@@ -1,5 +1,13 @@
 # BACKLOG
 
+## 2026-08-17 Documentation Handoff
+
+Imported applicable Windows service guidance from Microsoft Learn into
+`docs/architecture.md`, `docs/engineering-standards.md`, `docs/testing.md`,
+and `windows/README.md`. The documented lifecycle contract is intended for
+the remaining SCM adapter work; no unfinished SCM capability is marked as
+complete by this documentation update.
+
 Execution source of truth. Update after every session.
 
 ## Documentation Freshness Rules
@@ -20,14 +28,14 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
 | TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Live RHEL/libvirt host and Windows guest unavailable in this environment |
-| TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser and pure resize decision policy implemented; timer/service loop remains |
-| TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser and error validation implemented; transport adapter remains |
+| TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
+| TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, and configurable named-pipe client implemented; live transport validation remains |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser foundation is complete; runtime wiring and a complete Windows Rust build remain. |
+| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, and validated service configuration are complete; SCM adapter, persistence, and live validation remain. |
 
 ## Completed
 

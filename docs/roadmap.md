@@ -9,8 +9,8 @@
 
 ## Phase 2: Core Functionality (In Progress)
 
-- [~] Windows service: Memory metric polling (decision policy implemented; timer remains)
-- [ ] Windows service: QEMU Guest Agent exposure
+- [~] Windows service: Memory metric polling (poller and stoppable interval scheduler implemented; service hosting remains)
+- [~] Windows service: QEMU Guest Agent exposure (configurable named-pipe client implemented; live channel validation remains)
 - [~] Host-side virtio-mem validation flow (safe resize planning implemented; live XML adapter remains)
 - [ ] End-to-end integration testing
 
@@ -18,13 +18,13 @@
 
 - [ ] Error handling and recovery
 - [ ] Logging and observability
-- [ ] Configuration management
+- [~] Configuration management (validated runtime model implemented; persistent loading remains)
 - [ ] Performance tuning
 - [ ] Documentation completion
 
 ## Phase 4: Operations (Future)
 
-- [ ] Windows service registration
+- [~] Windows service registration (portable lifecycle host implemented; SCM adapter remains)
 - [ ] Host automation automation and checks
 - [ ] Monitoring and alerting
 - [ ] Health checks

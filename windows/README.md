@@ -13,13 +13,15 @@ windows/
 ├── Cargo.toml
 ├── src/
 │   ├── main.rs
-│   ├── service.rs
-│   ├── metrics.rs
-│   ├── guest_agent.rs
+│   ├── controller.rs
+│   ├── config.rs
+│   ├── error.rs
+│   ├── qga.rs
+│   ├── runtime.rs
+│   ├── service_host.rs
+│   ├── service_loop.rs
+│   ├── stats.rs
 │   └── lib.rs
-├── tests/
-│   ├── metrics_tests.rs
-│   └── guest_agent_tests.rs
 └── README.md
 ```
 
@@ -52,4 +54,28 @@ runtime requirements are:
 - Windows 11 with QEMU Guest Agent running
 - Windows service APIs available in the target environment
 
-See [../../BACKLOG.md](../../BACKLOG.md) for task assignments and [../../docs/architecture.md](../../docs/architecture.md) for design details.
+The current runtime foundation includes a configurable named-pipe QEMU Guest
+Agent client, a mockable memory poller, and an adapter-based single poll
+iteration. It also includes a stoppable polling scheduler and portable
+`ServiceHost` lifecycle wrapper. Windows SCM registration and live KVM channel
+validation remain in progress. `ServiceConfig` supplies validated service
+identity, endpoint, timing, and least-privilege defaults; persistent loading
+is not implemented yet.
+
+## Service hosting rules
+
+The eventual SCM adapter must keep service callbacks bounded and delegate
+polling to the stoppable runtime. It must report lifecycle transitions in the
+order **start-pending → running → stop-pending → stopped**, distinguish normal
+cancellation from failure, and preserve unexpected worker failures as
+non-zero process exits so SCM recovery can act. Service registration must use a
+stable identity, documented configuration, and the least-privileged account
+that can access the QEMU Guest Agent channel.
+
+The required operational verification sequence is **install → start → inspect
+logs → stop → remove**. See [`../docs/architecture.md`](../docs/architecture.md)
+and [`../docs/testing.md`](../docs/testing.md) for the lifecycle contract and
+test matrix.
+
+See [../BACKLOG.md](../BACKLOG.md) for task assignments and
+[../docs/architecture.md](../docs/architecture.md) for design details.

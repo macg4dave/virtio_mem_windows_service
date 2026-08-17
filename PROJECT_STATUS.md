@@ -1,10 +1,10 @@
 # Project Status & Next Steps
 
-## Current State: Planning Phase ✅
+## Current State: Implementation Phase ✅
 
 **Date**: 2026-08-17  
-**Phase**: Foundation (Phase 1)  
-**Overall Status**: Ready for development
+**Phase**: Core Functionality (Phase 2)
+**Overall Status**: Runtime foundation implemented; service and live integration remain
 
 ### Completion Summary
 
@@ -26,7 +26,16 @@
 The Rust library now contains the pure memory-control policy used by the
 future service loop. It validates block-aligned limits, applies hysteresis,
 waits for requested/current convergence, and clamps each one-block request to
-the configured safe range.
+the configured safe range. A transport-neutral `MemoryPoller` now fetches a
+QEMU Guest Agent response through a mockable trait, parses it, applies that
+policy, and returns typed transport or parsing errors. The guest-side named-pipe
+client and adapter-based loop iteration are now implemented; service hosting
+and live channel validation remain. The polling loop now supports a validated
+non-zero interval and an explicit atomic stop signal.
+`ServiceHost` provides portable lifecycle state tracking; Windows SCM
+registration is still pending. `ServiceConfig` now validates service identity,
+QGA endpoint, timing, and the default least-privilege account; persistent
+configuration loading remains pending.
 
 ## Next task
 
@@ -48,6 +57,9 @@ Completed in this session:
 Current blocker:
 
 - Windows-native Rust 1.97.1 MSVC validation now passes; live QGA/libvirt validation remains pending on the KVM host.
+- The executable entry point is still a foundation stub; the native SCM adapter,
+  persistent configuration loader, event-log integration, and live QGA
+  validation are not implemented yet.
 
 Success criteria:
 

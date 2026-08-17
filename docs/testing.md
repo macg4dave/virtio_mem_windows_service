@@ -19,6 +19,31 @@ cargo fmt --all
 
 The Rust service tests should cover QGA response parsing, threshold boundaries, minimum/maximum safe ranges, and invalid configuration cases. They do not require a live VM.
 
+### Windows service lifecycle testing
+
+The SCM adapter and portable host must be tested separately from live QEMU
+Guest Agent access. At minimum, verify:
+
+1. startup reports pending before initialization and running only after the
+  worker is ready;
+2. a stop request cancels scheduling, prevents new polls, and reaches stopped;
+3. system shutdown follows the same graceful cancellation path;
+4. repeated stop requests are harmless and do not deadlock;
+5. an unexpected worker error reaches failed and produces a non-zero process
+  result for SCM recovery; and
+6. a slow stop reports stop-pending and completes within the configured
+  shutdown deadline.
+
+The portable Rust tests additionally verify startup failure before `Running`,
+atomic stop signaling, cancellation wake-up, configuration validation, and
+that a stopped loop performs no new poll.
+
+Installation validation must also confirm the registered service name,
+description, executable path, account, startup mode, and recovery actions.
+Verify the sequence **install → start → observe logs → stop → delete** on a
+Windows test machine. Do not test recovery by terminating a production
+service or by using unbounded restart loops.
+
 ### Real VM validation
 
 On the RHEL host, validate the Windows guest agent and live device before enabling automatic updates:

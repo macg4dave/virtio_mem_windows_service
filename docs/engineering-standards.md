@@ -29,6 +29,21 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - Error handling: `set -euo pipefail`
 - Target: Bash 4.0+
 
+### Windows service lifecycle
+
+- Keep SCM start/stop callbacks short; never perform an unbounded poll or blocking QEMU Guest Agent operation directly in a callback.
+- Make start, running, stop-pending, stopped, and failed states explicit at the SCM boundary. Do not report running before the worker is ready.
+- Use one cancellation path for operator stop and system shutdown. A normal cancellation must not be logged or exited as a crash.
+- Make shutdown idempotent: stop scheduling new work, allow in-flight work to finish within a bounded deadline, release channel resources, and then exit.
+- Treat an unexpected worker failure as a failed service, preserve its error context in Windows event logging, and return a non-zero process result so configured SCM recovery can restart it. Never leave a silent zombie process.
+- Define and validate a stable service identity, executable path, startup mode, recovery policy, and least-privilege service account during installation.
+- Prefer configuration files or other documented persistent configuration for multiple settings; avoid undocumented or security-sensitive startup arguments.
+- Keep service identity, QGA pipe path, polling interval, shutdown timeout, and
+  service account in validated configuration; use `LocalService` by default
+  and require an explicit documented reason to elevate.
+- Cancellation waits must be wakeable; do not use an uninterruptible sleep for
+  the polling interval.
+
 ## Documentation Standards
 
 - All features must be documented in [docs/feature-matrix.md](feature-matrix.md)

@@ -4,6 +4,11 @@
 
 ### GetMemoryStats
 
+The guest-side transport sends the request as one newline-delimited JSON
+message over the configured Windows virtio-serial/QEMU Guest Agent pipe. The
+pipe path is supplied to `NamedPipeGuestAgent`; the client does not discover
+or modify host-side libvirt resources.
+
 Request:
 
 ```json
@@ -60,3 +65,26 @@ The Rust controller consumes parsed memory stats plus the live virtio-mem
 
 The controller never emits a target outside the configured minimum/maximum
 range and does not perform the host-side resize itself.
+
+## Guest Polling Boundary
+
+`MemoryPoller` obtains a `GetMemoryStats` response through the `GuestAgent`
+trait, parses it, and evaluates the controller decision. The service loop
+obtains `requested` and `current` through `MemoryStateProvider`; only a
+`Request` decision is passed to `ResizeRequestSink`. `NoChange` and
+`WaitForConvergence` produce no resize side effect.
+
+## Polling Lifecycle
+
+`run_polling_loop` executes one poll, waits for the configured non-zero
+interval, and repeats until its `AtomicBool` stop signal is set. Polling and
+resize errors stop the loop and are returned to the service host; failed
+operations are not retried implicitly.
+
+## Service Lifecycle
+
+`ServiceHost` owns the worker stop signal and tracks `Created`, `Running`,
+`Stopped`, and `Failed` states. Worker failures are returned to the caller and
+transition the host to `Failed`; workers are not silently restarted. Windows
+Service Control Manager registration and callbacks remain a platform adapter
+around this lifecycle boundary.

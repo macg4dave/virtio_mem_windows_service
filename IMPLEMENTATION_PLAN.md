@@ -117,10 +117,10 @@ This phase establishes the initial repository structure and validates the QEMU G
 
 ---
 
-## Phase 2: Core Functionality (Planned)
+## Phase 2: Core Functionality (In Progress)
 
-- **TASK-004**: Windows service memory polling logic
-- **TASK-005**: Safe QEMU Guest Agent response handling
+- **TASK-004**: Windows service memory polling logic (In Progress: `MemoryPoller` composes agent responses with parser and policy)
+- **TASK-005**: Safe QEMU Guest Agent response handling (In Progress: typed poll errors and malformed-response propagation)
 - **TASK-006**: Host-side virtio-mem validation flow
 - **TASK-007**: End-to-end integration testing
 
@@ -172,24 +172,28 @@ Phase 2/3/4 tasks
 ## Quality Gates
 
 ### Gate 1: Phase 1 Completion
-- [ ] Rust service compiles and all tests pass
+
+- [x] Rust library compiles and all 13 unit tests pass; complete service runtime remains
 - [ ] QEMU Guest Agent integration is validated
 - [ ] Bash helper scripts run cleanly
 - [ ] All documentation is current
 
 ### Gate 2: Phase 2 Completion
+
 - [ ] End-to-end guest validation succeeds on a test VM
 - [ ] Memory-read logic is stable across repeated checks
 - [ ] No silent failures during validation loops
 - [ ] Integration checks are documented
 
 ### Gate 3: Phase 3 Completion
+
 - [ ] All error conditions are handled gracefully
 - [ ] Logs are readable and actionable
 - [ ] Configuration is externalized when needed
 - [ ] Performance meets targets
 
 ### Gate 4: Phase 4 Completion
+
 - [ ] Service registration is documented and validated
 - [ ] Automation checks are repeatable
 - [ ] Health checks pass continuously
