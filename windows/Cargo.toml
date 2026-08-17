@@ -1,0 +1,23 @@
+[package]
+name = "virtio-mem-service"
+version = "0.1.0"
+edition = "2021"
+authors = ["macg4dave"]
+license = "MIT"
+description = "Windows service for virtio-mem integration with QEMU Guest Agent"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+winapi = { version = "0.3", features = ["processthreadsapi", "winbase", "sysinfoapi", "winnt"] }
+
+[dev-dependencies]
+mockall = "0.12"
+
+[[bin]]
+name = "virtio-mem-service"
+path = "src/main.rs"

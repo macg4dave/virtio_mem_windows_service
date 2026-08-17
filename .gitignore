@@ -1,0 +1,37 @@
+# Go
+/linux/bin/
+/linux/virtio-mem-controller
+*.o
+*.a
+*.so
+.DS_Store
+go.sum
+
+# Rust
+/windows/target/
+/windows/.cargo/
+/target/
+**/*.rs.bk
+
+# Editor
+/.vs/
+/.vscode/
+*.user
+*.sln.DotSettings.user
+launchSettings.json
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~
+.vscode/settings.json
+
+# OS
+Thumbs.db
+.env
+.env.local
+
+# Logs
+*.log
+logs/
