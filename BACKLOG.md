@@ -35,7 +35,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, and validated service configuration are complete; SCM adapter, persistence, and live validation remain. |
+| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, startup validation, and a local Windows SCM install/stop registration path are complete; live service registration on a real Windows guest and host validation remain. |
 
 ## Completed
 

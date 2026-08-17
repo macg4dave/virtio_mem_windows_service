@@ -96,6 +96,14 @@ mod tests {
         }
     }
 
+    struct FailingStateProvider;
+
+    impl MemoryStateProvider for FailingStateProvider {
+        fn memory_state(&mut self) -> Result<(u64, u64), String> {
+            Err("state read failed".to_owned())
+        }
+    }
+
     #[derive(Default)]
     struct StubResize {
         requested: Vec<u64>,
@@ -105,6 +113,20 @@ mod tests {
         fn request_resize(&mut self, requested_bytes: u64) -> Result<(), String> {
             self.requested.push(requested_bytes);
             Ok(())
+        }
+    }
+
+    struct FailingResize {
+        failed: bool,
+    }
+
+    impl ResizeRequestSink for FailingResize {
+        fn request_resize(&mut self, _requested_bytes: u64) -> Result<(), String> {
+            if self.failed {
+                Err("resize rejected".to_owned())
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -149,6 +171,30 @@ mod tests {
             ResizeDecision::NoChange
         );
         assert!(resize.requested.is_empty());
+    }
+
+    #[test]
+    fn state_provider_failure_returns_explicit_error() {
+        let mut poller = poller(StubGuestAgent);
+        let mut state = FailingStateProvider;
+        let mut resize = StubResize::default();
+
+        assert_eq!(
+            poll_once(&mut poller, &mut state, &mut resize),
+            Err(ServiceLoopError::StateProvider("state read failed".to_owned()))
+        );
+    }
+
+    #[test]
+    fn resize_sink_failure_returns_explicit_error() {
+        let mut poller = poller(StubGuestAgent);
+        let mut state = StubState;
+        let mut resize = FailingResize { failed: true };
+
+        assert_eq!(
+            poll_once(&mut poller, &mut state, &mut resize),
+            Err(ServiceLoopError::ResizeRequest("resize rejected".to_owned()))
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ pub enum ServiceState {
 }
 
 impl ServiceState {
-    fn from_u8(value: u8) -> Self {
+    pub(crate) fn from_u8(value: u8) -> Self {
         match value {
             0 => Self::Created,
             1 => Self::StartPending,
@@ -28,6 +28,7 @@ impl ServiceState {
     }
 }
 
+#[derive(Debug)]
 pub struct StopSignal {
     cancelled: AtomicBool,
     wake: Condvar,

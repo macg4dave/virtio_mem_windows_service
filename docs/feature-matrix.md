@@ -7,10 +7,10 @@
 | Validate virtio-mem state | In Progress | Host | Ops | Bash + Rust | Safe requested/current convergence policy implemented; live XML adapter remains |
 | Windows service memory collection | In Progress | Windows | Service | Rust | Memory stats model and threshold policy implemented |
 | QEMU Guest Agent integration | In Progress | Host | Validation | Bash + Rust | Contract and parser implemented; live `virsh` validation remains |
-| Service lifecycle hosting | In Progress | Windows | Service | Rust | `ServiceHost` state machine and stop signaling implemented; SCM adapter remains |
-| Service configuration | In Progress | Windows | Service | Rust | Validated identity, QGA endpoint, timing, and least-privilege account defaults; persistence remains |
+| Service lifecycle hosting | In Progress | Windows | Service | Rust | `ServiceHost` state machine, stop signaling, startup validation, and local SCM install/stop registration path implemented; live Windows service registration remains |
+| Service configuration | In Progress | Windows | Service | Rust | Validated identity, QGA endpoint, timing, least-privilege account defaults, and startup guard implemented; persistence remains |
 | Logging and metrics | Planned | Both | Both | Rust | Per-service logging |
-| Error handling and recovery | Planned | Both | Both | Rust | Explicit error handling |
+| Error handling and recovery | In Progress | Both | Both | Rust | Explicit runtime and resize failures are covered locally; live host recovery remains blocked |
 | Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, and Rust validation helpers added |
 
 ## Platform Support
