@@ -5,6 +5,7 @@
 ### GetMemoryStats
 
 Request:
+
 ```json
 {
   "execute": "guest-get-memory-stats"
@@ -12,6 +13,7 @@ Request:
 ```
 
 Response:
+
 ```json
 {
   "return": [
@@ -28,6 +30,10 @@ Response:
 - `stat-total`: Total allocated memory in bytes
 - `stat-available`: Available memory (including cache)
 
+The Rust parser requires `stat-free` and `stat-total`. If `stat-available` is
+omitted by the guest agent, it falls back to `stat-free`. Values greater than
+`stat-total` are rejected as inconsistent.
+
 ## Memory Change Request
 
 Input: Target memory size in bytes, aligned to the device block size.
@@ -41,3 +47,16 @@ The controller must inspect live virtio-mem XML after every request. `requested`
 - Maintain backward compatibility with existing QEMU Guest Agent versions
 - Version any breaking changes to the protocol
 - Do not issue another resize while `requested` and `current` differ
+
+## Controller Decision Contract
+
+The Rust controller consumes parsed memory stats plus the live virtio-mem
+`requested` and `current` values. It returns one of:
+
+- `NoChange` when memory is within the hysteresis band or a safe limit has
+  been reached
+- `WaitForConvergence` when a previous resize is still pending
+- `Request { requested_bytes }` for one aligned block of growth or removal
+
+The controller never emits a target outside the configured minimum/maximum
+range and does not perform the host-side resize itself.

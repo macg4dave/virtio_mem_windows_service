@@ -2,14 +2,14 @@
 
 | Feature | Status | Owner | Component | Language | Notes |
 |---------|--------|-------|-----------|----------|-------|
-| Read memory metrics from QEMU Guest Agent | Planned | Windows | Service | Rust | Native `guest-get-memory-stats` parser and adapter |
-| Poll Windows memory availability | Planned | Windows | Service | Rust | Polling cadence to be confirmed |
-| Validate virtio-mem state | Planned | Host | Ops | Bash + Rust | Inspect live XML and verify adjustment safety |
-| Windows service memory collection | Planned | Windows | Service | Rust | Revisit only if native QGA is insufficient |
-| QEMU Guest Agent integration | Planned | Host | Validation | Bash + Rust | Uses host `virsh qemu-agent-command` |
+| Read memory metrics from QEMU Guest Agent | In Progress | Windows | Service | Rust | `guest-get-memory-stats` response parser implemented; transport adapter remains |
+| Poll Windows memory availability | In Progress | Windows | Service | Rust | Pure decision policy implemented; timer and Windows service loop remain |
+| Validate virtio-mem state | In Progress | Host | Ops | Bash + Rust | Safe requested/current convergence policy implemented; live XML adapter remains |
+| Windows service memory collection | In Progress | Windows | Service | Rust | Memory stats model and threshold policy implemented |
+| QEMU Guest Agent integration | In Progress | Host | Validation | Bash + Rust | Contract and parser implemented; live `virsh` validation remains |
 | Logging and metrics | Planned | Both | Both | Rust | Per-service logging |
 | Error handling and recovery | Planned | Both | Both | Rust | Explicit error handling |
-| Automation and scripts | Planned | Both | Ops | Bash | Build and validation helpers |
+| Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, and Rust validation helpers added |
 
 ## Platform Support
 

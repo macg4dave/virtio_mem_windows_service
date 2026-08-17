@@ -1,3 +1,3 @@
 fn main() {
-    println!("virtio-mem service placeholder");
+    println!("virtio-mem service foundation");
 }

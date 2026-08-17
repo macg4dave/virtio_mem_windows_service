@@ -44,7 +44,10 @@ cargo fmt --check
 
 ## Development
 
-Requires:
+See [`../docs/dependencies.md`](../docs/dependencies.md) for the complete
+toolchain, crate, host, guest, and validation requirements. The minimum local
+runtime requirements are:
+
 - Rust 1.70+
 - Windows 11 with QEMU Guest Agent running
 - Windows service APIs available in the target environment

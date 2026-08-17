@@ -15,12 +15,39 @@ On Windows 11, check that the QEMU Guest Agent service is installed and running.
 
 If the service does not exist:
 
-1. Download QEMU Guest Agent for Windows from [QEMU project](https://www.qemu.org/)
-2. Run the installer (typically `qemu-ga-x86_64.exe` or similar)
-3. Restart Windows
-4. Validate the service is active through the Windows service manager
+On RHEL 10, the QEMU guest tools/driver ISOs are normally provided by the `virtio-win` package. Check with:
 
-If the service is installed but not running, start it before continuing.
+```bash
+rpm -ql virtio-win
+```
+
+The ISO is typically:
+
+```text
+/usr/share/virtio-win/virtio-win.iso
+```
+
+Check whether it is installed:
+
+```bash
+rpm -q virtio-win
+ls -lh /usr/share/virtio-win/
+```
+
+If it is not installed:
+
+```bash
+sudo dnf install virtio-win
+```
+
+To find any related ISO files regardless of package:
+
+```bash
+sudo find /usr/share /var/lib/libvirt -iname "*.iso" 2>/dev/null
+```
+
+For a Windows 11 VM, `virtio-win.iso` contains the VirtIO drivers such as balloon, memory, network, storage, and guest agent components.
+
 
 ## Step 2: Configure Guest Agent Channel in libvirt
 
@@ -118,6 +145,25 @@ Record the following for the project documentation:
 - [ ] Consistency: Run 3+ consecutive queries and verify results
 - [ ] Socket stability: Test 100+ rapid consecutive commands
 
+## Step 7: Run the repository validation helper
+
+From the repository root on the RHEL host, run the prerequisite check first:
+
+```bash
+bash scripts/check-environment.sh
+```
+
+Then run the explicit-scope probe. The VM name is required; no VM is selected
+implicitly:
+
+```bash
+bash scripts/validate-guest-agent.sh win11_gpu 3
+```
+
+The helper validates `guest-info` once and
+`guest-get-memory-stats` for the requested number of attempts. It does not
+resize memory, restart the VM, or execute commands inside the guest.
+
 ## Troubleshooting
 
 ### Issue: "timed out"
@@ -125,6 +171,7 @@ Record the following for the project documentation:
 **Cause**: Guest Agent not responding, service not running, or channel not configured.
 
 **Solution**:
+
 1. Restart QEMU Guest Agent: `Restart-Service QEMU-GA` (Windows)
 2. Verify channel in XML: `virsh dumpxml win11_gpu | grep -A 3 channel`
 3. Restart VM: `virsh reboot win11_gpu`
@@ -135,6 +182,7 @@ Record the following for the project documentation:
 **Cause**: QEMU Guest Agent doesn't support `guest-get-memory-stats` or old version.
 
 **Solution**:
+
 1. Verify agent version supports the command
 2. Try `guest-get-fsinfo` as a fallback test command
 3. Check QEMU version is 2.12+ (when guest-get-memory-stats was added)
@@ -144,42 +192,26 @@ Record the following for the project documentation:
 **Cause**: Shell escaping issues or malformed commands.
 
 **Solution**:
+
 1. Use single quotes in bash to avoid shell expansion
 2. Double-escape backslashes: `\\\\` in Windows paths
 3. Use `jq` to format and validate JSON: `... | jq .`
 
-## Example: Integration Test Script
+## Example: Manual Integration Checks
 
-Save as `test-guest-agent.sh` on the RHEL host:
+The repository helper above replaces the earlier ad-hoc script. Equivalent
+manual checks are:
 
 ```bash
 #!/bin/bash
 
 VM_NAME="win11_gpu"
-MAX_RETRIES=3
-
-echo "Testing QEMU Guest Agent for $VM_NAME..."
-
-# Test 1: guest-info
-echo "Test 1: guest-info"
 virsh qemu-agent-command "$VM_NAME" '{"execute":"guest-info"}' | jq .
-
-# Test 2: guest-get-memory-stats
-echo "Test 2: guest-get-memory-stats"
 virsh qemu-agent-command "$VM_NAME" '{"execute":"guest-get-memory-stats"}' | jq .
-
-# Test 3: Multiple cycles (stability test)
-echo "Test 3: Stability (5 cycles)..."
-for i in {1..5}; do
-  echo "  Cycle $i..."
-  virsh qemu-agent-command "$VM_NAME" '{"execute":"guest-get-memory-stats"}' > /dev/null && echo "    ✓" || echo "    ✗"
-  sleep 1
-done
-
-echo "Done."
 ```
 
-Make executable: `chmod +x test-guest-agent.sh`
+The helper scripts are intended to be executable files in the checkout. If the
+checkout does not preserve executable bits, run `chmod +x scripts/*.sh`.
 
 ## Success Criteria
 
@@ -197,4 +229,4 @@ Once validated:
 1. Update [docs/api-contract.md](api-contract.md) with observed response formats
 2. Add expected latency measurements
 3. Document any version-specific workarounds
-4. Proceed with TASK-001 (Linux controller scaffolding)
+4. Proceed with the Rust service runtime work in TASK-001.

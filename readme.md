@@ -29,6 +29,9 @@ The project avoids Go entirely. Any future runtime component will be Rust-based,
 
 ## Prerequisites
 
+See the complete dependency and requirement checklist in
+[`docs/dependencies.md`](docs/dependencies.md).
+
 ### Host / environment
 
 - RHEL host with libvirt and QEMU available
@@ -44,3 +47,10 @@ The project avoids Go entirely. Any future runtime component will be Rust-based,
 - A virtio-serial channel named `org.qemu.guest_agent.0`
 
 Follow [`docs/qemu-ga-setup.md`](docs/qemu-ga-setup.md) to install and validate the guest agent. This repo does not use Go for the runtime implementation.
+
+## Host validation helpers
+
+From a RHEL host, run `bash scripts/check-environment.sh` before
+`bash scripts/validate-guest-agent.sh VM_NAME 3`. The validation helper only
+queries the explicitly supplied VM and never changes VM memory or executes
+guest commands.

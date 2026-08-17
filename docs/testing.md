@@ -4,6 +4,9 @@
 
 All testing is performed locally. No CI pipeline is currently configured.
 
+See [`dependencies.md`](dependencies.md) for the complete toolchain and host/
+guest prerequisite matrix.
+
 ### Rust Service Testing
 
 ```bash
@@ -44,4 +47,7 @@ Before committing:
 
 ## Known Blockers
 
-Document any local testing blockers here when encountered.
+- The Windows-native Rust 1.97.1 MSVC toolchain now passes the full local
+  format, release build, test, and Clippy pipeline.
+- Live QEMU Guest Agent and libvirt validation requires the RHEL host and
+  Windows guest described in `docs/qemu-ga-setup.md`.

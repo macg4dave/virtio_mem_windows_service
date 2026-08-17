@@ -21,17 +21,33 @@
 - [ ] Host automation scripts (planned in Bash)
 - [x] Backlog execution board created
 
+## Current Phase 2 work
+
+The Rust library now contains the pure memory-control policy used by the
+future service loop. It validates block-aligned limits, applies hysteresis,
+waits for requested/current convergence, and clamps each one-block request to
+the configured safe range.
+
 ## Next task
 
-### TASK-001: Rust service foundation
+### TASK-001: Rust service foundation (in progress)
 
 This is the first implementation step. It includes:
 
 1. Rust project structure under `windows/`
-2. QEMU Guest Agent client
+2. QEMU Guest Agent response parsing
 3. Validation of guest memory metrics
 4. Memory-safety and error-handling checks
 5. Local test coverage and validation helpers
+
+Completed in this session:
+
+- `parse_memory_stats` handles required fields, optional availability, malformed JSON, and inconsistent values.
+- Unit tests cover the expected response, fallback behavior, missing fields, and invalid ranges.
+
+Current blocker:
+
+- Windows-native Rust 1.97.1 MSVC validation now passes; live QGA/libvirt validation remains pending on the KVM host.
 
 Success criteria:
 

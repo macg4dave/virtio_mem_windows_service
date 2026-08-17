@@ -2,16 +2,16 @@
 
 ## Phase 1: Foundation (In Progress)
 
-- [ ] Rust service scaffolding
-- [ ] QEMU Guest Agent integration research
-- [ ] libvirt validation proof-of-concept
-- [ ] Bash validation helpers and local automation
+- [~] Rust service scaffolding (parser foundation implemented; service runtime remains)
+- [x] QEMU Guest Agent integration research
+- [x] libvirt validation proof-of-concept (manual and scripted checks documented)
+- [x] Bash validation helpers and local automation
 
-## Phase 2: Core Functionality (Planned)
+## Phase 2: Core Functionality (In Progress)
 
-- [ ] Windows service: Memory metric polling
+- [~] Windows service: Memory metric polling (decision policy implemented; timer remains)
 - [ ] Windows service: QEMU Guest Agent exposure
-- [ ] Host-side virtio-mem validation flow
+- [~] Host-side virtio-mem validation flow (safe resize planning implemented; live XML adapter remains)
 - [ ] End-to-end integration testing
 
 ## Phase 3: Hardening (Planned)

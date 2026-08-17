@@ -15,6 +15,19 @@
 - `lower_threshold_gb`: Free memory threshold to trigger add (default 2 GB)
 - `upper_threshold_gb`: Free memory threshold to trigger remove (default 6 GB)
 
+### Resize policy
+
+The controller evaluates the last parsed `stat-free` value once per poll:
+
+- Below `lower_threshold_bytes`: request one additional device block.
+- Above `upper_threshold_bytes`: request one fewer device block.
+- Between or exactly at either threshold: do not change memory.
+- While `virtio_mem_requested_bytes != virtio_mem_current_bytes`: wait and do
+  not issue another request.
+
+Every target is clamped to the configured minimum and maximum and both limits
+must be aligned to `block_size_bytes`.
+
 ### Persistence
 
 Currently, state is transient (no database). State is recalculated on each poll cycle.

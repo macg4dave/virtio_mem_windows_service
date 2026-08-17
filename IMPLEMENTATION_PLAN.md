@@ -24,9 +24,9 @@ This phase establishes the initial repository structure and validates the QEMU G
 
 2. **Core Components**
    - [ ] Guest-side memory collection entry point
-   - [ ] QEMU Guest Agent parsing and validation
-   - [ ] Error handling and safe defaults
-   - [ ] Local unit tests for parsing and thresholds
+   - [x] QEMU Guest Agent parsing and validation foundation
+   - [x] Error handling and safe defaults for memory-stat responses
+   - [x] Local unit tests for parsing and invalid values
    - [ ] Bash helper scripts for validation and local checks
 
 3. **Implementation Constraints**
