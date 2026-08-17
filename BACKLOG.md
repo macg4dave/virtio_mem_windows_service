@@ -34,6 +34,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
+| TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |
 
 ## Blocked
 

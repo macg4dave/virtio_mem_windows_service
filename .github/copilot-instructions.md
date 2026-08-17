@@ -81,11 +81,35 @@ Read the architecture and design docs first:
 ## Validation Rules
 
 - Rust changes: build and validate locally with `cargo build` and `cargo test` when available.
+- Run `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings` for Rust changes when the toolchain supports them.
 - Bash changes: run the script or a focused validation command locally.
 - Windows service changes: build and validate locally before committing.
 - All testing is performed locally. Document any blocking issues for local validation.
 - Stack changes: validate that services can start and communicate correctly.
 - If a command cannot run locally, state the exact blocker.
+
+## Rust Engineering Rules
+
+- Use the Rust 2021 edition and preserve the crate's existing MSVC/Windows target assumptions.
+- Prefer safe, idiomatic Rust: explicit `Result`/`Option` handling, structured error types, and small testable functions.
+- Avoid `unwrap()`, `expect()`, panics, global mutable state, and `unsafe`; if one is necessary, justify it and test the failure path.
+- Keep public items minimal. Add documentation for new public APIs and preserve existing API behavior unless the task explicitly changes the contract.
+- Prefer borrowing over cloning, but do not trade away clarity for micro-optimizations. Measure before optimizing.
+- Keep parsing and policy logic deterministic and independent of live VMs so unit tests remain hermetic.
+- Add regression tests for bug fixes, including boundary values, malformed input, error paths, and request convergence where relevant.
+- Do not add dependencies casually. Review the dependency's license, maintenance, feature flags, and Windows compatibility before changing `Cargo.toml` or `Cargo.lock`.
+- Keep Windows service code, QEMU Guest Agent transport, and pure memory policy logic separated so each can be tested independently.
+- Do not use Rust prompts or examples that assume Go, Python, Node.js, PowerShell, OpenAPI, Linux service managers, or unrelated UI frameworks.
+
+## Rust Change Checklist
+
+Before declaring a Rust task complete:
+
+1. Read the relevant architecture, backlog, contract, data-model, and testing documentation.
+2. Make the smallest focused change and update tests in the same change.
+3. Run formatting, tests, Clippy, and a release build when practical.
+4. Update affected documentation and the `BACKLOG.md` task status/handoff notes.
+5. Report exact validation results and any environment blocker; never claim a check passed without running it.
 
 ## Safety Rules
 

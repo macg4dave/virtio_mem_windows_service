@@ -1,18 +1,18 @@
 ---
 agent: agent
-description: Review a Roller_hoops diff for contract and documentation drift
+description: Review a virtio-mem Windows service diff for contract and documentation drift
 ---
 
 Review the current diff against:
 
-- `AGENTS.md`
+- `.github/copilot-instructions.md`
 - `BACKLOG.md`
 - `docs/engineering-standards.md`
-- `docs/ai-coding-control.md`
+- `docs/architecture.md`
 - `docs/feature-matrix.md`
-- `api/openapi.yaml` and `docs/api-contract.md` if API behavior changed
+- `docs/api-contract.md` if QEMU Guest Agent or public Rust API behavior changed
 - `docs/data-model.md` if persistence changed
-- `docs/ui-ux.md` if operator workflow changed
+- `docs/testing.md`
 
 Lead with concrete findings only. For each finding, name:
 
@@ -22,3 +22,12 @@ Lead with concrete findings only. For each finding, name:
 - the smallest correction
 
 Do not approve the change just because tests pass. Tests are evidence, not a substitute for contract review.
+
+Also check that:
+
+- only Rust and Bash were added or changed;
+- Windows service code does not invoke Linux commands or access host devices;
+- parsing validates malformed, missing, inconsistent, and overflowing values;
+- new public Rust items have appropriate documentation and tests;
+- `BACKLOG.md` and affected docs reflect the change;
+- no secrets, credentials, tokens, private keys, or production data were introduced.
