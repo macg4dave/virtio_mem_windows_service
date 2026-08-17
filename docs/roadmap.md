@@ -2,17 +2,16 @@
 
 ## Phase 1: Foundation (In Progress)
 
-- [ ] Linux controller scaffolding
-- [ ] Windows service scaffolding (conditional; native QGA validation first)
+- [ ] Rust service scaffolding
 - [ ] QEMU Guest Agent integration research
-- [ ] libvirt integration proof-of-concept
+- [ ] libvirt validation proof-of-concept
+- [ ] Bash validation helpers and local automation
 
 ## Phase 2: Core Functionality (Planned)
 
-- [ ] Linux controller: Memory metric polling
-- [ ] Linux controller: Hysteresis-based allocation logic
-- [ ] Windows service: Memory metrics collection
+- [ ] Windows service: Memory metric polling
 - [ ] Windows service: QEMU Guest Agent exposure
+- [ ] Host-side virtio-mem validation flow
 - [ ] End-to-end integration testing
 
 ## Phase 3: Hardening (Planned)
@@ -25,8 +24,8 @@
 
 ## Phase 4: Operations (Future)
 
-- [ ] Systemd service integration
 - [ ] Windows service registration
+- [ ] Host automation automation and checks
 - [ ] Monitoring and alerting
 - [ ] Health checks
 - [ ] Metrics export

@@ -2,23 +2,24 @@
 
 ## System Overview
 
-This system manages dynamic memory allocation for a Windows 11 guest running under QEMU using virtio-mem, with a Linux RHEL controller service.
+This system manages dynamic memory allocation for a Windows 11 guest running under QEMU using virtio-mem. The repository is intentionally scoped to Rust and Bash only; any runtime service will be implemented as a Rust program rather than a Go controller.
 
 ### Components
 
-- **Linux Controller (Go)**: Polls Windows memory metrics via QEMU Guest Agent, calculates allocation changes, and communicates with libvirt
-- **Windows Service**: Deferred. Native QEMU Guest Agent memory statistics are the first integration path; a guest service is added only if validation proves native QGA insufficient.
+- **Windows Service (Rust)**: Planned guest-side runtime for memory metrics and QEMU Guest Agent interaction
+- **Host validation / automation (Bash)**: Planned scripts for validation, local build workflow, and operational checks
+- **QEMU / libvirt validation path**: Used to verify guest agent responses and live virtio-mem behavior
 
 ### Data Flow
 
 ```
 Windows 11 (Guest)
     ↓ QEMU Guest Agent
-    ↓ Unix socket
-Linux Controller
+    ↓ Unix socket / libvirt interface
+Host validation and runtime tooling
     ├── Read memory metrics
-    ├── Calculate allocation (2GB hysteresis)
-    └── Execute virsh update-memory-device
+    ├── Validate guest-agent behavior
+    └── Coordinate virtio-mem verification
 ```
 
 ## Service Boundaries
@@ -27,14 +28,13 @@ See [copilot-instructions.md](../.github/copilot-instructions.md) for detailed o
 
 ## RPC & Interfaces
 
-- QEMU Guest Agent protocol, accessed by the host through libvirt/`virsh`
-- libvirt virtio-mem XML and `update-memory-device` live update
-- The controller reads live `requested` and `current` values and waits for convergence before another request
+- QEMU Guest Agent protocol accessed through libvirt / `virsh`
+- libvirt virtio-mem XML inspection for validation and live adjustment checks
+- Future runtime logic will remain in Rust, never in Go
 
-## Controller safety policy
+## Safety policy
 
-- Poll every 10 seconds by default.
-- Grow by 2 GiB when guest available memory is below 2 GiB.
-- Shrink by 2 GiB when guest available memory is above 6 GiB.
-- Clamp allocation to 8–28 GiB.
-- Do not issue a new resize while `requested` and `current` differ.
+- Keep validation conservative and explicit.
+- Confirm QEMU Guest Agent responses before enabling automated changes.
+- Avoid speculative memory changes without a successful behavior check.
+- Preserve a clear separation between guest-side logic and host-side automation.

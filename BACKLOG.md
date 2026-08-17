@@ -18,11 +18,9 @@ Tasks ready to start (Phase 1 - Foundation):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 |----|-------|-------|--------|--------|--------------|
-| TASK-001 | Linux controller scaffolding | Copilot | In Progress | 4-6 hours | libvirt-devel |
-| TASK-002 | Windows service scaffolding (Rust) | Unassigned | Deferred | Re-estimate after native QGA validation | Native QGA gap |
-| TASK-003 | QEMU Guest Agent validation | Unassigned | Not Started | 2-3 hours | TASK-001 |
-
-See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed deliverables and acceptance criteria.
+| TASK-001 | Rust service scaffolding | Copilot | Planned | 4-6 hours | QEMU Guest Agent validation |
+| TASK-002 | QEMU Guest Agent validation | Unassigned | Planned | 2-3 hours | None |
+| TASK-003 | Bash validation helpers | Unassigned | Planned | 1-2 hours | TASK-001 |
 
 ## In Progress
 
@@ -44,19 +42,15 @@ See [IMPLEMENTATION_PLAN.md](IMPLEMENTATION_PLAN.md) for detailed deliverables a
 
 ## Architecture Decisions
 
-### Memory Allocation Strategy
+### Runtime language policy
 
-- **Lower threshold**: 2 GB free → add 2 GB
-- **Upper threshold**: 6 GB free → remove 2 GB
-- **Min allocation**: 8 GB
-- **Max allocation**: 28 GB
-- **Poll interval**: 10 seconds (conservative to avoid oscillation)
-
-Rationale: Conservative thresholds prevent thrashing. Asymmetric add/remove prevents rapid cycling.
+- Rust is the default choice for any service or program logic.
+- Bash is used for automation and validation scripts.
+- Go is explicitly not used in this repository.
 
 ### Communication Protocol
 
-Use QEMU Guest Agent over Unix socket for reliability. Alternatives rejected:
-- `dommemstat`: Limited accuracy (balloon-based)
-- Direct registry access: Violates service boundaries
-- Custom protocols: Unnecessary complexity
+Use QEMU Guest Agent over the validated guest-host interface. Alternatives rejected:
+- Direct registry access: violates service boundaries
+- Unvalidated custom protocols: adds unnecessary complexity
+- Go-based implementation: intentionally excluded

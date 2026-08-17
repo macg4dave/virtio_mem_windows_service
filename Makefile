@@ -3,34 +3,14 @@
 help:
 	@echo "Virtual Memory Controller - Build Targets"
 	@echo ""
-	@echo "Linux Controller:"
-	@echo "  make linux-build      - Build Linux controller"
-	@echo "  make linux-test       - Run Go tests"
-	@echo "  make linux-fmt        - Format Go code"
-	@echo "  make linux-vet        - Vet Go code"
-	@echo ""
 	@echo "Windows Service:"
 	@echo "  make windows-build    - Build Rust service"
 	@echo "  make windows-test     - Run Rust tests"
 	@echo ""
-	@echo "Combined:"
-	@echo "  make build            - Build all components"
-	@echo "  make test             - Test all components"
-	@echo "  make lint            - Lint all components"
-	@echo "  make fmt             - Format all components"
-	@echo "  make clean           - Clean build artifacts"
-
-linux-build:
-	cd linux && go build -o bin/virtio-mem-controller ./cmd/controller
-
-linux-test:
-	cd linux && go test ./...
-
-linux-vet:
-	cd linux && go vet ./...
-
-linux-fmt:
-	cd linux && gofmt -w .
+	@echo "Automation:"
+	@echo "  make lint             - Lint the Rust component"
+	@echo "  make fmt              - Format Rust code"
+	@echo "  make clean            - Clean Rust build artifacts"
 
 windows-build:
 	cd windows && cargo build --release
@@ -38,21 +18,20 @@ windows-build:
 windows-test:
 	cd windows && cargo test
 
-build: linux-build windows-build
-	@echo "✓ All components built"
+build: windows-build
+	@echo "✓ Rust component built"
 
-test: linux-test windows-test
-	@echo "✓ All tests passed"
+test: windows-test
+	@echo "✓ Rust tests passed"
 
-lint: linux-vet
+lint:
 	cd windows && cargo clippy --all-targets --all-features -- -D warnings
 	@echo "✓ Linting complete"
 
-fmt: linux-fmt
+fmt:
 	cd windows && cargo fmt --all
 	@echo "✓ Formatting complete"
 
 clean:
-	cd linux && rm -rf bin/ pkg/ && go clean ./...
 	cd windows && cargo clean
 	@echo "✓ Clean complete"

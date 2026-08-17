@@ -1,17 +1,14 @@
-# Go
-/linux/bin/
-/linux/virtio-mem-controller
-*.o
-*.a
-*.so
-.DS_Store
-go.sum
-
 # Rust
 /windows/target/
 /windows/.cargo/
 /target/
 **/*.rs.bk
+
+# General
+*.o
+*.a
+*.so
+.DS_Store
 
 # Editor
 /.vs/

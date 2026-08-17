@@ -16,38 +16,38 @@
 - [x] Testing strategy outlined
 - [x] Implementation plan created
 - [x] QEMU Guest Agent setup guide created
-- [x] Linux controller foundation implemented (policy, QGA adapter, libvirt/virsh adapter, tests)
-- [ ] Windows service implementation (deferred pending native QGA validation)
+- [x] Go references removed from the repo scope
+- [ ] Windows service implementation (planned in Rust)
+- [ ] Host automation scripts (planned in Bash)
 - [x] Backlog execution board created
 
 ## Next task
 
-### TASK-001: Linux controller foundation
+### TASK-001: Rust service foundation
 
 This is the first implementation step. It includes:
 
-1. Go project structure under `linux/`
+1. Rust project structure under `windows/`
 2. QEMU Guest Agent client
-3. libvirt integration wrapper
-4. Memory calculation logic for hysteresis
-5. Logging and unit tests
+3. Validation of guest memory metrics
+4. Memory-safety and error-handling checks
+5. Local test coverage and validation helpers
 
 Success criteria:
 
-- Go code compiles without errors
-- `go vet ./...` passes
-- `go test ./...` passes
-- The controller is ready for integration with the QEMU Guest Agent
+- Rust code compiles without errors
+- `cargo test` passes locally
+- `cargo clippy` passes locally
+- The service is ready for integration with the QEMU Guest Agent
 
 ## Technology policy
 
 This repo is intentionally limited to:
 
-- Go for the Linux controller
-- Rust for the Windows service
+- Rust for any service or program logic
 - Bash for build and automation scripts
 
-No C#, PowerShell, Python, Java, or other languages are allowed in the source tree.
+No Go, C#, PowerShell, Python, Java, or other languages are allowed in the source tree.
 
 ## Architecture at a glance
 
@@ -55,21 +55,15 @@ No C#, PowerShell, Python, Java, or other languages are allowed in the source tr
 Windows 11 guest
   ↕ QEMU Guest Agent
 RHEL host
-  ↕ Go controller
-  ├─ Query memory stats
-  ├─ Apply hysteresis logic
-  └─ Call libvirt to adjust virtio-mem
+  ↕ Rack of host validation and automation
+  ├─ Inspect memory metrics
+  ├─ Validate guest-agent behavior
+  └─ Verify virtio-mem safety before automation
 
-Windows service (Rust) is deferred. Native QEMU Guest Agent statistics are the first implementation path.
+The runtime implementation is planned in Rust, not Go.
 ```
 
 ## Project stack
-
-### Linux controller (Go)
-
-- Language: Go 1.20+
-- Layer: libvirt/QEMU interaction and polling
-- Entry point: `linux/cmd/controller`
 
 ### Windows service (Rust)
 
@@ -84,10 +78,9 @@ Windows service (Rust) is deferred. Native QEMU Guest Agent statistics are the f
 
 ## Validation checklist
 
-- [x] `go test ./...` in the Linux project
-- [x] `go vet ./...` in the Linux project
 - [ ] `cargo test` in the Windows project
 - [ ] `cargo clippy` in the Windows project
+- [ ] Bash helper validation passes locally
 - [ ] Documentation updated when behavior changes
 
 ## References

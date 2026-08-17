@@ -2,23 +2,14 @@
 
 ## Language Policy
 
-This project is restricted to exactly three languages:
+This project is restricted to exactly two languages:
 
-- Go for the Linux controller
-- Rust for the Windows service
+- Rust for any required service or program logic
 - Bash for automation and scripting
 
 No additional languages are permitted in source code, scripts, build tooling, or infrastructure definitions.
 
 ## Code Style
-
-### Go
-
-- Format: `gofmt`
-- Lint: `go vet ./...`
-- Test coverage: Aim for >80%
-- Package structure: `cmd/`, `pkg/`, `internal/`
-- Min version: Go 1.20+
 
 ### Rust
 
@@ -56,6 +47,6 @@ No additional languages are permitted in source code, scripts, build tooling, or
 
 Respect the [architecture.md](architecture.md) service boundaries:
 
-- Linux controller does not access Windows registry/filesystem
 - Windows service does not invoke Linux commands
-- All communication via QEMU Guest Agent interface
+- Host automation remains separate from guest runtime logic
+- All communication stays on the QEMU Guest Agent interface and validated host tooling

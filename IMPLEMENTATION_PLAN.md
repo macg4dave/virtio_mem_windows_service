@@ -2,105 +2,58 @@
 
 ## Phase 1: Foundation (CURRENT)
 
-This phase establishes the core project scaffolding and validates the QEMU Guest Agent integration.
+This phase establishes the initial repository structure and validates the QEMU Guest Agent integration path.
 
-### TASK-001: Linux Controller Foundation
+### TASK-001: Rust service foundation
 
 **Owner**: Copilot  
-**Status**: In Progress  
+**Status**: Planned  
 **Effort**: 4-6 hours
 
 #### Deliverables
 
 1. **Directory Structure**
-   ```
-   linux/
-   ├── cmd/
-   │   └── controller/
-   │       └── main.go
-   ├── pkg/
-   │   ├── qemu/
-   │   │   └── agent.go           # QEMU Guest Agent client
-   │   ├── libvirt/
-   │   │   └── client.go          # libvirt interface
-   │   └── metrics/
-   │       └── calculator.go      # Hysteresis logic
-   ├── internal/
-   │   └── config/
-   │       └── config.go          # Config parsing
-   ├── go.mod
-   ├── go.sum
-   ├── Makefile
+   ```text
+   windows/
+   ├── src/
+   │   └── main.rs
+   ├── Cargo.toml
+   ├── Cargo.lock
    └── README.md
    ```
 
 2. **Core Components**
-   - [ ] CLI entry point with graceful shutdown
-   - [x] QEMU Agent client (host `virsh qemu-agent-command` adapter)
-   - [x] Libvirt wrapper (live XML inspection and `virsh update-memory-device`)
-   - [x] Metrics calculator (hysteresis logic)
-   - [x] Configuration loader (safe defaults)
-   - [ ] Logging setup (structured, with verbosity levels)
+   - [ ] Guest-side memory collection entry point
+   - [ ] QEMU Guest Agent parsing and validation
+   - [ ] Error handling and safe defaults
+   - [ ] Local unit tests for parsing and thresholds
+   - [ ] Bash helper scripts for validation and local checks
 
-3. **Go Dependencies**
-   - `github.com/libvirt/libvirt-go` (already in go.mod)
-   - Consider: `github.com/sirupsen/logrus` for logging
-   - Consider: `github.com/spf13/cobra` for CLI if complexity grows
+3. **Implementation Constraints**
+   - Use Rust for the runtime logic
+   - Use Bash for local automation and validation steps
 
 4. **Validation**
-   - [ ] `go mod tidy`
-   - [ ] `go fmt ./...`
-   - [x] `go vet ./...`
-   - [x] `go test ./...` (unit tests with mocks)
-   - [x] Build produces binary: `./virtio-mem-controller`
+   - [ ] `cargo build --release`
+   - [ ] `cargo test`
+   - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
+   - [ ] `cargo fmt --all`
 
 #### Acceptance Criteria
 
-- Controller builds without errors
-- All packages have unit tests (mocked QEMU/libvirt)
-- Code passes `go vet` and `gofmt`
-- Can read configuration defaults
-- Logs structure is consistent
+- The Rust service compiles without errors
+- Unit tests cover parsing and validation logic
+- Local lint and build checks pass
+- The implementation remains compatible with the repo’s Rust/Bash-only rule
 
 #### Blockers / Dependencies
 
-- Requires libvirt development headers (`libvirt-devel` on RHEL)
-- QEMU Guest Agent must be running on Windows (test in TASK-003)
+- QEMU Guest Agent must be running on Windows for live validation
+- Host-side validation requires libvirt and `virsh` access
 
 ---
 
-### TASK-002: Windows Service (Deferred)
-
-**Owner**: Unassigned  
-**Status**: Deferred pending native QGA validation  
-**Effort**: Re-estimate after a demonstrated capability gap
-
-#### Deliverables
-
-1. **Prerequisite decision**
-   - Validate native `guest-get-memory-stats` and host-side QGA access first.
-   - Define a concrete missing metric or guest lifecycle requirement before adding service code.
-   - If required, design the Rust service contract and Windows service lifecycle as a separate task.
-
-2. **Validation gate**
-   - [ ] Native QGA is shown insufficient by a documented real-VM test.
-   - [ ] Rust service responsibility and protocol are documented before implementation.
-
-#### Acceptance Criteria
-
-- A concrete native-QGA gap is documented.
-- Rust service responsibility and API contract are reviewed.
-- Windows service lifecycle and metrics behavior have unit tests.
-
-#### Blockers / Dependencies
-
-- Requires an observed native-QGA limitation.
-- Windows 11 for testing.
-- QEMU Guest Agent must be available.
-
----
-
-### TASK-003: QEMU Guest Agent Integration Research
+### TASK-002: QEMU Guest Agent validation
 
 **Owner**: Unassigned  
 **Status**: Ready  
@@ -111,28 +64,27 @@ This phase establishes the core project scaffolding and validates the QEMU Guest
 1. **Validation Checklist**
    - [ ] QEMU Guest Agent service exists on Windows 11
    - [ ] Guest Agent channel is configured in libvirt domain XML
-   - [ ] Can execute `virsh qemu-agent-command` from RHEL host
-   - [ ] Guest Agent responds to `guest-info` command
+   - [ ] The host can execute `virsh qemu-agent-command`
+   - [ ] Guest Agent responds to `guest-info`
    - [ ] Guest Agent responds to `guest-get-memory-stats`
    - [ ] Unix socket communication works reliably
 
 2. **Documentation**
    - [ ] Update [docs/qemu-ga-setup.md](docs/qemu-ga-setup.md) with step-by-step setup
    - [ ] Document expected response formats for memory stats
-   - [ ] Document error codes and recovery strategies
-   - [ ] Record any version-specific quirks or limitations
+   - [ ] Record error conditions and recovery strategies
 
 3. **Proof of Concept**
    - [ ] Manual command-line test of each API call
    - [ ] Capture actual JSON responses from Guest Agent
-   - [ ] Test memory query latency and consistency
-   - [ ] Test socket recovery after disconnection
+   - [ ] Measure response latency and consistency
+   - [ ] Test socket recovery after temporary disconnection
 
 #### Acceptance Criteria
 
 - QEMU Guest Agent is confirmed operational
-- All required API endpoints are documented with examples
-- At least 3 successful round-trips for each endpoint
+- Required API endpoints are documented with examples
+- At least 3 successful round-trips are observed per endpoint
 - Known failure modes are documented
 - Setup instructions are reproducible
 
@@ -140,15 +92,36 @@ This phase establishes the core project scaffolding and validates the QEMU Guest
 
 - Requires running QEMU guest with Windows 11
 - Requires libvirt host access
-- QEMU version must support virtio-mem (verified separately)
+- QEMU version must support the guest agent features in use
+
+---
+
+### TASK-003: Bash validation helpers
+
+**Owner**: Unassigned  
+**Status**: Planned  
+**Effort**: 1-2 hours
+
+#### Deliverables
+
+- [ ] Local validation script for environment checks
+- [ ] Bash helper for cargo build and test invocation
+- [ ] Explicit error handling with `set -euo pipefail`
+- [ ] Documentation of expected host prerequisites
+
+#### Acceptance Criteria
+
+- The helper scripts run locally without silent failures
+- Required tool checks fail clearly when prerequisites are missing
+- Bash is used only for automation, not runtime logic
 
 ---
 
 ## Phase 2: Core Functionality (Planned)
 
-- **TASK-004**: Linux controller memory polling loop
-- **TASK-005**: Hysteresis-based allocation logic
-- **TASK-006**: Windows service metrics exposure via pipe
+- **TASK-004**: Windows service memory polling logic
+- **TASK-005**: Safe QEMU Guest Agent response handling
+- **TASK-006**: Host-side virtio-mem validation flow
 - **TASK-007**: End-to-end integration testing
 
 ## Phase 3: Hardening (Planned)
@@ -160,8 +133,8 @@ This phase establishes the core project scaffolding and validates the QEMU Guest
 
 ## Phase 4: Operations (Future)
 
-- **TASK-012**: systemd integration (Linux)
-- **TASK-013**: Windows service registration (Windows)
+- **TASK-012**: Windows service registration
+- **TASK-013**: Host automation and checks
 - **TASK-014**: Monitoring and alerting
 - **TASK-015**: Health checks
 
@@ -169,17 +142,17 @@ This phase establishes the core project scaffolding and validates the QEMU Guest
 
 ## Task Dependencies
 
-```
-TASK-001 (Linux scaffolding)
+```text
+TASK-001 (Rust scaffolding)
     ↓
-TASK-002 (Windows scaffolding)
+TASK-002 (QEMU GA validation)
     ↓
-TASK-003 (QEMU GA validation)
+TASK-003 (Bash validation helpers)
     ↓
-TASK-004 (Polling loop)
-TASK-005 (Hysteresis logic)
+TASK-004 (Memory polling logic)
+TASK-005 (QGA response handling)
     ↓
-TASK-006 (Metrics exposure)
+TASK-006 (Virtio-mem validation)
     ↓
 TASK-007 (Integration testing)
     ↓
@@ -189,9 +162,9 @@ Phase 2/3/4 tasks
 ## Execution Rules
 
 1. Complete one task at a time in the **Ready Queue**
-2. Move completed tasks to **Completed** section in BACKLOG.md
+2. Move completed tasks to **Completed** in BACKLOG.md
 3. Update documentation with every completed task
-4. Run local validation (build, test, vet, fmt) before marking complete
+4. Perform local Rust and Bash validation before marking complete
 5. Document any blockers or handoff notes
 
 ---
@@ -199,25 +172,25 @@ Phase 2/3/4 tasks
 ## Quality Gates
 
 ### Gate 1: Phase 1 Completion
-- [ ] Linux controller builds and all tests pass
-- [ ] Windows service builds and all tests pass
+- [ ] Rust service compiles and all tests pass
 - [ ] QEMU Guest Agent integration is validated
+- [ ] Bash helper scripts run cleanly
 - [ ] All documentation is current
 
 ### Gate 2: Phase 2 Completion
-- [ ] End-to-end test: Windows metrics flow to Linux controller
-- [ ] Memory allocation changes are observed in both directions
-- [ ] Poll cycle completes without errors (10 cycles minimum)
-- [ ] No memory leaks or resource exhaustion
+- [ ] End-to-end guest validation succeeds on a test VM
+- [ ] Memory-read logic is stable across repeated checks
+- [ ] No silent failures during validation loops
+- [ ] Integration checks are documented
 
 ### Gate 3: Phase 3 Completion
 - [ ] All error conditions are handled gracefully
 - [ ] Logs are readable and actionable
-- [ ] Configuration is externalized
-- [ ] Performance meets targets (sub-second response, <5% CPU)
+- [ ] Configuration is externalized when needed
+- [ ] Performance meets targets
 
 ### Gate 4: Phase 4 Completion
-- [ ] Services are registered and auto-start correctly
-- [ ] Metrics are exported and readable
+- [ ] Service registration is documented and validated
+- [ ] Automation checks are repeatable
 - [ ] Health checks pass continuously
 - [ ] Production deployment is documented

@@ -4,23 +4,22 @@ This project is written primarily by AI coding agents. Follow the repository ope
 
 ## Language Requirements
 
-⚠️ STRICT RULE: This project may only use Go, Rust, and Bash.
+⚠️ STRICT RULE: This project may only use Rust and Bash.
 
-- ✅ Allowed: Go, Rust, Bash
-- ❌ Forbidden: C#, PowerShell, Python, Node.js, Java, or any other language
-- ✅ Go for the Linux controller
-- ✅ Rust for the Windows service
-- ✅ Bash for scripts and automation
+- ✅ Allowed: Rust, Bash
+- ❌ Forbidden: Go, C#, PowerShell, Python, Node.js, Java, or any other language
+- ✅ Rust for any required service or program logic
+- ✅ Bash for automation, validation, and helper scripts
 
 ## Required Entry Point
 
 Read the architecture and design docs first:
 
-- Project overview: [readme.md](../../readme.md)
-- Architecture and service boundaries: [docs/architecture.md](../../docs/architecture.md)
-- Execution board / dev runbook: [BACKLOG.md](../../BACKLOG.md)
-- Validation and testing strategy: [docs/testing.md](../../docs/testing.md)
-- Cross-cutting standards: [docs/engineering-standards.md](../../docs/engineering-standards.md)
+- Project overview: [readme.md](../readme.md)
+- Architecture and service boundaries: [docs/architecture.md](../docs/architecture.md)
+- Execution board / dev runbook: [BACKLOG.md](../BACKLOG.md)
+- Validation and testing strategy: [docs/testing.md](../docs/testing.md)
+- Cross-cutting standards: [docs/engineering-standards.md](../docs/engineering-standards.md)
 
 ## Prime Directives
 
@@ -31,22 +30,9 @@ Read the architecture and design docs first:
 - Never commit secrets, credentials, private keys, tokens, PSKs, or production data.
 - Preserve stable IDs and existing API contracts unless the change explicitly updates the contract.
 - Add regression tests for fixed logic errors.
+- No Go code or Go planning artifacts are permitted in this repository.
 
 ## Service Boundaries
-
-**Linux controller service** (Go) owns:
-
-- Reading Windows memory metrics via QEMU Guest Agent
-- Polling and scheduling memory adjustments
-- Calculating memory allocation logic
-- Communicating with libvirt/QEMU
-- Monitoring and logging
-
-**Linux controller** must not:
-
-- Access Windows registry or file system directly
-- Execute arbitrary scripts on the Windows guest
-- Bypass the QEMU Guest Agent interface
 
 **Windows service** owns:
 
@@ -60,6 +46,18 @@ Read the architecture and design docs first:
 - Directly invoke Linux commands
 - Access host storage or devices
 - Change host-level settings
+
+**Bash automation** owns:
+
+- Local validation scripts
+- Build helper commands
+- Environment checks and operational setup
+
+**Bash scripts** must not:
+
+- Introduce unreviewed privileged actions
+- Hide errors or skip `set -euo pipefail`
+- Depend on Go toolchains or Go build flows
 
 ## Contract Rules
 
@@ -82,7 +80,8 @@ Read the architecture and design docs first:
 
 ## Validation Rules
 
-- Go changes: run `gofmt`, `go vet ./...`, and `go test ./...` when available.
+- Rust changes: build and validate locally with `cargo build` and `cargo test` when available.
+- Bash changes: run the script or a focused validation command locally.
 - Windows service changes: build and validate locally before committing.
 - All testing is performed locally. Document any blocking issues for local validation.
 - Stack changes: validate that services can start and communicate correctly.

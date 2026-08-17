@@ -1,6 +1,6 @@
 ---
 agent: agent
-description: Make a Roller_hoops API change without contract drift
+description: Make an API change without contract drift
 ---
 
 Before editing, read:
@@ -15,10 +15,10 @@ For the change:
 
 1. Update `api/openapi.yaml` first or alongside handler behavior.
 2. Update `docs/api-contract.md`.
-3. Regenerate UI types with `cd ui-node && npm run gen:openapi`.
+3. Regenerate types only if the project includes generated schema tooling.
 4. Avoid hand-written DTO drift; alias generated schemas where practical.
-5. Add or update Go handler/contract tests and UI route tests as appropriate.
-6. Run focused tests, then `npm test`, `npm run build`, and Go tests when available.
+5. Add or update Rust validation tests and any relevant automation checks.
+6. Run focused tests and the local validation flow for the affected component.
 7. Update `BACKLOG.md` handoff notes with exact validation.
 
-Keep `core-go` headless and keep `ui-node` out of PostgreSQL.
+Keep the runtime logic Rust-based and keep scripting in Bash where feasible.
