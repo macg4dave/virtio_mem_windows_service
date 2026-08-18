@@ -93,7 +93,25 @@ convergence state before doing anything. Without `--apply`, it is a dry run.
 With `--apply`, it issues one live request, records timestamped samples of
 `requested`, `current`, domain state, and optional QGA free/total memory, then
 waits for convergence. It automatically requests the original size afterward
-unless `--keep-target` is explicitly supplied.
+unless `--keep-target` is explicitly supplied, and exits with failure unless
+that rollback also reaches `requested == current`. AI-run tests are capped at a
+30-second forward timeout; `--timeout` accepts only 1–30 seconds. Rollback
+retains its own 300-second default via `--rollback-timeout`.
+
+The terminal output is intentionally summary-only so an AI review does not
+receive hundreds of polling lines. Pass `--log PATH` to retain detailed CSV
+samples for later operator review.
+
+The harness has conservative safety gates: the default target cap is 8 GiB,
+the host must retain at least 4 GiB of `MemAvailable` after the requested
+increase, and a test may never target the full virtio-mem device. These are
+additional safety limits, not a substitute for cgroups, host capacity planning,
+or an operator review. Override the cap or reserve only for a separately
+approved test with a documented reason.
+
+The test also has a fixed 1 GiB retention floor: targets below 1 GiB are
+rejected, and automatic rollback never requests less than 1 GiB. The test no
+longer attempts a zero-memory rollback.
 
 Example dry run:
 
@@ -112,12 +130,32 @@ Only after confirming the target and obtaining explicit operator approval for a
 live mutation should the apply form be used:
 
 ```bash
-sudo bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152 --connect qemu:///system --apply --log /tmp/win11_gpu-memory.csv
+sudo bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152 --connect qemu:///system --apply --timeout 30 --log /tmp/win11_gpu-memory.csv
 ```
 
 The `sudo` form is only valid after explicit operator approval for that exact
 VM, alias, target, and reversible test. If sudo requests authentication, type
 the password directly in the terminal; the agent must not receive it.
+
+The earlier 20 GiB attempt demonstrated why the full-device guard is required:
+the VM already has 8 GiB of base RAM and the host has approximately 30 GiB of
+physical memory. Requesting the full 20 GiB virtio-mem device could approach
+28 GiB of guest memory before QEMU and host overhead. The attempt was rejected
+by `virsh` at the KiB boundary and the VM remained unchanged, but the test is
+now blocked before any live command by the explicit full-device and host-headroom
+checks.
+
+The later approved 1 GiB test demonstrated a separate rollback hazard: the
+forward request converged in about 5 seconds, but rollback to zero remained
+pending beyond the 300-second rollback timeout. The live XML then reported
+`requested=0` and `current=18432 KiB` while the VM remained running. Treat this
+as a critical failure: do not issue another resize, reboot, or forced action
+automatically. Capture the current XML and operator-approved diagnostics, then
+resolve convergence before any new request.
+
+The script accepts canonical byte targets but converts them to KiB for
+`virsh --requested-size`, whose default unit is KiB. It rejects targets that
+cannot be represented as an exact KiB value and never rounds silently.
 
 The script never guesses a target, never runs two resize requests at once, and
 does not retain a target unless `--keep-target` is explicitly added. A timeout

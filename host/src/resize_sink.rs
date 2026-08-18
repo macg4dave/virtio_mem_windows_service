@@ -38,6 +38,10 @@ impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
         if state.requested_bytes != state.current_bytes {
             return Err("refusing resize while the previous request has not converged".to_owned());
         }
+        let requested_kib = requested_bytes
+            .checked_div(1024)
+            .filter(|_| requested_bytes.is_multiple_of(1024))
+            .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
         self.command
             .run(&[
                 "update-memory-device".to_owned(),
@@ -45,7 +49,7 @@ impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
                 "--alias".to_owned(),
                 self.alias.clone(),
                 "--requested-size".to_owned(),
-                requested_bytes.to_string(),
+                requested_kib.to_string(),
                 "--live".to_owned(),
             ])
             .map_err(|error| error.to_string())?;
@@ -102,7 +106,7 @@ mod tests {
                     "--alias",
                     "memory0",
                     "--requested-size",
-                    "6291456",
+                    "6144",
                     "--live",
                 ],
             ]

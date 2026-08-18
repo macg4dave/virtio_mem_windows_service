@@ -77,6 +77,38 @@ Tasks ready to start (Phase 2 - Core Functionality):
 - Updated prompt and testing rules: privileged scripts require current-turn
   approval naming the complete command, target, mutation, and rollback, then
   run once as a whole under `sudo`; passwords remain operator-entered only.
+- The approved 20 GiB attempt was rejected by `virsh` before mutation because
+  the adapter passed canonical bytes to a KiB-valued `--requested-size` option.
+  The VM remained at `requested=current=0`; the script and Rust resize sink now
+  convert exact byte values to KiB and reject lossy conversions.
+- Incident follow-up: the live test now rejects full-device targets, defaults
+  to an 8 GiB target cap, and requires 4 GiB host `MemAvailable` headroom after
+  the increase. Automatic controller operation remains disabled pending an
+  equivalent host-capacity safety gate.
+- Incident log review showed the 20 GiB request converged, while rollback was
+  still pending for about 90 seconds before the VM later returned to zero.
+  Rollback timeout is now a hard test failure; the harness no longer reports
+  restoration unless `requested == current` is confirmed.
+- Follow-up read-only check: `win11_gpu` is running on `qemu:///system`, its
+  QGA channel is connected, and virtio-mem remains `requested=current=0`. The
+  host controller systemd unit is not installed/running, and QGA still lacks
+  `guest-get-memory-stats`; the Windows service cannot be confirmed through
+  the non-command QGA probes. The hardened 20 GiB dry run returned blocked
+  before any mutation.
+- The live test now separates forward convergence timeout from rollback
+  timeout. A 30-second test timeout cannot shorten the default 300-second
+  rollback window.
+- Approved 1 GiB test evidence: the forward request converged from 0 to 1 GiB
+  in about 5 seconds, but rollback to 0 did not converge within the 300-second
+  rollback window. The VM currently reports `requested=0` and
+  `current=18432 KiB` (18 MiB), remains running, and must not receive another
+  resize until convergence and the rollback failure are understood.
+- AI-run live tests now have a hard 30-second forward timeout and compact
+  terminal output; detailed polling remains in the optional CSV log. Rollback
+  retains a separate 300-second default.
+- Added a fixed 1 GiB retention floor to the live test: smaller targets are
+  rejected and rollback never requests below 1 GiB, avoiding the previous
+  zero-memory rollback path.
 
 ## Completed
 

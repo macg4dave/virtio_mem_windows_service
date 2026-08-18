@@ -42,7 +42,11 @@ omitted by the guest agent, it falls back to `stat-free`. Values greater than
 ## Memory Change Request
 
 Input: Target memory size in bytes, aligned to the device block size.
-Process: `virsh update-memory-device <vm> --alias <virtio-mem-alias> --requested-size <bytes> --live`
+Process: the host adapter converts the canonical byte target to an integer
+KiB value, then runs `virsh update-memory-device <vm> --alias
+<virtio-mem-alias> --requested-size <kib> --live`. `virsh` interprets
+`--requested-size` as KiB by default; a target that is not an exact number of
+KiB must be rejected rather than rounded.
 
 The controller must inspect live virtio-mem XML after every request. `requested` is the desired size and `current` is the size currently active in the guest; they may differ while QEMU converges.
 
@@ -106,7 +110,7 @@ use a command shell. Its host calls are:
 
 - `virsh qemu-agent-command <vm> {"execute":"guest-get-memory-stats"}`
 - `virsh dumpxml --live <vm>`
-- `virsh update-memory-device <vm> --alias <alias> --requested-size <bytes> --live`
+- `virsh update-memory-device <vm> --alias <alias> --requested-size <kib> --live`
 
 The implementation must bound each command, capture a non-zero exit status
 with its diagnostic output, and treat it as an explicit failure. Before the
