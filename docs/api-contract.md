@@ -39,6 +39,26 @@ The Rust parser requires `stat-free` and `stat-total`. If `stat-available` is
 omitted by the guest agent, it falls back to `stat-free`. Values greater than
 `stat-total` are rejected as inconsistent.
 
+### Host memory-stat source (`VIRTIO_MEM_STATS_SOURCE`)
+
+The RHEL host controller's connected guest agent (QGA 109.1.0 on `win11_gpu`)
+does not implement `guest-get-memory-stats` (see `docs/issues.md` ISSUE-001),
+so the controller cannot rely on that command alone. `HostConfig` selects the
+memory-stat source with `VIRTIO_MEM_STATS_SOURCE`:
+
+- `dommemstat` (default): reads `virsh dommemstat <vm>`, a virtio-balloon
+  driver counter that does not require the guest agent. It requires the
+  domain to have `actual` and `unused` fields; `available` is used if present,
+  otherwise `unused` is reused. This must be verified against the live guest
+  before enabling automated resizing, since it depends on a functioning
+  virtio-balloon driver/service in the guest.
+- `qga`: uses `guest-get-memory-stats` as before, for guest agents that
+  implement it.
+
+Both sources produce the same `MemoryStats { free_bytes, available_bytes,
+total_bytes }` value consumed by the shared policy engine, so switching
+sources does not change `plan_resize` behavior.
+
 ## Memory Change Request
 
 Input: Target memory size in bytes, aligned to the device block size.

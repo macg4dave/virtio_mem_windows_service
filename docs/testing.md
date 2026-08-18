@@ -187,6 +187,45 @@ per-instance configuration file. Observe the unit with
 convergence operations must exit non-zero; a restart rereads live state and
 must never replay a prior resize request.
 
+#### Memory-stat source configuration
+
+The connected QGA (`109.1.0` on `win11_gpu`) does not implement
+`guest-get-memory-stats`, so `VIRTIO_MEM_STATS_SOURCE` defaults to
+`dommemstat`, which reads `virsh dommemstat <vm>` (virtio-balloon counters)
+instead. Before enabling the systemd unit, confirm with a read-only
+`virsh dommemstat win11_gpu` that the domain reports `actual` and `unused`
+(and ideally `available`); if the balloon driver does not report these
+fields, the controller will fail closed with an explicit `GuestStats` error
+rather than guess. Set `VIRTIO_MEM_STATS_SOURCE=qga` only for a guest agent
+known to implement `guest-get-memory-stats`.
+
+`VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES` is a required configuration value: the
+controller will not send a grow request unless the RHEL host's
+`/proc/meminfo` `MemAvailable` covers the requested delta plus this reserve.
+An insufficient-headroom check is not treated as a fatal error; the
+controller logs and waits for the next poll interval rather than crashing the
+systemd unit.
+
+#### Testing through the installed host service, not the standalone script
+
+The standalone `scripts/live-resize-test.sh` script is a pre-installation
+safety probe and is not a substitute for exercising the actual
+`virtio-mem-host` systemd service end to end. Before declaring the host
+controller usable:
+
+1. Build the release binary (`cargo build --workspace --release`) and install
+   it, the templated systemd unit, and a per-instance configuration file
+   under the approved `virtio-mem-host` account — an explicitly
+   operator-approved, reversible action, not something to script implicitly.
+2. Start the unit and drive one 1 GiB grow from the current converged state
+   by adjusting the instance's configured thresholds (or a controlled QGA/
+   `dommemstat` stimulus), then observe `systemctl status` and
+   `journalctl -u virtio-mem-host@INSTANCE` for the resulting convergence.
+3. Confirm the unit blocks further requests while `requested != current`, and
+   that it retains at least 1 GiB rather than converging toward zero.
+4. Do not attempt this while a prior live test has not converged; check
+   current `requested`/`current` via read-only `dumpxml` first.
+
 ### Running the Service Locally (Non-Service Mode)
 
 For debugging and testing without installing as a Windows service:

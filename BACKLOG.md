@@ -110,6 +110,42 @@ Tasks ready to start (Phase 2 - Core Functionality):
   rejected and rollback never requests below 1 GiB, avoiding the previous
   zero-memory rollback path.
 
+### 2026-08-18 host controller stats-source and safety-gate hardening
+
+- Fixed ISSUE-001 in code: `HostConfig` now selects a memory-stat source with
+  `VIRTIO_MEM_STATS_SOURCE` (`dommemstat` by default, `qga` opt-in). The new
+  `host/src/dommemstat.rs` reads virtio-balloon-backed `virsh dommemstat`
+  counters (`actual`/`unused`/`available`) so the controller no longer depends
+  on the unimplemented `guest-get-memory-stats` QGA command. Whether the
+  connected guest's balloon driver actually reports `unused`/`available` on
+  `win11_gpu` still needs a live, read-only `virsh dommemstat win11_gpu` check
+  before automatic operation is enabled.
+- Added a hard `MIN_HEADROOM_BYTES` (1 GiB) invariant to the shared
+  `VirtioMemState::validate_target` in `virtio-mem-core`, so no resize target
+  (Windows or host) can ever be validated within 1 GiB of the device's full
+  size, independent of operator-configured `max_memory_bytes`.
+- Added a host-side memory-headroom gate: `host/src/host_memory.rs` reads
+  `/proc/meminfo`'s `MemAvailable`, and `HostRuntime` now skips (does not
+  error, just logs and waits) any grow decision unless the RHEL host has
+  enough free memory for the requested delta plus the new
+  `VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES` reserve, mirroring
+  `scripts/live-resize-test.sh --host-reserve-bytes`.
+- Workspace `cargo fmt --all -- --check`, `cargo test --workspace`, and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings` all
+  pass locally after these changes (52 tests).
+- Not done in this session (requires live RHEL/libvirt access and explicit
+  operator approval, which this session did not have): building/installing
+  the `virtio-mem-host` systemd unit, creating the least-privilege
+  `virtio-mem-host` account, and running a live 1 GiB test through the
+  installed service. See the unresolved rollback incident below before
+  attempting any further live resize.
+- **Unresolved live incident carried forward:** the last recorded live state
+  has `win11_gpu` at `requested=0` and `current=18432 KiB` (18 MiB), not
+  converged, after a rollback that did not complete within the 300-second
+  window. Do not issue another resize (via script or the host service) until
+  an operator confirms current live state and the rollback non-convergence is
+  understood.
+
 ## Completed
 
 | ID | Title | Owner | Completed | Notes |

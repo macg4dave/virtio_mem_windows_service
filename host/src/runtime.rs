@@ -4,15 +4,22 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use virtio_mem_core::{
-    parse_memory_stats, plan_resize, MemoryControllerConfig, ResizeDecision, VirtioMemState,
+    plan_resize, MemoryControllerConfig, MemoryStats, ResizeDecision, VirtioMemState,
 };
 
 use crate::config::HostConfig;
-use crate::virsh::VirshError;
+use crate::host_memory::HostMemorySource;
 
 pub trait GuestStatsSource {
-    fn get_memory_stats(&self) -> Result<String, VirshError>;
+    fn get_memory_stats(&self) -> Result<MemoryStats, String>;
 }
+
+impl GuestStatsSource for Box<dyn GuestStatsSource> {
+    fn get_memory_stats(&self) -> Result<MemoryStats, String> {
+        (**self).get_memory_stats()
+    }
+}
+
 pub trait MemoryStateSource {
     fn memory_state(&self) -> Result<VirtioMemState, String>;
 }
@@ -23,37 +30,46 @@ pub trait ResizeSink {
 #[derive(Debug, Error)]
 pub enum HostRuntimeError {
     #[error("guest-agent request failed: {0}")]
-    GuestAgent(#[from] VirshError),
-    #[error("guest-agent response failed validation: {0}")]
     GuestStats(String),
     #[error("live virtio-mem state failed validation: {0}")]
     MemoryState(String),
     #[error("memory controller configuration is invalid: {0}")]
     Controller(String),
+    #[error("host available-memory check failed: {0}")]
+    HostMemory(String),
     #[error("resize request failed: {0}")]
     Resize(String),
     #[error("virtio-mem request did not converge within {0:?}")]
     ConvergenceTimeout(Duration),
 }
 
-pub struct HostRuntime<G, S, R> {
+pub struct HostRuntime<G, S, R, H> {
     guest_agent: G,
     state_source: S,
     resize_sink: R,
+    host_memory: H,
     config: HostConfig,
 }
 
-impl<G, S, R> HostRuntime<G, S, R>
+impl<G, S, R, H> HostRuntime<G, S, R, H>
 where
     G: GuestStatsSource,
     S: MemoryStateSource,
     R: ResizeSink,
+    H: HostMemorySource,
 {
-    pub fn new(guest_agent: G, state_source: S, resize_sink: R, config: HostConfig) -> Self {
+    pub fn new(
+        guest_agent: G,
+        state_source: S,
+        resize_sink: R,
+        host_memory: H,
+        config: HostConfig,
+    ) -> Self {
         Self {
             guest_agent,
             state_source,
             resize_sink,
+            host_memory,
             config,
         }
     }
@@ -79,9 +95,10 @@ where
                 continue;
             }
             pending_since = None;
-            let response = self.guest_agent.get_memory_stats()?;
-            let stats = parse_memory_stats(&response)
-                .map_err(|error| HostRuntimeError::GuestStats(error.to_string()))?;
+            let stats = self
+                .guest_agent
+                .get_memory_stats()
+                .map_err(HostRuntimeError::GuestStats)?;
             let controller = MemoryControllerConfig {
                 min_memory_bytes: self.config.min_memory_bytes,
                 max_memory_bytes: self.config.max_memory_bytes,
@@ -97,6 +114,26 @@ where
             )
             .map_err(|error| HostRuntimeError::Controller(error.to_string()))?;
             if let ResizeDecision::Request { requested_bytes } = decision {
+                if requested_bytes > state.current_bytes {
+                    let delta = requested_bytes - state.current_bytes;
+                    let host_available = self
+                        .host_memory
+                        .available_bytes()
+                        .map_err(HostRuntimeError::HostMemory)?;
+                    let headroom_after = host_available.saturating_sub(delta);
+                    if delta > host_available
+                        || headroom_after < self.config.host_min_headroom_bytes
+                    {
+                        eprintln!(
+                            "virtio-mem-host: blocking grow to {requested_bytes} bytes; \
+                             host available={host_available} delta={delta} \
+                             min_headroom={}",
+                            self.config.host_min_headroom_bytes
+                        );
+                        wait_interruptibly(stop, self.config.poll_interval);
+                        continue;
+                    }
+                }
                 self.resize_sink
                     .request_resize(requested_bytes)
                     .map_err(HostRuntimeError::Resize)?;

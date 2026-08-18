@@ -15,3 +15,12 @@ VIRTIO_MEM_POLL_INTERVAL_SECONDS=30
 VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS=10
 VIRTIO_MEM_CONVERGENCE_TIMEOUT_SECONDS=300
 # VIRTIO_MEM_VIRSH_BINARY=/usr/bin/virsh
+
+# dommemstat (virtio-balloon counters) is the default and does not require
+# guest-get-memory-stats support. Set to "qga" only if the connected guest
+# agent implements guest-get-memory-stats.
+VIRTIO_MEM_STATS_SOURCE=dommemstat
+
+# Required: a grow request is blocked unless the RHEL host's /proc/meminfo
+# MemAvailable covers the requested delta plus this reserve.
+VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES=4294967296

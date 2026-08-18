@@ -52,4 +52,12 @@ pub enum VirtioMemError {
         value: u64,
         block: u64,
     },
+    #[error(
+        "virtio-mem target {target} leaves less than the required {minimum_headroom} byte headroom below device size {size}"
+    )]
+    TargetLacksHeadroom {
+        target: u64,
+        size: u64,
+        minimum_headroom: u64,
+    },
 }

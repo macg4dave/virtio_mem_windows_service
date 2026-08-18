@@ -27,6 +27,6 @@ pub use service_scm::{
     ScmServiceState, ScmServiceStatus, WindowsServiceRegistration,
 };
 pub use stats::{parse_memory_stats, MemoryStats};
-pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES};
+pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES, MIN_HEADROOM_BYTES};
 pub use virtio_mem_provider::{VirtioMemXmlSource, XmlMemoryStateProvider};
 pub use virtio_mem_xml::{parse_virtio_mem_xml, VirtioMemXmlError, VirtioMemXmlState};

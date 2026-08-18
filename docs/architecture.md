@@ -100,3 +100,15 @@ production resize sink remain to be implemented.
 - Confirm QEMU Guest Agent responses before enabling automated changes.
 - Avoid speculative memory changes without a successful behavior check.
 - Preserve a clear separation between guest-side logic and host-side automation.
+- A resize target may never leave less than `MIN_HEADROOM_BYTES` (1 GiB) of a
+    virtio-mem device's declared size unplugged; this is enforced in the
+    shared `VirtioMemState::validate_target` contract, not only by operator
+    configuration.
+- The RHEL host controller must confirm host-side `MemAvailable` covers a grow
+    request plus a configured reserve (`VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES`)
+    before sending it; insufficient headroom blocks the request for that
+    poll cycle instead of failing the service.
+- When the connected QEMU Guest Agent does not implement
+    `guest-get-memory-stats`, the host controller must use an alternative
+    memory-stat source (`virsh dommemstat`) rather than proceed without
+    metrics; see `docs/api-contract.md`.

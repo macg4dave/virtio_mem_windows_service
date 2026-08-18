@@ -45,6 +45,14 @@ server, but the installed Windows QGA does not support the required
     virtio-mem resize is an asynchronous `requested` change, not an immediate
     guest memory state switch; the controller must wait for convergence before
     issuing a follow-up request.
+- **Host stats-source fallback and hard safety invariants (2026-08-18):** the
+    host controller can now source memory stats from `virsh dommemstat`
+    instead of the unimplemented `guest-get-memory-stats`, and a shared
+    `MIN_HEADROOM_BYTES` invariant plus a host `/proc/meminfo` headroom gate
+    are enforced in code rather than only by configuration. Live systemd
+    installation and a resize test through the installed service remain, and
+    the unresolved `win11_gpu` rollback non-convergence (see `docs/issues.md`
+    ISSUE-005) must be resolved by an operator before any further live test.
 
 ## Verified wins to preserve
 

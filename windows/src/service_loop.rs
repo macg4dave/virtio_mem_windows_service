@@ -83,7 +83,8 @@ mod tests {
     use crate::controller::MemoryControllerConfig;
     use crate::runtime::GuestAgent;
 
-    const MIB: u64 = 1024 * 1024;
+    // Scaled to GiB (not MiB) so targets satisfy the shared MIN_HEADROOM_BYTES invariant.
+    const MIB: u64 = 1024 * 1024 * 1024;
 
     struct StubGuestAgent;
 
@@ -305,8 +306,8 @@ mod tests {
     impl GuestAgent for NoChangeGuestAgent {
         fn get_memory_stats(&mut self) -> Result<String, String> {
             Ok(r#"{"return":[
-                {"stat":"stat-free","value":4194304},
-                {"stat":"stat-total","value":16777216}
+                {"stat":"stat-free","value":4294967296},
+                {"stat":"stat-total","value":17179869184}
             ]}"#
             .to_owned())
         }

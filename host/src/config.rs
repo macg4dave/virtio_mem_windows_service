@@ -17,6 +17,18 @@ pub enum HostConfigError {
     InvalidMemoryRange,
     #[error("host-controller durations must be greater than zero")]
     InvalidDuration,
+    #[error("VIRTIO_MEM_STATS_SOURCE must be 'dommemstat' or 'qga': {0}")]
+    InvalidStatsSource(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatsSource {
+    /// Balloon-driver-backed `virsh dommemstat`; does not require the guest
+    /// agent to implement `guest-get-memory-stats`.
+    DomMemStat,
+    /// QEMU Guest Agent `guest-get-memory-stats`; requires a guest agent
+    /// version that implements the command.
+    Qga,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,12 +43,21 @@ pub struct HostConfig {
     pub command_timeout: Duration,
     pub convergence_timeout: Duration,
     pub virsh_binary: String,
+    pub stats_source: StatsSource,
+    pub host_min_headroom_bytes: u64,
 }
 
 impl HostConfig {
     pub fn from_env() -> Result<Self, HostConfigError> {
         let vm_name = required("VIRTIO_MEM_VM_NAME")?;
         let alias = required("VIRTIO_MEM_ALIAS")?;
+        let stats_source = match env::var("VIRTIO_MEM_STATS_SOURCE") {
+            Ok(value) if value.eq_ignore_ascii_case("qga") => StatsSource::Qga,
+            Ok(value) if value.eq_ignore_ascii_case("dommemstat") => StatsSource::DomMemStat,
+            Ok(value) if value.trim().is_empty() => StatsSource::DomMemStat,
+            Ok(other) => return Err(HostConfigError::InvalidStatsSource(other)),
+            Err(_) => StatsSource::DomMemStat,
+        };
         let config = Self {
             vm_name,
             alias,
@@ -51,6 +72,8 @@ impl HostConfig {
             )?),
             virsh_binary: env::var("VIRTIO_MEM_VIRSH_BINARY")
                 .unwrap_or_else(|_| "virsh".to_owned()),
+            stats_source,
+            host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
         };
         config.validate()?;
         Ok(config)
@@ -118,6 +141,8 @@ mod tests {
             command_timeout: Duration::from_secs(1),
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
+            stats_source: StatsSource::DomMemStat,
+            host_min_headroom_bytes: 1,
         };
         assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
     }

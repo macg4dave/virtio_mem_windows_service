@@ -65,8 +65,8 @@ mod tests {
     use super::*;
     use crate::virsh::{VirshCommand, VirshError};
 
-    const CONVERGED_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='MiB'>8</size><block unit='MiB'>2</block><requested unit='MiB'>4</requested><current unit='MiB'>4</current></target><alias name='memory0'/></memory></domain>";
-    const PENDING_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='MiB'>8</size><block unit='MiB'>2</block><requested unit='MiB'>6</requested><current unit='MiB'>4</current></target><alias name='memory0'/></memory></domain>";
+    const CONVERGED_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
+    const PENDING_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>6</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
 
     struct Fake {
         xml: &'static str,
