@@ -60,6 +60,12 @@ This starts the service worker directly (no admin privileges required, no servic
 - Begin the main polling loop
 - Exit cleanly on `Ctrl+C` or when the worker completes
 
+For deterministic local service testing, the Windows runtime also includes a
+built-in in-process harness that exposes a valid memory snapshot and a capture
+sink without requiring a live QEMU Guest Agent pipe. This keeps the lifecycle
+and policy tests hermetic while the actual guest-channel validation remains a
+separate live-KVM gate.
+
 **This mode is ideal for:**
 
 - Local debugging and troubleshooting

@@ -103,6 +103,41 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
+    #[derive(Clone, Copy, Debug)]
+    struct TestMemoryStateProvider {
+        state: VirtioMemState,
+    }
+
+    impl TestMemoryStateProvider {
+        fn new(state: VirtioMemState) -> Self {
+            Self { state }
+        }
+    }
+
+    impl MemoryStateProvider for TestMemoryStateProvider {
+        fn memory_state(&mut self) -> Result<VirtioMemState, String> {
+            Ok(self.state)
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct TestResizeSink {
+        requests: Vec<u64>,
+    }
+
+    impl TestResizeSink {
+        fn requests(&self) -> Vec<u64> {
+            self.requests.clone()
+        }
+    }
+
+    impl ResizeRequestSink for TestResizeSink {
+        fn request_resize(&mut self, requested_bytes: u64) -> Result<(), String> {
+            self.requests.push(requested_bytes);
+            Ok(())
+        }
+    }
+
     struct StubGuestAgent {
         response: Result<String, String>,
     }
@@ -228,5 +263,20 @@ mod tests {
 
         runtime.request_stop();
         assert!(runtime.run().is_ok());
+    }
+
+    #[test]
+    fn test_runtime_harness_records_resize_requests() {
+        let mut provider = TestMemoryStateProvider::new(VirtioMemState {
+            size_bytes: 32 * MIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 16 * MIB,
+            current_bytes: 16 * MIB,
+        });
+        let mut sink = TestResizeSink::default();
+
+        assert_eq!(provider.memory_state().unwrap().requested_bytes, 16 * MIB);
+        assert!(sink.request_resize(18 * MIB).is_ok());
+        assert_eq!(sink.requests(), vec![18 * MIB]);
     }
 }
