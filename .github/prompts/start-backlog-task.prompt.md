@@ -25,3 +25,8 @@ Rust-specific requirements:
 - Update affected contracts/docs and `BACKLOG.md` in the same task.
 
 Do not add speculative features. Do not use AI agreement as validation.
+
+Shell safety:
+
+- Check and report the working tree before edits. Do not edit or delete files outside the repository, server files, VM definitions, or service state without explicit current-turn approval naming the target and action.
+- Keep discovery and local validation unprivileged. Ask before any privileged command, naming the complete command, target, mutation, and rollback; after approval run the whole script once under `sudo`. Never request, store, or automate the password.

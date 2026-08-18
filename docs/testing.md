@@ -4,6 +4,42 @@
 
 All testing is performed locally. No CI pipeline is currently configured.
 
+### Privilege and password policy
+
+The normal Rust validation path does not require root and should be run as the
+regular development user:
+
+- `cargo fmt --all -- --check`
+- `cargo build --workspace --release`
+- `cargo test --workspace`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `bash -n scripts/*.sh`
+
+Do not wrap these commands in `sudo`; doing so can create root-owned build
+artifacts and hides permission problems rather than fixing them.
+
+Only live host operations such as installing a systemd unit under `/etc`,
+writing `/usr/local/libexec`, managing a system service, or changing libvirt
+authorization normally require administrative setup. Avoid repeated password
+prompts by having the host administrator perform that setup once, using an
+explicit non-login `virtio-mem-host` service account with only the required
+libvirt access. The account should run the controller directly; it should not
+be granted broad passwordless `sudo` access and the controller should not run
+as root.
+
+After that one-time setup, run read-only probes and the controller under the
+approved account or authorization context. If a particular test genuinely
+needs root, ask for approval first with the complete command, protected target,
+expected mutation, and rollback behavior. Once approved, run the entire test
+script once under `sudo` rather than adding `sudo` to individual subcommands.
+Never automate or collect the password; the operator types it directly into
+the terminal. Do not use `sudo -S`, modify sudoers, or weaken host permissions
+just to make a test pass.
+
+Any live resize, VM lifecycle operation, service installation/removal, or edit
+to a server-side file remains an explicit operator-approved action separate
+from the unprivileged test suite.
+
 See [`dependencies.md`](dependencies.md) for the complete toolchain and host/
 guest prerequisite matrix.
 
@@ -20,6 +56,76 @@ cargo fmt --all
 The Rust service tests should cover QGA response parsing, threshold boundaries, minimum/maximum safe ranges, and invalid configuration cases. They do not require a live VM.
 
 ### RHEL host controller testing
+
+#### Read-only memory decision preview
+
+Use `scripts/preview-memory-decision.sh` to see whether the configured policy
+would grow, shrink, wait, or leave the guest unchanged. The script reads the
+explicit VM's state, virtio-mem XML, and QGA memory statistics, then mirrors the
+shared policy thresholds and block alignment checks. It never invokes
+`update-memory-device` and is safe to use before enabling the systemd unit.
+
+The policy values must be supplied as environment variables matching the host
+controller configuration. The script returns status `0` for `NO CHANGE`, `10`
+when a resize **would** be requested, and `20` when the decision is blocked or
+validation fails. A status of `10` is only a preview result; no memory change
+has occurred.
+
+Example with an already-approved, non-secret instance configuration loaded in
+the current shell:
+
+```bash
+set -a
+source /etc/virtio-mem-host/INSTANCE.conf
+set +a
+bash scripts/preview-memory-decision.sh "$VIRTIO_MEM_VM_NAME" "$VIRTIO_MEM_ALIAS"
+```
+
+The current `win11_gpu` guest is expected to return `BLOCKED` until its QEMU
+Guest Agent provides `guest-get-memory-stats`; this confirms that the preview
+refuses to guess when the required observation is missing.
+
+#### Reversible live-resize test
+
+Use `scripts/live-resize-test.sh` for an operator-approved, reversible test of
+one virtio-mem target. It validates the live alias, size, block alignment, and
+convergence state before doing anything. Without `--apply`, it is a dry run.
+With `--apply`, it issues one live request, records timestamped samples of
+`requested`, `current`, domain state, and optional QGA free/total memory, then
+waits for convergence. It automatically requests the original size afterward
+unless `--keep-target` is explicitly supplied.
+
+Example dry run:
+
+```bash
+bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152
+```
+
+On hosts where the default `virsh` connection is `qemu:///session`, add
+`--connect qemu:///system` so the test uses the system libvirt instance:
+
+```bash
+bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152 --connect qemu:///system
+```
+
+Only after confirming the target and obtaining explicit operator approval for a
+live mutation should the apply form be used:
+
+```bash
+sudo bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152 --connect qemu:///system --apply --log /tmp/win11_gpu-memory.csv
+```
+
+The `sudo` form is only valid after explicit operator approval for that exact
+VM, alias, target, and reversible test. If sudo requests authentication, type
+the password directly in the terminal; the agent must not receive it.
+
+The script never guesses a target, never runs two resize requests at once, and
+does not retain a target unless `--keep-target` is explicitly added. A timeout
+or interruption attempts to restore the original requested size. Review the
+CSV and console samples for convergence latency and QGA observations. The
+current guest's missing `guest-get-memory-stats` capability will leave the QGA
+columns as unavailable, but XML `requested/current` convergence can still be
+observed.
 
 Run the full workspace gate before installing the controller:
 
@@ -158,6 +264,33 @@ Windows test machine. Do not test recovery by terminating a production
 service or by using unbounded restart loops.
 
 ### Real VM validation
+
+#### First RHEL-server smoke-test evidence (2026-08-18)
+
+The first read-only checks were run against the explicitly named `win11_gpu`
+guest on the RHEL server. The prerequisite script passed, `virsh domstate`
+reported `running`, and the connected channel was
+`org.qemu.guest_agent.0`.
+
+Successful QGA reads were `guest-info`, `guest-ping`, `guest-get-osinfo`, and
+`guest-get-host-name`. The guest reported QGA version `109.1.0`, Windows 11
+x64, and hostname `ICE101`.
+
+The standard three-attempt probe is currently blocked at
+`guest-get-memory-stats`: the agent returns `command ... has not been found`,
+and `guest-info` does not advertise that command. This is a guest-agent
+capability issue, not a transport failure. No `guest-exec`, reboot, resize, or
+XML mutation was used during this check.
+
+The compatible `virsh dumpxml win11_gpu` inspection found virtio-mem alias
+`ua-virtiomem0`, size `20971520 KiB` (20 GiB), block `2048 KiB` (2 MiB), and
+`requested=0 KiB` / `current=0 KiB`. The direct `qemu-system-x86_64 --version`
+check was unavailable because that binary is not in the current PATH, although
+`virsh version` reported libvirt `11.10.0`, QEMU API `11.10.0`, and hypervisor
+`10.1.0`.
+
+Do not enable the host controller or attempt a resize until a supported,
+validated memory-stat source is available and the V1 gate is complete.
 
 On the RHEL host, validate the Windows guest agent and live device before enabling automatic updates:
 

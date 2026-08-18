@@ -26,3 +26,9 @@ Rules:
 - Preserve public contracts and service boundaries.
 
 Validate from `windows/` with `cargo test`, `cargo fmt --all -- --check`, and Clippy when available. Report exact results.
+
+Shell safety:
+
+- Keep tests unprivileged and hermetic unless live integration is explicitly requested.
+- Do not edit or delete server files, alter VM/libvirt/systemd state, or run mutating commands without current-turn approval naming the exact target and action.
+- Never use `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval, run the complete test script once under `sudo`; never automate or collect the password, and let the user type it directly into the terminal.

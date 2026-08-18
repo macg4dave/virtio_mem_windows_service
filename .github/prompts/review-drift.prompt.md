@@ -31,3 +31,8 @@ Also check that:
 - new public Rust items have appropriate documentation and tests;
 - `BACKLOG.md` and affected docs reflect the change;
 - no secrets, credentials, tokens, private keys, or production data were introduced.
+
+Shell safety:
+
+- Review commands must be read-only by default. Do not edit/delete server files or mutate VM, libvirt, or systemd state without explicit current-turn approval naming the exact target and action.
+- Never use `sudo`, `su`, or `doas` during review without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never automate password entry.

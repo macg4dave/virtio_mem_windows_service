@@ -21,3 +21,8 @@ Rules:
 - Avoid unrelated prose or formatting churn.
 
 Validate Rust examples with the appropriate `cargo test` command from `windows/`, then report exact results and any live-VM blocker.
+
+Shell safety:
+
+- Documentation validation is read-only by default and must not edit/delete server files or change VM, libvirt, or systemd state without explicit approval.
+- Never use `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never automate or collect the password.

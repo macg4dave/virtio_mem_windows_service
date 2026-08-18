@@ -4,7 +4,7 @@
 
 | ID | Description | Status | Component | Priority |
 |----|-------------|--------|-----------|----------|
-| ISSUE-001 | QEMU Guest Agent availability on Windows 11 | Open | Windows | High |
+| ISSUE-001 | QEMU Guest Agent availability on Windows 11; connected QGA 109.1.0 does not provide `guest-get-memory-stats` | Open; reproduced on `win11_gpu` 2026-08-18 | Windows | High |
 | ISSUE-002 | Hysteresis tuning for memory allocation | Open | Linux | Medium |
 | ISSUE-003 | Error handling for libvirt communication | Open | Linux | High |
 

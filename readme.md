@@ -60,6 +60,19 @@ From a RHEL host, run `bash scripts/check-environment.sh` before
 queries the explicitly supplied VM and never changes VM memory or executes
 guest commands.
 
+To preview the controller's memory decision without changing the VM, use
+`bash scripts/preview-memory-decision.sh VM_NAME ALIAS` with the policy
+environment variables from the approved host-controller configuration. The
+preview is read-only; exit status `10` means a resize would be requested, not
+that one was issued.
+
+For an explicitly approved, reversible live test, use
+`bash scripts/live-resize-test.sh VM_NAME ALIAS TARGET_BYTES --apply`. It
+records convergence samples and restores the original size by default. Omit
+`--apply` for a dry run; do not use `--keep-target` unless retaining the new
+size is intentional. Use `--connect qemu:///system` when the default libvirt
+connection is the empty per-user session.
+
 ## RHEL host controller
 
 `host/` provides `virtio-mem-host`, a Rust process supervised by the templated

@@ -21,3 +21,8 @@ Rules:
 - Document the measured result and update `BACKLOG.md` if the task is completed.
 
 Validate from `windows/` with tests, format check, Clippy, and release build. Report measurements, exact commands, and blockers.
+
+Shell safety:
+
+- Performance measurements must not mutate the server, VM, service manager, or files outside the repository without explicit approval naming the exact action.
+- Prefer normal-user benchmarks and tests. If a privileged run is required, ask first with the complete command, target, mutation, and rollback, then run the whole script once under `sudo`; never automate or collect the password.

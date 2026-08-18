@@ -17,7 +17,9 @@ workspace also contains a host-side virtio-mem controller scaffold with
 XML/state validation and a bounded runtime loop. The remaining gaps are
 primarily live KVM validation, real Windows guest plumbing, and service
 registration/operation proof on a real guest rather than a local synthetic
-test harness.
+test harness. The first read-only checks now have evidence from the RHEL
+server, but the installed Windows QGA does not support the required
+`guest-get-memory-stats` command, so the V1 gate remains blocked.
 
 ## Recent verified wins
 
@@ -250,19 +252,25 @@ evidence before live testing.
 
 ### V1. Guest Agent probe
 
-- [!] Requires a running RHEL/libvirt host and Windows KVM guest.
-- [ ] Run host prerequisite checks.
-- [ ] Confirm the virtio-serial channel name `org.qemu.guest_agent.0`.
+- [~] Requires a running RHEL/libvirt host and Windows KVM guest; first live
+    checks ran against `win11_gpu` on 2026-08-18.
+- [x] Run host prerequisite checks.
+- [x] Confirm the virtio-serial channel name `org.qemu.guest_agent.0`.
 - [ ] Confirm QGA service availability and permissions in Windows.
-- [ ] Run `guest-info` and `guest-get-memory-stats` at least three times.
-- [ ] Record QEMU, libvirt, QGA versions, latency, and observed response fields.
+- [!] Run `guest-info` and `guest-get-memory-stats` at least three times;
+    `guest-info` succeeds, but QGA `109.1.0` reports
+    `guest-get-memory-stats` as not found.
+- [~] Record QEMU, libvirt, QGA versions, latency, and observed response
+    fields; libvirt 11.10.0, QEMU API 11.10.0, hypervisor 10.1.0, and QGA
+    109.1.0 are captured, while direct QEMU CLI output is blocked by PATH.
 - [ ] Capture the actual Windows pipe path and account/ACL behavior.
 - [ ] Repeat the probe after QGA restart and guest reboot.
 
 ### V2. Live virtio-mem inspection
 
-- [ ] Capture the virtio-mem alias and block size from live XML.
-- [ ] Capture `requested`, `current`, and `size` values.
+- [x] Capture the virtio-mem alias and block size from live XML (`ua-virtiomem0`,
+  2 MiB).
+- [x] Capture `requested`, `current`, and `size` values (0, 0, and 20 GiB).
 - [ ] Confirm the block size is compatible with the host configuration and THP assumptions.
 - [ ] Check whether `dynamic-memslots=on` and `unplugged-inaccessible=on` are in use.
 - [ ] Select a reversible, aligned target within configured limits.

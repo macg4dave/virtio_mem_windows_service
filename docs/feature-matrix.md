@@ -12,7 +12,7 @@
 | Service configuration | In Progress | Windows | Service | Rust | Validated identity, QGA endpoint, timing, least-privilege account defaults, and startup guard implemented; persistence remains |
 | Logging and metrics | Planned | Both | Both | Rust | Per-service logging |
 | Error handling and recovery | In Progress | Both | Both | Rust | Explicit runtime and resize failures are covered locally; live host recovery remains blocked |
-| Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, and Rust validation helpers added |
+| Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, Rust validation, virtio-mem inspection, read-only decision preview, and guarded reversible live-resize test helpers added; live resize remains explicitly opt-in |
 
 ## Platform Support
 

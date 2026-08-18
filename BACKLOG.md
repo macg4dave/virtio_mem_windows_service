@@ -39,6 +39,45 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are locally covered; live VM evidence, service registration, and QGA validation remain. |
 | TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Workspace format, release build, 46 tests, and Clippy warnings-as-errors pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
 
+### 2026-08-18 live KVM handoff
+
+- First read-only checks against `win11_gpu` on the RHEL server passed for
+  `virsh`/`jq`; libvirt reports 11.10.0, the guest is running, and the QGA
+  channel `org.qemu.guest_agent.0` is connected.
+- `guest-info`, `guest-ping`, `guest-get-osinfo`, and
+  `guest-get-host-name` returned valid responses. The guest reports QGA
+  `109.1.0`, Windows 11 x64, and hostname `ICE101`.
+- The repository probe is blocked because this agent does not advertise or
+  implement `guest-get-memory-stats`; it returns `has not been found`. No
+  guest command execution, reboot, resize, or XML mutation was attempted.
+- Read-only XML inspection found virtio-mem alias `ua-virtiomem0`, size 20 GiB,
+  block 2 MiB, and `requested=current=0`. Automatic resize remains disabled.
+- `qemu-system-x86_64` is not in the current PATH; verify the host package/path
+  separately before relying on direct QEMU CLI diagnostics.
+
+### 2026-08-18 shell-safety and privilege handoff
+
+- Added repository-wide prompt rules requiring explicit current-turn approval
+  before editing/deleting protected server files or mutating VM, libvirt, or
+  systemd state.
+- Prompt rules forbid `sudo`, `su`, `doas`, password collection, and password
+  automation. Normal Cargo/Bash validation remains unprivileged.
+- Documented the recommended one-time administrator setup for a dedicated
+  least-privilege `virtio-mem-host` account instead of repeated root prompts or
+  broad passwordless sudo access.
+- Added `scripts/preview-memory-decision.sh`, a read-only policy preview that
+  reports no-change, blocked, grow, or shrink decisions and never issues a
+  live resize command.
+- Added `scripts/live-resize-test.sh`, which requires explicit `--apply`, logs
+  requested/current convergence over time, and restores the original size by
+  default after a successful test.
+- Added explicit `--connect` support after the first server shell was found to
+  default to the empty `qemu:///session` connection while the VM lives under
+  `qemu:///system`.
+- Updated prompt and testing rules: privileged scripts require current-turn
+  approval naming the complete command, target, mutation, and rollback, then
+  run once as a whole under `sudo`; passwords remain operator-entered only.
+
 ## Completed
 
 | ID | Title | Owner | Completed | Notes |

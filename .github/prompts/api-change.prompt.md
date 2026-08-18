@@ -21,3 +21,8 @@ For the change:
 6. Update `BACKLOG.md` handoff notes with exact validation.
 
 Keep runtime logic in Rust, automation in Bash, and do not invent OpenAPI or generated-schema files that this repository does not use.
+
+Shell safety:
+
+- Limit changes to approved repository files. Do not edit/delete protected server files or change VM, libvirt, or systemd state without explicit approval naming the exact action.
+- Run validation without elevated privileges where possible. If privilege is needed, ask first with the complete command, target, mutation, and rollback, then run the whole script once under `sudo`; never automate or collect password entry.

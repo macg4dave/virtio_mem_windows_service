@@ -21,3 +21,8 @@ Rules:
 - Update docs and `BACKLOG.md` if structure, ownership, or behavior changes.
 
 Validate from `windows/` with `cargo fmt --all -- --check`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo build --release` when available.
+
+Shell safety:
+
+- Limit edits to the repository files required by the task; never alter or delete server-side files or VM/service state without explicit current-turn approval.
+- Keep validation unprivileged. If privilege is required, ask first with the complete command, target, mutation, and rollback, then run the whole script once under `sudo`; never automate password entry.

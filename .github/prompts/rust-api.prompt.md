@@ -21,3 +21,8 @@ Rules:
 7. Do not invent OpenAPI or other schema artifacts; use the repository's documented contracts.
 
 Validate from `windows/` with `cargo test`, format check, Clippy, and release build when practical. Report exact results.
+
+Shell safety:
+
+- Keep contract validation read-only and unprivileged unless live integration is explicitly approved for a named target.
+- Never edit/delete protected server files or mutate VM/libvirt/systemd state without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never automate or collect the password.

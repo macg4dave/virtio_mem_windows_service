@@ -21,3 +21,9 @@ Task:
 """
 
 Validate the affected script and run the relevant Rust checks from `windows/`. Report exact output and environment blockers.
+
+Shell safety:
+
+- Run formatting, Cargo tests, Clippy, and builds as the normal user whenever possible; these checks must not silently gain root privileges.
+- Do not add or run privileged install, service, VM, libvirt, or filesystem mutation steps without explicit current-turn approval naming the target and action.
+- Never invoke `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval, run the whole script once under `sudo`, not a mixture of privileged subcommands. Never automate or collect the password; the user types it directly into the terminal.

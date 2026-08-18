@@ -28,3 +28,9 @@ Rules:
 6. Keep the fix minimal and update relevant contracts/docs and `BACKLOG.md`.
 
 Validate from `windows/` with tests, format check, Clippy, and release build when practical. Report findings and exact validation results.
+
+Shell safety:
+
+- Treat host files, VM state, service units, and files outside the repository as protected resources.
+- Keep review and validation read-only by default; no delete/edit/restart/resize/install action without explicit approval naming the target and action.
+- Never use `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never request, store, or automate the password.

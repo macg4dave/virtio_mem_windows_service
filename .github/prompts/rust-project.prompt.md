@@ -33,3 +33,10 @@ Rules:
 6. Keep pure parsing and resize-policy logic independent from live Windows/QGA effects.
 7. Update affected docs and `BACKLOG.md` in the same change.
 8. Validate from `windows/` with format check, tests, Clippy, and release build when practical; report exact output and blockers.
+
+Shell safety:
+
+- Treat the server, VM, systemd/libvirt state, and files outside this repository as protected.
+- Do not edit, delete, move, overwrite, install, restart, stop, reboot, resize, chmod, or chown protected resources without explicit approval in the current turn naming the target and action.
+- Keep discovery read-only by default. Ask before any privileged command, naming the complete command, target, mutation, and rollback; after approval run the whole script once under `sudo`. Never collect, store, or automate the password.
+- Prefer unprivileged hermetic tests and least-privilege service accounts over broad root access.
