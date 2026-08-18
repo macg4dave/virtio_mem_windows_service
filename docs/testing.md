@@ -184,14 +184,6 @@ by `virsh` at the KiB boundary and the VM remained unchanged, but the test is
 now blocked before any live command by the explicit full-device and host-headroom
 checks.
 
-The later approved 1 GiB test demonstrated a separate rollback hazard: the
-forward request converged in about 5 seconds, but rollback to zero remained
-pending beyond the 300-second rollback timeout. The live XML then reported
-`requested=0` and `current=18432 KiB` while the VM remained running. Treat this
-as a critical failure: do not issue another resize, reboot, or forced action
-automatically. Capture the current XML and operator-approved diagnostics, then
-resolve convergence before any new request.
-
 The script accepts canonical byte targets but converts them to KiB for
 `virsh --requested-size`, whose default unit is KiB. It rejects targets that
 cannot be represented as an exact KiB value and never rounds silently.

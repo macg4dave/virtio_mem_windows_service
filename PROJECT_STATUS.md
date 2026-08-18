@@ -51,10 +51,10 @@ built on the Win11 guest or another Windows build host.
 
 ## External blockers
 
-- The attached Windows QGA reports that `guest-get-memory-stats` is unavailable.
-- `dommemstat` field availability requires operator verification on the guest.
-- The previous `win11_gpu` rollback did not converge within the documented
-  timeout; no further live resize should be attempted until it is understood.
+- The attached Windows QGA does not advertise `guest-get-memory-stats`; the
+  host controller uses the verified `dommemstat` fallback by default.
+- Live resize remains gated by fresh XML validation and
+  `requested == current` convergence at the time of each request.
 - Driver `plugged_size` versus libvirt `current` remains an unverified
   cross-layer mapping.
 

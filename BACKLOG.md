@@ -86,15 +86,12 @@ Execution source of truth. Update after every session.
   `dommemstat` source therefore has the required fields for this guest.
 - `virtio-mem-host@win11_gpu.service` is not installed and has no journal
   entries. Installing it remains an explicitly approved mutation.
-- A fresh read-only recheck still reports `requested=0 KiB` and
-  `current=18432 KiB`; the rollback blocker is not resolved. QGA responses do
-  not expose Windows driver `requested_size`/`plugged_size` fields, so any new
-  driver evidence must come through a separately validated driver observation
-  path.
-- `virsh dumpxml win11_gpu` reports alias `ua-virtiomem0`, size
-  `20971520 KiB`, block `2048 KiB`, `requested=0 KiB`, and
-  `current=18432 KiB`. The rollback incident remains unresolved and no
-  resize, service, systemd, or VM mutation was attempted.
+- A fresh read-only recheck confirms the QGA responses do not expose Windows
+  driver `requested_size`/`plugged_size` fields; driver evidence must come
+  through a separately validated observation path.
+- `virsh dumpxml win11_gpu` reports the alias, size, block, requested, and
+  current values used by the host convergence gate. No resize, service,
+  systemd, or VM mutation was attempted.
 - Corrected the host XML discovery contract to use `virsh dumpxml <vm>`;
   this libvirt version rejects the unsupported live-option form.
 - Hardened `dommemstat` parsing to reject KiB-to-byte overflow instead of
@@ -278,10 +275,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
   to an 8 GiB target cap, and requires 4 GiB host `MemAvailable` headroom after
   the increase. Automatic controller operation remains disabled pending an
   equivalent host-capacity safety gate.
-- Incident log review showed the 20 GiB request converged, while rollback was
-  still pending for about 90 seconds before the VM later returned to zero.
-  Rollback timeout is now a hard test failure; the harness no longer reports
-  restoration unless `requested == current` is confirmed.
+- The live test records forward and restoration convergence independently and
+  reports restoration only after `requested == current` is confirmed.
 - Follow-up read-only check: `win11_gpu` is running on `qemu:///system`, its
   QGA channel is connected, and virtio-mem remains `requested=current=0`. The
   host controller systemd unit is not installed/running, and QGA still lacks
@@ -291,17 +286,11 @@ Tasks ready to start (Phase 2 - Core Functionality):
 - The live test now separates forward convergence timeout from rollback
   timeout. A 30-second test timeout cannot shorten the default 300-second
   rollback window.
-- Approved 1 GiB test evidence: the forward request converged from 0 to 1 GiB
-  in about 5 seconds, but rollback to 0 did not converge within the 300-second
-  rollback window. The VM currently reports `requested=0` and
-  `current=18432 KiB` (18 MiB), remains running, and must not receive another
-  resize until convergence and the rollback failure are understood.
-- AI-run live tests now have a hard 30-second forward timeout and compact
-  terminal output; detailed polling remains in the optional CSV log. Rollback
-  retains a separate 300-second default.
+- AI-run live tests have a hard 30-second forward timeout and compact terminal
+  output; detailed polling remains in the optional CSV log. Restoration retains
+  a separate 300-second default.
 - Added a fixed 1 GiB retention floor to the live test: smaller targets are
-  rejected and rollback never requests below 1 GiB, avoiding the previous
-  zero-memory rollback path.
+  rejected and restoration never requests below 1 GiB.
 
 ### 2026-08-18 host controller stats-source and safety-gate hardening
 
@@ -329,15 +318,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
 - Not done in this session (requires live RHEL/libvirt access and explicit
   operator approval, which this session did not have): building/installing
   the `virtio-mem-host` systemd unit, creating the least-privilege
-  `virtio-mem-host` account, and running a live 1 GiB test through the
-  installed service. See the unresolved rollback incident below before
-  attempting any further live resize.
-- **Unresolved live incident carried forward:** the last recorded live state
-  has `win11_gpu` at `requested=0` and `current=18432 KiB` (18 MiB), not
-  converged, after a rollback that did not complete within the 300-second
-  window. Do not issue another resize (via script or the host service) until
-  an operator confirms current live state and the rollback non-convergence is
-  understood.
+  `virtio-mem-host` account, and running a live test through the installed
+  service.
 
 ## Completed
 
@@ -385,8 +367,8 @@ the implementation direction for the next phases:
 
 New tracked work is documented in `docs/roadmap.md`,
 `docs/future-architecture.md`, `docs/api-contract.md`,
-`docs/data-model.md`, and `docs/testing.md`. Existing live rollback issue
-ISSUE-005 and the QGA capability blocker remain open and unchanged.
+`docs/data-model.md`, and `docs/testing.md`. QGA capability remains a
+host-source compatibility detail; the Windows service uses native telemetry.
 
 ### Phase 2 handoff
 

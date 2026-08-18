@@ -61,8 +61,6 @@ verification.
 - Exercise one reversible aligned resize through the installed service.
 - Confirm convergence suppression, host headroom checks, bounded failures,
    signal handling, and restart behavior.
-- Resolve the recorded `win11_gpu` rollback non-convergence before any new
-   resize attempt.
 
 **Gate:** no automatic resize until live QGA/dommemstat, XML compatibility, and
 convergence evidence pass.

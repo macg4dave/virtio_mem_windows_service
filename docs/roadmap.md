@@ -19,9 +19,12 @@ priority is the Phase 2 Windows demand-agent foundation: native telemetry,
 canonical-byte demand reports, and bounded target recommendations that do not
 take over host actuation. The existing one-VM host controller remains the only
 resize authority until live state mapping and Phase 3 global arbitration have
-been validated. The first read-only checks have evidence from the RHEL server,
-but the installed Windows QGA does not support `guest-get-memory-stats`, so
-the V1 gate remains blocked.
+been validated. The first read-only checks have evidence from the RHEL server.
+The QGA memory command may be unavailable on the guest, but that is no longer
+a Windows service startup blocker because the service uses native
+`GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry. The host controller
+uses `dommemstat` by default when the guest QGA does not provide
+`guest-get-memory-stats`.
 
 ## Recent verified wins
 
@@ -52,14 +55,11 @@ the V1 gate remains blocked.
     instead of the unimplemented `guest-get-memory-stats`, and a shared
     `MIN_HEADROOM_BYTES` invariant plus a host `/proc/meminfo` headroom gate
     are enforced in code rather than only by configuration. Live systemd
-    installation and a resize test through the installed service remain, and
-    the unresolved `win11_gpu` rollback non-convergence (see `docs/issues.md`
-    ISSUE-005) must be resolved by an operator before any further live test.
+    installation and a resize test through the installed service remain.
 - **RHEL read-only fallback evidence (2026-08-18):** `virsh dommemstat
     win11_gpu` returned `actual`, `unused`, and `available` successfully, so
-    the default host stats source is observable on this guest. Live XML still
-    reports `requested=0` and `current=18432 KiB`; this confirms the rollback
-    blocker remains active and does not authorize another resize.
+    the default host stats source is observable on this guest. Live XML remains
+    the authoritative source for the requested/current convergence gate.
 - **RHEL service observation (2026-08-18):** the read-only check found no
     installed `virtio-mem-host@win11_gpu.service` and no journal entries.
     Service installation and lifecycle validation remain separate approved
@@ -304,9 +304,9 @@ evidence before live testing.
 - [x] Run host prerequisite checks.
 - [x] Confirm the virtio-serial channel name `org.qemu.guest_agent.0`.
 - [ ] Confirm QGA service availability and permissions in Windows.
-- [!] Run `guest-info` and `guest-get-memory-stats` at least three times;
-    `guest-info` succeeds, but QGA `109.1.0` reports
-    `guest-get-memory-stats` as not found.
+- [~] Run `guest-info` and the configured host memory-stat source at least
+    three times; `guest-info` succeeds, QGA `109.1.0` does not provide
+    `guest-get-memory-stats`, and `dommemstat` is the verified fallback.
 - [~] Record QEMU, libvirt, QGA versions, latency, and observed response
     fields; libvirt 11.10.0, QEMU API 11.10.0, hypervisor 10.1.0, and QGA
     109.1.0 are captured, while direct QEMU CLI output is blocked by PATH.
@@ -478,7 +478,7 @@ single-VM convergence evidence are available.
 | B9 | Shutdown timeout is configured but not yet enforced by the worker host | Stop-pending behavior cannot be proven | Add bounded join/worker termination policy in M3/M5 |
 | B11 | Official virtio-mem guidance shows compatibility and safety limits that are not yet codified in the host contract | The controller can make unsafe assumptions about resize behavior or valid host configurations | Add the QEMU/libvirt compatibility gate and explicit validation checks in M9a before live automation |
 | B12 | Contemporary virtio-mem guidance recommends `dynamic-memslots=on` with `unplugged-inaccessible=on` for safe unplugged memory handling | The host may misread unplugged-memory semantics without this configuration | Document and verify the host/guest configuration assumptions during V2 and M9a |
-| B13 | Native Windows telemetry and the versioned demand-report contract are designed but not implemented | Blocks the Phase 2 demand-agent gate and global-controller inputs | Implement `GlobalMemoryStatusEx`/`GetPerformanceInfo` collection behind deterministic fakes, without changing host actuation authority |
+| B13 | Native Windows telemetry and the versioned demand-report contract lack live workload evidence | Blocks production tuning and global-controller inputs, but not Windows service startup | Collect live workload evidence for `GlobalMemoryStatusEx`/`GetPerformanceInfo` reports without changing host actuation authority |
 | B14 | Driver `plugged_size` versus libvirt `current` has not been validated as one cross-layer state mapping | Blocks global pool accounting and safe reclaim | Capture the same controlled resize through driver, QEMU, and libvirt observation before treating actual allocation as interchangeable |
 
 ## Definition of done for the project

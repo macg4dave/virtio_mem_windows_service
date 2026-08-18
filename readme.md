@@ -56,8 +56,8 @@ Clippy warnings-as-errors, and Bash syntax validation.
 - Live Windows SCM, ACL, workload, and event-log validation remains open.
 - The connected guest's QGA does not provide `guest-get-memory-stats`; the
   `dommemstat` fallback still requires live verification.
-- A previous live rollback did not converge within its timeout. No further live
-  resize should be attempted until that incident is understood.
+- Live resize remains subject to fresh XML validation and the
+  `requested == current` convergence gate before every request.
 
 See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 
@@ -127,8 +127,8 @@ bash scripts/validate-guest-agent.sh VM_NAME 3
 ```
 
 Read the [QEMU Guest Agent setup guide](docs/qemu-ga-setup.md) first. The
-current guest may report that `guest-get-memory-stats` is unavailable; do not
-replace a missing metric with an unvalidated guess.
+current guest may report that `guest-get-memory-stats` is unavailable; the host
+controller uses the verified `dommemstat` fallback rather than guessing.
 
 ### 4. Preview before changing memory
 

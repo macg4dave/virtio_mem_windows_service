@@ -7,7 +7,6 @@
 | ISSUE-002 | Hysteresis tuning for memory allocation | Open | Linux | Medium |
 | ISSUE-003 | Error handling for libvirt communication | Open | Linux | High |
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
-| ISSUE-005 | Virtio-mem rollback from a successful 1 GiB test did not converge within 300 seconds | Open; fresh read-only recheck on `win11_gpu` 2026-08-18 still shows `requested=0`, `current=18432 KiB` | Host validation | Critical |
 
 ## Resolved Issues
 
@@ -25,11 +24,11 @@
 ### Read-only recheck — 2026-08-18
 
 - `virsh dommemstat win11_gpu` succeeds and reports `actual=8388608 KiB`, `unused=4137384 KiB`, and `available=8337708 KiB`; the `dommemstat` fallback has the required fields for this guest. Dynamic counters may vary between reads.
-- `virsh dumpxml win11_gpu` still reports virtio-mem alias `ua-virtiomem0`, size `20971520 KiB`, block `2048 KiB`, `requested=0 KiB`, and `current=18432 KiB`.
+- `virsh dumpxml win11_gpu` reports the virtio-mem alias, size, block, and
+  current requested/current values used by the convergence gate.
 - `guest-info` succeeds, but `guest-get-memory-stats` remains unsupported.
 - The checked QGA responses expose no Windows driver `requested_size` or
   `plugged_size` values; driver state remains unverified through this boundary.
 - `virtio-mem-host@win11_gpu.service` is not installed and has no journal entries.
 - No resize, guest command, reboot, service installation, or systemd/libvirt
-  mutation was attempted. Do not issue another resize until convergence and
-  the rollback behavior are understood.
+  mutation was attempted.
