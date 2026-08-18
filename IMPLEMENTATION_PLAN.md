@@ -9,8 +9,13 @@ ordered implementation plan without duplicating task status tables.
 ### 1. Complete guest transport and lifecycle hardening
 
 - Add bounded connect, write, flush, and read deadlines to the Windows QGA
-   named-pipe client.
-- Enforce the configured shutdown timeout during worker termination.
+   named-pipe client. **Implemented:** version-2 configuration now carries a
+   5-second default operation deadline; Windows uses overlapped connect,
+   write, and read operations with `CancelIoEx` cancellation. The synchronous
+   flush API is intentionally avoided because it cannot be cancelled.
+- **Implemented:** enforce the configured shutdown timeout during worker
+   termination and return a typed timeout failure when cancellation does not
+   converge; real SCM observation remains.
 - Preserve explicit transport, parser, cancellation, and startup failures.
 - Keep the Windows service free of Linux, libvirt, and host-side commands.
 

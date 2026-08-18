@@ -12,6 +12,10 @@ pub enum ServiceHostError {
     Startup(String),
     #[error("service worker failed: {0}")]
     Worker(String),
+    #[error("service worker did not stop within the configured shutdown timeout")]
+    ShutdownTimeout,
+    #[error("service host shutdown timeout must be greater than zero")]
+    InvalidShutdownTimeout,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -22,6 +26,8 @@ pub enum ConfigurationError {
     InvalidPollInterval,
     #[error("shutdown timeout must be greater than zero")]
     InvalidShutdownTimeout,
+    #[error("QEMU Guest Agent operation timeout must be greater than zero")]
+    InvalidQgaOperationTimeout,
     #[error("configuration file I/O failed: {0}")]
     FileIo(String),
     #[error("configuration file is invalid: {0}")]

@@ -261,10 +261,21 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
         status_handle,
         ScmServiceStatus::from_state(ServiceState::StartPending),
     );
-    let mut host = ServiceHost::with_stop(
-        move |service_stop: &StopSignal| {
+    let shutdown_timeout = match ServiceConfig::load_default() {
+        Ok(config) => config.shutdown_timeout,
+        Err(_) => {
             let _ = publish_status(
                 status_handle,
+                ScmServiceStatus::from_state(ServiceState::Failed),
+            );
+            return;
+        }
+    };
+    let status_handle_value = status_handle as usize;
+    let mut host = ServiceHost::with_stop_and_shutdown_timeout(
+        move |service_stop: &StopSignal| {
+            let _ = publish_status(
+                status_handle_value as SERVICE_STATUS_HANDLE,
                 ScmServiceStatus::from_state(ServiceState::Running),
             );
             while !service_stop.is_cancelled() {
@@ -273,6 +284,7 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
             Ok(())
         },
         stop,
+        shutdown_timeout,
     );
     let result = host.run();
     let final_state = if result.is_ok() {

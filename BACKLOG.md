@@ -25,6 +25,13 @@ Execution source of truth. Update after every session.
   links to the roadmap and supporting contracts.
 - Local documentation and Rust validation remain required before marking any
   implementation milestone complete.
+- Added a version-2 QGA operation timeout and native overlapped named-pipe
+  boundary for connect/write/read. A timed-out request now calls `CancelIoEx`,
+  closes its handles, and returns an explicit transport error without using
+  the non-cancellable synchronous flush API.
+- Added a bounded `ServiceHost` worker boundary using the configured shutdown
+  timeout, typed timeout failure, SCM timeout wiring, and deterministic slow-
+  worker tests. Live install/start/stop observation remains separate.
 
 ## 2026-08-18 Windows demand-agent handoff
 
@@ -65,7 +72,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | --- | --- | --- | --- | --- | --- |
 | TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Live RHEL/libvirt host and Windows guest unavailable in this environment |
 | TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
-| TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, and configurable named-pipe client implemented; live transport validation remains |
+| TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | 2-3 hours | M4/M6 local service foundation; live workload evidence and runtime publication remain |
 
@@ -92,6 +99,22 @@ Tasks ready to start (Phase 2 - Core Functionality):
   block 2 MiB, and `requested=current=0`. Automatic resize remains disabled.
 - `qemu-system-x86_64` is not in the current PATH; verify the host package/path
   separately before relying on direct QEMU CLI diagnostics.
+
+### 2026-08-18 Windows SCM validation handoff
+
+- The release service binary built successfully.
+- The approved `VirtioMemService` install attempt could not open the Windows
+  SCM because the current terminal lacks service-manager permissions.
+- A read-only `sc.exe query VirtioMemService` confirmed no partial service
+  registration exists. Do not mark F7/M7 complete until an administrator runs
+  the documented install → start → observe → stop → remove sequence.
+- Follow-up administrator run used `sc.exe` correctly: registration succeeded,
+  but `sc.exe start VirtioMemService` returned `ERROR_ACCESS_DENIED (5)` and
+  the service remained stopped. `sc.exe stop` returned the expected `1062`
+  because it was never started; removal then succeeded. The likely deployment
+  blocker is the default `LocalService` account lacking traversal/read access
+  to the executable under `C:\Users\Dave\github`; validate this before changing
+  the least-privilege account or service security descriptor.
 
 ### 2026-08-18 shell-safety and privilege handoff
 

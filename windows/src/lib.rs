@@ -24,7 +24,7 @@ pub use error::{
     ConfigurationError, MemoryStatsError, PollError, ServiceHostError, ServiceLoopError,
     VirtioMemError,
 };
-pub use qga::NamedPipeGuestAgent;
+pub use qga::{NamedPipeGuestAgent, DEFAULT_QGA_OPERATION_TIMEOUT};
 pub use runtime::{DemandServiceWorker, GuestAgent, MemoryPoller, ServiceRuntime};
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};

@@ -28,7 +28,7 @@ the V1 gate remains blocked.
 - **Local quality baseline:** on 2026-08-18 the workspace passed
     `cargo test --workspace --all-features`, `cargo clippy --workspace
     --all-targets --all-features -- -D warnings`, and `cargo build --workspace
-    --all-features`; the workspace currently reports 70 tests passing and 0
+    --all-features`; the workspace currently reports 72 tests passing and 0
     failures.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -66,7 +66,7 @@ the V1 gate remains blocked.
 ## Verified wins to preserve
 
 - **Local quality baseline:** the native Windows MSVC build, release build,
-    70 unit tests, and Clippy warnings-as-errors gate pass locally.
+    72 unit tests, and Clippy warnings-as-errors gate pass locally.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Clear boundaries:** guest Rust code does not invoke Linux commands; host
@@ -115,7 +115,7 @@ readiness in the remaining host-side work.
 | M0 | Repository and architecture baseline | [x] | — | Architecture, contracts, standards, and testing docs reviewed |
 | M1 | Pure memory policy and QGA parsing | [x] | M0 | Parser and controller tests cover malformed, boundary, alignment, and convergence cases |
 | M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
-| M3 | Service lifecycle foundation | [~] | M2 | Startup readiness, cancellation, failure, and state tests pass locally; configured shutdown deadline enforcement remains |
+| M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |
 | M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, demand-report path, timing, account, missing-file defaults, and validation model exist locally; ACL provisioning remains |
 | M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; real guest/service-manager validation remains |
 | M6 | Concrete guest runtime wiring | [~] | M4, M5 | `main.rs` starts the configured worker and maps unexpected failures to a non-zero process result; live guest state/resize sink wiring still needs proof on a real VM |
@@ -167,8 +167,12 @@ readiness in the remaining host-side work.
 - [x] `MemoryPoller` composes QGA responses with the controller policy.
 - [x] `run_polling_loop` validates intervals and stops on cancellation or failure.
 - [x] Cancellation wakes the scheduler instead of waiting for the full interval.
-- [ ] Enforce bounded connect, write, flush, and read deadlines for QGA I/O.
-- [ ] Prevent a slow or stuck QGA operation from exceeding the shutdown deadline.
+- [x] Enforce a configured deadline around connect, write, and read for the
+    QGA request boundary; the Windows transport uses overlapped I/O and
+    `CancelIoEx` rather than an unbounded synchronous flush.
+- [x] Prevent a slow or stuck QGA operation from holding the polling caller
+    past the shutdown deadline; timeout cancellation closes the overlapped
+    request before returning the transport error.
 
 **Gate:** Pure Rust tests pass and no host command is invoked by guest logic.
 
@@ -189,7 +193,8 @@ readiness in the remaining host-side work.
 - [x] Service identity, QGA endpoint, poll interval, shutdown timeout, and least-privilege account defaults are validated.
 - [x] Load persistent configuration rather than relying only on in-process defaults.
 - [x] Add a versioned configuration schema and migration/rejection rules.
-- [ ] Enforce the configured shutdown timeout rather than only storing it.
+- [x] Enforce the configured shutdown timeout during worker termination and
+    return a typed failure when a worker does not stop before the deadline.
 
 **Gate:** Worker readiness precedes `Running`; expected cancellation is not a crash; unexpected failures remain recoverable by the SCM layer.
 
@@ -449,7 +454,6 @@ single-VM convergence evidence are available.
 | B5 | Concrete guest state and resize sinks are not wired | Blocks real automatic resize behavior | Implement M6 without invoking Linux commands from the guest |
 | B6 | Event-log and recovery policy are not implemented | Blocks operational failure recovery | Implement H1/H2 and verify intentional versus unexpected exits |
 | B7 | QGA, controller, libvirt, and `virsh` memory-unit semantics are not reconciled in one tested contract | Blocks safe resize enablement | Resolve in F6a before M9/M10 |
-| B8 | Named-pipe I/O currently has no enforced operation deadline | A stuck QGA call can violate bounded shutdown | Implement cancellable/deadline-aware transport in F4/F5 |
 | B9 | Shutdown timeout is configured but not yet enforced by the worker host | Stop-pending behavior cannot be proven | Add bounded join/worker termination policy in M3/M5 |
 | B11 | Official virtio-mem guidance shows compatibility and safety limits that are not yet codified in the host contract | The controller can make unsafe assumptions about resize behavior or valid host configurations | Add the QEMU/libvirt compatibility gate and explicit validation checks in M9a before live automation |
 | B12 | Contemporary virtio-mem guidance recommends `dynamic-memslots=on` with `unplugged-inaccessible=on` for safe unplugged memory handling | The host may misread unplugged-memory semantics without this configuration | Document and verify the host/guest configuration assumptions during V2 and M9a |

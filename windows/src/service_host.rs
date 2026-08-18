@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::error::ServiceHostError;
 
@@ -97,24 +97,40 @@ where
 }
 
 pub struct ServiceHost<W> {
-    worker: W,
+    worker: Option<W>,
     stop: StopSignal,
     state: AtomicU8,
+    shutdown_timeout: Duration,
 }
 
 impl<W> ServiceHost<W>
 where
-    W: ServiceWorker,
+    W: ServiceWorker + Send + 'static,
 {
+    const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(30);
+
     pub fn new(worker: W) -> Self {
-        Self::with_stop(worker, StopSignal::new())
+        Self::with_shutdown_timeout(worker, Self::DEFAULT_SHUTDOWN_TIMEOUT)
     }
 
     pub fn with_stop(worker: W, stop: StopSignal) -> Self {
+        Self::with_stop_and_shutdown_timeout(worker, stop, Self::DEFAULT_SHUTDOWN_TIMEOUT)
+    }
+
+    pub fn with_shutdown_timeout(worker: W, shutdown_timeout: Duration) -> Self {
+        Self::with_stop_and_shutdown_timeout(worker, StopSignal::new(), shutdown_timeout)
+    }
+
+    pub fn with_stop_and_shutdown_timeout(
+        worker: W,
+        stop: StopSignal,
+        shutdown_timeout: Duration,
+    ) -> Self {
         Self {
-            worker,
+            worker: Some(worker),
             stop,
             state: AtomicU8::new(ServiceState::Created as u8),
+            shutdown_timeout,
         }
     }
 
@@ -143,25 +159,75 @@ where
             }
         }
 
+        if self.shutdown_timeout.is_zero() {
+            self.state
+                .store(ServiceState::Failed as u8, Ordering::Release);
+            return Err(ServiceHostError::InvalidShutdownTimeout);
+        }
+
         self.state
             .store(ServiceState::StartPending as u8, Ordering::Release);
-        if let Err(error) = self.worker.initialize(&self.stop) {
+        let Some(worker) = self.worker.as_mut() else {
+            self.state
+                .store(ServiceState::Failed as u8, Ordering::Release);
+            return Err(ServiceHostError::Startup(
+                "service worker is unavailable".to_owned(),
+            ));
+        };
+        if let Err(error) = worker.initialize(&self.stop) {
             self.state
                 .store(ServiceState::Failed as u8, Ordering::Release);
             return Err(ServiceHostError::Startup(error));
         }
         self.state
             .store(ServiceState::Running as u8, Ordering::Release);
-        match self.worker.run(&self.stop) {
-            Ok(()) => {
-                self.state
-                    .store(ServiceState::Stopped as u8, Ordering::Release);
-                Ok(())
-            }
-            Err(error) => {
-                self.state
-                    .store(ServiceState::Failed as u8, Ordering::Release);
-                Err(ServiceHostError::Worker(error))
+        let Some(mut worker) = self.worker.take() else {
+            self.state
+                .store(ServiceState::Failed as u8, Ordering::Release);
+            return Err(ServiceHostError::Startup(
+                "service worker is unavailable".to_owned(),
+            ));
+        };
+        let stop = self.stop.clone();
+        let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
+        let _worker_thread = std::thread::spawn(move || {
+            let result = worker.run(&stop);
+            let _ = result_sender.send(result);
+        });
+
+        let mut shutdown_started = None;
+        loop {
+            let wait = shutdown_started
+                .map(|started: Instant| self.shutdown_timeout.saturating_sub(started.elapsed()))
+                .unwrap_or_else(|| Duration::from_millis(50));
+            match result_receiver.recv_timeout(wait) {
+                Ok(Ok(())) => {
+                    self.state
+                        .store(ServiceState::Stopped as u8, Ordering::Release);
+                    return Ok(());
+                }
+                Ok(Err(error)) => {
+                    self.state
+                        .store(ServiceState::Failed as u8, Ordering::Release);
+                    return Err(ServiceHostError::Worker(error));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    self.state
+                        .store(ServiceState::Failed as u8, Ordering::Release);
+                    return Err(ServiceHostError::Worker(
+                        "service worker exited without reporting a result".to_owned(),
+                    ));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if self.stop.is_cancelled() {
+                        let started = shutdown_started.get_or_insert_with(Instant::now);
+                        if started.elapsed() >= self.shutdown_timeout {
+                            self.state
+                                .store(ServiceState::Failed as u8, Ordering::Release);
+                            return Err(ServiceHostError::ShutdownTimeout);
+                        }
+                    }
+                }
             }
         }
     }
@@ -251,5 +317,58 @@ mod tests {
         thread
             .join()
             .expect("waiter should exit after cancellation");
+    }
+
+    #[test]
+    fn rejects_zero_shutdown_timeout() {
+        let mut host =
+            ServiceHost::with_shutdown_timeout(|_stop: &StopSignal| Ok(()), Duration::ZERO);
+
+        assert_eq!(host.run(), Err(ServiceHostError::InvalidShutdownTimeout));
+        assert_eq!(host.state(), ServiceState::Failed);
+    }
+
+    #[test]
+    fn returns_shutdown_timeout_for_worker_that_does_not_stop() {
+        let stop = StopSignal::new();
+        let cancel = stop.clone();
+        let _canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            cancel.cancel();
+        });
+        let mut host = ServiceHost::with_stop_and_shutdown_timeout(
+            |_stop: &StopSignal| {
+                thread::sleep(Duration::from_millis(200));
+                Ok(())
+            },
+            stop,
+            Duration::from_millis(20),
+        );
+
+        assert_eq!(host.run(), Err(ServiceHostError::ShutdownTimeout));
+        assert_eq!(host.state(), ServiceState::Failed);
+    }
+
+    #[test]
+    fn waits_for_worker_to_finish_within_shutdown_timeout() {
+        let stop = StopSignal::new();
+        let cancel = stop.clone();
+        let _canceller = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(20));
+            cancel.cancel();
+        });
+        let mut host = ServiceHost::with_stop_and_shutdown_timeout(
+            |stop: &StopSignal| {
+                while !stop.is_cancelled() {
+                    thread::yield_now();
+                }
+                Ok(())
+            },
+            stop,
+            Duration::from_secs(1),
+        );
+
+        assert!(host.run().is_ok());
+        assert_eq!(host.state(), ServiceState::Stopped);
     }
 }

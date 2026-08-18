@@ -45,6 +45,26 @@ guest prerequisite matrix.
 
 ### Rust Service Testing
 
+#### VS Code workflow
+
+The repository includes `.vscode/tasks.json` and `.vscode/launch.json` so the
+normal validation path can be run without an administrator terminal:
+
+- **Rust: full local gate** — format check, workspace tests, Clippy, and a
+  release build in sequence.
+- **Rust: test workspace** — focused `cargo test --workspace --all-features`.
+- **Rust: clippy workspace** — warnings-as-errors linting.
+- **Rust: format check** — repository-wide rustfmt verification.
+- **Rust: debug interactive service** — launches the non-SCM `run` mode through
+  CodeLLDB; stop it with the debugger stop control or cancellation path.
+
+The SCM tasks are deliberately separate and marked **(elevated)**. Open VS
+Code itself as Administrator before using them. They invoke `sc.exe` explicitly;
+do not type `sc` in PowerShell because `sc` is an alias for `Set-Content` and
+will create files named `start`, `query`, or `stop` instead of querying SCM.
+Use **SCM: query service** after start and stop to observe transitions. Never
+combine these tasks with live resize or VM lifecycle operations.
+
 ```bash
 cd windows
 cargo build --release
@@ -62,6 +82,10 @@ unsafe values fail startup. Local tests cover round-trip persistence,
 missing-file defaults, schema rejection, and empty-path validation. Production
 installation must provision the directory and least-privilege ACLs before
 writing configuration or demand reports.
+Schema version 2 includes `qga_operation_timeout_millis`, defaulting to 5000
+ms. The timeout bounds the complete named-pipe request (connect, write, flush,
+and response read); a timed-out request is returned as an explicit transport
+error and no resize is attempted for that cycle.
 
 ### RHEL host controller testing
 
@@ -323,6 +347,11 @@ Guest Agent access. At minimum, verify:
 The portable Rust tests additionally verify startup failure before `Running`,
 atomic stop signaling, cancellation wake-up, configuration validation, and
 that a stopped loop performs no new poll.
+
+QGA transport tests verify that a zero operation timeout is rejected before a
+pipe is opened, the default timeout is five seconds, and Windows timeout values
+are clamped to the valid millisecond range. On Windows, an overlapped I/O
+timeout calls `CancelIoEx` and closes the request handles before returning.
 
 The `VirtioMemState` contract tests additionally verify the canonical byte
 unit, minimum and power-of-two block size, requested/current/target alignment,

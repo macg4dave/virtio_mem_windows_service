@@ -122,7 +122,12 @@ pure Rust `VirtioMemState` byte/alignment validator, a versioned JSON
 configuration loader, and a generic `DemandServiceWorker` that publishes
 advisory reports through an injected JSON-lines sink. Event-log integration,
 live XML parsing, a trustworthy Windows current-allocation provider, and the
-production resize sink remain to be implemented. The main SCM entry point must
+production resize sink remain to be implemented. QEMU Guest Agent transactions
+have a configured operation deadline (5 seconds by default). The Windows
+transport uses overlapped I/O and `CancelIoEx`, so the polling caller returns
+instead of waiting indefinitely during connect, write, or response read; it
+deliberately avoids the non-cancellable synchronous `FlushFileBuffers` call.
+The main SCM entry point must
 not construct a demand worker until that allocation provider is available.
 
 ## RPC & Interfaces

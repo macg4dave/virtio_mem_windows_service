@@ -32,12 +32,15 @@ fn run_service(config: ServiceConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
     let poll_interval = config.poll_interval;
 
-    let mut host = ServiceHost::new(|stop: &StopSignal| {
-        while !stop.is_cancelled() {
-            stop.wait(poll_interval);
-        }
-        Ok(())
-    });
+    let mut host = ServiceHost::with_shutdown_timeout(
+        move |stop: &StopSignal| {
+            while !stop.is_cancelled() {
+                stop.wait(poll_interval);
+            }
+            Ok(())
+        },
+        config.shutdown_timeout,
+    );
     host.run().map_err(|error| error.to_string())?;
 
     Ok(())
