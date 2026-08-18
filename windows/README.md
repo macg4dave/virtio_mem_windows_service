@@ -32,6 +32,13 @@ windows/
 cargo build --release
 ```
 
+Build this crate on Windows (or a host with an installed Windows Rust target
+and compatible linker). The RHEL development host does not currently contain
+the Windows target standard library or a Windows linker, so it cannot produce
+the service executable. The service already sends the QGA
+`guest-get-memory-stats` request; the connected guest agent must advertise
+that command for runtime collection to succeed.
+
 ## Test
 
 ```bash

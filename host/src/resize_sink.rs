@@ -23,11 +23,7 @@ impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
     fn request_resize(&self, requested_bytes: u64) -> Result<(), String> {
         let snapshot = self
             .command
-            .run(&[
-                "dumpxml".to_owned(),
-                "--live".to_owned(),
-                self.vm_name.clone(),
-            ])
+            .run(&["dumpxml".to_owned(), self.vm_name.clone()])
             .map_err(|error| error.to_string())?;
         let state = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
             .map_err(|error| error.to_string())?
@@ -99,7 +95,7 @@ mod tests {
         assert_eq!(
             calls.take(),
             vec![
-                vec!["dumpxml", "--live", "guest"],
+                vec!["dumpxml", "guest"],
                 vec![
                     "update-memory-device",
                     "guest",

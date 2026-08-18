@@ -27,6 +27,13 @@ libvirt access. The account should run the controller directly; it should not
 be granted broad passwordless `sudo` access and the controller should not run
 as root.
 
+When several approved read-only host checks require elevated access, batch them
+into one process and authenticate once. Approve and run one complete
+read-only report invocation rather than prefixing each `virsh` command with
+`sudo`. Commands inside that report must not invoke nested `sudo`. Do not
+depend on the sudo timestamp cache to avoid prompts; the single outer `sudo`
+invocation is the batching guarantee.
+
 After that one-time setup, run read-only probes and the controller under the
 approved account or authorization context. If a particular test genuinely
 needs root, ask for approval first with the complete command, protected target,
@@ -454,7 +461,9 @@ automatic systemd instance:
 The libvirt/QEMU documentation adds a few required checks before any automated resize logic is considered safe:
 
 ```bash
-# Inspect the guest's live memory devices and look for requested/current values
+# Inspect the running guest's memory devices and look for requested/current values.
+# `dumpxml` has no `--live` option; its default is the live definition for a
+# running domain. Use `--inactive` only when intentionally inspecting config.
 virsh dumpxml "$VM_NAME" | grep -A20 -B5 "virtio-mem"
 
 # Or query the live XML directly when the alias is known

@@ -24,19 +24,26 @@ Windows runtime wiring and live KVM evidence remain open.
 
 The 2026-08-18 local workspace gate passed:
 
-- 77 tests
+- 77 tests before the latest host-parser regression test (the current count is
+  reported by the validation run below).
 - `cargo build --workspace --all-features --release`
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
 - `bash -n scripts/*.sh`
 
+The RHEL host-controller artifact was rebuilt on 2026-08-18 at
+`target/release/virtio-mem-host`; its 14 package tests passed. A Windows
+service artifact is not available from this host because the Windows Rust
+target and a Windows linker are not installed. The Windows service must be
+built on the Win11 guest or another Windows build host.
+
 ## Open implementation work
 
 - Wire `windows/src/main.rs` to the configured QGA client and demand worker;
   trustworthy current-allocation provider and resize sink remain open.
-- Enforce a configured QGA operation deadline with native overlapped
-  connect/write/read and `CancelIoEx` cancellation; synchronous flush is
-  intentionally avoided because it has no cancellable deadline.
+- Confirm the corrected host XML discovery command and complete live systemd
+  validation; this host rejects a live option on `dumpxml`, and the controller
+  now uses the default `virsh dumpxml <vm>` form.
 - Provision ProgramData and service ACLs, event-log output, and real SCM
   installation/recovery behavior.
 - Complete host compatibility checks, live systemd validation, and reversible

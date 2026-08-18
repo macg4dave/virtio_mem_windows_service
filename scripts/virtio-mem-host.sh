@@ -42,7 +42,10 @@ for command_name in virsh xmllint; do
 done
 
 xml_snapshot() {
-  virsh dumpxml --live "$vm_name"
+  # virsh dumpxml has no --live option; for a running domain its default
+  # output is the live definition. --inactive is the explicit persistent
+  # configuration selector and must not be used for resize validation.
+  virsh dumpxml "$vm_name"
 }
 
 memory_xpath="/domain/devices/memory[@model='virtio-mem'][alias[@name='$alias']]"

@@ -23,11 +23,7 @@ impl<C: VirshCommand> MemoryStateSource for VirshXmlSource<C> {
     fn memory_state(&self) -> Result<VirtioMemState, String> {
         let xml = self
             .command
-            .run(&[
-                "dumpxml".to_owned(),
-                "--live".to_owned(),
-                self.vm_name.clone(),
-            ])
+            .run(&["dumpxml".to_owned(), self.vm_name.clone()])
             .map_err(|error| error.to_string())?;
         parse_virtio_mem_xml_for_alias(&xml, &self.alias)
             .map(|snapshot| snapshot.memory)
@@ -44,14 +40,7 @@ mod tests {
     }
     impl VirshCommand for Fake {
         fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
-            assert_eq!(
-                arguments,
-                &[
-                    "dumpxml".to_owned(),
-                    "--live".to_owned(),
-                    "guest".to_owned()
-                ]
-            );
+            assert_eq!(arguments, &["dumpxml".to_owned(), "guest".to_owned()]);
             Ok(self.xml.clone())
         }
     }

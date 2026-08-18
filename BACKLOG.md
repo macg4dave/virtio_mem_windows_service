@@ -10,6 +10,60 @@ complete by this documentation update.
 
 Execution source of truth. Update after every session.
 
+## 2026-08-18 Windows QGA/build handoff
+
+- Confirmed `windows/src/qga.rs` already sends the newline-delimited
+  `guest-get-memory-stats` request with a bounded overlapped named-pipe
+  operation; no repository-side QGA request implementation is missing.
+- Built the RHEL host controller successfully as
+  `target/release/virtio-mem-host`; `cargo test -p virtio-mem-host` passed all
+  14 tests.
+- A Windows service artifact could not be produced on this RHEL host because
+  `x86_64-pc-windows-gnu` is not installed and no MinGW, Clang, LLD, or MSVC
+  linker is available. Build `virtio-mem-service` on the Windows guest or a
+  Windows build host, then validate the QGA command there.
+- The live QGA still does not advertise `guest-get-memory-stats`; installing
+  or updating the external Windows QEMU Guest Agent remains required for
+  native QGA memory-stat support. The host `dommemstat` fallback remains the
+  default and is already implemented.
+
+## 2026-08-18 privileged-probe batching handoff
+
+- Strengthened repository agent guidance so related privileged read-only host
+  probes are approved and executed as one batch under one outer `sudo`.
+- The agent must not invoke `sudo` once per `virsh`/systemd probe, depend on
+  sudo timestamp caching, or retry authorization separately for each command.
+- Passwords remain operator-entered directly into the terminal and are never
+  requested, stored, or transmitted to the agent.
+
+## 2026-08-18 RHEL read-only validation handoff
+
+- A single unprivileged read-only batch completed without repeated password
+  prompts: `bash scripts/check-environment.sh`, `virsh version`, domain state,
+  `dommemstat`, XML, QGA capability checks, systemd status, and journal read.
+- `bash scripts/check-environment.sh` passed on the RHEL host.
+- `bash scripts/validate-guest-agent.sh win11_gpu 3` reached `guest-info`,
+  then failed closed because QGA 109.1.0 does not implement
+  `guest-get-memory-stats`.
+- `virsh dommemstat win11_gpu` succeeded with `actual=8388608 KiB`,
+  `unused=4137384 KiB`, and `available=8337708 KiB`; the default
+  `dommemstat` source therefore has the required fields for this guest.
+- `virtio-mem-host@win11_gpu.service` is not installed and has no journal
+  entries. Installing it remains an explicitly approved mutation.
+- A fresh read-only recheck still reports `requested=0 KiB` and
+  `current=18432 KiB`; the rollback blocker is not resolved. QGA responses do
+  not expose Windows driver `requested_size`/`plugged_size` fields, so any new
+  driver evidence must come through a separately validated driver observation
+  path.
+- `virsh dumpxml win11_gpu` reports alias `ua-virtiomem0`, size
+  `20971520 KiB`, block `2048 KiB`, `requested=0 KiB`, and
+  `current=18432 KiB`. The rollback incident remains unresolved and no
+  resize, service, systemd, or VM mutation was attempted.
+- Corrected the host XML discovery contract to use `virsh dumpxml <vm>`;
+  this libvirt version rejects the unsupported live-option form.
+- Hardened `dommemstat` parsing to reject KiB-to-byte overflow instead of
+  saturating, with regression tests.
+
 ## 2026-08-18 Documentation synchronization
 
 - Synchronized `PROJECT_STATUS.md` and `IMPLEMENTATION_PLAN.md` with the

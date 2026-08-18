@@ -55,6 +55,19 @@ the V1 gate remains blocked.
     installation and a resize test through the installed service remain, and
     the unresolved `win11_gpu` rollback non-convergence (see `docs/issues.md`
     ISSUE-005) must be resolved by an operator before any further live test.
+- **RHEL read-only fallback evidence (2026-08-18):** `virsh dommemstat
+    win11_gpu` returned `actual`, `unused`, and `available` successfully, so
+    the default host stats source is observable on this guest. Live XML still
+    reports `requested=0` and `current=18432 KiB`; this confirms the rollback
+    blocker remains active and does not authorize another resize.
+- **RHEL service observation (2026-08-18):** the read-only check found no
+    installed `virtio-mem-host@win11_gpu.service` and no journal entries.
+    Service installation and lifecycle validation remain separate approved
+    mutation work.
+- **Fresh convergence recheck (2026-08-18):** `win11_gpu` still reports
+    `requested=0 KiB` and `current=18432 KiB`. The QGA responses checked here
+    do not expose Windows driver `requested_size`/`plugged_size`; the
+    cross-layer driver mapping remains unverified.
 - **Windows demand-agent foundation (2026-08-18):** native
     `GlobalMemoryStatusEx`/`GetPerformanceInfo` collection, checked
     canonical-byte snapshots, bounded pressure ratios, provisional five-state

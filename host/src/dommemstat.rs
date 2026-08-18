@@ -63,9 +63,15 @@ pub fn parse_dommemstat(output: &str) -> Result<MemoryStats, String> {
         .ok_or_else(|| "dommemstat response is missing the required 'unused' field".to_owned())?;
     let available_kib = fields.get("available").copied().unwrap_or(unused_kib);
 
-    let total_bytes = actual_kib.saturating_mul(KIB);
-    let free_bytes = unused_kib.saturating_mul(KIB);
-    let available_bytes = available_kib.saturating_mul(KIB);
+    let total_bytes = actual_kib
+        .checked_mul(KIB)
+        .ok_or_else(|| "dommemstat 'actual' value overflows bytes".to_owned())?;
+    let free_bytes = unused_kib
+        .checked_mul(KIB)
+        .ok_or_else(|| "dommemstat 'unused' value overflows bytes".to_owned())?;
+    let available_bytes = available_kib
+        .checked_mul(KIB)
+        .ok_or_else(|| "dommemstat 'available' value overflows bytes".to_owned())?;
 
     if free_bytes > total_bytes || available_bytes > total_bytes {
         return Err(format!(
@@ -126,5 +132,12 @@ mod tests {
     #[test]
     fn rejects_inconsistent_values() {
         assert!(parse_dommemstat("actual 10\nunused 20\n").is_err());
+    }
+
+    #[test]
+    fn rejects_values_that_overflow_bytes() {
+        assert!(parse_dommemstat("actual 18014398509481984\nunused 1\n").is_err());
+        assert!(parse_dommemstat("actual 100\nunused 18014398509481984\n").is_err());
+        assert!(parse_dommemstat("actual 100\nunused 1\navailable 18014398509481984\n").is_err());
     }
 }

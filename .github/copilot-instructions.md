@@ -76,6 +76,18 @@ Read the architecture and design docs first:
   once under `sudo` (for example, `sudo bash scripts/example.sh ...`) rather
   than mixing privileged and unprivileged subcommands. Do not add `sudo` to
   individual commands opportunistically or chain unrelated privileged actions.
+- **Batch privileged reads into one approval and one sudo process.** When
+  several related read-only `virsh`, `systemctl`, `journalctl`, or host
+  inspection commands need the same permission, ask for approval for the
+  complete named batch, then run one approved script or `sudo bash -s` that
+  performs all of those reads. Never invoke `sudo` once per probe, retry the
+  same batch with separate `sudo` commands, or make the user authenticate 15
+  times for one investigation. Commands inside the approved privileged batch
+  must run without nested `sudo`.
+- Do not rely on sudo's credential-cache timeout to implement batching; the
+  command structure itself must contain a single privileged entry point. If a
+  batch fails because of authorization, stop at that boundary and report it
+  instead of launching individual privileged retries.
 - Never ask the user to send a password, store credentials, or put a password
   in a script, environment file, command line, or repository. If the terminal
   prompts for sudo authentication, the user must type it directly; do not use

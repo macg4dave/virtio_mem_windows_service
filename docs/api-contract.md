@@ -217,7 +217,8 @@ virtio-mem alias. The alias is restricted to letters, digits, `_`, `.`, and
 use a command shell. Its host calls are:
 
 - `virsh qemu-agent-command <vm> {"execute":"guest-get-memory-stats"}`
-- `virsh dumpxml --live <vm>`
+- `virsh dumpxml <vm>` (the default for a running domain; `--inactive` is not
+  used for live resize validation)
 - `virsh update-memory-device <vm> --alias <alias> --requested-size <kib> --live`
 
 The implementation must bound each command, capture a non-zero exit status
