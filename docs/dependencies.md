@@ -30,9 +30,10 @@ host validation environment.
 | JSON validation | `jq` | Current distribution package | Validate QGA responses in Bash |
 | Host shell | Bash | 4.0+ | Run repository scripts |
 | Guest OS | Windows 11 x64 under QEMU/KVM | Required | Run the service and QEMU Guest Agent |
-| Guest agent | QEMU Guest Agent x64 | Installed and running | Provide `guest-info` and `guest-get-memory-stats` |
+| Guest agent | QEMU Guest Agent x64 | Installed and running; observed `109.1.0` on `win11_gpu` | Provide `guest-info`; `guest-get-memory-stats` requires QGA built from upstream QEMU 9.1+ and is not implemented in the observed build |
 | Guest channel | Virtio-serial channel `org.qemu.guest_agent.0` | Required | Connect libvirt/QEMU to QGA |
 | Guest device | Configured virtio-mem device and known alias | Required for resize tests | Exercise requested/current memory convergence |
+| Host virtualization stack | libvirt, QEMU API, hypervisor | Observed `11.10.0` (libvirt), `11.10.0` (QEMU API), `10.1.0` (hypervisor) on the RHEL host | Reported by `virsh version`/`guest-info` during the 2026-08-18 probe |
 
 ## Rust project dependencies
 
@@ -134,6 +135,14 @@ The helper checks `guest-info` once and
 `guest-get-memory-stats` three times by default. It does not resize memory,
 restart the VM, or execute commands inside the guest.
 
+On `win11_gpu` (QGA `109.1.0`), `guest-get-memory-stats` returns "command has
+not been found"; upgrading the guest's `qemu-guest-agent` build to one
+compiled from upstream QEMU 9.1+ (for example, a newer `virtio-win` package)
+is required for that command to work. The host controller does not depend on
+it: `VIRTIO_MEM_STATS_SOURCE` defaults to `dommemstat`, which reads `virsh
+dommemstat` and has verified `actual`/`unused`/`available` fields on this
+guest. See `docs/issues.md` (ISSUE-001) and `host/src/config.rs`.
+
 ## Live virtio-mem requirements
 
 Resize validation additionally requires:
@@ -218,6 +227,10 @@ These constraints are not optional recommendations for a future improvement; the
   Windows-native toolchain is preferred for validating this Windows service.
 - QGA and live virtio-mem checks still require the RHEL/libvirt host and
   Windows guest described above.
+- As of 2026-08-18, `win11_gpu` reports libvirt `11.10.0`, QEMU API `11.10.0`,
+  hypervisor `10.1.0`, and QGA `109.1.0`; `guest-info` succeeds repeatedly but
+  `guest-get-memory-stats` is unimplemented on this QGA build, so `dommemstat`
+  remains the verified default stats source.
 
 ## Related documentation
 
