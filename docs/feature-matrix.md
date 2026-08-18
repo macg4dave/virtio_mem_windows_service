@@ -1,7 +1,7 @@
 # Feature Matrix
 
 | Feature | Status | Owner | Component | Language | Notes |
-|---------|--------|-------|-----------|----------|-------|
+| --------- | -------- | ------- | ----------- | ---------- | ------- |
 | Read memory metrics from QEMU Guest Agent | In Progress | Windows | Service | Rust | Parser and configurable named-pipe client implemented; service scheduling remains |
 | Poll Windows memory availability | In Progress | Windows | Service | Rust | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; service hosting remains |
 | Validate virtio-mem state | In Progress | Host | Ops | Bash + Rust | Canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state provider, and requested/current convergence policy implemented; live XML discovery and resize sink remain |
@@ -13,6 +13,14 @@
 | Logging and metrics | Planned | Both | Both | Rust | Per-service logging |
 | Error handling and recovery | In Progress | Both | Both | Rust | Explicit runtime and resize failures are covered locally; live host recovery remains blocked |
 | Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, Rust validation, virtio-mem inspection, read-only decision preview, and guarded reversible live-resize test helpers added; live resize remains explicitly opt-in |
+| Native Windows memory telemetry | Planned | Windows | Demand agent | Rust | `GlobalMemoryStatusEx` and `GetPerformanceInfo`; Phase 2 foundation |
+| Versioned Windows demand report | Planned | Windows | Demand agent | Rust | Raw counters, pressure ratios, demand state, desired target, and safe-floor recommendation |
+| Four-level memory target model | Planned | Both | Contract | Rust | Configured minimum, safe floor, desired target, and observed current allocation |
+| Driver/QEMU state reconciliation | Research | Both | Integration | Rust + Bash | Validate `requested_size`/`plugged_size` against libvirt `requested`/`current`; no direct IOCTL assumed |
+| Global VM pool accounting | Planned | Host | Global controller | Rust | Host reserve and actual observed VM allocations; Phase 3 |
+| Growth and reclaim priorities | Planned | Host | Global controller | Rust | Separate per-VM growth and reclaim priority; Phase 3 |
+| Trend-aware safe reclaim | Planned | Both | Policy | Rust | Rolling history, safe floors, bounded aligned steps, and convergence gates; Phase 3 |
+| viomem user-mode interface | Deferred | Windows | Driver research | Rust + upstream driver | Device interface exists upstream, but a supported user-mode status/IOCTL contract is unverified |
 
 ## Platform Support
 

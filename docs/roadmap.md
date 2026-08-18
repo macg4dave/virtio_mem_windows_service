@@ -14,12 +14,14 @@ QEMU Guest Agent client boundary, wakeable polling loop, portable service host,
 validated configuration model, startup validation path, and local Windows
 SCM install/stop registration path are implemented and locally tested. The
 workspace also contains a host-side virtio-mem controller scaffold with
-XML/state validation and a bounded runtime loop. The remaining gaps are
-primarily live KVM validation, real Windows guest plumbing, and service
-registration/operation proof on a real guest rather than a local synthetic
-test harness. The first read-only checks now have evidence from the RHEL
-server, but the installed Windows QGA does not support the required
-`guest-get-memory-stats` command, so the V1 gate remains blocked.
+XML/state validation and a bounded runtime loop. The next implementation
+priority is the Phase 2 Windows demand-agent foundation: native telemetry,
+canonical-byte demand reports, and bounded target recommendations that do not
+take over host actuation. The existing one-VM host controller remains the only
+resize authority until live state mapping and Phase 3 global arbitration have
+been validated. The first read-only checks have evidence from the RHEL server,
+but the installed Windows QGA does not support `guest-get-memory-stats`, so
+the V1 gate remains blocked.
 
 ## Recent verified wins
 
@@ -115,9 +117,13 @@ readiness in the remaining host-side work.
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, and opt-in Bash live source/sink checks are implemented; live VM evidence remains |
 | M9a | Virtio-mem safety and compatibility gate | [ ] | M8, M9 | Host adapter documents the QEMU/libvirt limits, dynamic memslot requirements, and incompatible device classes before any live resize automation |
 | M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
-| M10 | End-to-end resize flow | [ ] | M7, M8, M9, M9a, M9b | One reversible aligned resize converges without overlapping requests |
-| M11 | Hardening and observability | [ ] | M10 | Recovery, event logging, metrics, timeout, and restart tests pass |
-| M12 | Operational release readiness | [ ] | M11 | Documentation, health checks, monitoring, and repeatable host automation complete |
+| M10 | Phase 2 demand-agent foundation | [ ] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, and advisory safe floor are locally tested; no direct host actuation |
+| M10a | Cross-layer state observation | [ ] | M8, M9, M9a | Controlled evidence maps driver `requested_size`/`plugged_size` to QEMU/libvirt `requested`/`current` without treating the fields as interchangeable by assumption |
+| M10b | End-to-end single-VM resize flow | [ ] | M7, M8, M9, M9a, M9b | One reversible aligned resize converges without overlapping requests and records the observed state transition |
+| M11 | Phase 3 global pool arbitration | [ ] | M10, M10a, M10b | Hermetic multi-VM simulation models host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states |
+| M11a | Controlled reclaim and convergence | [ ] | M11 | Trend-aware safe floors, bounded aligned reclaim, hysteresis, in-flight protection, convergence waits, and stop-on-pressure behavior pass simulation tests |
+| M12 | Hardening and observability | [ ] | M11a | Recovery, event logging, metrics, bounded timeout behavior, and restart tests pass for guest and global-controller paths |
+| M13 | Operational release readiness | [ ] | M12 | Documentation, health checks, monitoring, compatibility evidence, rollback, and repeatable host automation complete |
 
 ## Phase 1 — Foundation
 
@@ -296,7 +302,56 @@ evidence before live testing.
 
 **Live validation gate:** No automatic memory updates until V1 and V2 pass.
 
-## Phase 3 — Hardening
+## Phase 3 — Global arbitration and controlled reclaim
+
+Phase 3 starts only after the Phase 2 demand-agent gate and the live
+cross-layer state-observation gate pass. The Linux global controller becomes
+the sole owner of host reserve accounting, VM pool capacity, and multi-VM
+allocation decisions. The Windows service remains a measurement and
+recommendation agent; it does not issue Linux/libvirt commands or direct
+`viomem.sys` requests.
+
+### G1. Cross-layer state mapping
+
+- [ ] Capture controlled, reversible observations of Windows
+    `requested_size`/`plugged_size` and QEMU/libvirt `requested`/`current`.
+- [ ] Document which values represent requested state versus actual active
+    allocation and which values may remain stale during convergence.
+- [ ] Do not use driver and libvirt field names interchangeably until the
+    mapping is proven across the same resize operation.
+
+### G2. Global RAM pool model
+
+- [ ] Model total physical RAM, fixed host baseline, cache allowance,
+    emergency reserve, VM capacity, actual VM allocations, and pool-free RAM.
+- [ ] Count observed active/plugged allocation, not requested allocation, as
+    capacity consumed during convergence.
+- [ ] Fail closed when demand reports or actual VM state are stale, missing, or
+    internally inconsistent.
+
+### G3. Multi-VM arbitration simulation
+
+- [ ] Add independent growth and reclaim priorities for every VM.
+- [ ] Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY`
+    transitions with hysteresis and block-sized decisions.
+- [ ] Respect configured minimums, advisory safe floors, in-flight operations,
+    stale reports, host reserve, and pool capacity.
+- [ ] Prove the policy deterministically before connecting live multi-VM
+    actuation.
+
+### G4. Controlled reclaim and actuation
+
+- [ ] Add rolling demand history and conservative, validated safe floors.
+- [ ] Reclaim one aligned step at a time, wait for convergence, and stop on
+    pressure or incomplete evidence.
+- [ ] Keep direct `viomem.sys` IOCTLs deferred unless a separate supported
+    interface, security, signing, timeout, and rollback investigation passes.
+
+**Phase 3 gate:** Pool accounting and arbitration are deterministic,
+observable, bounded, and based on actual observed virtio-mem state; simulated
+reclaim passes before any automatic multi-VM live action.
+
+## Phase 4 — Hardening
 
 ### H1. Error handling and recovery
 
@@ -335,9 +390,9 @@ evidence before live testing.
 - [ ] Set explicit latency and shutdown acceptance thresholds from measured KVM
     results rather than assumptions.
 
-**Phase 3 gate:** Failures are actionable, observable, bounded, and covered by local tests.
+**Phase 4 gate:** Failures are actionable, observable, bounded, and covered by local tests.
 
-## Phase 4 — Operations
+## Phase 5 — Operations
 
 ### O1. Host automation
 
@@ -366,29 +421,33 @@ evidence before live testing.
 
 ```text
 M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7
-              └──────────────→ M8 → M9 ─┐
-                                        └→ M10 → M11 → M12
+              └──────────────→ M8 → M9 → M9a → M9b ─┐
+                                                   ├→ M10 → M10a → M10b → M11 → M11a → M12 → M13
+              M4 → M6 ────────────────────────────┘
 ```
 
-The live KVM path (`M8`) is external to the Windows build path, but M10 cannot
-pass until both paths succeed.
+The live KVM path (`M8`) is external to the Windows build path. The Phase 2
+demand-agent work (`M10`) can be developed with deterministic native-API fakes,
+but the global-controller path cannot pass its gates until state mapping and
+single-VM convergence evidence are available.
 
 ## Active blockers and decisions
 
 | ID | Blocker or decision | Impact | Owner/action |
 | --- | --- | --- | --- |
-| B1 | No continuously attached RHEL/libvirt host and Windows KVM guest in the local validation environment | Blocks M8–M10 live evidence | Run `scripts/check-environment.sh` and `scripts/validate-guest-agent.sh` on the KVM host |
+| B1 | Live RHEL/libvirt and Windows KVM evidence is incomplete even though first read-only checks exist | Blocks M8, M10a, and M10b live evidence | Run the documented probes and controlled observations on the KVM host |
 | B2 | Actual Windows QGA pipe path and LocalService permissions are not yet verified | Blocks safe installation defaults | Confirm channel/device mapping on the guest before installation |
-| B3 | SCM adapter and callback API are not implemented | Blocks install/start/stop/remove validation | Implement M5 against the portable `ServiceHost` and `StopSignal` boundaries |
+| B3 | Real guest SCM install/start/stop/remove validation is not complete | Blocks M7 operational evidence | Validate the implemented adapter on a Windows guest with service-manager permissions and event-log visibility |
 | B4 | Persistent configuration location and format are not selected | Blocks production startup configuration | Choose a Windows-safe, least-privilege configuration mechanism in H3 |
 | B5 | Concrete guest state and resize sinks are not wired | Blocks real automatic resize behavior | Implement M6 without invoking Linux commands from the guest |
 | B6 | Event-log and recovery policy are not implemented | Blocks operational failure recovery | Implement H1/H2 and verify intentional versus unexpected exits |
 | B7 | QGA, controller, libvirt, and `virsh` memory-unit semantics are not reconciled in one tested contract | Blocks safe resize enablement | Resolve in F6a before M9/M10 |
 | B8 | Named-pipe I/O currently has no enforced operation deadline | A stuck QGA call can violate bounded shutdown | Implement cancellable/deadline-aware transport in F4/F5 |
 | B9 | Shutdown timeout is configured but not yet enforced by the worker host | Stop-pending behavior cannot be proven | Add bounded join/worker termination policy in M3/M5 |
-| B10 | No deterministic failure-injection harness exists | Live-only failures would be slow and difficult to reproduce | Implement F8a before M10 |
 | B11 | Official virtio-mem guidance shows compatibility and safety limits that are not yet codified in the host contract | The controller can make unsafe assumptions about resize behavior or valid host configurations | Add the QEMU/libvirt compatibility gate and explicit validation checks in M9a before live automation |
 | B12 | Contemporary virtio-mem guidance recommends `dynamic-memslots=on` with `unplugged-inaccessible=on` for safe unplugged memory handling | The host may misread unplugged-memory semantics without this configuration | Document and verify the host/guest configuration assumptions during V2 and M9a |
+| B13 | Native Windows telemetry and the versioned demand-report contract are designed but not implemented | Blocks the Phase 2 demand-agent gate and global-controller inputs | Implement `GlobalMemoryStatusEx`/`GetPerformanceInfo` collection behind deterministic fakes, without changing host actuation authority |
+| B14 | Driver `plugged_size` versus libvirt `current` has not been validated as one cross-layer state mapping | Blocks global pool accounting and safe reclaim | Capture the same controlled resize through driver, QEMU, and libvirt observation before treating actual allocation as interchangeable |
 
 ## Definition of done for the project
 
@@ -402,7 +461,13 @@ The project is complete only when:
 6. Host and guest tests cover the install/start/stop/remove and live resize flows.
 7. All QGA operations and shutdown paths have bounded deadlines.
 8. Unit conversions and adapter contracts are tested end to end.
-9. Documentation, recovery procedures, health checks, release evidence, and known limitations are current.
+9. Native demand reports are versioned, canonical-byte based, bounded, and
+    advisory; they cannot directly actuate host memory.
+10. Global pool accounting uses host reserve and observed actual VM allocation,
+    and arbitration covers growth, reclaim, stale data, in-flight operations,
+    and explicit pressure states.
+11. Documentation, recovery procedures, health checks, release evidence, and
+    known limitations are current.
 
 ## Known risks
 
@@ -412,3 +477,48 @@ The project is complete only when:
 - Slow or interrupted QGA responses during bounded shutdown.
 - SCM callback timing and recovery semantics.
 - Cross-platform integration between the Windows guest and Linux KVM host.
+
+## Revised implementation direction
+
+The implementation is deliberately staged:
+
+- **Phase 2 demand-agent foundation:** add native Windows telemetry and a
+  versioned demand recommendation while retaining the current one-VM host
+  resize path as the only actuation authority.
+- **Phase 3 global controller:** add host reserve accounting, multi-VM
+  arbitration, driver/QEMU state reconciliation, trend-aware reclaim, and
+  controlled operational rollout.
+
+### Phase 2 demand-agent milestones
+
+- [ ] Collect physical memory with `GlobalMemoryStatusEx`.
+- [ ] Collect commit/system metrics with `GetPerformanceInfo`.
+- [ ] Define canonical-byte raw snapshots and a versioned demand report.
+- [ ] Calculate bounded pressure ratios and provisional demand states.
+- [ ] Produce desired-target and safe-floor recommendations without issuing
+    virtio-mem changes from the Windows service.
+- [ ] Preserve QGA/dommemstat compatibility until native telemetry has live
+    evidence.
+- [ ] Add deterministic tests for invalid counters, ratio bounds, hysteresis,
+    target limits, and alignment.
+
+**Phase 2 gate:** The guest can report a complete demand snapshot locally, and
+the existing host controller remains the only resize authority.
+
+### Phase 3 global-controller milestones
+
+- [ ] Reconcile driver `requested_size`/`plugged_size` with libvirt
+    `requested`/`current` using controlled evidence.
+- [ ] Model total RAM, host reserve, VM capacity, and actual pool-free memory.
+- [ ] Add separate growth and reclaim priorities for each VM.
+- [ ] Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY`
+    arbitration states before connecting live multi-VM actuation.
+- [ ] Add rolling history, conservative safe floors, bounded aligned reclaim,
+    convergence waits, and stop-on-pressure behavior.
+- [ ] Treat direct viomem IOCTLs as deferred research until source, signing,
+    permissions, and runtime behavior are proven.
+- [ ] Keep any viomem fork/build/signing/install work as a separate kernel
+    driver track with its own rollback and disposable-guest validation.
+
+**Phase 3 gate:** Pool accounting and reclaim are deterministic, observable,
+bounded, and based on actual observed virtio-mem state.

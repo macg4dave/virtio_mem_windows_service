@@ -15,6 +15,34 @@
 - `lower_threshold_bytes`: Free memory threshold to trigger add
 - `upper_threshold_bytes`: Free memory threshold to trigger remove
 
+### Phase 2 demand-agent state
+
+The planned native Windows collector produces a raw snapshot before policy is
+applied:
+
+- `physical_total_bytes`: `GlobalMemoryStatusEx` physical total
+- `physical_available_bytes`: immediately reusable physical memory
+- `memory_load_percent`: Windows memory-load estimate
+- `commit_total_bytes`, `commit_limit_bytes`, `commit_peak_bytes`:
+  `GetPerformanceInfo` commit values
+- `system_cache_bytes`, `kernel_paged_bytes`, `kernel_nonpaged_bytes`:
+  additional context from `GetPerformanceInfo`
+- `sample_timestamp`: monotonic or UTC timestamp selected by the runtime
+
+The derived demand state contains `physical_pressure`, `commit_pressure`, a
+`demand_state` of `release`, `stable`, `want_more`, `pressure`, or `critical`,
+`desired_target_bytes`, and `safe_floor_bytes`.
+
+The four policy levels have distinct meanings:
+
+1. `configured_minimum_bytes`: administrative hard floor;
+2. `safe_floor_bytes`: measured recommendation for pressure reclaim;
+3. `desired_target_bytes`: normal operating recommendation;
+4. observed current allocation: actual host/guest state.
+
+Neither target authorizes a resize by itself. Phase 2 keeps allocation
+authority in the existing host controller.
+
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and
 must be converted explicitly before entering the Rust policy layer. Internal
@@ -50,6 +78,13 @@ The pure Rust `VirtioMemState` contract validates that device size, requested,
 current, and target values are positive, within `size`, and aligned to a
 power-of-two block that is at least 1 MiB. Host XML parsing must construct and
 validate this state before a resize sink can issue a request.
+
+The upstream `viomem.sys` driver has corresponding fields named
+`requested_size` and `plugged_size`, plus a block bitmap. Those names must not
+be silently substituted for libvirt `requested` and `current`: their exact
+cross-layer mapping remains a Phase 3 validation task. Until then,
+`virtio_mem_current_bytes` from the live libvirt snapshot is the host
+controller's authoritative active state.
 
 ### Persistence
 

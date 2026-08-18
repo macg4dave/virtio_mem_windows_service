@@ -162,6 +162,55 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 ## Architecture Decisions
 
+### 2026-08-18 demand-agent and global-controller design review
+
+The architecture review of the Windows driver findings is now incorporated as
+the implementation direction for the next phases:
+
+- Phase 2 builds a Windows demand-agent foundation using native
+  `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry.
+- The Windows service reports measurements and recommendations; it does not
+  directly allocate host memory or issue Linux/libvirt commands.
+- The existing one-VM host controller remains the Phase 2 actuation authority
+  and retains host-headroom, alignment, minimum-headroom, and convergence gates.
+- Phase 3 adds one Linux global pool authority with host reserve accounting,
+  multi-VM growth/reclaim priorities, trend-aware reclaim, and explicit pressure
+  states.
+- Upstream `viomem.sys` confirms block bitmaps, `requested_size` versus
+  `plugged_size`, NUMA feature negotiation, inaccessible unplugged memory, and
+  Windows memory-manager hot-add/hot-remove. These are integration boundaries,
+  not a reason to duplicate driver mechanics in the Rust service.
+- The upstream device interface does not establish a supported user-mode
+  IOCTL/status contract for this repository; direct driver access is deferred.
+- The upstream `viomem` project is a KMDF/Visual Studio solution with
+  VirtIO/WDF library dependencies and Win10/Win11 x86/x64/ARM64 configurations.
+  This repository should consume the driver as an external dependency, not
+  absorb its kernel build, signing, or installation lifecycle.
+- Upstream issue `#1574` is not cited as a viomem unplug defect; it is a
+  `vioscsi` TRIM issue. Any viomem wait/non-convergence risk requires separate
+  evidence.
+
+New tracked work is documented in `docs/roadmap.md`,
+`docs/future-architecture.md`, `docs/api-contract.md`,
+`docs/data-model.md`, and `docs/testing.md`. Existing live rollback issue
+ISSUE-005 and the QGA capability blocker remain open and unchanged.
+
+### Phase 2 handoff
+
+- Implement native telemetry behind deterministic fakes first.
+- Keep the demand report versioned and canonical-byte based.
+- Do not replace QGA/dommemstat or enable new live resize behavior until live
+  compatibility evidence exists.
+
+### Phase 3 handoff
+
+- First prove the mapping between driver `plugged_size` and libvirt `current`.
+- Build and test global pool arbitration in simulation before live multi-VM
+  actuation.
+- Require bounded, aligned, convergent reclaim with measured workload history.
+- If a driver status interface is needed, create a separate signed-driver
+  work item with access-control and rollback evidence before adding Rust calls.
+
 ### Runtime language policy
 
 - Rust is the default choice for any service or program logic.

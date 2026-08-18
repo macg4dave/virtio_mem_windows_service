@@ -59,6 +59,53 @@ Both sources produce the same `MemoryStats { free_bytes, available_bytes,
 total_bytes }` value consumed by the shared policy engine, so switching
 sources does not change `plan_resize` behavior.
 
+## Phase 2 Windows demand report
+
+The demand-agent contract is additive to the existing QGA/dommemstat contract.
+It describes what Windows observes and recommends; it does not grant the
+guest authority to allocate host memory.
+
+The planned versioned report is:
+
+```json
+{
+  "version": 1,
+  "memory": {
+    "physical_total_bytes": 17179869184,
+    "physical_available_bytes": 3221225472,
+    "memory_load_percent": 72,
+    "commit_total_bytes": 11811160064,
+    "commit_limit_bytes": 25769803776,
+    "commit_peak_bytes": 12884901888,
+    "system_cache_bytes": 2147483648,
+    "kernel_paged_bytes": 104857600,
+    "kernel_nonpaged_bytes": 52428800
+  },
+  "demand": {
+    "state": "pressure",
+    "physical_pressure": 0.82,
+    "commit_pressure": 0.46,
+    "desired_target_bytes": 21474836480,
+    "safe_floor_bytes": 17179869184
+  },
+  "limits": {
+    "configured_minimum_bytes": 8589934592,
+    "configured_maximum_bytes": 30064771072
+  }
+}
+```
+
+`GlobalMemoryStatusEx` is the planned source for physical totals, available
+physical memory, and memory load. `GetPerformanceInfo` is the planned source
+for commit and system-wide memory fields. These native sources are Phase 2
+implementation work; the existing QGA/dommemstat report remains valid during
+the transition.
+
+Demand states are initially `release`, `stable`, `want_more`, `pressure`, and
+`critical`. Thresholds are provisional and must be tested with deterministic
+fixtures before being used for automatic actuation. A desired target is a
+recommendation, not a host allocation grant.
+
 ## Memory Change Request
 
 Input: Target memory size in bytes, aligned to the device block size.
@@ -84,6 +131,17 @@ The official libvirt/QEMU model treats virtio-mem as a NUMA-aware memory balloon
 When more than one virtio-mem device is present, `virsh` must be directed with `--alias` because the update API cannot infer which device should be resized. The host-side controller should therefore treat the alias as part of the contract and should validate the live XML against the selected alias after each request.
 
 This is a key operational difference from a DIMM or balloon model: virtio-mem is not a simple single-step memory resize, and guest cooperation is required to unplug or plug memory blocks safely.
+
+### Driver and state terminology
+
+The upstream Windows driver uses `requested_size` and `plugged_size`, while
+libvirt exposes `requested` and `current`. The driver also maintains a
+block-state bitmap and performs Windows memory-manager hot-add/hot-remove.
+These observations support the host-side asynchronous model, but the mapping
+between driver `plugged_size` and libvirt `current` is not yet a validated
+cross-layer contract. Until Phase 3 validation completes, the existing live
+libvirt `current` field remains authoritative for this repository's host
+controller.
 
 The pure `parse_virtio_mem_xml` adapter accepts a captured libvirt XML
 snapshot, requires the `virtio-mem` model and alias, converts `B`, `KiB`,

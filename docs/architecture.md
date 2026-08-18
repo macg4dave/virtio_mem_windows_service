@@ -6,7 +6,7 @@ This system manages dynamic memory allocation for a Windows 11 guest running und
 
 ### Components
 
-- **Windows Service (Rust)**: Guest-side runtime for memory metrics, QEMU Guest Agent interaction, cancellation, and service lifecycle hosting
+- **Windows Service (Rust)**: Guest-side demand agent for memory telemetry, demand calculation, QEMU Guest Agent compatibility, cancellation, and service lifecycle hosting
 - **RHEL host controller (Rust/systemd)**: One explicitly configured VM and virtio-mem alias per unit instance; reads QGA and live libvirt state, then issues validated live resize requests
 - **Host validation / automation (Bash)**: Explicit preflight, diagnostic, and manual operational helpers; these do not run inside the controller
 - **QEMU / libvirt validation path**: Used to verify guest agent responses and live virtio-mem behavior
@@ -22,6 +22,28 @@ Host validation and runtime tooling
     ├── Validate guest-agent behavior
     └── Coordinate virtio-mem verification
 ```
+
+### Phase 2 and Phase 3 ownership
+
+Phase 2 is a transition architecture. The Windows service may measure guest
+memory and report a demand recommendation, but the existing one-VM RHEL host
+controller remains the allocation and actuation authority. The Windows service
+does not invoke Linux commands, modify libvirt, or directly control
+`viomem.sys`.
+
+The Phase 3 target separates the system into three cooperating layers:
+
+1. **Windows demand agent:** collects native Windows telemetry and reports raw
+    measurements, pressure, demand state, desired target, and safe-floor
+    recommendation.
+2. **Per-VM QEMU/libvirt adapter:** validates an aligned target, changes
+    virtio-mem `requested`, and observes asynchronous `current` convergence.
+3. **Linux global controller:** owns host reserve, VM pool accounting, and
+    multi-VM growth/reclaim arbitration.
+
+See [`future-architecture.md`](future-architecture.md) for the target design.
+Multi-VM arbitration and global pool ownership are not implemented by the
+current Phase 2 controller.
 
 ## RHEL host controller lifecycle and boundaries
 
@@ -39,6 +61,18 @@ sends a follow-up request while they differ. Invalid configuration, failed QGA
 calls, malformed XML, failed resize commands, and convergence timeouts are
 actionable failures; a bounded systemd restart must reread live state rather
 than replay a previous request.
+
+### Measurement, policy, and actuation
+
+These concerns are intentionally separate:
+
+- **Measurement** observes Windows and host state.
+- **Policy** produces a recommendation or global allocation decision.
+- **Actuation** changes virtio-mem and reports whether the guest converged.
+
+The Phase 2 Windows service owns guest measurement and recommendation only. The
+host controller owns the currently implemented allocation decision and resize
+request. A future global Linux controller will own cross-VM policy.
 
 ## Service Boundaries
 
@@ -93,6 +127,27 @@ production resize sink remain to be implemented.
 - QEMU Guest Agent protocol accessed through libvirt / `virsh`
 - libvirt virtio-mem XML inspection for validation and live adjustment checks
 - Future runtime logic will remain in Rust, never in Go
+
+## Windows virtio-mem driver boundary
+
+The upstream `viomem.sys` driver owns block-level memory mechanics. Its source
+maintains a block bitmap, distinguishes `requested_size` from `plugged_size`,
+supports `VIRTIO_MEM_F_ACPI_PXM` and
+`VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE`, adds memory with
+`MmAddPhysicalMemory`, and uses `MmAllocateNodePagesForMdlEx` with
+`MM_ALLOCATE_AND_HOT_REMOVE` for removal.
+
+The Windows service must not duplicate page selection or assume that it can
+unplug arbitrary memory. A supported user-mode IOCTL/status API has not been
+established, so direct driver communication is deferred. The relationship
+between driver `plugged_size` and libvirt `current` requires live validation
+before it becomes a shared accounting contract.
+
+The upstream driver is built as a KMDF/Visual Studio solution with separate
+VirtIO/WDF library dependencies and Win10/Win11 architecture configurations.
+This repository does not build, install, sign, or modify that kernel driver.
+Any driver fork or added status interface requires its own signing, security,
+installation, rollback, and live-validation plan.
 
 ## Safety policy
 

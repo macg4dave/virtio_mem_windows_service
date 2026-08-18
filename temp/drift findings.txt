@@ -1,0 +1,1273 @@
+I think the cleanest design is to separate policy, measurement, and actuation. Otherwise all three controllers will end up fighting each other.
+1. Linux RAM Controller — global authority
+This should be the top-level controller and the only component that decides whether memory may be given to or taken from a VM.
+It owns a model something like:
+Physical RAM
+│
+├── Host reserved RAM
+│   ├── Linux baseline
+│   ├── Filesystem cache allowance
+│   ├── Safety/emergency reserve
+│   └── Other host services
+│
+└── VM RAM pool
+    │
+    ├── VM1 allocation
+    ├── VM2 allocation
+    └── Unallocated pool
+Important distinction: Linux's MemAvailable is useful, but I would not directly treat all of it as VM-allocatable RAM. Linux will report reclaimable page cache as available, but aggressively consuming that can hurt the host.
+I'd define:
+Total RAM
+
+HostReserve
+    = fixed minimum
+    + dynamic host pressure reserve
+
+VMCapacity
+    = TotalRAM - HostReserve
+
+VMAllocated
+    = sum of memory currently committed to VMs
+
+PoolFree
+    = VMCapacity - VMAllocated
+The controller should also have hysteresis. You don't want:
+VM needs 500 MB
+→ give 500 MB
+→ host pressure rises
+→ remove 500 MB
+→ VM needs it again
+So allocations should happen in chunks, for example 128 MB, 256 MB, or whatever matches virtio-mem block granularity.
+
+2. Windows KVM Controller — VM-local demand authority
+Your Windows service should not really decide whether it is allowed to have more RAM. It should report:
+Current usable RAM
+Memory pressure
+Working set / commit pressure
+Available physical memory
+Configured minimum
+Configured maximum
+Then make a request:
+REQUEST_GROW:
+    VM = win11_gpu
+    Current = 10 GB
+    Requested = +2 GB
+    Reason = HIGH_PRESSURE
+The Linux controller answers:
+GRANT +2 GB
+or:
+GRANT +512 MB
+or:
+DENY
+Similarly, Windows can say:
+I can release 1 GB
+But Linux should initiate the actual virtio-mem removal process.
+The Windows service should ideally understand three values:
+Minimum RAM
+Target RAM
+Maximum RAM
+For example:
+Minimum: 8 GB
+Target: dynamic
+Maximum: 28 GB
+The key question is what "current RAM" means. I would track both:
+GuestAssignedRAM
+GuestActuallyAvailableRAM
+because with virtio-mem, those may not always be conceptually identical during a transition.
+
+3. QEMU/KVM Manager — arbitration layer
+I think this is where your priority idea belongs.
+Rather than allowing every VM to compete equally:
+Global VM Pool: 40 GB
+
+VM                  Min     Max      Priority
+------------------------------------------------
+win11_gpu           8 GB    28 GB    100
+gaming_vm           8 GB    24 GB    90
+fedora_dev          4 GB    16 GB    60
+test_vm             2 GB    16 GB    10
+But I would separate priority into two concepts.
+Growth priority
+Who gets free RAM first?
+win11_gpu       100
+gaming_vm        90
+fedora_dev       60
+test_vm          10
+Reclaim priority
+Who loses RAM first when the pool is exhausted?
+test_vm          100
+fedora_dev        70
+gaming_vm         30
+win11_gpu         10
+This gives you much more control.
+A VM may be high priority for growth but also reasonably reclaimable. Or a database VM might be difficult to shrink despite not needing the highest growth priority.
+
+I would structure the system like this
+                   ┌─────────────────────────┐
+                    │ Linux Global Controller │
+                    │                         │
+                    │ Physical RAM            │
+                    │ Host Reserve            │
+                    │ VM Pool                 │
+                    │ Pressure State          │
+                    └────────────┬────────────┘
+                                 │
+                         RAM allocation API
+                                 │
+              ┌──────────────────┼──────────────────┐
+              │                  │                  │
+              ▼                  ▼                  ▼
+       ┌────────────┐     ┌────────────┐    ┌────────────┐
+       │ QEMU VM 1 │     │ QEMU VM 2 │    │ QEMU VM 3 │
+       │ Manager    │     │ Manager    │    │ Manager    │
+       └─────┬──────┘     └─────┬──────┘    └─────┬──────┘
+             │                  │                 │
+             ▼                  ▼                 ▼
+       Windows Service     Windows Service    Linux Guest
+       Memory pressure     Memory pressure    Guest agent
+       Release ability     Release ability    etc.
+The component I would add to your idea is a central state machine. Something like:
+NORMAL
+    Pool has sufficient RAM.
+
+CAUTION
+    Pool getting low.
+    Lower priority growth requests restricted.
+
+PRESSURE
+    Pool exhausted.
+    Begin reclaiming reclaimable RAM.
+
+CRITICAL
+    Host memory pressure.
+    Stop all growth.
+    Aggressively reclaim from low-priority VMs.
+
+EMERGENCY
+    Host protection.
+    Force maximum reclaim policy / pause or otherwise protect host.
+The biggest architectural rule I'd use is:
+Only one component owns the actual RAM pool accounting.
+The Windows service should measure guest demand. The per-VM QEMU controller should perform virtio-mem changes. The Linux global controller should decide who gets what.
+That avoids the situation where Windows thinks it released 4 GB, QEMU thinks 4 GB is available, but the global manager has already promised the same 4 GB to another VM.
+The next useful step is probably to define the exact state data model for each VM and the global pool. That would give us a concrete shared structure for the Rust Windows service, the Linux controller, and the QEMU/libvirt management service.
+
+Windows service
+—-
+
+The Windows service should not try to invent its own definition of “RAM demand”. Windows already has several layers of memory telemetry, and the useful design is to combine existing counters into a single demand signal.
+The important distinction is between:
+Memory available — how much RAM Windows currently has readily available.
+Memory pressure — whether allocations are becoming difficult and Windows is reclaiming aggressively.
+Commit pressure — whether processes collectively need more committed virtual memory.
+Working-set trimming / paging activity — evidence that the current RAM allocation is insufficient.
+For your project, I would avoid basing growth purely on AvailableBytes. A machine can have low available RAM quite happily because Windows deliberately uses spare RAM for cache.
+I would build the Windows side around a small set of existing Windows APIs rather than Performance Monitor, WMI, or ETW as the primary mechanism.
+The core snapshot can come from two Win32 calls:
+GlobalMemoryStatusEx
+GetPerformanceInfo
+GlobalMemoryStatusEx gives you physical RAM available immediately, total physical RAM, and Windows' overall memory-load percentage. ullAvailPhys includes the standby, free, and zero page lists, so it is a reasonable measure of RAM Windows can reuse without first writing it to disk. (Microsoft Learn)
+GetPerformanceInfo gives you system-wide commit information:
+CommitTotal
+CommitLimit
+CommitPeak
+
+PhysicalTotal
+PhysicalAvailable
+
+SystemCache
+
+KernelPaged
+KernelNonpaged
+That gives us a second view of demand: not just "how much RAM is free?", but "how close is Windows to its commit limit?" (Microsoft Learn)
+I would have the service produce a raw snapshot like:
+struct MemorySnapshot {
+    timestamp: Instant,
+
+    // Actual VM RAM currently visible to Windows
+    physical_total: u64,
+    physical_available: u64,
+
+    // Windows' own estimate
+    memory_load_percent: u32,
+
+    // System commit
+    commit_total: u64,
+    commit_limit: u64,
+    commit_peak: u64,
+
+    // Useful context
+    system_cache: u64,
+    kernel_paged: u64,
+    kernel_nonpaged: u64,
+}
+Then derive the interesting values:
+physical_used =
+    physical_total - physical_available
+
+physical_pressure =
+    1 - (physical_available / physical_total)
+
+commit_pressure =
+    commit_total / commit_limit
+The service should report the raw numbers to the Linux controller, but it can also calculate a demand_state.
+For example:
+┌─────────────┬────────────────────────────────────────┐
+│ State       │ Meaning                                │
+├─────────────┼────────────────────────────────────────┤
+│ RELEASE     │ VM has comfortably more RAM than needed│
+│ STABLE      │ Current allocation is appropriate      │
+│ WANT_MORE   │ Memory headroom getting low            │
+│ PRESSURE    │ Windows is under real memory pressure  │
+│ CRITICAL    │ Immediate growth desirable             │
+└─────────────┴────────────────────────────────────────┘
+I would not use one threshold such as:
+Available RAM < 1 GB = grow
+That behaves badly when the VM changes from 8 GB to 28 GB.
+Instead use both absolute and percentage thresholds:
+8 GB VM
+Available = 500 MB      → pressure
+
+28 GB VM
+Available = 500 MB      → severe pressure
+
+28 GB VM
+Available = 6 GB        → probably fine
+A possible initial algorithm:
+available_ratio = AvailablePhys / TotalPhys
+commit_ratio    = CommitTotal / CommitLimit
+Then:
+if available_ratio < 0.03
+    || physical_available < 512 MB
+    || commit_ratio > 0.90
+{
+    CRITICAL
+}
+else if available_ratio < 0.08
+    || physical_available < 2 GB
+    || commit_ratio > 0.80
+{
+    PRESSURE
+}
+else if available_ratio < 0.15
+{
+    WANT_MORE
+}
+else if available_ratio > 0.30
+    && commit_ratio < 0.60
+{
+    RELEASE_CANDIDATE
+}
+else
+{
+    STABLE
+}
+Those numbers are only starting points. Microsoft's current troubleshooting guidance similarly treats very low available memory and high committed-memory percentages as warning or critical conditions. (Microsoft Learn)
+The important bit: calculate a target, not just pressure
+Rather than saying:
+Windows is under pressure: add RAM
+the service should be able to say:
+Current RAM:       12 GB
+Available:          800 MB
+Desired headroom:  20%
+Target RAM:        16 GB
+Request:           +4 GB
+For example:
+target_ram =
+    physical_used / desired_utilisation
+If Windows is currently using 11 GB and we want it running at roughly 75% utilisation:
+target = 11 / 0.75
+       = 14.7 GB
+Round that to your virtio-mem block size:
+16 GB
+So the protocol becomes much cleaner:
+{
+    "vm": "win11_gpu",
+
+    "current_ram": "12GiB",
+    "available_ram": "800MiB",
+
+    "physical_pressure": 0.93,
+    "commit_pressure": 0.71,
+
+    "demand_state": "pressure",
+
+    "minimum_ram": "8GiB",
+    "desired_ram": "16GiB",
+    "maximum_ram": "28GiB",
+
+    "request_change": "+4GiB"
+}
+I would avoid Performance Counters initially
+You could query:
+\Memory\Available MBytes
+\Memory\% Committed Bytes In Use
+\Memory\Page Reads/sec
+\Memory\Pages Input/sec
+and they are useful, particularly for detecting sustained paging. Microsoft documents Available MBytes and % Committed Bytes In Use as useful memory-health indicators, while page reads can help identify a genuine memory bottleneck. (Microsoft Learn)
+But for the first implementation I would use direct APIs:
+GlobalMemoryStatusEx()
+GetPerformanceInfo()
+They are simple, fast, require no Performance Counter plumbing, and provide most of what we need.
+Then add a second layer later for paging activity over time.
+That matters because a single snapshot cannot distinguish:
+Available RAM: 500 MB
+from:
+Available RAM: 500 MB
+System running perfectly for six hours
+versus:
+Available RAM: 500 MB
+Hard paging increasing rapidly
+Working sets being trimmed
+Applications slowing down
+The first is probably fine. The second needs more RAM.
+So I would structure the Windows service internally as:
+MemoryCollector
+       │
+       ▼
+RawMemorySnapshot
+       │
+       ▼
+History / Rolling Window
+       │
+       ├── 10 second trend
+       ├── 60 second trend
+       └── 5 minute trend
+       │
+       ▼
+MemoryDemandCalculator
+       │
+       ├── Current pressure
+       ├── Predicted demand
+       ├── Releasable memory estimate
+       └── Desired RAM target
+       │
+       ▼
+Linux / KVM controller
+The part I think is most interesting for your project is releasable memory. Growing is easy: Windows tells us it is under pressure. Shrinking safely is harder.
+I would make that the next design problem: how can the Windows service estimate "you can remove X GB from this VM without causing Windows memory pressure?" That is where a target-RAM algorithm becomes more useful than simply monitoring available RAM.
+
+Windows ram over time
+—--
+That is the harder and more interesting half of the problem.
+I would treat it as a safe shrink calculation, not an attempt to determine how much RAM Windows is "actually using". Windows deliberately uses spare RAM for cache and standby pages, so used RAM is not a useful answer.
+The question should be:
+If I reduce the guest's physical RAM by X, will the remaining RAM still leave Windows with an acceptable operating margin?
+A simple first model is:
+Current RAM
+- protected working memory
+- required safety headroom
+= potentially releasable RAM
+For example:
+Current guest RAM:       24 GB
+Currently available:      8 GB
+Minimum desired free:     4 GB
+Safety buffer:            1 GB
+
+Potentially releasable:   3 GB
+So:
+24 GB - 3 GB = 21 GB target
+Round that to the virtio-mem block size, perhaps:
+24 GB → 20 GB
+But AvailablePhys - minimum_free alone is too simplistic. I would make the calculation depend on several constraints.
+releasable =
+    min(
+        physical_headroom,
+        commit_headroom,
+        historical_headroom
+    )
+1. Physical headroom
+The obvious part:
+physical_headroom =
+    AvailablePhys - DesiredAvailableReserve
+The reserve should be dynamic.
+For example:
+DesiredAvailableReserve =
+    max(
+        2 GB,
+        15% of CurrentRAM
+    )
+On a 28 GB VM:
+Available:              10 GB
+Desired reserve:       4.2 GB
+
+Physical releasable:   5.8 GB
+2. Commit headroom
+This is important because physical available memory does not tell the whole story.
+Suppose:
+RAM:              16 GB
+Available:         6 GB
+Commit:            30 GB
+Commit limit:      32 GB
+It would be dangerous to remove several GB simply because 6 GB is currently available. Windows may already be heavily dependent on the page file.
+So define a maximum acceptable commit pressure:
+TargetCommitRatio = 0.70
+Then calculate whether shrinking RAM would make the system's commit situation unacceptable.
+Initially, I would use commit pressure mainly as a shrink inhibitor, rather than trying to precisely calculate a number of GB from it.
+For example:
+Commit pressure > 85%
+    → do not shrink
+
+Commit pressure 70–85%
+    → conservative shrink
+
+Commit pressure < 70%
+    → normal shrink permitted
+3. Historical low-water mark
+This is where the service becomes considerably smarter.
+The service should maintain a rolling history:
+Current available RAM:        10 GB
+
+Lowest available, 1 minute:    9 GB
+Lowest available, 5 minutes:   7 GB
+Lowest available, 30 minutes:  3 GB
+You do not want to shrink based only on the current instant.
+Imagine:
+12:00  Available = 10 GB
+12:01  Available =  8 GB
+12:02  Available =  6 GB
+12:03  Available =  3 GB
+At 12:00 the service might think it can remove 6 GB, but demand is clearly increasing.
+So I would require RAM to be consistently surplus before releasing it.
+Something like:
+Shrink allowed only if:
+
+Available RAM has been above reserve
+for at least 60–300 seconds
+
+AND
+
+memory availability trend is stable or increasing
+
+AND
+
+commit pressure is below threshold
+
+AND
+
+no significant paging pressure
+Then:
+safe_available =
+    minimum(
+        current_available,
+        average_available_1m,
+        minimum_available_5m
+    )
+Use the conservative value rather than the instantaneous one.
+A first practical algorithm
+For your current project, I would start here:
+releasable = current_available
+    .saturating_sub(desired_available_reserve);
+
+if commit_pressure > 0.85 {
+    releasable = 0;
+}
+
+if available_trend < 0 {
+    releasable = releasable / 2;
+}
+
+if recent_memory_pressure {
+    releasable = 0;
+}
+
+releasable = releasable.min(
+    current_ram - configured_minimum_ram
+);
+Then add a maximum shrink step:
+Maximum shrink per request = 1 GB
+or perhaps:
+Maximum shrink = 10% of current RAM
+The system then works iteratively:
+Windows has 24 GB
+        │
+        ▼
+Service determines 4 GB is safely surplus
+        │
+        ▼
+Requests shrink of 1 GB
+        │
+        ▼
+virtio-mem removes 1 GB
+        │
+        ▼
+Wait 30–60 seconds
+        │
+        ▼
+Measure Windows again
+        │
+        ├── Still healthy → consider another 1 GB
+        │
+        └── Pressure rising → stop immediately
+I strongly prefer this over:
+"Windows can lose 6 GB, remove 6 GB now"
+The iterative approach makes the controller self-correcting.
+The model could ultimately expose two different numbers to the Linux controller:
+current_ram       = 24 GB
+
+safe_floor        = 18 GB
+desired_ram       = 20 GB
+These mean different things:
+safe_floor
+    "Do not go below this unless necessary."
+
+desired_ram
+    "This is what Windows thinks is currently appropriate."
+That gives the global Linux controller useful flexibility. If the global pool is healthy:
+Keep VM at desired_ram = 20 GB
+If another higher-priority VM needs memory:
+Reduce this VM toward safe_floor = 18 GB
+And if the host enters serious pressure:
+The global controller knows exactly how much room exists:
+
+Current:     24 GB
+Desired:     20 GB
+Safe floor:  18 GB
+Configured minimum: 8 GB
+I think that four-level model is the right interface between the Windows service and the Linux RAM controller:
+Configured minimum ───────── absolute hard floor
+        │
+Safe floor ───────────────── safe under pressure
+        │
+Desired RAM ──────────────── normal operating target
+        │
+Current RAM ──────────────── actual allocation
+        │
+Configured maximum ───────── absolute ceiling
+The next useful question is whether virtio-mem can remove memory from Windows purely by unplugging memory blocks, or whether the Windows service needs to actively influence Windows' memory state before requesting the shrink. That determines whether safe_floor is only advisory or whether the service can actively make RAM reclaimable.
+
+Yes. The key thing to verify now is the current state of QEMU virtio-mem support, Linux host support, and especially whether Windows can currently handle virtio-mem hot-unplug/reclaim without a dedicated guest driver or agent. I’m checking current upstream and development discussions rather than relying on older documentation.
+The current answer is clearer than the older information suggested: Windows virtio-mem support exists in development, but it is still technology-preview/unstable and is not in a normal public virtio-win release yet. (virtio-mem.gitlab.io)
+That changes how I would design your project.
+What virtio-mem currently gives you
+The architecture is essentially:
+Host changes requested-size
+        ↓
+virtio-mem device notifies guest
+        ↓
+Guest virtio-mem driver decides which blocks can be plugged/unplugged
+        ↓
+QEMU reports actual plugged size
+The important point is that the host cannot simply say:
+"Windows, you now have 16 GB instead of 24 GB"
+It requests a target size, and the guest driver has to actually unplug suitable memory blocks. QEMU can report the resulting device size via MEMORY_DEVICE_SIZE_CHANGE. (virtio-mem.gitlab.io)
+So your Windows service should not be responsible for physically freeing specific pages. The virtio-mem driver owns that job.
+That is actually good news.
+Windows support is exactly where your service can add value
+The virtio-mem project itself currently says:
+Support for Windows guests has been added to virtio-win, but is still under development and should be considered unstable.
+It also says there is no public virtio-win release containing those changes yet. (virtio-mem.gitlab.io)
+The driver handles the low-level operation:
+Which physical memory blocks can be unplugged?
+Can Windows migrate their contents?
+Did the unplug succeed?
+Your service can provide the missing policy layer:
+How much memory should the guest ask for?
+When is it safe to shrink?
+How much headroom does this workload need?
+That separation is probably the right architecture.
+One important QEMU limitation
+Current virtio-mem documentation still states that QEMU does not yet provide protection against a guest continuing to use more memory than requested, similar to the limitation with virtio-balloon. It recommends cgroups as a host-side limit, and dynamic-memslots=on should be enabled. (virtio-mem.gitlab.io)
+So there are potentially three different numbers:
+Maximum device capacity
+        28 GB
+
+Requested virtio-mem size
+        16 GB
+
+Actual plugged memory
+        14 GB
+Your controller must track the actual plugged memory, not just the requested target.
+This is important for your pool manager.
+Linux requests VM shrink:
+24 GB → 16 GB
+
+Windows virtio-mem driver attempts unplug
+
+Actual result:
+24 GB → 20 GB
+The remaining 4 GB is still genuinely occupied from the host's perspective until the guest successfully unplugs it.
+Therefore:
+PoolFree =
+    HostAllocatable
+    - Sum(ActualPluggedMemory)
+Not:
+PoolFree =
+    HostAllocatable
+    - Sum(RequestedMemory)
+That distinction should probably be fundamental to the project.
+Your Windows service becomes a demand predictor
+I would now redefine its purpose as:
+Windows Memory Demand Agent
+Its output could be:
+{
+  "current_visible_ram": "24GiB",
+  "minimum_ram": "8GiB",
+  "desired_ram": "18GiB",
+  "safe_reclaim_target": "16GiB",
+
+  "pressure": {
+    "physical": 0.42,
+    "commit": 0.51,
+    "paging": "low"
+  },
+
+  "demand": "stable"
+}
+Then the Linux controller decides:
+Windows wants:          18 GB
+Currently has:          24 GB
+Safe reclaim target:    16 GB
+Global pool pressure:   HIGH
+Result:
+Set virtio-mem requested-size = 16 GB
+Or:
+Global pool healthy
+→ leave at 24 GB temporarily
+Or:
+High-priority VM needs RAM
+→ reduce Windows toward 16 GB
+The interesting problem: can the Windows driver expose feedback?
+The ideal architecture would be:
+Windows Service
+      │
+      │ memory demand
+      ▼
+Linux Controller
+      │
+      │ requested-size = 16 GB
+      ▼
+QEMU virtio-mem
+      │
+      ▼
+Windows virtio-mem driver
+      │
+      ├── unplugged 2 GB
+      ├── unplugged another 2 GB
+      └── unable to unplug remaining memory
+      │
+      ▼
+Actual plugged size = 20 GB
+      │
+      ▼
+Linux pool accounting
+The host already has a mechanism to observe size changes through QEMU's memory-device events. (virtio-mem.gitlab.io)
+So I don't think your Windows service needs privileged access to the virtio-mem driver initially. It can remain entirely separate.
+That gives you a much cleaner first version:
+┌──────────────────────────────────────┐
+│ Windows Memory Demand Service        │
+│                                      │
+│ Reads:                               │
+│  GlobalMemoryStatusEx                │
+│  GetPerformanceInfo                  │
+│  Paging trends                       │
+│                                      │
+│ Calculates:                          │
+│  Minimum                             │
+│  Desired RAM                         │
+│  Safe shrink target                  │
+└──────────────────┬───────────────────┘
+                   │
+                   │ JSON / socket / virtio-serial
+                   ▼
+┌──────────────────────────────────────┐
+│ Linux Global RAM Controller          │
+│                                      │
+│ Knows:                               │
+│  Host available pool                 │
+│  All VM priorities                   │
+│  Actual plugged memory               │
+│                                      │
+│ Decides allocation                   │
+└──────────────────┬───────────────────┘
+                   │
+                   ▼
+              QEMU / libvirt
+                   │
+                   ▼
+               virtio-mem
+I would change one thing from our previous discussion
+I would not have the Windows service calculate exactly how much RAM can physically be removed.
+It cannot know which physical pages the virtio-mem driver will be able to migrate or unplug.
+Instead, it should report three policy values:
+HARD_FLOOR
+    Never intentionally go below this.
+
+DESIRED
+    The RAM Windows currently wants for comfortable operation.
+
+RECLAIMABLE_TARGET
+    A conservative target the host may shrink toward when necessary.
+For example:
+Current:              24 GB
+
+Desired:              18 GB
+Reclaimable target:   16 GB
+Hard floor:            8 GB
+The host can then say:
+Normal:
+24 GB → 18 GB
+
+Host pressure:
+24 GB → 16 GB
+
+Emergency:
+May attempt below 16 GB,
+but never below 8 GB
+The actual result is then determined by the virtio-mem driver and reported back through QEMU.
+I think this gives your project a useful niche even while the Windows virtio-mem driver remains experimental: you are not replacing it. You are building the memory demand and orchestration layer that it does not provide.
+The next thing I would investigate is the current virtio-win development branch and locate the actual Windows virtio-mem driver code. That would tell us exactly what control and status interfaces it already exposes, and whether your service can communicate with it directly rather than treating it as a black box. (GitHub)
+
+Windows driver
+—---
+The driver is viomem.sys.
+The important thing for us now is to inspect the source rather than infer its behaviour from QEMU documentation.
+I want to find specifically:
+viomem.c / viomem.cpp
+device initialization
+memory block enumeration
+plug handling
+unplug handling
+IOCTLs
+WMI interfaces
+registry configuration
+user/kernel communication
+because that answers a much more useful question for your project:
+Can your Rust service communicate directly with viomem.sys, or is the only practical control path the QEMU-side requested-size mechanism?
+There is another useful clue: the virtio-win repository's normal Windows driver packaging already treats viomem as a first-class driver, rather than it being some external experimental project.
+So I would now change our plan for your service.
+Instead of building:
+Windows service
+   ↓
+Windows memory telemetry
+   ↓
+guess what virtio-mem can reclaim
+we should investigate whether we can build:
+Windows memory telemetry
+       +
+viomem driver state
+       ↓
+actual guest memory demand
+       ↓
+host controller
+That could give us something considerably better than the generic RAM controller we were discussing.
+I can go one level deeper and pull apart the current viomem.sys source and its INF/build configuration to identify exactly what interfaces it exposes to Windows and how the driver decides that a memory block can be unplugged. That is the part worth doing before changing your Rust service architecture.
+https://github.com/virtio-win/kvm-guest-drivers-windows
+
+
+Virt-mem driver interface
+—---
+I pulled apart the current upstream viomem implementation rather than relying on the documentation. The important result is that the driver already has almost exactly the primitives we need, but it does not expose a useful user-mode control API for your Rust service.
+The current upstream project is virtio-win/kvm-guest-drivers-windows; its current solution builds viomem as a KMDF kernel driver from viomem/sys/viomem.c, Device.c, Driver.c, utils.c, viomem.h, and related files.
+1. What viomem.sys actually exposes
+The INF identifies it as a PCI VirtIO memory device:
+PCI\VEN_1AF4&DEV_1058
+and installs viomem.sys as a demand-start kernel driver using KMDF. It also creates the device interface GUID_DEVINTERFACE_VIOMEM.
+The driver creates that interface here:
+WdfDeviceCreateDeviceInterface(
+    device,
+    &GUID_DEVINTERFACE_VIOMEM,
+    NULL);
+That is significant.
+There is therefore a Windows device interface which a user-mode application could potentially enumerate/open.
+However, from the current source I have found no obvious public IOCTL interface intended for a user-mode controller. The driver's control path is internally driven by its worker thread and the virtio queue.
+So your Rust service cannot currently just do something sensible like:
+DeviceIoControl(... SET_TARGET_RAM ...)
+because there doesn't appear to be such an API.
+2. The driver knows considerably more than Windows' normal memory counters
+This is the interesting part.
+The driver reads the virtio-mem configuration:
+block_size
+node_id
+addr
+region_size
+usable_region_size
+plugged_size
+requested_size
+The definitions are directly in viomem.h.
+The meanings are particularly useful:
+region_size
+    Maximum memory region.
+
+usable_region_size
+    Currently usable region.
+
+plugged_size
+    Currently actually used/plugged memory.
+
+requested_size
+    Amount of memory the host currently wants plugged.
+So there are already four distinct concepts:
+Maximum possible
+       ↓
+usable region
+       ↓
+requested size
+       ↓
+actually plugged
+That maps extremely well onto your RAM controller idea.
+3. The driver maintains a bitmap of individual memory blocks
+During initialisation it gets:
+configReqest.block_size
+configReqest.region_size
+and calculates:
+bitmapSizeInBits =
+    region_size / block_size;
+It then allocates a bitmap with one bit per virtio-mem block and clears it.
+This is important because the driver isn't thinking in terms of arbitrary RAM quantities.
+It thinks:
+virtio-mem region
+ ├── block 0
+ ├── block 1
+ ├── block 2
+ ├── ...
+ └── block N
+and maintains the state of those blocks.
+4. The actual unplug protocol
+The driver sends the standard virtio-mem request:
+VIRTIO_MEM_REQ_UNPLUG
+with:
+address
+number_of_blocks
+The source constructs:
+devCtx->plugRequest->type = VIRTIO_MEM_REQ_UNPLUG;
+devCtx->plugRequest->u.plug.addr = Address;
+devCtx->plugRequest->u.plug.nb_blocks = NumberOfBlocks;
+and submits it through the virtqueue.
+The host can answer:
+ACK
+NACK
+BUSY
+ERROR
+although the protocol semantics differ depending on the request type.
+So this isn't Windows simply giving QEMU a "free this RAM" instruction.
+The sequence is closer to:
+Windows memory manager
+        ↓
+viomem.sys
+        ↓
+identify block(s)
+        ↓
+virtio-mem UNPLUG request
+        ↓
+QEMU / host
+        ↓
+ACK
+        ↓
+block is considered unplugged
+5. How does it decide which block can be unplugged?
+This is the crucial part for your project.
+The virtio-mem driver does not arbitrarily inspect Windows processes and decide:
+"This 512 MB looks unused, let's remove it."
+Instead, the Windows memory manager is involved in making physical memory removable.
+The driver advertises:
+VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE
+and the source explicitly documents why:
+Windows' memory manager guarantees that removed memory will not be accessed.
+The driver itself therefore doesn't access removed memory.
+This means our earlier idea of trying to calculate which pages are reclaimable in the Rust service is the wrong abstraction.
+Windows already has the authority to make physical memory removable.
+Your service should ask for a target amount, while viomem.sys and the Windows memory manager deal with the actual blocks.
+6. NUMA support is already there
+The driver negotiates:
+VIRTIO_MEM_F_ACPI_PXM
+and uses the ACPI proximity information to make the virtio-mem device NUMA-aware. The source specifically notes that Windows' memory-add interface does not let the driver directly specify the NUMA node; Windows makes that decision based on the ACPI configuration.
+For your project this means we should eventually account for:
+VM RAM
+ ├── NUMA node 0
+ ├── NUMA node 1
+ └── ...
+rather than treating all guest RAM as one completely homogeneous pool.
+7. There is also UNPLUG_ALL
+The driver implements:
+VIRTIO_MEM_REQ_UNPLUG_ALL
+which asks the host to unplug everything and shrink the usable size.
+After receiving an ACK, it verifies:
+configuration.plugged_size == 0
+before considering the operation successful.
+However, this is currently a problematic area.
+The upstream repository has open issue #1574 specifically because UNPLUG_ALL/unplug handling can result in extremely long shutdown times. The issue describes per-block unplugging and an unbounded wait for the host ACK. (GitHub)
+That is something we should take seriously before designing an aggressive automatic shrinker.
+8. What this means for your Windows service
+I would now change the design significantly.
+Your service should not attempt to control individual virtio-mem blocks.
+Instead:
+                   Windows
+                       │
+        ┌──────────────┴──────────────┐
+        │                             │
+        ▼                             ▼
+Windows memory manager          viomem.sys
+        │                             │
+        │                             ├── block bitmap
+        │                             ├── plugged_size
+        │                             ├── requested_size
+        │                             └── virtio queue
+        │
+        ▼
+Memory pressure / demand
+        │
+        ▼
+Your Rust service
+        │
+        ▼
+"Windows wants 18 GB"
+The Rust service becomes a policy/telemetry agent, not a memory driver.
+9. The one thing I think we should add
+There is an obvious missing bridge:
+Rust service
+      │
+      │ "What is viomem actually doing?"
+      ▼
+viomem.sys
+The driver already has:
+GUID_DEVINTERFACE_VIOMEM
+but apparently no useful documented user-mode IOCTL interface.
+So we have three possibilities.
+A. Use QEMU/libvirt as the control interface.
+This is the safest and probably the correct first implementation.
+Windows service
+    ↓
+desired RAM
+    ↓
+Linux controller
+    ↓
+QEMU requested-size
+    ↓
+viomem.sys
+B. Add a small user/kernel interface to viomem.
+For example:
+IOCTL_VIOMEM_GET_STATE
+
+returns:
+
+block_size
+region_size
+usable_region_size
+requested_size
+plugged_size
+Potentially also:
+IOCTL_VIOMEM_GET_BITMAP
+This would make your service much more capable, because it could see the actual guest-side state.
+C. Instrument the existing driver.
+Because you control the driver source, you could add tracing or an auxiliary interface without changing the virtio-mem protocol itself.
+I think B is potentially the most interesting long-term direction, but I would not modify viomem.sys yet.
+The architecture I now think makes the most sense
+                   ┌─────────────────────────┐
+                    │ Windows Memory Manager   │
+                    └───────────┬─────────────┘
+                                │
+                     Windows memory telemetry
+                                │
+                                ▼
+                    ┌─────────────────────────┐
+                    │ Your Rust Service       │
+                    │                         │
+                    │ Demand estimator         │
+                    │ Target RAM               │
+                    │ Minimum RAM              │
+                    │ Pressure                 │
+                    └───────────┬─────────────┘
+                                │
+                         desired RAM
+                                │
+                                ▼
+                    ┌─────────────────────────┐
+                    │ Linux RAM Controller     │
+                    │                         │
+                    │ VM pool                  │
+                    │ priorities               │
+                    │ host reserve             │
+                    │ global pressure          │
+                    └───────────┬─────────────┘
+                                │
+                         QEMU requested-size
+                                │
+                                ▼
+                    ┌─────────────────────────┐
+                    │ QEMU virtio-mem          │
+                    └───────────┬─────────────┘
+                                │
+                                ▼
+                    ┌─────────────────────────┐
+                    │ viomem.sys               │
+                    │                         │
+                    │ Windows memory manager   │
+                    │ block bitmap             │
+                    │ plug/unplug              │
+                    └─────────────────────────┘
+And crucially, plugged_size becomes the authoritative value for the Linux pool, not what your Windows service requested.
+The current driver source confirms that requested_size and plugged_size are deliberately separate quantities.
+That gives us a much stronger model:
+VM:
+    max       = 28 GB
+    requested = 20 GB
+    plugged   = 18 GB
+    desired   = 18 GB
+    minimum   = 8 GB
+The host can then accurately say:
+Actually consuming VM pool:
+18 GB
+
+Host has requested:
+20 GB
+
+Windows has actually received:
+18 GB
+That distinction is exactly what your global RAM pool needs.
+One other notable current-state point: the driver is already included in the Windows 10 and Windows 11 x64 virtio-win packages as viomem.sys, .inf, .cat, and .pdb; it is not merely a source-only experiment. (GitHub) The upstream status history also records recent viomem fixes, including Coverity fixes in February 2026 and cleanup in July 2026. (GitHub)
+The next thing worth pulling apart is the rest of Viomem.c — specifically the worker thread and the functions that call MmAddPhysicalMemory / MmRemovePhysicalMemory or their Windows equivalents. That will tell us exactly what Windows memory-manager operation is being used to make a block removable, and therefore how much of the demand/reclaim logic Windows is already doing for us.
+
+Windows service - virt-mem driver
+—
+For your repo, I would expand it from “Windows virtio-mem controller” into a Windows-side memory demand agent. The useful part is not reproducing viomem.sys; it is providing information that the Linux/QEMU side cannot get from the guest by itself.
+The repo can eventually provide five distinct capabilities.
+1. Memory demand
+The service continuously answers:
+How much RAM does Windows want right now?
+Use existing Windows memory APIs rather than inventing a memory accounting system.
+Expose something like:
+current_ram       12 GB
+available_ram      3 GB
+commit             9 GB / 24 GB
+memory_pressure    72%
+paging             low
+demand             HIGH
+desired_ram        16 GB
+The important output is desired_ram, not simply “RAM usage”.
+For example:
+8 GB allocated
+Windows using 6.5 GB
+→ desired = 8 GB
+
+12 GB allocated
+Windows using 8 GB
+→ desired = 12 GB
+
+12 GB allocated
+Windows repeatedly running short of RAM
+→ desired = 16 GB
+This gives the host a target rather than a binary grow/shrink signal.
+2. Safe shrink target
+I'd make this a separate calculation.
+current       24 GB
+desired       18 GB
+safe_floor    16 GB
+minimum        8 GB
+maximum        28 GB
+The meanings are:
+desired
+    Normal amount Windows currently wants.
+
+safe_floor
+    Amount the host can reclaim toward without immediately
+    putting Windows into a known pressure state.
+
+minimum
+    Administrative VM minimum.
+
+maximum
+    Administrative VM maximum.
+This is particularly useful because the Linux controller can make its own decision.
+Suppose another VM suddenly needs 4 GB:
+win11_gpu:
+
+current       24 GB
+desired       18 GB
+safe_floor    16 GB
+The Linux controller can reclaim 6 GB without asking Windows to figure out the global policy.
+3. Pressure feedback
+Don't make the service just send a number.
+Give it a state:
+IDLE
+STABLE
+GROWING
+PRESSURE
+CRITICAL
+RELEASABLE
+And preferably a score:
+pressure_score: 0.0 → 1.0
+That lets the Linux controller make more sophisticated decisions.
+For example:
+VM A:
+    16 GB
+    pressure = 0.85
+
+VM B:
+    16 GB
+    pressure = 0.15
+    reclaimable = 4 GB
+The host knows immediately which VM is asking for RAM and which VM is a candidate for reclaim.
+4. Trend prediction
+This is where your service can become more useful than simply wrapping Windows Performance Counters.
+Keep a short history:
+RAM        Available       Pressure
+------------------------------------
+12 GB       4.1 GB          0.40
+12 GB       3.8 GB          0.45
+12 GB       3.2 GB          0.52
+12 GB       2.5 GB          0.63
+12 GB       1.8 GB          0.76
+The service can detect:
+pressure increasing
+rather than waiting until:
+available = 0
+Likewise:
+24 GB
+available:
+10 GB
+11 GB
+12 GB
+12 GB
+13 GB
+suggests that the VM has spare RAM and can become a reclaim candidate.
+You don't need an AI model for this. A rolling slope plus hysteresis is probably sufficient.
+5. Actual virtio-mem state
+This is the part I'd investigate further in the repo.
+Your service could eventually report:
+virtio_mem:
+    region_size:       28 GB
+    requested_size:    18 GB
+    plugged_size:      17 GB
+    block_size:         X MB
+The distinction matters enormously.
+You could have:
+requested = 18 GB
+plugged   = 16 GB
+meaning Windows/QEMU requested 18 GB but only 16 GB is actually plugged.
+Your Linux controller should use plugged_size for pool accounting.
+A useful API for your Rust service
+I would design the service's local API around a single status object.
+Something along these lines:
+{
+  "memory": {
+    "current": 17179869184,
+    "available": 3221225472,
+    "commit": 11811160064,
+    "commit_limit": 25769803776
+  },
+
+  "demand": {
+    "state": "growing",
+    "score": 0.78,
+    "desired": 21474836480,
+    "safe_floor": 17179869184
+  },
+
+  "limits": {
+    "minimum": 8589934592,
+    "maximum": 30064771072
+  },
+
+  "virtio_mem": {
+    "requested": 19327352832,
+    "plugged": 17179869184
+  }
+}
+I would keep the service read-only with respect to virtio-mem initially.
+That is important.
+Let your existing repo answer:
+“What does Windows want?”
+and leave:
+“Should the VM actually receive it?”
+to the future Linux/QEMU controller.
+That gives you a clean separation.
+
+Then your repo becomes useful even without the Linux controller
+You could run:
+virtio-mem-windows-service status
+and get:
+Windows RAM
+
+Allocated:          16.0 GiB
+Available:           3.1 GiB
+Commit:              9.8 / 24 GiB
+Pressure:            0.71
+
+Demand
+
+State:               GROWING
+Desired:             20.0 GiB
+Safe floor:          14.0 GiB
+
+Virtio-mem
+
+Requested:           16.0 GiB
+Plugged:             16.0 GiB
+That makes the project independently useful.
+
+Where the viomem.sys source becomes valuable
+The next source investigation should focus specifically on the path:
+host requests new size
+        ↓
+viomem.sys receives config change
+        ↓
+worker thread
+        ↓
+plug/unplug operation
+        ↓
+Windows memory manager
+        ↓
+virtio-mem ACK
+        ↓
+bitmap/state update
+We want to identify the exact Windows kernel APIs used for:
+adding physical memory
+removing physical memory
+checking whether memory can be removed
+notifying Windows of memory changes
+That gives your project an important design answer:
+How much of “safe reclaim” is already solved by Windows itself?
+If Windows' memory manager already guarantees that the pages associated with an unplugged block are no longer accessible, then your service does not need to predict individual-page reclaimability at all. It only needs to determine whether reducing the VM's total physical-memory budget is likely to create pressure.
+That would make the service substantially simpler.
+
+One feature I'd add specifically for your project: memory recommendation
+Instead of only exposing raw telemetry, have the service produce:
+RECOMMENDATION
+
+current:       24 GB
+desired:       18 GB
+minimum:        8 GB
+safe floor:    16 GB
+
+grow:           0 GB
+shrink:         6 GB
+But don't actually perform the shrink.
+Then the Linux controller can apply its own policy:
+Windows recommendation:
+    shrink 6 GB
+
+Linux pool:
+    currently healthy
+
+→ ignore recommendation
+→ leave VM at 24 GB
+or:
+Windows recommendation:
+    shrink 6 GB
+
+Linux pool:
+    critical
+
+→ accept
+→ request 18 GB
+or:
+Windows:
+    wants +4 GB
+
+Linux pool:
+    only 2 GB available
+
+→ grant +2 GB
+This is the point where your original three-layer idea becomes very clean:
+Windows service
+    = "What does this VM need?"
+
+QEMU/KVM manager
+    = "What is this VM actually allocated?"
+
+Linux RAM controller
+    = "Who gets the global RAM pool?"
+And viomem.sys remains the mechanism underneath those decisions.
+That is the direction I'd take the repo rather than turning it into another virtio-mem driver.
+

@@ -454,6 +454,60 @@ Before committing:
 - [ ] Local non-service (`run`) mode has been tested if code changes affect worker logic
 - [ ] Service installation (`install` command) has been tested if SCM code changes
 
+## Phase 2 demand-agent validation
+
+Native Windows telemetry is additive to the current QGA/dommemstat path. Test
+the collector and calculator without a live VM first:
+
+- mock `GlobalMemoryStatusEx` and `GetPerformanceInfo` results;
+- reject zero totals, zero commit limits, impossible counters, and overflow;
+- verify physical and commit pressure ratios remain within `0.0..=1.0`;
+- test every demand-state boundary and hysteresis transition;
+- verify desired targets are clamped to configured minimum/maximum values;
+- verify safe-floor recommendations never authorize a resize by themselves;
+- verify all targets remain block-aligned and canonical byte based.
+
+The demand report must be read-only with respect to virtio-mem. A passing local
+collector test does not prove that QEMU/libvirt or `viomem.sys` converges.
+
+## Phase 3 driver and global-controller validation
+
+### Driver-source validation boundary
+
+When driver behavior changes or a driver status interface is proposed, validate
+the upstream or forked `viomem` solution separately from the Rust workspace:
+
+- build the intended Win10/Win11 architecture with the required Visual
+  Studio/WDF environment;
+- record whether the build is test-signed or production-signed;
+- install only on a disposable test guest with a documented rollback;
+- verify the device interface, virtio feature negotiation, block size, and
+  plug/unplug behavior;
+- test power transitions and driver/service restart behavior;
+- prove any IOCTL contract with access-control, malformed-input, timeout, and
+  version-compatibility tests before the Rust service consumes it.
+
+The presence of `GUID_DEVINTERFACE_VIOMEM` is not sufficient evidence of a
+user-mode IOCTL API. Do not add kernel-driver build or installation steps to
+the normal Rust/Bash validation gate.
+
+Before live multi-VM work, validate the state model with hermetic simulations:
+
+- allocate and reclaim several VMs against a fixed host reserve;
+- test independent growth and reclaim priorities;
+- exercise `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY`
+  transitions with hysteresis;
+- ensure in-flight `requested != current` state cannot be counted as free pool;
+- verify stale or missing demand reports fail closed;
+- test bounded, block-aligned reclaim and stop-on-pressure behavior.
+
+For explicitly approved live validation, capture the driver version and
+features, virtio-mem block size, QEMU/libvirt `requested` and `current`, and
+the Windows driver's `requested_size` and `plugged_size` when those values are
+observable. Do not assume the two naming pairs are equivalent until the same
+resize is observed across all layers. Do not add a direct driver IOCTL or
+perform an unbounded shrink based on this design document.
+
 ## Known Blockers
 
 - The Windows-native Rust 1.97.1 MSVC toolchain now passes the full local
