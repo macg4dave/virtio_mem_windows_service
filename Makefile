@@ -6,6 +6,8 @@ help:
 	@echo "Windows Service:"
 	@echo "  make windows-build    - Build Rust service"
 	@echo "  make windows-test     - Run Rust tests"
+	@echo "  make host-build       - Build RHEL host controller"
+	@echo "  make host-test        - Run RHEL host-controller tests"
 	@echo ""
 	@echo "Automation:"
 	@echo "  make lint             - Lint the Rust component"
@@ -18,20 +20,28 @@ windows-build:
 windows-test:
 	cd windows && cargo test
 
-build: windows-build
-	@echo "✓ Rust component built"
+host-build:
+	cargo build -p virtio-mem-host --release
 
-test: windows-test
-	@echo "✓ Rust tests passed"
+host-test:
+	cargo test -p virtio-mem-host
+
+build:
+	cargo build --workspace --release
+	@echo "✓ Rust workspace built"
+
+test:
+	cargo test --workspace
+	@echo "✓ Rust workspace tests passed"
 
 lint:
-	cd windows && cargo clippy --all-targets --all-features -- -D warnings
+	cargo clippy --workspace --all-targets --all-features -- -D warnings
 	@echo "✓ Linting complete"
 
 fmt:
-	cd windows && cargo fmt --all
+	cargo fmt --all
 	@echo "✓ Formatting complete"
 
 clean:
-	cd windows && cargo clean
-	@echo "✓ Clean complete"
+	cargo clean
+	@echo "✓ Workspace clean complete"

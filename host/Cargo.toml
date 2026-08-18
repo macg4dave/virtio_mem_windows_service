@@ -1,0 +1,17 @@
+[package]
+name = "virtio-mem-host"
+version = "0.1.0"
+edition = "2021"
+authors = ["macg4dave"]
+license = "MIT"
+description = "RHEL systemd controller for one virtio-mem device"
+
+[dependencies]
+thiserror = "2.0.20"
+signal-hook = "0.3"
+wait-timeout = "0.2"
+virtio-mem-core = { path = "../crates/virtio-mem-core" }
+
+[[bin]]
+name = "virtio-mem-host"
+path = "src/main.rs"

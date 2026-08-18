@@ -25,6 +25,7 @@ host validation environment.
 | Windows API | `winapi` features: `processthreadsapi`, `winbase`, `sysinfoapi`, `winnt` | Locked in `windows/Cargo.lock` | Windows process, service, and memory APIs |
 | Rust tests | `mockall` | Locked in `windows/Cargo.lock` | Test doubles for future adapters |
 | Host OS | RHEL host with libvirt and QEMU | RHEL 10 expected by setup guide | Run VM and live virtio-mem checks |
+| Host controller | Rust 1.70+, `systemd`, and `virsh` | RHEL host | Run one Rust controller instance per configured VM/device alias |
 | Host CLI | `virsh` | From libvirt client | Query QGA and inspect/update VM state |
 | JSON validation | `jq` | Current distribution package | Validate QGA responses in Bash |
 | Host shell | Bash | 4.0+ | Run repository scripts |
@@ -35,8 +36,11 @@ host validation environment.
 
 ## Rust project dependencies
 
-The authoritative manifest is [`../windows/Cargo.toml`](../windows/Cargo.toml).
-The lockfile [`../windows/Cargo.lock`](../windows/Cargo.lock) records resolved
+The authoritative workspace manifest is [`../Cargo.toml`](../Cargo.toml). The
+package manifests are [`../windows/Cargo.toml`](../windows/Cargo.toml),
+[`../host/Cargo.toml`](../host/Cargo.toml), and
+[`../crates/virtio-mem-core/Cargo.toml`](../crates/virtio-mem-core/Cargo.toml).
+The workspace lockfile [`../Cargo.lock`](../Cargo.lock) records resolved
 versions and must be retained for reproducible builds.
 
 ### Runtime dependencies
@@ -145,6 +149,52 @@ Resize validation additionally requires:
 The controller policy refuses another request while `requested` and `current`
 differ and clamps all targets to safe aligned limits. See
 [`api-contract.md`](api-contract.md) and [`data-model.md`](data-model.md).
+
+## QEMU and libvirt operational constraints
+
+The official virtio-mem guidance adds several operational constraints that affect both design and validation:
+
+- `requested-size` must be an integer multiple of the device's `block-size` and cannot exceed the device's maximum size.
+- `block-size` is the hotplug granularity and should typically be at least the guest's THP size; a 2 MiB block is the common default for x86 systems.
+
+- The guest can fail to fulfill a shrink request if it cannot free or hotunplug memory reliably; a request can therefore succeed at the host while the guest remains below the target for a time.
+- QEMU does not currently provide the same protection for unplugged memory that virtio-balloon does; operators should use cgroups or other host-side limits to avoid memory overcommit.
+- `dynamic-memslots=on` is recommended where supported because it reduces metadata and can make unplugged memory inaccessible, but it must be used with `unplugged-inaccessible=on`.
+- Some workloads or devices remain incompatible with virtio-mem, including `vdpa`, `RDMA migration`, `vfio-nvme`, `mlock`-based usage, and several vhost-user devices such as DPDK/SPDK.
+- The memory backend should generally use sparse storage semantics: `reserve=off` and `prealloc=off` for virtio-mem backends, while the virtio-mem device itself may use `prealloc=on` when appropriate.
+
+The Rust Windows crate also uses `quick-xml` for pure parsing of captured
+libvirt snapshots. This parser does not invoke `virsh`, libvirt, or Linux
+commands; live discovery remains outside the guest service boundary.
+
+The opt-in host resize helper additionally requires `xmllint` and `virsh`.
+`xmllint` is used only to select and validate the explicitly named device from
+the live XML; the helper does not perform broad VM discovery.
+
+## RHEL host-controller deployment
+
+The `host/` crate is a Rust systemd controller, not a replacement for the
+explicit Bash validation helpers. Each templated systemd instance manages one
+VM and one virtio-mem alias; it does not discover domains broadly.
+
+Build the workspace before installation:
+
+```bash
+cargo build --workspace --release
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+```
+
+Install the release binary at `/usr/local/libexec/virtio-mem-host`, the unit at
+`/etc/systemd/system/virtio-mem-host@.service`, and a non-secret instance file
+derived from `host/systemd/virtio-mem-host.conf.example` at
+`/etc/virtio-mem-host/INSTANCE.conf`. The `virtio-mem-host` service account
+must be a non-login account with only the libvirt authorization required for
+the explicitly configured VM. Verify that access before enabling the unit; do
+not silently change it to run as root.
+
+These constraints are not optional recommendations for a future improvement; they directly affect whether the guest can accept memory changes safely and whether the host-side controller can make valid policy choices.
 
 ## Validation matrix
 

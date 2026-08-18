@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::error::ServiceHostError;
@@ -29,28 +29,35 @@ impl ServiceState {
 }
 
 #[derive(Debug)]
-pub struct StopSignal {
+struct StopState {
     cancelled: AtomicBool,
     wake: Condvar,
     lock: Mutex<()>,
 }
 
+#[derive(Debug, Clone)]
+pub struct StopSignal {
+    state: Arc<StopState>,
+}
+
 impl StopSignal {
     pub fn new() -> Self {
         Self {
-            cancelled: AtomicBool::new(false),
-            wake: Condvar::new(),
-            lock: Mutex::new(()),
+            state: Arc::new(StopState {
+                cancelled: AtomicBool::new(false),
+                wake: Condvar::new(),
+                lock: Mutex::new(()),
+            }),
         }
     }
 
     pub fn cancel(&self) {
-        self.cancelled.store(true, Ordering::Release);
-        self.wake.notify_all();
+        self.state.cancelled.store(true, Ordering::Release);
+        self.state.wake.notify_all();
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::Acquire)
+        self.state.cancelled.load(Ordering::Acquire)
     }
 
     pub fn wait(&self, timeout: Duration) {
@@ -58,11 +65,11 @@ impl StopSignal {
             return;
         }
 
-        let guard = match self.lock.lock() {
+        let guard = match self.state.lock.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let _ = self.wake.wait_timeout(guard, timeout);
+        let _ = self.state.wake.wait_timeout(guard, timeout);
     }
 }
 
@@ -100,9 +107,13 @@ where
     W: ServiceWorker,
 {
     pub fn new(worker: W) -> Self {
+        Self::with_stop(worker, StopSignal::new())
+    }
+
+    pub fn with_stop(worker: W, stop: StopSignal) -> Self {
         Self {
             worker,
-            stop: StopSignal::new(),
+            stop,
             state: AtomicU8::new(ServiceState::Created as u8),
         }
     }

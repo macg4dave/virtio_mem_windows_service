@@ -30,12 +30,14 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Live RHEL/libvirt host and Windows guest unavailable in this environment |
 | TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, and configurable named-pipe client implemented; live transport validation remains |
+| TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, startup validation, and a local Windows SCM install/stop registration path are complete; live service registration on a real Windows guest and host validation remain. |
+| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and opt-in Bash host checks are locally covered; live VM evidence, service registration, and QGA validation remain. |
+| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Workspace format, release build, 46 tests, and Clippy warnings-as-errors pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
 
 ## Completed
 
@@ -43,6 +45,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | --- | --- | --- | --- | --- |
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
 | TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |
+| TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | 2026-08-18 | Added host-side virtio-mem semantics, compatibility limits, and live validation guidance based on official libvirt and QEMU documentation. |
 
 ## Blocked
 
@@ -67,3 +70,15 @@ Use QEMU Guest Agent over the validated guest-host interface. Alternatives rejec
 - Direct registry access: violates service boundaries
 - Unvalidated custom protocols: adds unnecessary complexity
 - Go-based implementation: intentionally excluded
+
+### RHEL host controller
+
+- A Rust controller supervised by a templated systemd unit manages exactly one
+  explicitly configured VM and virtio-mem alias per service instance.
+- It queries QEMU Guest Agent memory statistics and live libvirt XML, then may
+  issue one validated `virsh update-memory-device --live` request.
+- It must not discover VMs broadly, invoke a shell, administer Windows
+  processes, or issue another request until `requested` equals `current`.
+- Failed QGA, XML, or resize operations remain explicit service failures;
+  systemd restart behavior must be bounded and must never blindly replay a
+  resize request.

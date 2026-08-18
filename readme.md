@@ -1,8 +1,12 @@
 # virtio-mem Windows controller
 
-This repository is in planning stage and is intentionally limited to Rust and Bash. If a program or service is required, it will be implemented in Rust; Bash remains for local automation and validation helpers.
+This repository is in implementation and is intentionally limited to Rust and
+Bash. Runtime components are Rust; Bash remains for local automation and
+validation helpers.
 
-> **Status:** Planning stage. The repo does not include Go code or Go-based design work.
+> **Status:** Phase 2 foundation. The shared Rust policy core, Windows service
+> foundation, and RHEL systemd controller are implemented locally; live KVM
+> validation remains blocked on a RHEL/libvirt host and Windows guest.
 
 ## Architecture
 
@@ -18,7 +22,8 @@ RHEL host
             └─ operational automation
 ```
 
-The project avoids Go entirely. Any future runtime component will be Rust-based, and automation will remain Bash-based.
+The project avoids Go entirely. The Windows service and RHEL controller are
+Rust-based; automation remains Bash-based.
 
 ## Planning assumptions
 
@@ -54,3 +59,16 @@ From a RHEL host, run `bash scripts/check-environment.sh` before
 `bash scripts/validate-guest-agent.sh VM_NAME 3`. The validation helper only
 queries the explicitly supplied VM and never changes VM memory or executes
 guest commands.
+
+## RHEL host controller
+
+`host/` provides `virtio-mem-host`, a Rust process supervised by the templated
+`host/systemd/virtio-mem-host@.service` unit. Each instance manages one
+explicitly configured VM and virtio-mem alias. It reads QEMU Guest Agent
+statistics and live XML through bounded `virsh` calls, validates byte-aligned
+requests, and does not issue another resize until the previous one converges.
+
+Build all Rust components with `bash scripts/build-rust.sh`. Deployment and
+live-validation requirements are documented in `docs/dependencies.md` and
+`docs/testing.md`; do not enable the systemd unit before the manual safety gate
+has succeeded.

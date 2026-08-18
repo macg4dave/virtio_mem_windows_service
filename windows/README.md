@@ -56,11 +56,11 @@ runtime requirements are:
 
 The current runtime foundation includes a configurable named-pipe QEMU Guest
 Agent client, a mockable memory poller, and an adapter-based single poll
-iteration. It also includes a stoppable polling scheduler and portable
-`ServiceHost` lifecycle wrapper. Windows SCM registration and live KVM channel
-validation remain in progress. `ServiceConfig` supplies validated service
-identity, endpoint, timing, and least-privilege defaults; persistent loading
-is not implemented yet.
+iteration. It also includes a stoppable polling scheduler, portable
+`ServiceHost` lifecycle wrapper, and a native SCM dispatcher that shares the
+same cancellation signal as the worker. `ServiceConfig` supplies validated
+service identity, endpoint, timing, and least-privilege defaults; persistent
+loading and live KVM channel validation are not implemented yet.
 
 ## Service hosting rules
 
@@ -73,7 +73,9 @@ stable identity, documented configuration, and the least-privileged account
 that can access the QEMU Guest Agent channel.
 
 The required operational verification sequence is **install → start → inspect
-logs → stop → remove**. See [`../docs/architecture.md`](../docs/architecture.md)
+logs → stop → remove**. The executable exposes matching `install`, `start`,
+`stop`, and `remove` commands; each requires an elevated terminal when SCM
+permissions require it. See [`../docs/architecture.md`](../docs/architecture.md)
 and [`../docs/testing.md`](../docs/testing.md) for the lifecycle contract and
 test matrix.
 

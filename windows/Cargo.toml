@@ -7,16 +7,18 @@ license = "MIT"
 description = "Windows service for virtio-mem integration with QEMU Guest Agent"
 
 [dependencies]
+virtio-mem-core = { path = "../crates/virtio-mem-core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-thiserror = "1.0"
+thiserror = "2.0.20"
 anyhow = "1.0"
+quick-xml = "0.41.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 winapi = { version = "0.3", features = ["processthreadsapi", "winbase", "winsvc", "sysinfoapi", "winnt"] }
 
 [dev-dependencies]
-mockall = "0.12"
+mockall = "0.15.0"
 
 [[bin]]
 name = "virtio-mem-service"

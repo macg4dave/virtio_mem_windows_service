@@ -99,6 +99,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::virtio_mem::VirtioMemState;
+
+    const MIB: u64 = 1024 * 1024;
 
     struct StubGuestAgent {
         response: Result<String, String>,
@@ -113,8 +116,13 @@ mod tests {
     struct StubState;
 
     impl MemoryStateProvider for StubState {
-        fn memory_state(&mut self) -> Result<(u64, u64), String> {
-            Ok((16, 16))
+        fn memory_state(&mut self) -> Result<VirtioMemState, String> {
+            Ok(VirtioMemState {
+                size_bytes: 28 * MIB,
+                block_size_bytes: 2 * MIB,
+                requested_bytes: 16 * MIB,
+                current_bytes: 16 * MIB,
+            })
         }
     }
 
@@ -132,11 +140,11 @@ mod tests {
 
     fn config() -> MemoryControllerConfig {
         MemoryControllerConfig {
-            min_memory_bytes: 8,
-            max_memory_bytes: 28,
-            lower_threshold_bytes: 2,
-            upper_threshold_bytes: 6,
-            block_size_bytes: 4,
+            min_memory_bytes: 8 * MIB,
+            max_memory_bytes: 28 * MIB,
+            lower_threshold_bytes: 2 * MIB,
+            upper_threshold_bytes: 6 * MIB,
+            block_size_bytes: 2 * MIB,
         }
     }
 
@@ -144,17 +152,19 @@ mod tests {
     fn parses_agent_response_and_plans_resize() {
         let agent = StubGuestAgent {
             response: Ok(r#"{"return":[
-                    {"stat":"stat-free","value":1},
-                    {"stat":"stat-total","value":16}
+                    {"stat":"stat-free","value":1048576},
+                    {"stat":"stat-total","value":16777216}
                 ]}"#
             .to_owned()),
         };
         let mut poller = MemoryPoller::new(agent, config());
 
         assert_eq!(
-            poller.poll(16, 16).expect("poll should succeed"),
+            poller
+                .poll(16 * MIB, 16 * MIB)
+                .expect("poll should succeed"),
             ResizeDecision::Request {
-                requested_bytes: 20
+                requested_bytes: 18 * MIB
             }
         );
     }

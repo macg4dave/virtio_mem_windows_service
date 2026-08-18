@@ -44,6 +44,19 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - Cancellation waits must be wakeable; do not use an uninterruptible sleep for
   the polling interval.
 
+### RHEL host-controller lifecycle
+
+- Run one explicitly configured VM and virtio-mem alias per systemd instance;
+  do not implement broad VM discovery or implicit multi-target scheduling.
+- Invoke `virsh` through fixed argument vectors with a finite timeout; never
+  use a shell, string interpolation, or an unbounded external command.
+- Refresh and validate the selected live XML immediately before a resize. Do
+  not issue a request while `requested != current` or replay one after restart.
+- Use `SIGTERM` and `SIGINT` for one wakeable cancellation path. Operational
+  failures must produce contextual journal output and a non-zero process exit.
+- Configure an explicit non-login service account and verify its least-privilege
+  libvirt authorization before enabling the unit. Do not silently run as root.
+
 ## Documentation Standards
 
 - All features must be documented in [docs/feature-matrix.md](feature-matrix.md)

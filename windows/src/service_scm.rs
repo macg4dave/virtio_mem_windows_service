@@ -3,21 +3,27 @@ use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use winapi::ctypes::c_void;
 use winapi::shared::minwindef::{DWORD, FALSE};
 use winapi::um::winsvc::{
-    ControlService, CreateServiceW, OpenSCManagerW, OpenServiceW, SERVICE_ACCEPT_SHUTDOWN,
-    SERVICE_ACCEPT_STOP, SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP, SERVICE_RUNNING,
-    SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING,
-    SC_MANAGER_CREATE_SERVICE,
+    ControlService, CreateServiceW, DeleteService, OpenSCManagerW, OpenServiceW,
+    RegisterServiceCtrlHandlerExW, SetServiceStatus, StartServiceCtrlDispatcherW, StartServiceW,
+    SC_MANAGER_CREATE_SERVICE, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
+    SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP, SERVICE_RUNNING, SERVICE_START_PENDING,
+    SERVICE_STATUS, SERVICE_STATUS_HANDLE, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING,
+    SERVICE_TABLE_ENTRYW,
 };
 
 const SERVICE_ALL_ACCESS: DWORD = 0xF01FF;
 const SERVICE_AUTO_START: DWORD = 0x00000002;
 const SERVICE_ERROR_NORMAL: DWORD = 0x00000000;
 const SERVICE_WIN32_OWN_PROCESS: DWORD = 0x00000010;
+const ERROR_FAILED_SERVICE_CONTROLLER_CONNECT: i32 = 1063;
+const SERVICE_DELETE: DWORD = 0x00010000;
+const SERVICE_START: DWORD = 0x00000010;
 
 use crate::config::ServiceConfig;
-use crate::service_host::{ServiceState, StopSignal};
+use crate::service_host::{ServiceHost, ServiceState, StopSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScmServiceState {
@@ -83,6 +89,11 @@ pub struct ScmHandler {
     state: AtomicU8,
 }
 
+struct ServiceContext {
+    stop: StopSignal,
+    status_handle: SERVICE_STATUS_HANDLE,
+}
+
 impl ScmHandler {
     pub fn new(stop: StopSignal) -> Self {
         Self {
@@ -102,7 +113,8 @@ impl ScmHandler {
     pub fn accept_control(&self, control: DWORD) -> bool {
         if control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN {
             self.stop.cancel();
-            self.state.store(ServiceState::StopPending as u8, Ordering::Release);
+            self.state
+                .store(ServiceState::StopPending as u8, Ordering::Release);
             return true;
         }
 
@@ -144,16 +156,19 @@ impl WindowsServiceRegistration {
 }
 
 fn to_wide(value: &str) -> Vec<u16> {
-    OsStr::new(value)
-        .encode_wide()
-        .chain(once(0))
-        .collect()
+    OsStr::new(value).encode_wide().chain(once(0)).collect()
 }
 
 pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
     let registration = WindowsServiceRegistration::from_config(config)?;
     let manager_name = to_wide("");
-    let manager = unsafe { OpenSCManagerW(manager_name.as_ptr(), std::ptr::null(), SC_MANAGER_CREATE_SERVICE) };
+    let manager = unsafe {
+        OpenSCManagerW(
+            manager_name.as_ptr(),
+            std::ptr::null(),
+            SC_MANAGER_CREATE_SERVICE,
+        )
+    };
     if manager.is_null() {
         return Err("OpenSCManagerW failed to open the service manager".to_owned());
     }
@@ -162,8 +177,6 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
     let display_name = to_wide(&registration.display_name);
     let executable = to_wide(&registration.executable_path);
     let account = to_wide(&registration.service_account);
-    let password = to_wide("");
-
     let service = unsafe {
         CreateServiceW(
             manager,
@@ -178,12 +191,15 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
             std::ptr::null_mut(),
             std::ptr::null(),
             account.as_ptr(),
-            password.as_ptr(),
+            std::ptr::null(),
         )
     };
 
     if service.is_null() {
         let os_error = std::io::Error::last_os_error();
+        unsafe {
+            winapi::um::winsvc::CloseServiceHandle(manager);
+        }
         return Err(format!(
             "CreateServiceW failed for {} with error {os_error}",
             registration.service_name,
@@ -196,6 +212,118 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+pub fn run_as_service() -> Result<bool, String> {
+    let service_name = to_wide(crate::config::DEFAULT_SERVICE_NAME);
+    let mut table = [
+        SERVICE_TABLE_ENTRYW {
+            lpServiceName: service_name.as_ptr() as *mut u16,
+            lpServiceProc: Some(service_main),
+        },
+        SERVICE_TABLE_ENTRYW {
+            lpServiceName: std::ptr::null_mut(),
+            lpServiceProc: None,
+        },
+    ];
+
+    let started = unsafe { StartServiceCtrlDispatcherW(table.as_mut_ptr()) };
+    if started != 0 {
+        return Ok(true);
+    }
+
+    let error = std::io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_FAILED_SERVICE_CONTROLLER_CONNECT) {
+        Ok(false)
+    } else {
+        Err(format!("StartServiceCtrlDispatcherW failed: {error}"))
+    }
+}
+
+unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
+    let stop = StopSignal::new();
+    let service_name = to_wide(crate::config::DEFAULT_SERVICE_NAME);
+    let mut context = Box::new(ServiceContext {
+        stop: stop.clone(),
+        status_handle: std::ptr::null_mut(),
+    });
+    let status_handle = RegisterServiceCtrlHandlerExW(
+        service_name.as_ptr(),
+        Some(service_control_handler),
+        (&mut *context) as *mut ServiceContext as *mut _,
+    );
+    if status_handle.is_null() {
+        return;
+    }
+    context.status_handle = status_handle;
+
+    let _ = publish_status(
+        status_handle,
+        ScmServiceStatus::from_state(ServiceState::StartPending),
+    );
+    let mut host = ServiceHost::with_stop(
+        move |service_stop: &StopSignal| {
+            let _ = publish_status(
+                status_handle,
+                ScmServiceStatus::from_state(ServiceState::Running),
+            );
+            while !service_stop.is_cancelled() {
+                service_stop.wait(std::time::Duration::from_secs(1));
+            }
+            Ok(())
+        },
+        stop,
+    );
+    let result = host.run();
+    let final_state = if result.is_ok() {
+        ServiceState::Stopped
+    } else {
+        ServiceState::Failed
+    };
+    let _ = publish_status(status_handle, ScmServiceStatus::from_state(final_state));
+}
+
+unsafe extern "system" fn service_control_handler(
+    control: DWORD,
+    _event_type: DWORD,
+    _event_data: *mut c_void,
+    context: *mut c_void,
+) -> DWORD {
+    if context.is_null() {
+        return 1;
+    }
+    let context = &*(context as *const ServiceContext);
+    if control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN {
+        context.stop.cancel();
+        let _ = publish_status(
+            context.status_handle,
+            ScmServiceStatus::from_state(ServiceState::StopPending),
+        );
+        0
+    } else {
+        1
+    }
+}
+
+fn publish_status(handle: SERVICE_STATUS_HANDLE, status: ScmServiceStatus) -> Result<(), String> {
+    let mut native = SERVICE_STATUS {
+        dwServiceType: SERVICE_WIN32_OWN_PROCESS,
+        dwCurrentState: status.current_state,
+        dwControlsAccepted: status.controls_accepted,
+        dwWin32ExitCode: status.exit_code,
+        dwServiceSpecificExitCode: 0,
+        dwCheckPoint: 0,
+        dwWaitHint: 0,
+    };
+    let published = unsafe { SetServiceStatus(handle, &mut native) };
+    if published == 0 {
+        Err(format!(
+            "SetServiceStatus failed: {}",
+            std::io::Error::last_os_error()
+        ))
+    } else {
+        Ok(())
+    }
 }
 
 pub fn stop_service(service_name: &str) -> Result<(), String> {
@@ -232,6 +360,64 @@ pub fn stop_service(service_name: &str) -> Result<(), String> {
 
     if stopped == FALSE {
         return Err(format!("ControlService failed for {service_name}"));
+    }
+
+    Ok(())
+}
+
+pub fn start_service(service_name: &str) -> Result<(), String> {
+    let manager_name = to_wide("");
+    let manager = unsafe { OpenSCManagerW(manager_name.as_ptr(), std::ptr::null(), 0) };
+    if manager.is_null() {
+        return Err("OpenSCManagerW failed while preparing to start the service".to_owned());
+    }
+
+    let service_name_u16 = to_wide(service_name);
+    let service = unsafe { OpenServiceW(manager, service_name_u16.as_ptr(), SERVICE_START) };
+    if service.is_null() {
+        unsafe {
+            winapi::um::winsvc::CloseServiceHandle(manager);
+        }
+        return Err(format!("OpenServiceW failed for {service_name}"));
+    }
+
+    let started = unsafe { StartServiceW(service, 0, std::ptr::null_mut()) };
+    unsafe {
+        winapi::um::winsvc::CloseServiceHandle(service);
+        winapi::um::winsvc::CloseServiceHandle(manager);
+    }
+
+    if started == FALSE {
+        return Err(format!("StartServiceW failed for {service_name}"));
+    }
+
+    Ok(())
+}
+
+pub fn remove_service(service_name: &str) -> Result<(), String> {
+    let manager_name = to_wide("");
+    let manager = unsafe { OpenSCManagerW(manager_name.as_ptr(), std::ptr::null(), 0) };
+    if manager.is_null() {
+        return Err("OpenSCManagerW failed while preparing to remove the service".to_owned());
+    }
+
+    let service_name_u16 = to_wide(service_name);
+    let service = unsafe { OpenServiceW(manager, service_name_u16.as_ptr(), SERVICE_DELETE) };
+    if service.is_null() {
+        unsafe {
+            winapi::um::winsvc::CloseServiceHandle(manager);
+        }
+        return Err(format!("OpenServiceW failed for {service_name}"));
+    }
+
+    let removed = unsafe { DeleteService(service) };
+    unsafe {
+        winapi::um::winsvc::CloseServiceHandle(service);
+        winapi::um::winsvc::CloseServiceHandle(manager);
+    }
+
+    if removed == FALSE {
+        return Err(format!("DeleteService failed for {service_name}"));
     }
 
     Ok(())

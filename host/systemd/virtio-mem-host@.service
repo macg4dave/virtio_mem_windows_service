@@ -1,0 +1,23 @@
+[Unit]
+Description=Virtio-mem controller for %i
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=virtio-mem-host
+Group=virtio-mem-host
+EnvironmentFile=/etc/virtio-mem-host/%i.conf
+ExecStart=/usr/local/libexec/virtio-mem-host
+Restart=on-failure
+RestartSec=15s
+TimeoutStopSec=45s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

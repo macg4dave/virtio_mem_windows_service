@@ -1,0 +1,17 @@
+# Install as /etc/virtio-mem-host/<instance>.conf. This file contains no secrets.
+# The systemd instance name identifies this explicitly managed VM.
+VIRTIO_MEM_VM_NAME=win11_gpu
+VIRTIO_MEM_ALIAS=ua-virtio-mem0
+
+# All memory quantities are byte counts and must be compatible with the live
+# virtio-mem block size. Choose limits only after inspecting the live device.
+VIRTIO_MEM_MIN_MEMORY_BYTES=8589934592
+VIRTIO_MEM_MAX_MEMORY_BYTES=17179869184
+VIRTIO_MEM_LOWER_THRESHOLD_BYTES=1073741824
+VIRTIO_MEM_UPPER_THRESHOLD_BYTES=4294967296
+
+# Every external command is bounded. TimeoutStopSec must exceed this value.
+VIRTIO_MEM_POLL_INTERVAL_SECONDS=30
+VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS=10
+VIRTIO_MEM_CONVERGENCE_TIMEOUT_SECONDS=300
+# VIRTIO_MEM_VIRSH_BINARY=/usr/bin/virsh

@@ -1,0 +1,3 @@
+[workspace]
+members = ["windows", "host", "crates/virtio-mem-core"]
+resolver = "2"

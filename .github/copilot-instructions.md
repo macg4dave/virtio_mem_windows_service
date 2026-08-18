@@ -75,6 +75,10 @@ Read the architecture and design docs first:
 - Update `docs/roadmap.md` when phase status changes or scope shifts.
 - Update `docs/feature-matrix.md` when features are added, completed, or changed.
 - Update `docs/issues.md` when a tracked bug is resolved, with status and fix reference.
+- Update `docs/testing.md` whenever adding new test procedures, CLI commands, debugging modes, or required validation steps.
+  - Document exact commands needed to run tests locally.
+  - Explain when to use `run` mode (local debugging) vs `install` mode (real service testing).
+  - Include expected output and success criteria for each validation step.
 - If a doc update cannot be completed, log the gap in the task card's handoff notes. Never skip silently.
 - See [BACKLOG.md](../BACKLOG.md) § "Documentation Freshness Rules" for the full checklist and triggers.
 
@@ -84,6 +88,9 @@ Read the architecture and design docs first:
 - Run `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings` for Rust changes when the toolchain supports them.
 - Bash changes: run the script or a focused validation command locally.
 - Windows service changes: build and validate locally before committing.
+  - Test the `run` command (non-service mode) for worker logic and lifecycle changes.
+  - Document any new CLI modes or command-line options in `docs/testing.md`.
+  - Report the exact cargo test results in the commit or task notes.
 - All testing is performed locally. Document any blocking issues for local validation.
 - Stack changes: validate that services can start and communicate correctly.
 - If a command cannot run locally, state the exact blocker.

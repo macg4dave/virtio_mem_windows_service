@@ -2,9 +2,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$repo_root/windows"
+cd "$repo_root"
 
 cargo fmt --all -- --check
-cargo build --release
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
+cargo build --workspace --release
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings

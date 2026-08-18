@@ -13,14 +13,41 @@ The project is in **Phase 2: Core Functionality**. The parser, resize policy,
 QEMU Guest Agent client boundary, wakeable polling loop, portable service host,
 validated configuration model, startup validation path, and local Windows
 SCM install/stop registration path are implemented and locally tested. The
-executable entry point validates configuration and fails explicitly before
-startup, but live Windows service registration and host-side KVM validation
-remain externally blocked.
+workspace also contains a host-side virtio-mem controller scaffold with
+XML/state validation and a bounded runtime loop. The remaining gaps are
+primarily live KVM validation, real Windows guest plumbing, and service
+registration/operation proof on a real guest rather than a local synthetic
+test harness.
+
+## Recent verified wins
+
+- **Local quality baseline:** on 2026-08-18 the workspace passed
+    `cargo test --workspace --all-features`, `cargo clippy --workspace
+    --all-targets --all-features -- -D warnings`, and `cargo build --workspace
+    --all-features`; the workspace currently reports 46 tests passing and 0
+    failures.
+- **Safe policy core:** resize decisions are aligned, bounded by configured
+    limits, hysteresis-aware, and blocked while `requested != current`.
+- **Strong boundary separation:** guest Rust code does not invoke Linux commands;
+    host Bash validation stays explicit-scope and read-only by default.
+- **Failure visibility:** parser, transport, startup, polling, resize, and
+    worker failures return typed errors instead of silent fallback.
+- **Cancellation correctness:** stop wakes the polling wait rather than
+    delaying shutdown for the full interval.
+- **Host/controller scaffolding:** the RHEL host adapter validates live XML,
+    selected alias data, QGA responses, and resize requests before sending a
+    change, and the runtime loop blocks overlapping updates until convergence.
+- **Documentation traceability:** architecture, API, testing, backlog, and
+    roadmap status are updated together with implementation work.
+- **Host-side virtio-mem reality check:** libvirt/QEMU guidance confirms a
+    virtio-mem resize is an asynchronous `requested` change, not an immediate
+    guest memory state switch; the controller must wait for convergence before
+    issuing a follow-up request.
 
 ## Verified wins to preserve
 
 - **Local quality baseline:** the native Windows MSVC build, release build,
-    27 unit tests, and Clippy warnings-as-errors gate pass locally.
+    46 unit tests, and Clippy warnings-as-errors gate pass locally.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Clear boundaries:** guest Rust code does not invoke Linux commands; host
@@ -31,6 +58,36 @@ remain externally blocked.
     delaying shutdown for the full interval.
 - **Documentation traceability:** architecture, API, testing, backlog, and
     roadmap status are updated together with implementation work.
+- **Host-side virtio-mem reality check:** libvirt/QEMU documentation confirms a
+    virtio-mem resize is an asynchronous `requested` change, not an immediate
+    guest memory state switch; the controller must wait for convergence before
+    issuing a follow-up request.
+
+## New findings from official QEMU/libvirt guidance
+
+These are now design requirements rather than optional future refinements:
+
+- `requested-size` must be an integer multiple of the device `block-size` and
+    cannot exceed the device's maximum size.
+- `block-size` is the hotplug granularity and should usually be at least the
+    guest THP size; 2 MiB is the common default for x86 guests.
+- `current` may lag behind `requested` while the guest plugs or unplugs blocks;
+    this is normal and must not trigger a second resize request.
+- QEMU does not provide a balloon-style protection layer for unplugged memory;
+    cgroups or similar host-side limits are still required to control VM memory
+    consumption.
+- `dynamic-memslots=on` is recommended when available and must be combined with
+    `unplugged-inaccessible=on` for the virtualization stack to treat unplugged
+    blocks as inaccessible.
+- Some features and device types remain incompatible with virtio-mem, including
+    `vdpa`, `RDMA migration`, `vfio-nvme`, `mlock`-based setups, and several
+    vhost-user cases such as DPDK/SPDK.
+- For virtio-mem memory backends, sparse semantics are expected: `reserve=off`
+    and `prealloc=off` for the backend, while `prealloc=on` is sometimes used on
+    the virtio-mem device itself.
+
+These findings should be treated as the baseline for live validation and release
+readiness in the remaining host-side work.
 
 ## Milestone map
 
@@ -38,15 +95,17 @@ remain externally blocked.
 | --- | --- | --- | --- | --- |
 | M0 | Repository and architecture baseline | [x] | — | Architecture, contracts, standards, and testing docs reviewed |
 | M1 | Pure memory policy and QGA parsing | [x] | M0 | Parser and controller tests cover malformed, boundary, alignment, and convergence cases |
-| M2 | Guest runtime polling foundation | [~] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and bounded-I/O tests pass |
-| M3 | Service lifecycle foundation | [~] | M2 | Startup readiness, cancellation, bounded shutdown, failure, and state tests pass |
-| M4 | Runtime configuration foundation | [~] | M2 | Versioned persistent schema, identity, endpoint, timing, account, and validation model exists |
-| M5 | Native Windows SCM adapter | [ ] | M3, M4 | Service reports pending/running/stopped states through SCM and handles stop/shutdown callbacks |
-| M6 | Concrete guest runtime wiring | [ ] | M4, M5 | `main.rs` starts the configured worker and maps unexpected failures to a non-zero process result |
+| M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and bounded-I/O tests pass locally |
+| M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, bounded shutdown, failure, and state tests pass locally |
+| M4 | Runtime configuration foundation | [x] | M2 | Versioned persistent schema, identity, endpoint, timing, account, and validation model exists locally |
+| M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; real guest/service-manager validation remains |
+| M6 | Concrete guest runtime wiring | [~] | M4, M5 | `main.rs` starts the configured worker and maps unexpected failures to a non-zero process result; live guest state/resize sink wiring still needs proof on a real VM |
 | M7 | Installation and recovery operations | [ ] | M5, M6 | Install/start/observe/stop/delete sequence passes; bounded recovery actions are verified |
 | M8 | Live QGA and KVM validation | [!] | M2 | Host probe succeeds repeatedly against the Windows KVM guest |
-| M9 | Host virtio-mem XML adapter | [ ] | M1, M8 | Alias/block-size/requested/current reads are validated against live XML |
-| M10 | End-to-end resize flow | [ ] | M7, M8, M9 | One reversible aligned resize converges without overlapping requests |
+| M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, and opt-in Bash live source/sink checks are implemented; live VM evidence remains |
+| M9a | Virtio-mem safety and compatibility gate | [ ] | M8, M9 | Host adapter documents the QEMU/libvirt limits, dynamic memslot requirements, and incompatible device classes before any live resize automation |
+| M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
+| M10 | End-to-end resize flow | [ ] | M7, M8, M9, M9a, M9b | One reversible aligned resize converges without overlapping requests |
 | M11 | Hardening and observability | [ ] | M10 | Recovery, event logging, metrics, timeout, and restart tests pass |
 | M12 | Operational release readiness | [ ] | M11 | Documentation, health checks, monitoring, and repeatable host automation complete |
 
@@ -113,12 +172,21 @@ remain externally blocked.
 
 ### F6a. Contract and unit safety — must-have before live resize
 
-- [ ] Choose one canonical internal memory unit and document every conversion.
-- [ ] Reconcile QGA bytes, controller bytes, libvirt XML values, and any `virsh`
-    command units before enabling a resize sink.
-- [ ] Reject overflow, underflow, zero block size, and impossible total/free
-    relationships at every adapter boundary.
+- [x] Choose bytes (`u64`) as the canonical internal memory unit and document
+    every conversion boundary.
+- [~] Reconcile QGA bytes, controller bytes, libvirt XML values, and any
+    `virsh` command units before enabling a resize sink; the pure Rust
+    `VirtioMemState` contract and captured XML parser are implemented, but live
+    discovery and resize wiring remain.
+- [~] Reject zero size, undersized/non-power-of-two block size, zero or
+    out-of-range values, and unaligned values in the pure Rust contract; wire
+    it into every host adapter boundary when the XML adapter is added.
+- [~] Enforce `requested % block == 0`, `requested <= size`, and `block >= 1 MiB`
+    checks in the pure Rust contract; wire those checks into the host XML
+    adapter before issuing a resize request.
 - [ ] Add boundary tests for maximum values and unit conversion round trips.
+- [ ] Add compatibility checks for `dynamic-memslots`/`unplugged-inaccessible` and
+    known incompatible device classes before enabling live automation.
 
 **Gate:** A target size can be traced from QGA observation to host request with
 no ambiguous or implicit unit conversion.
@@ -145,7 +213,9 @@ no ambiguous or implicit unit conversion.
 - [ ] Implement guest-side memory state acquisition.
 - [ ] Implement a safe resize-request sink without Linux command execution.
 - [ ] Add structured error context at the service boundary.
-- [ ] Add a deterministic fake state provider and resize sink for integration tests.
+- [~] Add a deterministic fake state provider and resize sink for integration
+    tests; local fakes now provide validated byte snapshots, while the live XML
+    state provider and production resize sink remain.
 
 **Gate:** The executable can start its worker, stop cleanly, and fail visibly when an adapter fails.
 
@@ -192,9 +262,12 @@ evidence before live testing.
 ### V2. Live virtio-mem inspection
 
 - [ ] Capture the virtio-mem alias and block size from live XML.
-- [ ] Capture `requested` and `current` values.
+- [ ] Capture `requested`, `current`, and `size` values.
+- [ ] Confirm the block size is compatible with the host configuration and THP assumptions.
+- [ ] Check whether `dynamic-memslots=on` and `unplugged-inaccessible=on` are in use.
 - [ ] Select a reversible, aligned target within configured limits.
 - [ ] Confirm no update is issued while `requested != current`.
+- [ ] Confirm the chosen VM, host, and workload do not rely on incompatible virtio-mem features.
 
 ### V3. End-to-end resize
 
@@ -298,6 +371,8 @@ pass until both paths succeed.
 | B8 | Named-pipe I/O currently has no enforced operation deadline | A stuck QGA call can violate bounded shutdown | Implement cancellable/deadline-aware transport in F4/F5 |
 | B9 | Shutdown timeout is configured but not yet enforced by the worker host | Stop-pending behavior cannot be proven | Add bounded join/worker termination policy in M3/M5 |
 | B10 | No deterministic failure-injection harness exists | Live-only failures would be slow and difficult to reproduce | Implement F8a before M10 |
+| B11 | Official virtio-mem guidance shows compatibility and safety limits that are not yet codified in the host contract | The controller can make unsafe assumptions about resize behavior or valid host configurations | Add the QEMU/libvirt compatibility gate and explicit validation checks in M9a before live automation |
+| B12 | Contemporary virtio-mem guidance recommends `dynamic-memslots=on` with `unplugged-inaccessible=on` for safe unplugged memory handling | The host may misread unplugged-memory semantics without this configuration | Document and verify the host/guest configuration assumptions during V2 and M9a |
 
 ## Definition of done for the project
 

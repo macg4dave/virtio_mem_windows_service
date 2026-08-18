@@ -2,10 +2,11 @@ use crate::controller::ResizeDecision;
 use crate::error::ServiceLoopError;
 use crate::runtime::MemoryPoller;
 use crate::service_host::StopSignal;
+use crate::virtio_mem::VirtioMemState;
 use std::time::Duration;
 
 pub trait MemoryStateProvider {
-    fn memory_state(&mut self) -> Result<(u64, u64), String>;
+    fn memory_state(&mut self) -> Result<VirtioMemState, String>;
 }
 
 pub trait ResizeRequestSink {
@@ -23,14 +24,20 @@ where
     S: MemoryStateProvider,
     R: ResizeRequestSink,
 {
-    let (requested_bytes, current_bytes) = state_provider
+    let memory_state = state_provider
         .memory_state()
         .map_err(ServiceLoopError::StateProvider)?;
+    memory_state
+        .validate()
+        .map_err(|error| ServiceLoopError::StateProvider(error.to_string()))?;
     let decision = poller
-        .poll(requested_bytes, current_bytes)
+        .poll(memory_state.requested_bytes, memory_state.current_bytes)
         .map_err(ServiceLoopError::Poll)?;
 
     if let ResizeDecision::Request { requested_bytes } = decision {
+        memory_state
+            .validate_target(requested_bytes)
+            .map_err(|error| ServiceLoopError::ResizeRequest(error.to_string()))?;
         resize_sink
             .request_resize(requested_bytes)
             .map_err(ServiceLoopError::ResizeRequest)?;
@@ -76,13 +83,15 @@ mod tests {
     use crate::controller::MemoryControllerConfig;
     use crate::runtime::GuestAgent;
 
+    const MIB: u64 = 1024 * 1024;
+
     struct StubGuestAgent;
 
     impl GuestAgent for StubGuestAgent {
         fn get_memory_stats(&mut self) -> Result<String, String> {
             Ok(r#"{"return":[
-                {"stat":"stat-free","value":1},
-                {"stat":"stat-total","value":16}
+                {"stat":"stat-free","value":1048576},
+                {"stat":"stat-total","value":16777216}
             ]}"#
             .to_owned())
         }
@@ -91,15 +100,20 @@ mod tests {
     struct StubState;
 
     impl MemoryStateProvider for StubState {
-        fn memory_state(&mut self) -> Result<(u64, u64), String> {
-            Ok((16, 16))
+        fn memory_state(&mut self) -> Result<VirtioMemState, String> {
+            Ok(VirtioMemState {
+                size_bytes: 28 * MIB,
+                block_size_bytes: 2 * MIB,
+                requested_bytes: 16 * MIB,
+                current_bytes: 16 * MIB,
+            })
         }
     }
 
     struct FailingStateProvider;
 
     impl MemoryStateProvider for FailingStateProvider {
-        fn memory_state(&mut self) -> Result<(u64, u64), String> {
+        fn memory_state(&mut self) -> Result<VirtioMemState, String> {
             Err("state read failed".to_owned())
         }
     }
@@ -134,11 +148,11 @@ mod tests {
         MemoryPoller::new(
             agent,
             MemoryControllerConfig {
-                min_memory_bytes: 8,
-                max_memory_bytes: 28,
-                lower_threshold_bytes: 2,
-                upper_threshold_bytes: 6,
-                block_size_bytes: 4,
+                min_memory_bytes: 8 * MIB,
+                max_memory_bytes: 28 * MIB,
+                lower_threshold_bytes: 2 * MIB,
+                upper_threshold_bytes: 6 * MIB,
+                block_size_bytes: 2 * MIB,
             },
         )
     }
@@ -154,10 +168,10 @@ mod tests {
         assert_eq!(
             decision,
             ResizeDecision::Request {
-                requested_bytes: 20
+                requested_bytes: 18 * MIB
             }
         );
-        assert_eq!(resize.requested, vec![20]);
+        assert_eq!(resize.requested, vec![18 * MIB]);
     }
 
     #[test]
@@ -181,7 +195,9 @@ mod tests {
 
         assert_eq!(
             poll_once(&mut poller, &mut state, &mut resize),
-            Err(ServiceLoopError::StateProvider("state read failed".to_owned()))
+            Err(ServiceLoopError::StateProvider(
+                "state read failed".to_owned(),
+            ))
         );
     }
 
@@ -193,8 +209,62 @@ mod tests {
 
         assert_eq!(
             poll_once(&mut poller, &mut state, &mut resize),
-            Err(ServiceLoopError::ResizeRequest("resize rejected".to_owned()))
+            Err(ServiceLoopError::ResizeRequest(
+                "resize rejected".to_owned(),
+            ))
         );
+    }
+
+    struct InvalidState;
+
+    impl MemoryStateProvider for InvalidState {
+        fn memory_state(&mut self) -> Result<VirtioMemState, String> {
+            Ok(VirtioMemState {
+                size_bytes: 8 * MIB,
+                block_size_bytes: 3 * MIB,
+                requested_bytes: 8 * MIB,
+                current_bytes: 8 * MIB,
+            })
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_virtio_mem_state_before_polling() {
+        let mut poller = poller(StubGuestAgent);
+        let mut state = InvalidState;
+        let mut resize = StubResize::default();
+
+        assert!(matches!(
+            poll_once(&mut poller, &mut state, &mut resize),
+            Err(ServiceLoopError::StateProvider(_))
+        ));
+        assert!(resize.requested.is_empty());
+    }
+
+    struct SmallDeviceState;
+
+    impl MemoryStateProvider for SmallDeviceState {
+        fn memory_state(&mut self) -> Result<VirtioMemState, String> {
+            Ok(VirtioMemState {
+                size_bytes: 16 * MIB,
+                block_size_bytes: 2 * MIB,
+                requested_bytes: 16 * MIB,
+                current_bytes: 16 * MIB,
+            })
+        }
+    }
+
+    #[test]
+    fn rejects_target_outside_device_before_resize_sink() {
+        let mut poller = poller(StubGuestAgent);
+        let mut state = SmallDeviceState;
+        let mut resize = StubResize::default();
+
+        assert!(matches!(
+            poll_once(&mut poller, &mut state, &mut resize),
+            Err(ServiceLoopError::ResizeRequest(_))
+        ));
+        assert!(resize.requested.is_empty());
     }
 
     #[test]
@@ -235,8 +305,8 @@ mod tests {
     impl GuestAgent for NoChangeGuestAgent {
         fn get_memory_stats(&mut self) -> Result<String, String> {
             Ok(r#"{"return":[
-                {"stat":"stat-free","value":4},
-                {"stat":"stat-total","value":16}
+                {"stat":"stat-free","value":4194304},
+                {"stat":"stat-total","value":16777216}
             ]}"#
             .to_owned())
         }

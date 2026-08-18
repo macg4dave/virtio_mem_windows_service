@@ -1,7 +1,8 @@
 use std::process;
 
 use virtio_mem_service::{
-    install_service, stop_service, ServiceConfig, ServiceHost, StopSignal,
+    install_service, remove_service, run_as_service, start_service, stop_service, ServiceConfig,
+    ServiceHost, StopSignal,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -9,6 +10,9 @@ pub enum ServiceCommand {
     Install,
     Run,
     Stop,
+    Start,
+    Remove,
+    Help,
 }
 
 fn parse_command(args: &[String]) -> Option<ServiceCommand> {
@@ -16,15 +20,24 @@ fn parse_command(args: &[String]) -> Option<ServiceCommand> {
     match command {
         "install" => Some(ServiceCommand::Install),
         "stop" => Some(ServiceCommand::Stop),
+        "start" => Some(ServiceCommand::Start),
+        "remove" | "delete" => Some(ServiceCommand::Remove),
+        "help" | "--help" | "-h" => Some(ServiceCommand::Help),
         "run" | "" => Some(ServiceCommand::Run),
-        _ => Some(ServiceCommand::Run),
+        _ => None,
     }
 }
 
 fn run_service(config: ServiceConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
+    let poll_interval = config.poll_interval;
 
-    let mut host = ServiceHost::new(|_stop: &StopSignal| Ok(()));
+    let mut host = ServiceHost::new(|stop: &StopSignal| {
+        while !stop.is_cancelled() {
+            stop.wait(poll_interval);
+        }
+        Ok(())
+    });
     host.run().map_err(|error| error.to_string())?;
 
     Ok(())
@@ -35,6 +48,16 @@ fn main() {
     let command = parse_command(&args);
 
     let config = ServiceConfig::default();
+    if matches!(command, Some(ServiceCommand::Run)) {
+        match run_as_service() {
+            Ok(true) => return,
+            Ok(false) => {}
+            Err(error) => {
+                eprintln!("service dispatcher failed: {error}");
+                process::exit(1);
+            }
+        }
+    }
     match command {
         Some(ServiceCommand::Install) => {
             if let Err(error) = install_service(&config) {
@@ -50,11 +73,32 @@ fn main() {
             }
             println!("service stop requested");
         }
+        Some(ServiceCommand::Start) => {
+            if let Err(error) = start_service(&config.service_name) {
+                eprintln!("service start failed: {error}");
+                process::exit(1);
+            }
+            println!("service start requested");
+        }
+        Some(ServiceCommand::Remove) => {
+            if let Err(error) = remove_service(&config.service_name) {
+                eprintln!("service removal failed: {error}");
+                process::exit(1);
+            }
+            println!("service removed successfully");
+        }
         Some(ServiceCommand::Run) | None => {
+            if command.is_none() {
+                eprintln!("unknown command; use 'help' for usage");
+                process::exit(2);
+            }
             if let Err(error) = run_service(config) {
                 eprintln!("virtio-mem service startup failed: {error}");
                 process::exit(1);
             }
+        }
+        Some(ServiceCommand::Help) => {
+            println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]");
         }
     }
 }
@@ -88,5 +132,18 @@ mod tests {
             Some(ServiceCommand::Run)
         );
         assert_eq!(parse_command(&[]), Some(ServiceCommand::Run));
+        assert_eq!(
+            parse_command(&[String::from("start")]),
+            Some(ServiceCommand::Start)
+        );
+        assert_eq!(
+            parse_command(&[String::from("remove")]),
+            Some(ServiceCommand::Remove)
+        );
+        assert_eq!(
+            parse_command(&[String::from("help")]),
+            Some(ServiceCommand::Help)
+        );
+        assert_eq!(parse_command(&[String::from("unknown")]), None);
     }
 }

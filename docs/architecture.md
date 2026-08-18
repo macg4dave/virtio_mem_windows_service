@@ -7,7 +7,8 @@ This system manages dynamic memory allocation for a Windows 11 guest running und
 ### Components
 
 - **Windows Service (Rust)**: Guest-side runtime for memory metrics, QEMU Guest Agent interaction, cancellation, and service lifecycle hosting
-- **Host validation / automation (Bash)**: Planned scripts for validation, local build workflow, and operational checks
+- **RHEL host controller (Rust/systemd)**: One explicitly configured VM and virtio-mem alias per unit instance; reads QGA and live libvirt state, then issues validated live resize requests
+- **Host validation / automation (Bash)**: Explicit preflight, diagnostic, and manual operational helpers; these do not run inside the controller
 - **QEMU / libvirt validation path**: Used to verify guest agent responses and live virtio-mem behavior
 
 ### Data Flow
@@ -21,6 +22,23 @@ Host validation and runtime tooling
     ├── Validate guest-agent behavior
     └── Coordinate virtio-mem verification
 ```
+
+## RHEL host controller lifecycle and boundaries
+
+The RHEL controller is a Rust process supervised by a templated systemd unit.
+Each unit instance owns one explicitly configured VM name and virtio-mem alias;
+it must not enumerate domains or manage multiple VMs through an implicit
+configuration. Its only host integration is bounded, argument-safe `virsh`
+subprocess calls for QGA statistics, live XML snapshots, and approved live
+resize requests. It never invokes a shell or administers Windows processes.
+
+The controller uses the same byte-based state and resize policy as the Windows
+service. Before a resize, it validates the selected live XML state and target.
+After a request, it waits for `requested` and `current` to converge and never
+sends a follow-up request while they differ. Invalid configuration, failed QGA
+calls, malformed XML, failed resize commands, and convergence timeouts are
+actionable failures; a bounded systemd restart must reread live state rather
+than replay a previous request.
 
 ## Service Boundaries
 
@@ -64,9 +82,11 @@ These rules are adapted from [Microsoft's Windows service walkthrough](https://l
 and its [current Windows service guidance](https://learn.microsoft.com/en-us/dotnet/core/extensions/windows-service); the implementation remains Rust-only.
 
 The current Rust implementation provides `ServiceHost`, `StopSignal`, a
-wakeable polling loop, and validated `ServiceConfig` defaults. The native SCM
-callback/registration adapter, persistent configuration loading, event-log
-sink, and installation/recovery commands remain to be implemented.
+wakeable polling loop, validated `ServiceConfig` defaults, a native SCM
+callback/registration adapter, installation/start/stop/removal commands, and
+the pure Rust `VirtioMemState` byte/alignment validator. Persistent
+configuration loading, event-log integration, live XML parsing, and the
+production resize sink remain to be implemented.
 
 ## RPC & Interfaces
 
