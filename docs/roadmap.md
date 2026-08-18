@@ -146,6 +146,7 @@ readiness in the remaining host-side work.
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, explicit system-libvirt Bash source/sink checks, and fail-closed actuation gates are implemented; live VM evidence remains |
 | M9a | Virtio-mem safety and compatibility gate | [~] | M8, M9 | Tri-state XML compatibility parsing, mergeable external evidence, conflict detection, and fail-closed resize enforcement are implemented; live evidence provider and incompatible workload/device review remain |
 | M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
+| M9c | Rust host CLI replaces Bash resize helper | [ ] | M9, M9a | Rust owns snapshot, validation, dry-run, and explicitly applied resize commands; Bash helper is a temporary thin wrapper and then removed |
 | M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, advisory safe floor, durable JSON-lines output, and generic stoppable worker are locally tested; main SCM construction, trustworthy allocation provider, and live workload evidence remain; no direct host actuation |
 | M10a | Cross-layer state observation | [ ] | M8, M9, M9a | Controlled evidence maps driver `requested_size`/`plugged_size` to QEMU/libvirt `requested`/`current` without treating the fields as interchangeable by assumption |
 | M10b | End-to-end single-VM resize flow | [ ] | M7, M8, M9, M9a, M9b | One reversible aligned resize converges without overlapping requests and records the observed state transition |
@@ -478,7 +479,8 @@ M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7
 The live KVM path (`M8`) is external to the Windows build path. The Phase 2
 demand-agent work (`M10`) can be developed with deterministic native-API fakes,
 but the global-controller path cannot pass its gates until state mapping and
-single-VM convergence evidence are available.
+single-VM convergence evidence are available. M9c removes the duplicate Bash
+host-control implementation before live resize automation is expanded.
 
 ## Active blockers and decisions
 

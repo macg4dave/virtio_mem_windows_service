@@ -25,6 +25,7 @@ pub trait VirshCommand {
 pub struct Virsh {
     binary: String,
     timeout: Duration,
+    connection: Option<String>,
 }
 
 impl Virsh {
@@ -32,13 +33,30 @@ impl Virsh {
         Self {
             binary: binary.into(),
             timeout,
+            connection: None,
+        }
+    }
+
+    pub fn with_connection(
+        binary: impl Into<String>,
+        timeout: Duration,
+        connection: impl Into<String>,
+    ) -> Self {
+        Self {
+            binary: binary.into(),
+            timeout,
+            connection: Some(connection.into()),
         }
     }
 }
 
 impl VirshCommand for Virsh {
     fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
-        let mut child = Command::new(&self.binary)
+        let mut command = Command::new(&self.binary);
+        if let Some(connection) = &self.connection {
+            command.args(["-c", connection]);
+        }
+        let mut child = command
             .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

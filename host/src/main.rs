@@ -13,6 +13,23 @@ use virtio_mem_host::virsh::Virsh;
 use virtio_mem_host::xml_source::VirshXmlSource;
 
 fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match virtio_mem_host::cli::parse_args(&args) {
+        Ok(Some(command)) => {
+            return match virtio_mem_host::cli::run(command) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("virtio-mem-host CLI failed: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+        Ok(None) => {}
+    }
     let config = match HostConfig::from_env() {
         Ok(config) => config,
         Err(error) => {

@@ -1,6 +1,7 @@
 //! RHEL host-side adapters for the shared virtio-mem control policy.
 
 pub mod config;
+pub mod cli;
 pub mod dommemstat;
 pub mod host_memory;
 pub mod qga;

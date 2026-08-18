@@ -65,6 +65,23 @@ verification.
 **Gate:** no automatic resize until live QGA/dommemstat, XML compatibility, and
 convergence evidence pass.
 
+### 6. Replace the Bash host helper with a Rust CLI (M9c)
+
+- Add Rust subcommands for read-only `snapshot` and `validate` operations.
+- Add a dry-run resize command that reports the validated target and exact
+   `virsh` argument vector without mutating the VM.
+- Add an explicitly gated `resize --apply` command that reuses the existing
+   Rust XML, compatibility, convergence, unit, and host-headroom contracts.
+- Make `scripts/virtio-mem-host.sh` a temporary thin wrapper around the Rust
+   binary, then remove it after equivalent operator documentation and tests
+   pass.
+- Ensure no Bash implementation retains independent XML parsing, arithmetic,
+   compatibility, or resize policy logic.
+
+**Gate:** Rust is the only implementation of host snapshot/validation/resize
+policy; the Bash helper is deleted, and the Rust CLI passes the former helper's
+read-only and guarded-live regression cases.
+
 ## Phase 3 — Global arbitration
 
 ### 6. Prove cross-layer state mapping

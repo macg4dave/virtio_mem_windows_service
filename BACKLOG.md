@@ -1,5 +1,17 @@
 # BACKLOG
 
+## 2026-08-18 M9c Rust-only host control migration
+
+- Added M9c to replace `scripts/virtio-mem-host.sh` with an authoritative Rust
+  CLI for snapshot, validation, dry-run, and explicitly applied resize
+  operations.
+- The Rust CLI must reuse the existing XML, compatibility, unit, convergence,
+  and host-headroom contracts rather than reimplementing policy.
+- The Bash helper is explicitly a temporary migration target and must be
+  removed after equivalent Rust regression and operator validation.
+- This milestone is intentionally before broader live resize automation so the
+  repository has one host-control implementation and one safety policy.
+
 ## 2026-08-18 M9 host adapter boundary alignment
 
 - Aligned `scripts/virtio-mem-host.sh` with the Rust resize sink's safety
@@ -357,6 +369,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | 2-3 hours | M4/M6 local service foundation; live workload evidence and runtime publication remain |
+| TASK-010 | Rust host CLI replaces Bash resize helper | Copilot | Ready | 3-5 hours | M9/M9a XML, compatibility, unit, convergence, and headroom contracts implemented; replace and remove `scripts/virtio-mem-host.sh` |
 
 ## In Progress
 

@@ -511,7 +511,8 @@ Expected behavior from the docs:
 
 This is the required safety gate for live validation: if `requested` and `current` are still diverged, the controller must not keep sending resize changes.
 
-The repository also provides an explicit host helper:
+The repository currently provides an explicit Bash host helper while M9c
+migrates these operations into the Rust host CLI:
 
 ```bash
 # Read-only: capture the selected live virtio-mem XML
@@ -530,6 +531,11 @@ confirmation of `dynamic-memslots` and `unplugged-inaccessible`, plus
 `VIRTIO_MEM_WORKLOAD_REVIEW=confirmed` from the operator's incompatible-
 workload review. Snapshot mode remains read-only and does not require those
 actuation gates.
+
+M9c is the required migration milestone before broader live host automation.
+The Rust CLI must become authoritative for snapshot, validation, dry-run, and
+applied resize behavior. The Bash helper must not retain a second copy of the
+safety policy and will be removed after migration validation.
 
 ### Bash validation helpers
 

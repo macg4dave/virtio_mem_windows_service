@@ -79,7 +79,7 @@ See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 │    ├─ checks host headroom                                             │
 │    └─ issues one aligned request and waits for convergence             │
 │                                                                        │
-│  Bash helpers: explicit, read-only inspection and guarded test flows   │
+│  Temporary Bash wrappers: explicit inspection and guarded test flows     │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -94,6 +94,8 @@ See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 - Live resize tests are opt-in, bounded, aligned, and reversible by default.
 - Direct `viomem.sys` user-mode control remains deferred until a supported
   interface is proven.
+- Host snapshot, validation, and resize policy is being consolidated into the
+  Rust host CLI under milestone M9c; the current Bash helper is temporary.
 
 ## Quick start
 

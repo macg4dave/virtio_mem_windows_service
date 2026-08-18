@@ -28,6 +28,16 @@ impl<C> VirshResizeSink<C> {
 
 impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
     fn request_resize(&self, requested_bytes: u64) -> Result<(), String> {
+        let arguments = self.prepare_resize(requested_bytes)?;
+        self.command
+            .run(&arguments)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+}
+
+impl<C: VirshCommand> VirshResizeSink<C> {
+    pub fn prepare_resize(&self, requested_bytes: u64) -> Result<Vec<String>, String> {
         let snapshot = self
             .command
             .run(&["dumpxml".to_owned(), self.vm_name.clone()])
@@ -49,18 +59,15 @@ impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
         }
         let requested_kib = bytes_to_kibibytes(requested_bytes)
             .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
-        self.command
-            .run(&[
-                "update-memory-device".to_owned(),
-                self.vm_name.clone(),
-                "--alias".to_owned(),
-                self.alias.clone(),
-                "--requested-size".to_owned(),
-                requested_kib.to_string(),
-                "--live".to_owned(),
-            ])
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        Ok(vec![
+            "update-memory-device".to_owned(),
+            self.vm_name.clone(),
+            "--alias".to_owned(),
+            self.alias.clone(),
+            "--requested-size".to_owned(),
+            requested_kib.to_string(),
+            "--live".to_owned(),
+        ])
     }
 }
 
