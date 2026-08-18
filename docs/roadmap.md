@@ -28,7 +28,7 @@ the V1 gate remains blocked.
 - **Local quality baseline:** on 2026-08-18 the workspace passed
     `cargo test --workspace --all-features`, `cargo clippy --workspace
     --all-targets --all-features -- -D warnings`, and `cargo build --workspace
-    --all-features`; the workspace currently reports 46 tests passing and 0
+    --all-features`; the workspace currently reports 70 tests passing and 0
     failures.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -55,11 +55,18 @@ the V1 gate remains blocked.
     installation and a resize test through the installed service remain, and
     the unresolved `win11_gpu` rollback non-convergence (see `docs/issues.md`
     ISSUE-005) must be resolved by an operator before any further live test.
+- **Windows demand-agent foundation (2026-08-18):** native
+    `GlobalMemoryStatusEx`/`GetPerformanceInfo` collection, checked
+    canonical-byte snapshots, bounded pressure ratios, provisional five-state
+    classification, aligned bounded recommendations, and advisory safe floors
+    are implemented behind deterministic tests. A one-cycle collection and
+    injected publication boundary is also implemented; the report cannot
+    directly actuate virtio-mem.
 
 ## Verified wins to preserve
 
 - **Local quality baseline:** the native Windows MSVC build, release build,
-    46 unit tests, and Clippy warnings-as-errors gate pass locally.
+    70 unit tests, and Clippy warnings-as-errors gate pass locally.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Clear boundaries:** guest Rust code does not invoke Linux commands; host
@@ -107,9 +114,9 @@ readiness in the remaining host-side work.
 | --- | --- | --- | --- | --- |
 | M0 | Repository and architecture baseline | [x] | — | Architecture, contracts, standards, and testing docs reviewed |
 | M1 | Pure memory policy and QGA parsing | [x] | M0 | Parser and controller tests cover malformed, boundary, alignment, and convergence cases |
-| M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and bounded-I/O tests pass locally |
-| M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, bounded shutdown, failure, and state tests pass locally |
-| M4 | Runtime configuration foundation | [x] | M2 | Versioned persistent schema, identity, endpoint, timing, account, and validation model exists locally |
+| M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
+| M3 | Service lifecycle foundation | [~] | M2 | Startup readiness, cancellation, failure, and state tests pass locally; configured shutdown deadline enforcement remains |
+| M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, demand-report path, timing, account, missing-file defaults, and validation model exist locally; ACL provisioning remains |
 | M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; real guest/service-manager validation remains |
 | M6 | Concrete guest runtime wiring | [~] | M4, M5 | `main.rs` starts the configured worker and maps unexpected failures to a non-zero process result; live guest state/resize sink wiring still needs proof on a real VM |
 | M7 | Installation and recovery operations | [ ] | M5, M6 | Install/start/observe/stop/delete sequence passes; bounded recovery actions are verified |
@@ -117,7 +124,7 @@ readiness in the remaining host-side work.
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, and opt-in Bash live source/sink checks are implemented; live VM evidence remains |
 | M9a | Virtio-mem safety and compatibility gate | [ ] | M8, M9 | Host adapter documents the QEMU/libvirt limits, dynamic memslot requirements, and incompatible device classes before any live resize automation |
 | M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
-| M10 | Phase 2 demand-agent foundation | [ ] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, and advisory safe floor are locally tested; no direct host actuation |
+| M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, advisory safe floor, durable JSON-lines output, and generic stoppable worker are locally tested; main SCM construction, trustworthy allocation provider, and live workload evidence remain; no direct host actuation |
 | M10a | Cross-layer state observation | [ ] | M8, M9, M9a | Controlled evidence maps driver `requested_size`/`plugged_size` to QEMU/libvirt `requested`/`current` without treating the fields as interchangeable by assumption |
 | M10b | End-to-end single-VM resize flow | [ ] | M7, M8, M9, M9a, M9b | One reversible aligned resize converges without overlapping requests and records the observed state transition |
 | M11 | Phase 3 global pool arbitration | [ ] | M10, M10a, M10b | Hermetic multi-VM simulation models host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states |
@@ -180,8 +187,8 @@ readiness in the remaining host-side work.
 - [x] Startup failures are distinct from runtime worker failures.
 - [x] Stop and shutdown share one wakeable cancellation path.
 - [x] Service identity, QGA endpoint, poll interval, shutdown timeout, and least-privilege account defaults are validated.
-- [ ] Load persistent configuration rather than relying only on in-process defaults.
-- [ ] Add a versioned configuration schema and migration/rejection rules.
+- [x] Load persistent configuration rather than relying only on in-process defaults.
+- [x] Add a versioned configuration schema and migration/rejection rules.
 - [ ] Enforce the configured shutdown timeout rather than only storing it.
 
 **Gate:** Worker readiness precedes `Running`; expected cancellation is not a crash; unexpected failures remain recoverable by the SCM layer.
@@ -491,16 +498,16 @@ The implementation is deliberately staged:
 
 ### Phase 2 demand-agent milestones
 
-- [ ] Collect physical memory with `GlobalMemoryStatusEx`.
-- [ ] Collect commit/system metrics with `GetPerformanceInfo`.
-- [ ] Define canonical-byte raw snapshots and a versioned demand report.
-- [ ] Calculate bounded pressure ratios and provisional demand states.
-- [ ] Produce desired-target and safe-floor recommendations without issuing
+- [x] Collect physical memory with `GlobalMemoryStatusEx`.
+- [x] Collect commit/system metrics with `GetPerformanceInfo`.
+- [x] Define canonical-byte raw snapshots and a versioned demand report.
+- [x] Calculate bounded pressure ratios and provisional demand states.
+- [x] Produce desired-target and safe-floor recommendations without issuing
     virtio-mem changes from the Windows service.
 - [ ] Preserve QGA/dommemstat compatibility until native telemetry has live
     evidence.
-- [ ] Add deterministic tests for invalid counters, ratio bounds, hysteresis,
-    target limits, and alignment.
+- [x] Add deterministic tests for invalid counters, ratio bounds, target
+    limits, and alignment.
 
 **Phase 2 gate:** The guest can report a complete demand snapshot locally, and
 the existing host controller remains the only resize authority.

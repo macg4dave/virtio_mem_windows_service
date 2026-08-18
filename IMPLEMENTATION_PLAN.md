@@ -1,200 +1,107 @@
 # Implementation Plan
 
-## Phase 1: Foundation (CURRENT)
+`BACKLOG.md` is the execution source of truth. `docs/roadmap.md` defines the
+milestones and phase gates. This document summarizes the current dependency
+ordered implementation plan without duplicating task status tables.
 
-This phase establishes the initial repository structure and validates the QEMU Guest Agent integration path.
+## Phase 2 — Core functionality
 
-### TASK-001: Rust service foundation
+### 1. Complete guest transport and lifecycle hardening
 
-**Owner**: Copilot  
-**Status**: Planned  
-**Effort**: 4-6 hours
+- Add bounded connect, write, flush, and read deadlines to the Windows QGA
+   named-pipe client.
+- Enforce the configured shutdown timeout during worker termination.
+- Preserve explicit transport, parser, cancellation, and startup failures.
+- Keep the Windows service free of Linux, libvirt, and host-side commands.
 
-#### Deliverables
+**Evidence:** deterministic timeout and shutdown tests, followed by the local
+workspace quality gate.
 
-1. **Directory Structure**
-   ```text
-   windows/
-   ├── src/
-   │   └── main.rs
-   ├── Cargo.toml
-   ├── Cargo.lock
-   └── README.md
-   ```
+### 2. Complete concrete Windows runtime wiring
 
-2. **Core Components**
-   - [ ] Guest-side memory collection entry point
-   - [x] QEMU Guest Agent parsing and validation foundation
-   - [x] Error handling and safe defaults for memory-stat responses
-   - [x] Local unit tests for parsing and invalid values
-   - [ ] Bash helper scripts for validation and local checks
+- Connect `ServiceConfig` to `NamedPipeGuestAgent`.
+- Provide a trustworthy current-allocation provider; do not infer it from
+   configured limits or unrelated QGA totals.
+- Construct the advisory `DemandServiceWorker` from the service entry point.
+- Keep demand reports advisory and separate from host resize authority.
 
-3. **Implementation Constraints**
-   - Use Rust for the runtime logic
-   - Use Bash for local automation and validation steps
+**Evidence:** local `run` mode exercises the configured worker and fails
+visibly when an adapter fails.
 
-4. **Validation**
-   - [ ] `cargo build --release`
-   - [ ] `cargo test`
-   - [ ] `cargo clippy --all-targets --all-features -- -D warnings`
-   - [ ] `cargo fmt --all`
+### 3. Finish installation and recovery operations
 
-#### Acceptance Criteria
+- Provision the selected least-privilege account and ProgramData ACLs.
+- Validate install → start → observe → stop → remove on a Windows guest.
+- Configure bounded recovery only for unexpected failures.
+- Verify service status transitions and event-log visibility.
 
-- The Rust service compiles without errors
-- Unit tests cover parsing and validation logic
-- Local lint and build checks pass
-- The implementation remains compatible with the repo’s Rust/Bash-only rule
+**Dependency:** real Windows service-manager permissions and guest QGA channel
+verification.
 
-#### Blockers / Dependencies
+## Host-side validation path
 
-- QEMU Guest Agent must be running on Windows for live validation
-- Host-side validation requires libvirt and `virsh` access
+### 4. Complete the virtio-mem compatibility gate
 
----
+- Verify `dommemstat` fields on the target guest.
+- Confirm live XML alias, size, block, `requested`, and `current` values.
+- Verify `dynamic-memslots` and `unplugged-inaccessible` requirements where
+   supported.
+- Rule out documented incompatible workloads and device classes.
+- Add maximum-value and unit-conversion round-trip coverage.
 
-### TASK-002: QEMU Guest Agent validation
+### 5. Validate the one-VM host controller
 
-**Owner**: Unassigned  
-**Status**: Ready  
-**Effort**: 2-3 hours
+- Install the templated systemd service under the approved service account.
+- Exercise one reversible aligned resize through the installed service.
+- Confirm convergence suppression, host headroom checks, bounded failures,
+   signal handling, and restart behavior.
+- Resolve the recorded `win11_gpu` rollback non-convergence before any new
+   resize attempt.
 
-#### Deliverables
+**Gate:** no automatic resize until live QGA/dommemstat, XML compatibility, and
+convergence evidence pass.
 
-1. **Validation Checklist**
-   - [ ] QEMU Guest Agent service exists on Windows 11
-   - [ ] Guest Agent channel is configured in libvirt domain XML
-   - [ ] The host can execute `virsh qemu-agent-command`
-   - [ ] Guest Agent responds to `guest-info`
-   - [ ] Guest Agent responds to `guest-get-memory-stats`
-   - [ ] Unix socket communication works reliably
+## Phase 3 — Global arbitration
 
-2. **Documentation**
-   - [ ] Update [docs/qemu-ga-setup.md](docs/qemu-ga-setup.md) with step-by-step setup
-   - [ ] Document expected response formats for memory stats
-   - [ ] Record error conditions and recovery strategies
+### 6. Prove cross-layer state mapping
 
-3. **Proof of Concept**
-   - [ ] Manual command-line test of each API call
-   - [ ] Capture actual JSON responses from Guest Agent
-   - [ ] Measure response latency and consistency
-   - [ ] Test socket recovery after temporary disconnection
+Observe the same controlled operation through Windows driver state and
+libvirt/QEMU state. Do not treat `requested_size`/`plugged_size` as equivalent
+to `requested`/`current` until the mapping is documented and validated.
 
-#### Acceptance Criteria
+### 7. Build hermetic global-pool simulation
 
-- QEMU Guest Agent is confirmed operational
-- Required API endpoints are documented with examples
-- At least 3 successful round-trips are observed per endpoint
-- Known failure modes are documented
-- Setup instructions are reproducible
+- Model host reserve, actual VM allocations, pool-free capacity, stale reports,
+   and in-flight operations.
+- Add independent growth and reclaim priorities.
+- Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY` states.
+- Prove aligned, bounded reclaim and stop-on-pressure behavior.
 
-#### Blockers / Dependencies
+### 8. Add controlled reclaim and actuation
 
-- Requires running QEMU guest with Windows 11
-- Requires libvirt host access
-- QEMU version must support the guest agent features in use
+- Add rolling demand history and conservative safe floors.
+- Reclaim one aligned step at a time and wait for convergence.
+- Fail closed on stale or inconsistent evidence.
+- Keep direct driver IOCTL work deferred unless a separate signed-driver track
+   proves a supported interface.
 
----
+## Phase 4 and operations
 
-### TASK-003: Bash validation helpers
+After Phase 3 gates pass, implement recovery classification, structured
+observability, metrics, health checks, restart behavior, release packaging,
+rollback, and repeatable deployment procedures. Track this work in M12/M13 of
+`docs/roadmap.md` rather than creating a second task numbering scheme.
 
-**Owner**: Unassigned  
-**Status**: Planned  
-**Effort**: 1-2 hours
+## Validation gates
 
-#### Deliverables
+The local gate is:
 
-- [ ] Local validation script for environment checks
-- [ ] Bash helper for cargo build and test invocation
-- [ ] Explicit error handling with `set -euo pipefail`
-- [ ] Documentation of expected host prerequisites
+- `cargo fmt --all -- --check`
+- `cargo build --workspace --all-features --release`
+- `cargo test --workspace --all-features`
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `bash -n scripts/*.sh`
 
-#### Acceptance Criteria
-
-- The helper scripts run locally without silent failures
-- Required tool checks fail clearly when prerequisites are missing
-- Bash is used only for automation, not runtime logic
-
----
-
-## Phase 2: Core Functionality (In Progress)
-
-- **TASK-004**: Windows service memory polling logic (In Progress: `MemoryPoller` composes agent responses with parser and policy)
-- **TASK-005**: Safe QEMU Guest Agent response handling (In Progress: typed poll errors and malformed-response propagation)
-- **TASK-006**: Host-side virtio-mem validation flow
-- **TASK-007**: End-to-end integration testing
-
-## Phase 3: Hardening (Planned)
-
-- **TASK-008**: Error handling and recovery
-- **TASK-009**: Logging and observability
-- **TASK-010**: Configuration externalization
-- **TASK-011**: Performance tuning
-
-## Phase 4: Operations (Future)
-
-- **TASK-012**: Windows service registration
-- **TASK-013**: Host automation and checks
-- **TASK-014**: Monitoring and alerting
-- **TASK-015**: Health checks
-
----
-
-## Task Dependencies
-
-```text
-TASK-001 (Rust scaffolding)
-    ↓
-TASK-002 (QEMU GA validation)
-    ↓
-TASK-003 (Bash validation helpers)
-    ↓
-TASK-004 (Memory polling logic)
-TASK-005 (QGA response handling)
-    ↓
-TASK-006 (Virtio-mem validation)
-    ↓
-TASK-007 (Integration testing)
-    ↓
-Phase 2/3/4 tasks
-```
-
-## Execution Rules
-
-1. Complete one task at a time in the **Ready Queue**
-2. Move completed tasks to **Completed** in BACKLOG.md
-3. Update documentation with every completed task
-4. Perform local Rust and Bash validation before marking complete
-5. Document any blockers or handoff notes
-
----
-
-## Quality Gates
-
-### Gate 1: Phase 1 Completion
-
-- [x] Rust library compiles and all 13 unit tests pass; complete service runtime remains
-- [ ] QEMU Guest Agent integration is validated
-- [ ] Bash helper scripts run cleanly
-- [ ] All documentation is current
-
-### Gate 2: Phase 2 Completion
-
-- [ ] End-to-end guest validation succeeds on a test VM
-- [ ] Memory-read logic is stable across repeated checks
-- [ ] No silent failures during validation loops
-- [ ] Integration checks are documented
-
-### Gate 3: Phase 3 Completion
-
-- [ ] All error conditions are handled gracefully
-- [ ] Logs are readable and actionable
-- [ ] Configuration is externalized when needed
-- [ ] Performance meets targets
-
-### Gate 4: Phase 4 Completion
-
-- [ ] Service registration is documented and validated
-- [ ] Automation checks are repeatable
-- [ ] Health checks pass continuously
-- [ ] Production deployment is documented
+Live host and guest operations are separate, explicit-scope validation. They
+must not be substituted with local test success, and protected mutations
+require the approval and safety procedure documented in `docs/testing.md`.

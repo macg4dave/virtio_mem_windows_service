@@ -65,7 +65,7 @@ The demand-agent contract is additive to the existing QGA/dommemstat contract.
 It describes what Windows observes and recommends; it does not grant the
 guest authority to allocate host memory.
 
-The planned versioned report is:
+The implemented versioned report is:
 
 ```json
 {
@@ -95,16 +95,46 @@ The planned versioned report is:
 }
 ```
 
-`GlobalMemoryStatusEx` is the planned source for physical totals, available
-physical memory, and memory load. `GetPerformanceInfo` is the planned source
-for commit and system-wide memory fields. These native sources are Phase 2
-implementation work; the existing QGA/dommemstat report remains valid during
-the transition.
+`GlobalMemoryStatusEx` is the implemented source for physical totals,
+available physical memory, and memory load. `GetPerformanceInfo` is the
+implemented source for commit and system-wide memory fields. The native
+collector and report calculator are locally tested, but live workload evidence
+and production service wiring remain open. The existing QGA/dommemstat report
+remains valid during the transition.
 
-Demand states are initially `release`, `stable`, `want_more`, `pressure`, and
-`critical`. Thresholds are provisional and must be tested with deterministic
-fixtures before being used for automatic actuation. A desired target is a
-recommendation, not a host allocation grant.
+Demand states are `release`, `stable`, `want_more`, `pressure`, and `critical`.
+The current provisional pressure bands use the larger of physical and commit
+pressure: below 0.25 is `release`, below 0.60 is `stable`, below 0.75 is
+`want_more`, below 0.90 is `pressure`, and otherwise `critical`. These bands
+are policy inputs, not live-VM evidence, and must be tuned only after measured
+workload validation. A desired target is a recommendation, not a host
+allocation grant.
+
+`MemoryTelemetrySnapshot` validates counters before calculation. Physical and
+commit values are canonical `u64` bytes; `GetPerformanceInfo` page counters
+are converted with checked multiplication using the reported Windows page
+size. The native collector returns an explicit error for failed Windows APIs,
+zero denominators, impossible counters, and arithmetic overflow.
+
+`DemandCalculator` clamps recommendations to configured byte limits and aligns
+every target to the configured block size. It produces a one-block conservative
+safe-floor recommendation, but neither that floor nor the desired target is a
+resize command. The Windows service remains advisory and the existing host
+controller remains the only Phase 2 actuation authority.
+
+`DemandAgent` provides the runtime boundary for one caller-selected poll cycle:
+it collects a snapshot, calculates a report using the observed current
+allocation, and passes the report to an injected `DemandReportPublisher`. A
+collection or publication failure is returned explicitly. The publisher has no
+resize interface; integration with the main SCM worker and a persistent/event
+report sink remain separate operational work.
+
+`JsonLinesDemandReportPublisher` is the current durable local sink. It appends
+one complete JSON object plus a newline to the configured report path and
+returns directory, encoding, write, and flush failures explicitly. The generic
+`DemandServiceWorker` uses this publication boundary when supplied with a
+validated current-allocation provider; the main SCM worker does not guess that
+state from QGA totals or configured limits.
 
 ## Memory Change Request
 

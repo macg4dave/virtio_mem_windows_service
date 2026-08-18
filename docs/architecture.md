@@ -117,10 +117,13 @@ and its [current Windows service guidance](https://learn.microsoft.com/en-us/dot
 
 The current Rust implementation provides `ServiceHost`, `StopSignal`, a
 wakeable polling loop, validated `ServiceConfig` defaults, a native SCM
-callback/registration adapter, installation/start/stop/removal commands, and
-the pure Rust `VirtioMemState` byte/alignment validator. Persistent
-configuration loading, event-log integration, live XML parsing, and the
-production resize sink remain to be implemented.
+callback/registration adapter, installation/start/stop/removal commands, the
+pure Rust `VirtioMemState` byte/alignment validator, a versioned JSON
+configuration loader, and a generic `DemandServiceWorker` that publishes
+advisory reports through an injected JSON-lines sink. Event-log integration,
+live XML parsing, a trustworthy Windows current-allocation provider, and the
+production resize sink remain to be implemented. The main SCM entry point must
+not construct a demand worker until that allocation provider is available.
 
 ## RPC & Interfaces
 

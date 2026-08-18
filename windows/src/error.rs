@@ -22,4 +22,12 @@ pub enum ConfigurationError {
     InvalidPollInterval,
     #[error("shutdown timeout must be greater than zero")]
     InvalidShutdownTimeout,
+    #[error("configuration file I/O failed: {0}")]
+    FileIo(String),
+    #[error("configuration file is invalid: {0}")]
+    InvalidFile(String),
+    #[error("unsupported configuration schema version: {0}")]
+    UnsupportedSchemaVersion(u32),
+    #[error("configuration duration cannot be represented in milliseconds")]
+    DurationOverflow,
 }

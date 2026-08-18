@@ -10,6 +10,42 @@ complete by this documentation update.
 
 Execution source of truth. Update after every session.
 
+## 2026-08-18 Documentation synchronization
+
+- Synchronized `PROJECT_STATUS.md` and `IMPLEMENTATION_PLAN.md` with the
+  current Phase 2 roadmap and backlog; removed obsolete task numbering and
+  early-scaffold claims.
+- Corrected the feature matrix and API contract to describe implemented native
+  telemetry, advisory demand reports, and validated JSON configuration while
+  retaining live-validation and production-wiring gaps.
+- Corrected roadmap milestone wording so operation deadlines and configured
+  shutdown-timeout enforcement remain explicitly open.
+- Replaced the root `readme.md` with a user-facing guide covering project
+  goals, architecture, current status, safety boundaries, quick start, and
+  links to the roadmap and supporting contracts.
+- Local documentation and Rust validation remain required before marking any
+  implementation milestone complete.
+
+## 2026-08-18 Windows demand-agent handoff
+
+- Added `windows/src/demand.rs` with native `GlobalMemoryStatusEx` and
+  `GetPerformanceInfo` collection, checked canonical-byte counters, a versioned
+  advisory demand report, bounded provisional pressure states, aligned target
+  limits, and a conservative safe floor.
+- Added deterministic tests for invalid counters, pressure bounds, state
+  classification, target clamping/alignment, and invalid current allocation.
+- The collector/report are not wired to host actuation. QGA/dommemstat and the
+  existing host controller remain unchanged and authoritative for resize.
+- Added a one-cycle `DemandAgent` collection/publication boundary with injected
+  publisher, explicit telemetry/publication errors, and deterministic tests.
+- Added validated durable JSON-lines output and a generic stoppable advisory
+  worker; the configured path defaults under `C:\ProgramData`.
+- Added versioned JSON service configuration loading with validated defaults
+  when the file is absent, explicit schema rejection, and startup integration.
+- Live Windows workload evidence, persistent/event report output, and main
+  SCM construction remain open until a trustworthy current-allocation provider
+  and its service-account ACLs are validated.
+
 ## Documentation Freshness Rules
 
 After completing any task:
@@ -31,13 +67,15 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, and configurable named-pipe client implemented; live transport validation remains |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | 2-3 hours | M4/M6 local service foundation; live workload evidence and runtime publication remain |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are locally covered; live VM evidence, service registration, and QGA validation remain. |
-| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Workspace format, release build, 46 tests, and Clippy warnings-as-errors pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
+| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Workspace format, release build, 70 tests, and Clippy warnings-as-errors pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, and a generic stoppable worker are implemented. Main SCM construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, event-log integration, and any host integration remain intentionally deferred. |
 
 ### 2026-08-18 live KVM handoff
 

@@ -1,5 +1,6 @@
 pub mod config;
 pub mod controller;
+pub mod demand;
 pub mod error;
 pub mod qga;
 pub mod runtime;
@@ -13,12 +14,18 @@ pub mod virtio_mem_xml;
 
 pub use config::ServiceConfig;
 pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
+pub use demand::{
+    DemandAgent, DemandAgentError, DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig,
+    DemandRecommendation, DemandReport, DemandReportPublisher, DemandState,
+    JsonLinesDemandReportPublisher, MemoryTelemetry, MemoryTelemetrySnapshot,
+    NativeMemoryTelemetry,
+};
 pub use error::{
     ConfigurationError, MemoryStatsError, PollError, ServiceHostError, ServiceLoopError,
     VirtioMemError,
 };
 pub use qga::NamedPipeGuestAgent;
-pub use runtime::{GuestAgent, MemoryPoller, ServiceRuntime};
+pub use runtime::{DemandServiceWorker, GuestAgent, MemoryPoller, ServiceRuntime};
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};
 pub use service_loop::{poll_once, run_polling_loop, MemoryStateProvider, ResizeRequestSink};

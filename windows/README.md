@@ -15,6 +15,7 @@ windows/
 │   ├── main.rs
 │   ├── controller.rs
 │   ├── config.rs
+│   ├── demand.rs
 │   ├── error.rs
 │   ├── qga.rs
 │   ├── runtime.rs
@@ -59,13 +60,22 @@ Agent client, a mockable memory poller, and an adapter-based single poll
 iteration. It also includes a stoppable polling scheduler, portable
 `ServiceHost` lifecycle wrapper, and a native SCM dispatcher that shares the
 same cancellation signal as the worker. `ServiceConfig` supplies validated
-service identity, endpoint, timing, and least-privilege defaults; persistent
-loading and live KVM channel validation are not implemented yet.
+service identity, endpoint, timing, least-privilege defaults, and versioned JSON
+loading from `C:\ProgramData\VirtioMemService\config.json`; ACL provisioning
+and live KVM channel validation are not implemented yet. The demand
+agent foundation additionally collects native Windows memory counters through
+`GlobalMemoryStatusEx` and `GetPerformanceInfo`, validates canonical-byte
+snapshots, and emits a versioned advisory demand report without issuing a
+resize. `DemandAgent` exposes a testable one-cycle collection/publication
+boundary; wiring a persistent or event-log report sink into the SCM worker is
+still pending. The generic `DemandServiceWorker` and JSON-lines publisher are
+available, but the SCM entry point intentionally waits for a validated
+current-allocation provider rather than guessing from QGA totals or limits.
 
 ## Service hosting rules
 
-The eventual SCM adapter must keep service callbacks bounded and delegate
-polling to the stoppable runtime. It must report lifecycle transitions in the
+The SCM adapter keeps service callbacks bounded and delegates polling to the
+stoppable runtime. It must report lifecycle transitions in the
 order **start-pending → running → stop-pending → stopped**, distinguish normal
 cancellation from failure, and preserve unexpected worker failures as
 non-zero process exits so SCM recovery can act. Service registration must use a

@@ -17,8 +17,8 @@
 
 ### Phase 2 demand-agent state
 
-The planned native Windows collector produces a raw snapshot before policy is
-applied:
+The implemented native Windows collector produces a raw snapshot before policy
+is applied:
 
 - `physical_total_bytes`: `GlobalMemoryStatusEx` physical total
 - `physical_available_bytes`: immediately reusable physical memory
@@ -31,7 +31,8 @@ applied:
 
 The derived demand state contains `physical_pressure`, `commit_pressure`, a
 `demand_state` of `release`, `stable`, `want_more`, `pressure`, or `critical`,
-`desired_target_bytes`, and `safe_floor_bytes`.
+`desired_target_bytes`, and `safe_floor_bytes`. The report is versioned as
+`version: 1` and serializes all memory values as canonical byte counts.
 
 The four policy levels have distinct meanings:
 
@@ -42,6 +43,12 @@ The four policy levels have distinct meanings:
 
 Neither target authorizes a resize by itself. Phase 2 keeps allocation
 authority in the existing host controller.
+
+The `DemandAgent` runtime boundary accepts the observed current allocation as
+an explicit input and publishes a complete report through an injected sink.
+This keeps native telemetry and recommendation generation independent from QGA,
+libvirt, and any future report transport. Publication failure is observable and
+does not trigger a resize fallback.
 
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and

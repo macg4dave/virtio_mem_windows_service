@@ -1,8 +1,11 @@
 use std::time::Duration;
 
 use crate::controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
+use crate::demand::{
+    DemandAgent, DemandAgentError, DemandReport, DemandReportPublisher, MemoryTelemetry,
+};
 use crate::error::{PollError, ServiceLoopError};
-use crate::service_host::StopSignal;
+use crate::service_host::{ServiceWorker, StopSignal};
 use crate::service_loop::{run_polling_loop, MemoryStateProvider, ResizeRequestSink};
 use crate::stats::parse_memory_stats;
 
@@ -96,12 +99,86 @@ where
     }
 }
 
+/// Advisory demand worker that never exposes a resize sink.
+#[derive(Debug)]
+pub struct DemandServiceWorker<T, S, P> {
+    demand_agent: DemandAgent<T>,
+    state_provider: S,
+    publisher: P,
+    interval: Duration,
+}
+
+impl<T, S, P> DemandServiceWorker<T, S, P>
+where
+    T: MemoryTelemetry,
+    S: MemoryStateProvider,
+    P: DemandReportPublisher,
+{
+    pub fn new(
+        demand_agent: DemandAgent<T>,
+        state_provider: S,
+        publisher: P,
+        interval: Duration,
+    ) -> Result<Self, String> {
+        if interval.is_zero() {
+            return Err("demand worker interval must be greater than zero".to_owned());
+        }
+        Ok(Self {
+            demand_agent,
+            state_provider,
+            publisher,
+            interval,
+        })
+    }
+
+    pub fn run_once(&mut self) -> Result<DemandReport, String> {
+        let state = self
+            .state_provider
+            .memory_state()
+            .map_err(|error| format!("read current allocation: {error}"))?;
+        state
+            .validate()
+            .map_err(|error| format!("validate current allocation: {error}"))?;
+        self.demand_agent
+            .collect_and_publish(state.current_bytes, &mut self.publisher)
+            .map_err(|error| match error {
+                DemandAgentError::Telemetry(error) => format!("demand telemetry: {error}"),
+                DemandAgentError::Publication(error) => format!("demand publication: {error}"),
+            })
+    }
+
+    pub fn publisher(&self) -> &P {
+        &self.publisher
+    }
+}
+
+impl<T, S, P> ServiceWorker for DemandServiceWorker<T, S, P>
+where
+    T: MemoryTelemetry,
+    S: MemoryStateProvider,
+    P: DemandReportPublisher,
+{
+    fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
+        while !stop.is_cancelled() {
+            self.run_once()?;
+            if !stop.is_cancelled() {
+                stop.wait(self.interval);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::demand::{
+        DemandCalculator, DemandPolicyConfig, DemandReportPublisher, MemoryTelemetrySnapshot,
+    };
     use crate::virtio_mem::VirtioMemState;
 
     const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
 
     #[derive(Clone, Copy, Debug)]
     struct TestMemoryStateProvider {
@@ -278,5 +355,90 @@ mod tests {
         assert_eq!(provider.memory_state().unwrap().requested_bytes, 16 * MIB);
         assert!(sink.request_resize(18 * MIB).is_ok());
         assert_eq!(sink.requests(), vec![18 * MIB]);
+    }
+
+    #[derive(Clone)]
+    struct DemandTelemetryFixture;
+
+    impl MemoryTelemetry for DemandTelemetryFixture {
+        fn collect(&self) -> Result<MemoryTelemetrySnapshot, crate::demand::DemandError> {
+            Ok(MemoryTelemetrySnapshot {
+                physical_total_bytes: 16 * GIB,
+                physical_available_bytes: 2 * GIB,
+                memory_load_percent: 88,
+                commit_total_bytes: 15 * GIB,
+                commit_limit_bytes: 16 * GIB,
+                commit_peak_bytes: 15 * GIB,
+                system_cache_bytes: 0,
+                kernel_paged_bytes: 0,
+                kernel_nonpaged_bytes: 0,
+            })
+        }
+    }
+
+    #[derive(Default, Debug)]
+    struct DemandPublisherFixture {
+        reports: Vec<crate::demand::DemandReport>,
+    }
+
+    impl DemandReportPublisher for DemandPublisherFixture {
+        fn publish(&mut self, report: crate::demand::DemandReport) -> Result<(), String> {
+            self.reports.push(report);
+            Ok(())
+        }
+    }
+
+    struct DemandStateFixture;
+
+    impl MemoryStateProvider for DemandStateFixture {
+        fn memory_state(&mut self) -> Result<VirtioMemState, String> {
+            Ok(VirtioMemState {
+                size_bytes: 32 * GIB,
+                block_size_bytes: 2 * GIB,
+                requested_bytes: 30 * GIB,
+                current_bytes: 30 * GIB,
+            })
+        }
+    }
+
+    #[test]
+    fn advisory_worker_publishes_using_observed_current_state() {
+        let calculator = DemandCalculator::new(DemandPolicyConfig {
+            configured_minimum_bytes: 4 * GIB,
+            configured_maximum_bytes: 32 * GIB,
+            block_size_bytes: 2 * GIB,
+        })
+        .expect("demand policy should be valid");
+        let agent = DemandAgent::new(DemandTelemetryFixture, calculator);
+        let mut worker = DemandServiceWorker::new(
+            agent,
+            DemandStateFixture,
+            DemandPublisherFixture::default(),
+            Duration::from_secs(1),
+        )
+        .expect("worker should be valid");
+
+        let report = worker.run_once().expect("worker cycle should succeed");
+
+        assert_eq!(report.demand.state, crate::demand::DemandState::Critical);
+        assert_eq!(worker.publisher().reports, vec![report]);
+    }
+
+    #[test]
+    fn advisory_worker_rejects_zero_interval() {
+        let calculator = DemandCalculator::new(DemandPolicyConfig {
+            configured_minimum_bytes: 4 * GIB,
+            configured_maximum_bytes: 32 * GIB,
+            block_size_bytes: 2 * GIB,
+        })
+        .expect("demand policy should be valid");
+        let result = DemandServiceWorker::new(
+            DemandAgent::new(DemandTelemetryFixture, calculator),
+            DemandStateFixture,
+            DemandPublisherFixture::default(),
+            Duration::ZERO,
+        );
+
+        assert!(result.is_err());
     }
 }

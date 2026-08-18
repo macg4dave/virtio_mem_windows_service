@@ -15,7 +15,7 @@ anyhow = "1.0"
 quick-xml = "0.41.0"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-winapi = { version = "0.3", features = ["processthreadsapi", "winbase", "winsvc", "sysinfoapi", "winnt"] }
+winapi = { version = "0.3", features = ["processthreadsapi", "psapi", "winbase", "winsvc", "sysinfoapi", "winnt"] }
 
 [dev-dependencies]
 mockall = "0.15.0"

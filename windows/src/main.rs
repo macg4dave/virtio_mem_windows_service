@@ -47,7 +47,13 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = parse_command(&args);
 
-    let config = ServiceConfig::default();
+    let config = match ServiceConfig::load_default() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("service configuration failed: {error}");
+            process::exit(1);
+        }
+    };
     if matches!(command, Some(ServiceCommand::Run)) {
         match run_as_service() {
             Ok(true) => return,

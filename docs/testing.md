@@ -55,6 +55,14 @@ cargo fmt --all
 
 The Rust service tests should cover QGA response parsing, threshold boundaries, minimum/maximum safe ranges, and invalid configuration cases. They do not require a live VM.
 
+Service configuration is loaded from the versioned JSON file at
+`C:\ProgramData\VirtioMemService\config.json`. A missing file uses validated
+defaults; malformed files, unsupported schema versions, invalid durations, and
+unsafe values fail startup. Local tests cover round-trip persistence,
+missing-file defaults, schema rejection, and empty-path validation. Production
+installation must provision the directory and least-privilege ACLs before
+writing configuration or demand reports.
+
 ### RHEL host controller testing
 
 #### Read-only memory decision preview
@@ -456,16 +464,38 @@ Before committing:
 
 ## Phase 2 demand-agent validation
 
-Native Windows telemetry is additive to the current QGA/dommemstat path. Test
-the collector and calculator without a live VM first:
+Native Windows telemetry is additive to the current QGA/dommemstat path. The
+implemented `windows/src/demand.rs` collector and calculator are tested without
+a live VM first:
 
-- mock `GlobalMemoryStatusEx` and `GetPerformanceInfo` results;
+- validate `GlobalMemoryStatusEx` and `GetPerformanceInfo` results through
+  canonical `MemoryTelemetrySnapshot` fixtures;
 - reject zero totals, zero commit limits, impossible counters, and overflow;
 - verify physical and commit pressure ratios remain within `0.0..=1.0`;
-- test every demand-state boundary and hysteresis transition;
+- test the provisional `release`, `stable`, `want_more`, `pressure`, and
+  `critical` boundaries;
 - verify desired targets are clamped to configured minimum/maximum values;
 - verify safe-floor recommendations never authorize a resize by themselves;
 - verify all targets remain block-aligned and canonical byte based.
+- verify the demand-agent publisher receives exactly one complete report after
+  valid collection;
+- verify invalid telemetry prevents publication and publisher failures remain
+  explicit.
+
+The JSON-lines publisher test reads the emitted file back and parses each line
+as a complete version-1 `DemandReport`. The default path is under
+`C:\ProgramData\VirtioMemService`; installation must provision the directory
+and least-privilege ACLs before enabling durable service output. The main SCM
+worker remains unconnected until a real current-allocation provider is
+validated; tests must not substitute a configured minimum or QGA total for
+that state.
+
+The native collector calls `GlobalMemoryStatusEx` for physical memory and
+`GetPerformanceInfo` for page-based commit/system counters. Page counters are
+converted using checked multiplication by the reported page size. Windows API
+failures and invalid snapshots return explicit errors. The report is version 1
+and serializes canonical-byte values; it is advisory only and does not call a
+resize sink.
 
 The demand report must be read-only with respect to virtio-mem. A passing local
 collector test does not prove that QEMU/libvirt or `viomem.sys` converges.
