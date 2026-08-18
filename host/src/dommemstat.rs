@@ -69,15 +69,25 @@ pub fn parse_dommemstat(output: &str) -> Result<MemoryStats, String> {
     let free_bytes = unused_kib
         .checked_mul(KIB)
         .ok_or_else(|| "dommemstat 'unused' value overflows bytes".to_owned())?;
-    let available_bytes = available_kib
+    let reported_available_bytes = available_kib
         .checked_mul(KIB)
         .ok_or_else(|| "dommemstat 'available' value overflows bytes".to_owned())?;
 
-    if free_bytes > total_bytes || available_bytes > total_bytes {
+    if free_bytes > total_bytes {
         return Err(format!(
             "dommemstat reported inconsistent values: unused={unused_kib}KiB available={available_kib}KiB actual={actual_kib}KiB"
         ));
     }
+
+    // Some Windows balloon reports expose `available` from a broader memory
+    // view than `actual`, so it can exceed the balloon-adjusted size. It is
+    // not safe to use that value as a bounded guest-memory counter; retain
+    // the conservative `unused` fallback instead.
+    let available_bytes = if reported_available_bytes <= total_bytes {
+        reported_available_bytes
+    } else {
+        free_bytes
+    };
 
     Ok(MemoryStats {
         free_bytes,
@@ -132,6 +142,14 @@ mod tests {
     #[test]
     fn rejects_inconsistent_values() {
         assert!(parse_dommemstat("actual 10\nunused 20\n").is_err());
+    }
+
+    #[test]
+    fn falls_back_when_available_exceeds_actual() {
+        let stats = parse_dommemstat("actual 100\nunused 40\navailable 120\n")
+            .expect("unused remains a valid conservative fallback");
+        assert_eq!(stats.free_bytes, 40 * KIB);
+        assert_eq!(stats.available_bytes, 40 * KIB);
     }
 
     #[test]

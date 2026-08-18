@@ -1,7 +1,7 @@
 # Install as /etc/virtio-mem-host/<instance>.conf. This file contains no secrets.
 # The systemd instance name identifies this explicitly managed VM.
 VIRTIO_MEM_VM_NAME=win11_gpu
-VIRTIO_MEM_ALIAS=ua-virtio-mem0
+VIRTIO_MEM_ALIAS=ua-virtiomem0
 
 # All memory quantities are byte counts and must be compatible with the live
 # virtio-mem block size. Choose limits only after inspecting the live device.

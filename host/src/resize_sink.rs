@@ -1,4 +1,4 @@
-use virtio_mem_core::parse_virtio_mem_xml_for_alias;
+use virtio_mem_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility};
 
 use crate::runtime::ResizeSink;
 use crate::virsh::VirshCommand;
@@ -7,6 +7,7 @@ pub struct VirshResizeSink<C> {
     command: C,
     vm_name: String,
     alias: String,
+    external_compatibility: VirtioMemCompatibility,
 }
 
 impl<C> VirshResizeSink<C> {
@@ -15,7 +16,13 @@ impl<C> VirshResizeSink<C> {
             command,
             vm_name: vm_name.into(),
             alias: alias.into(),
+            external_compatibility: VirtioMemCompatibility::unknown(),
         }
+    }
+
+    pub fn with_external_compatibility(mut self, compatibility: VirtioMemCompatibility) -> Self {
+        self.external_compatibility = compatibility;
+        self
     }
 }
 
@@ -25,18 +32,22 @@ impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
             .command
             .run(&["dumpxml".to_owned(), self.vm_name.clone()])
             .map_err(|error| error.to_string())?;
-        let state = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
+        let snapshot = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
+            .map_err(|error| error.to_string())?;
+        snapshot
+            .compatibility
+            .merge(self.external_compatibility)
             .map_err(|error| error.to_string())?
-            .memory;
+            .validate_for_resize()
+            .map_err(|error| error.to_string())?;
+        let state = snapshot.memory;
         state
             .validate_target(requested_bytes)
             .map_err(|error| error.to_string())?;
         if state.requested_bytes != state.current_bytes {
             return Err("refusing resize while the previous request has not converged".to_owned());
         }
-        let requested_kib = requested_bytes
-            .checked_div(1024)
-            .filter(|_| requested_bytes.is_multiple_of(1024))
+        let requested_kib = bytes_to_kibibytes(requested_bytes)
             .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
         self.command
             .run(&[
@@ -61,8 +72,9 @@ mod tests {
     use super::*;
     use crate::virsh::{VirshCommand, VirshError};
 
-    const CONVERGED_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
-    const PENDING_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>6</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
+    const CONVERGED_XML: &str = "<domain><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
+    const PENDING_XML: &str = "<domain><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>6</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
+    const UNKNOWN_COMPATIBILITY_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
 
     struct Fake {
         xml: &'static str,
@@ -87,7 +99,8 @@ mod tests {
             xml: CONVERGED_XML,
             calls: Rc::clone(&calls),
         };
-        let sink = VirshResizeSink::new(fake, "guest", "memory0");
+        let sink = VirshResizeSink::new(fake, "guest", "memory0")
+            .with_external_compatibility(VirtioMemCompatibility::confirmed());
 
         sink.request_resize(6 * 1024 * 1024)
             .expect("aligned converged request succeeds");
@@ -119,9 +132,26 @@ mod tests {
             xml: PENDING_XML,
             calls: Rc::clone(&calls),
         };
-        let sink = VirshResizeSink::new(fake, "guest", "memory0");
+        let sink = VirshResizeSink::new(fake, "guest", "memory0")
+            .with_external_compatibility(VirtioMemCompatibility::confirmed());
 
         assert!(sink.request_resize(6 * 1024 * 1024).is_err());
+        assert_eq!(calls.take().len(), 1);
+    }
+
+    #[test]
+    fn rejects_unknown_compatibility_before_sending_a_resize() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let fake = Fake {
+            xml: UNKNOWN_COMPATIBILITY_XML,
+            calls: Rc::clone(&calls),
+        };
+        let sink = VirshResizeSink::new(fake, "guest", "memory0");
+
+        let error = sink
+            .request_resize(6 * 1024 * 1024)
+            .expect_err("unknown compatibility must fail closed");
+        assert!(error.contains("dynamic-memslots"));
         assert_eq!(calls.take().len(), 1);
     }
 }

@@ -2,7 +2,7 @@ use std::process;
 
 use virtio_mem_service::{
     install_service, remove_service, run_as_service, start_service, stop_service,
-    NativeMemoryTelemetry, NativeTelemetryWorker, ServiceConfig, ServiceHost,
+    NativeMemoryTelemetry, NativeTelemetryWorker, RuntimeWiringError, ServiceConfig, ServiceHost,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,12 +28,16 @@ fn parse_command(args: &[String]) -> Option<ServiceCommand> {
     }
 }
 
-fn run_service(config: ServiceConfig) -> Result<(), String> {
-    config.validate().map_err(|error| error.to_string())?;
-    let worker = NativeTelemetryWorker::new(NativeMemoryTelemetry, config.poll_interval)?;
+fn run_service(config: ServiceConfig) -> Result<(), RuntimeWiringError> {
+    config
+        .validate()
+        .map_err(|error| RuntimeWiringError::Configuration(error.to_string()))?;
+    let worker = NativeTelemetryWorker::new(NativeMemoryTelemetry, config.poll_interval)
+        .map_err(RuntimeWiringError::WorkerConstruction)?;
 
     let mut host = ServiceHost::with_shutdown_timeout(worker, config.shutdown_timeout);
-    host.run().map_err(|error| error.to_string())?;
+    host.run()
+        .map_err(|error| RuntimeWiringError::HostExecution(error.to_string()))?;
 
     Ok(())
 }
@@ -94,7 +98,7 @@ fn main() {
                 process::exit(2);
             }
             if let Err(error) = run_service(config) {
-                eprintln!("virtio-mem service startup failed: {error}");
+                eprintln!("virtio-mem service runtime failed: {error}");
                 process::exit(1);
             }
         }
@@ -115,7 +119,12 @@ mod tests {
             ..ServiceConfig::default()
         };
 
-        assert!(run_service(config).is_err());
+        assert_eq!(
+            run_service(config),
+            Err(RuntimeWiringError::Configuration(
+                "service configuration field is empty: service name".to_owned()
+            ))
+        );
     }
 
     #[test]

@@ -348,10 +348,10 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
     let mut host = ServiceHost::with_stop_and_shutdown_timeout(
         move |service_stop: &StopSignal| {
             let mut worker = NativeTelemetryWorker::new(NativeMemoryTelemetry, poll_interval)
-                .map_err(|error| format!("construct native telemetry worker: {error}"))?;
+                .map_err(|error| format!("runtime wiring / worker construction: {error}"))?;
             worker
                 .initialize(service_stop)
-                .map_err(|error| format!("initialize native telemetry worker: {error}"))?;
+                .map_err(|error| format!("runtime wiring / worker initialization: {error}"))?;
             let _ = publish_status(
                 status_handle_value as SERVICE_STATUS_HANDLE,
                 ScmServiceStatus::from_state(ServiceState::Running),
@@ -361,7 +361,9 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
         stop,
         shutdown_timeout,
     );
-    let result = host.run();
+    let result = host
+        .run()
+        .map_err(|error| format!("runtime wiring / service host execution: {error}"));
     let final_state = if result.is_ok() {
         ServiceState::Stopped
     } else {

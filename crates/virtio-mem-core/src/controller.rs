@@ -1,5 +1,6 @@
 use crate::error::MemoryStatsError;
 use crate::stats::MemoryStats;
+use crate::virtio_mem::MIN_BLOCK_SIZE_BYTES;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryControllerConfig {
@@ -19,9 +20,14 @@ pub enum ResizeDecision {
 
 impl MemoryControllerConfig {
     pub fn validate(self) -> Result<(), MemoryStatsError> {
-        if self.block_size_bytes == 0 {
+        if self.block_size_bytes < MIN_BLOCK_SIZE_BYTES {
             return Err(MemoryStatsError::InvalidConfiguration(
-                "block size must be greater than zero",
+                "block size must be at least 1 MiB",
+            ));
+        }
+        if !self.block_size_bytes.is_power_of_two() {
+            return Err(MemoryStatsError::InvalidConfiguration(
+                "block size must be a power of two",
             ));
         }
         if self.min_memory_bytes > self.max_memory_bytes {
@@ -90,12 +96,13 @@ mod tests {
     use super::*;
 
     fn config() -> MemoryControllerConfig {
+        const B: u64 = 1 << 20;
         MemoryControllerConfig {
-            min_memory_bytes: 8,
-            max_memory_bytes: 28,
-            lower_threshold_bytes: 2,
-            upper_threshold_bytes: 6,
-            block_size_bytes: 4,
+            min_memory_bytes: 8 * B,
+            max_memory_bytes: 28 * B,
+            lower_threshold_bytes: 2 * B,
+            upper_threshold_bytes: 6 * B,
+            block_size_bytes: 4 * B,
         }
     }
     fn stats(free_bytes: u64) -> MemoryStats {
@@ -108,48 +115,51 @@ mod tests {
 
     #[test]
     fn plans_and_bounds_one_block_requests() {
+        const B: u64 = 1 << 20;
         assert_eq!(
-            plan_resize(&stats(1), 16, 16, config()).expect("valid policy"),
+            plan_resize(&stats(B), 16 * B, 16 * B, config()).expect("valid policy"),
             ResizeDecision::Request {
-                requested_bytes: 20
+                requested_bytes: 20 * B
             }
         );
         assert_eq!(
-            plan_resize(&stats(7), 16, 16, config()).expect("valid policy"),
+            plan_resize(&stats(7 * B), 16 * B, 16 * B, config()).expect("valid policy"),
             ResizeDecision::Request {
-                requested_bytes: 12
+                requested_bytes: 12 * B
             }
         );
         assert_eq!(
-            plan_resize(&stats(1), 28, 28, config()).expect("valid policy"),
+            plan_resize(&stats(B), 28 * B, 28 * B, config()).expect("valid policy"),
             ResizeDecision::NoChange
         );
         assert_eq!(
-            plan_resize(&stats(7), 8, 8, config()).expect("valid policy"),
+            plan_resize(&stats(7 * B), 8 * B, 8 * B, config()).expect("valid policy"),
             ResizeDecision::NoChange
         );
     }
 
     #[test]
     fn honours_thresholds_and_pending_convergence() {
+        const B: u64 = 1 << 20;
         assert_eq!(
-            plan_resize(&stats(2), 16, 16, config()).expect("valid policy"),
+            plan_resize(&stats(2 * B), 16 * B, 16 * B, config()).expect("valid policy"),
             ResizeDecision::NoChange
         );
         assert_eq!(
-            plan_resize(&stats(6), 16, 16, config()).expect("valid policy"),
+            plan_resize(&stats(6 * B), 16 * B, 16 * B, config()).expect("valid policy"),
             ResizeDecision::NoChange
         );
         assert_eq!(
-            plan_resize(&stats(1), 20, 16, config()).expect("valid policy"),
+            plan_resize(&stats(B), 20 * B, 16 * B, config()).expect("valid policy"),
             ResizeDecision::WaitForConvergence
         );
     }
 
     #[test]
     fn rejects_invalid_configuration() {
+        const B: u64 = 1 << 20;
         let mut invalid = config();
-        invalid.max_memory_bytes = 27;
+        invalid.max_memory_bytes = 27 * B + 1;
         assert_eq!(
             invalid.validate(),
             Err(MemoryStatsError::InvalidConfiguration(

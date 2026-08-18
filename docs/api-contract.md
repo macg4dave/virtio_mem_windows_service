@@ -13,7 +13,8 @@ Request:
 
 ```json
 {
-  "execute": "guest-get-memory-stats"
+  "execute": "guest-get-memory-stats",
+  "id": "virtio-mem-memory-stats-1"
 }
 ```
 
@@ -37,7 +38,11 @@ Response:
 
 The Rust parser requires `stat-free` and `stat-total`. If `stat-available` is
 omitted by the guest agent, it falls back to `stat-free`. Values greater than
-`stat-total` are rejected as inconsistent.
+`stat-total` are rejected as inconsistent. The Windows transport requires a
+matching response `id`, a `return` array, and exactly one newline-delimited
+response frame. The compatibility parser used by host-side adapters accepts
+responses without an id because the host request remains a separate adapter
+boundary.
 
 ### Host memory-stat source (`VIRTIO_MEM_STATS_SOURCE`)
 
@@ -152,13 +157,27 @@ The controller must inspect live virtio-mem XML after every request. `requested`
 The official libvirt/QEMU model treats virtio-mem as a NUMA-aware memory balloon that is resized by changing the live `requested` value, not by hotplugging a new device. The live XML exposes four relevant values for each memory device:
 
 - `size`: maximum memory the device can currently expose to the guest
-- `block`: hotplug granularity; it must be a power of two and larger than 1 MiB in normal use
+- `block`: hotplug granularity; it must be a power of two and at least 1 MiB
+  in the canonical byte contract
 - `requested`: desired memory exposure for the guest
 - `current`: actual memory currently in use by the guest
 
 `requested` must be an integer multiple of `block` and must never exceed `size`. `current` may lag behind `requested` while the guest reclaims or plugs blocks; the controller must treat `requested != current` as an in-flight resize and avoid issuing another change until the guest settles.
 
 When more than one virtio-mem device is present, `virsh` must be directed with `--alias` because the update API cannot infer which device should be resized. The host-side controller should therefore treat the alias as part of the contract and should validate the live XML against the selected alias after each request.
+
+### Virtio-mem compatibility gate
+
+before a resize sink may issue `update-memory-device`, the combined evidence
+must explicitly confirm both `dynamic-memslots` and
+`unplugged-inaccessible`. Missing or unrecognized attributes are represented as
+`Unknown` and fail closed; they are never treated as enabled by default. XML
+evidence may be merged with an independent QEMU/configuration evidence source,
+but conflicting evidence is rejected. The combined gate also requires
+separate operator evidence that the VM/workload does not use incompatible
+classes such as `vfio-nvme`, RDMA migration, `mlock`, or unsupported vhost-user
+workloads. Those workload facts cannot be inferred reliably from the
+virtio-mem memory element alone.
 
 This is a key operational difference from a DIMM or balloon model: virtio-mem is not a simple single-step memory resize, and guest cooperation is required to unplug or plug memory blocks safely.
 
@@ -178,6 +197,13 @@ snapshot, requires the `virtio-mem` model and alias, converts `B`, `KiB`,
 `MiB`, and `GiB` values to canonical bytes with checked arithmetic, and
 constructs a validated `VirtioMemState`. It performs no host command execution
 or live XML discovery.
+
+All external KiB boundaries use checked conversion helpers. Byte values sent to
+`virsh --requested-size` must be exactly divisible by 1024; XML and
+`dommemstat` KiB values reject multiplication overflow rather than saturating
+or rounding. The shared state contract also requires the device size itself to
+be an exact multiple of the block size, so every representable target is a
+whole number of blocks.
 
 `XmlMemoryStateProvider` adapts a caller-provided `VirtioMemXmlSource` to the
 polling boundary. A source may obtain a snapshot from an approved host-side

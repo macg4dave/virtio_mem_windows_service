@@ -58,6 +58,11 @@ built on the Win11 guest or another Windows build host.
 - Driver `plugged_size` versus libvirt `current` remains an unverified
   cross-layer mapping.
 
+The previous live convergence incident is resolved as of 2026-08-18: a fresh
+post-driver-update XML check reports `requested=0 KiB` and `current=0 KiB` for
+`ua-virtiomem0`. This clears the stale rollback blocker, but does not replace
+the required controlled resize evidence or prove direct driver-field mapping.
+
 ## References
 
 - [BACKLOG.md](BACKLOG.md) — execution source of truth

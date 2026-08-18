@@ -4,6 +4,10 @@ use thiserror::Error;
 pub enum MemoryStatsError {
     #[error("invalid QEMU Guest Agent response: {0}")]
     InvalidJson(String),
+    #[error("QEMU Guest Agent response envelope is invalid: {0}")]
+    InvalidEnvelope(&'static str),
+    #[error("QEMU Guest Agent response id does not match the request")]
+    MismatchedResponseId,
     #[error("QEMU Guest Agent response is missing {0}")]
     MissingStat(&'static str),
     #[error("QEMU Guest Agent response has inconsistent memory values")]
@@ -40,6 +44,8 @@ pub enum VirtioMemError {
     BlockSizeTooSmall { actual: u64, minimum: u64 },
     #[error("virtio-mem block size must be a power of two: {0} bytes")]
     BlockSizeNotPowerOfTwo(u64),
+    #[error("virtio-mem device size {size} is not a multiple of block size {block}")]
+    SizeNotAligned { size: u64, block: u64 },
     #[error("virtio-mem {name} value {value} is outside device size {size}")]
     ValueOutsideSize {
         name: &'static str,

@@ -8,10 +8,15 @@ Type=exec
 User=virtio-mem-host
 Group=virtio-mem-host
 EnvironmentFile=/etc/virtio-mem-host/%i.conf
+Environment=LIBVIRT_DEFAULT_URI=qemu:///system
+Environment=HOME=/run/virtio-mem-host
+Environment=XDG_CACHE_HOME=/run/virtio-mem-host/.cache
 ExecStart=/usr/local/libexec/virtio-mem-host
 Restart=on-failure
 RestartSec=15s
 TimeoutStopSec=45s
+RuntimeDirectory=virtio-mem-host
+RuntimeDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

@@ -48,7 +48,6 @@ sudo find /usr/share /var/lib/libvirt -iname "*.iso" 2>/dev/null
 
 For a Windows 11 VM, `virtio-win.iso` contains the VirtIO drivers such as balloon, memory, network, storage, and guest agent components.
 
-
 ## Step 2: Configure Guest Agent Channel in libvirt
 
 On the RHEL host:
@@ -91,6 +90,7 @@ virsh qemu-agent-command win11_gpu '{"execute":"guest-info"}'
 ```
 
 If you get an error like `"command not found"` or `"timed out"`, verify:
+
 - Windows service is running: `Get-Service QEMU-GA` on Windows
 - Channel is properly configured in domain XML
 - VM was restarted after XML changes
@@ -114,6 +114,7 @@ virsh qemu-agent-command win11_gpu '{"execute":"guest-get-memory-stats"}'
 ```
 
 **Field meanings**:
+
 - `stat-free`: Free memory in bytes (not including caches)
 - `stat-total`: Total allocated memory in bytes
 - `stat-available`: Available memory including caches/buffers
@@ -160,8 +161,11 @@ implicitly:
 bash scripts/validate-guest-agent.sh win11_gpu 3
 ```
 
-The helper validates `guest-info` once and
-`guest-get-memory-stats` for the requested number of attempts. It does not
+The helper validates `guest-info` once and then validates the configured
+memory-stat source for the requested number of attempts. When
+`guest-get-memory-stats` is unavailable, it fails over to `virsh dommemstat`
+and requires numeric `actual` and `unused` fields. It defaults to
+`qemu:///system`; set `VIRSH_CONNECT` to use another libvirt URI. It does not
 resize memory, restart the VM, or execute commands inside the guest.
 
 ## Troubleshooting

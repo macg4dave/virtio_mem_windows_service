@@ -2,8 +2,28 @@ use std::time::Duration;
 
 use crate::runtime::GuestAgent;
 
-const GET_MEMORY_STATS_REQUEST: &str = r#"{"execute":"guest-get-memory-stats"}"#;
+pub const GET_MEMORY_STATS_REQUEST_ID: &str = "virtio-mem-memory-stats-1";
+const GET_MEMORY_STATS_REQUEST: &str =
+    r#"{"execute":"guest-get-memory-stats","id":"virtio-mem-memory-stats-1"}"#;
 pub const DEFAULT_QGA_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn validate_newline_framed_response(response: &str) -> Result<(), String> {
+    let Some(frame_end) = response.find('\n') else {
+        return Err("QEMU Guest Agent response was not newline framed".to_owned());
+    };
+    if !response[frame_end + 1..].trim().is_empty() {
+        return Err("QEMU Guest Agent returned multiple response frames".to_owned());
+    }
+    if response[..frame_end].trim().is_empty() {
+        return Err("QEMU Guest Agent returned an empty response".to_owned());
+    }
+    virtio_mem_core::parse_memory_stats_with_id(
+        response[..frame_end].trim(),
+        Some(GET_MEMORY_STATS_REQUEST_ID),
+    )
+    .map(|_| ())
+    .map_err(|error| format!("invalid QEMU Guest Agent response: {error}"))
+}
 
 pub struct NamedPipeGuestAgent {
     pipe_path: String,
@@ -121,12 +141,7 @@ fn request_memory_stats(pipe_path: &str, timeout: Duration) -> Result<String, St
 
         let response = String::from_utf8(response)
             .map_err(|error| format!("QEMU Guest Agent response is not UTF-8: {error}"))?;
-        if response.trim().is_empty() {
-            return Err("QEMU Guest Agent returned an empty response".to_owned());
-        }
-        if !response.contains('\n') {
-            return Err("QEMU Guest Agent response exceeded the read boundary".to_owned());
-        }
+        validate_newline_framed_response(&response)?;
         Ok(response)
     })();
 
@@ -281,9 +296,7 @@ fn request_memory_stats(pipe_path: &str, _timeout: Duration) -> Result<String, S
     BufReader::new(pipe)
         .read_line(&mut response)
         .map_err(|error| format!("read response: {error}"))?;
-    if response.trim().is_empty() {
-        return Err("QEMU Guest Agent returned an empty response".to_owned());
-    }
+    validate_newline_framed_response(&response)?;
     Ok(response)
 }
 
@@ -308,6 +321,32 @@ mod tests {
             agent.get_memory_stats(),
             Err("QEMU Guest Agent operation timeout must be greater than zero".to_owned())
         );
+    }
+
+    #[test]
+    fn request_is_one_newline_terminated_correlated_frame() {
+        assert_eq!(GET_MEMORY_STATS_REQUEST.matches('\n').count(), 0);
+        assert!(GET_MEMORY_STATS_REQUEST.starts_with(r#"{"execute":"guest-get-memory-stats"#));
+        assert!(GET_MEMORY_STATS_REQUEST.contains(GET_MEMORY_STATS_REQUEST_ID));
+        assert_eq!(
+            format!("{GET_MEMORY_STATS_REQUEST}\n")
+                .matches('\n')
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_empty_or_multiple_response_frames() {
+        assert!(validate_newline_framed_response("\n").is_err());
+        assert!(validate_newline_framed_response("{}\n{}\n").is_err());
+        assert!(validate_newline_framed_response("{}\n").is_err());
+        assert!(validate_newline_framed_response(
+            r#"{"return":[{"stat":"stat-free","value":100},{"stat":"stat-total","value":200}],"id":"virtio-mem-memory-stats-1"}
+"#
+        )
+        .is_ok());
+        assert!(validate_newline_framed_response("{}").is_err());
     }
 
     #[cfg(windows)]

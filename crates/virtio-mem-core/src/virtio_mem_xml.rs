@@ -2,13 +2,15 @@ use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use thiserror::Error;
 
+use crate::units::{kibibytes_to_bytes, BYTES_PER_KIB};
 use crate::virtio_mem::VirtioMemState;
-use crate::VirtioMemError;
+use crate::{CompatibilityEvidence, VirtioMemCompatibility, VirtioMemError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtioMemXmlState {
     pub alias: String,
     pub memory: VirtioMemState,
+    pub compatibility: VirtioMemCompatibility,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -65,13 +67,17 @@ impl Unit {
     fn to_bytes(self, field: &'static str, value: u64) -> Result<u64, VirtioMemXmlError> {
         let multiplier = match self {
             Self::Bytes => 1,
-            Self::Kibibytes => 1 << 10,
+            Self::Kibibytes => BYTES_PER_KIB,
             Self::Mebibytes => 1 << 20,
             Self::Gibibytes => 1 << 30,
         };
-        value
-            .checked_mul(multiplier)
-            .ok_or(VirtioMemXmlError::Overflow { field })
+        if matches!(self, Self::Kibibytes) {
+            kibibytes_to_bytes(value).ok_or(VirtioMemXmlError::Overflow { field })
+        } else {
+            value
+                .checked_mul(multiplier)
+                .ok_or(VirtioMemXmlError::Overflow { field })
+        }
     }
 }
 
@@ -82,6 +88,7 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
     let mut memory_depth = None;
     let mut pending: Option<(&'static str, Unit)> = None;
     let mut alias = None;
+    let mut compatibility = VirtioMemCompatibility::unknown();
     let mut values: [Option<ParsedValue>; 4] = [None, None, None, None];
 
     loop {
@@ -90,6 +97,13 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
                 let name = element.name().as_ref().to_vec();
                 if name == b"memory" {
                     let model = attribute(&element, b"model")?;
+                    compatibility.dynamic_memslots =
+                        compatibility_attribute(&element, b"dynamic-memslots", b"dynamicMemslots")?;
+                    compatibility.unplugged_inaccessible = compatibility_attribute(
+                        &element,
+                        b"unplugged-inaccessible",
+                        b"unpluggedInaccessible",
+                    )?;
                     memory_depth = Some(1_u32);
                     match model.as_deref() {
                         Some("virtio-mem") => {}
@@ -153,7 +167,11 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
         current_bytes: bytes(values[3], "current")?,
     };
     memory.validate()?;
-    Ok(VirtioMemXmlState { alias, memory })
+    Ok(VirtioMemXmlState {
+        alias,
+        memory,
+        compatibility,
+    })
 }
 
 /// Parse exactly one virtio-mem device selected by its libvirt alias.
@@ -259,6 +277,23 @@ fn attribute(
     Ok(None)
 }
 
+fn compatibility_attribute(
+    element: &quick_xml::events::BytesStart<'_>,
+    dashed_name: &[u8],
+    camel_name: &[u8],
+) -> Result<CompatibilityEvidence, VirtioMemXmlError> {
+    let value = attribute(element, dashed_name)?.or(attribute(element, camel_name)?);
+    match value.as_deref().map(str::to_ascii_lowercase).as_deref() {
+        None => Ok(CompatibilityEvidence::Unknown),
+        Some("yes" | "on" | "true" | "1") => Ok(CompatibilityEvidence::Confirmed),
+        Some("no" | "off" | "false" | "0") => Ok(CompatibilityEvidence::Rejected),
+        Some(value) => Err(VirtioMemXmlError::InvalidValue {
+            field: "compatibility attribute",
+            value: value.to_owned(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -273,6 +308,7 @@ mod tests {
         assert_eq!(parsed.alias, "ua-virtio-mem0");
         assert_eq!(parsed.memory.size_bytes, 8 * 1024 * 1024);
         assert_eq!(parsed.memory.block_size_bytes, 2 * 1024 * 1024);
+        assert_eq!(parsed.compatibility, VirtioMemCompatibility::unknown());
     }
 
     #[test]
@@ -303,5 +339,28 @@ mod tests {
             parse_virtio_mem_xml_for_alias(&xml, "missing"),
             Err(VirtioMemXmlError::AliasNotFound(_))
         ));
+    }
+
+    #[test]
+    fn parses_compatibility_attributes_without_treating_absence_as_safe() {
+        let xml = valid_xml().replace(
+            "model='virtio-mem'",
+            "model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='yes'",
+        );
+        let parsed = parse_virtio_mem_xml(&xml).expect("valid compatibility attributes");
+        assert_eq!(
+            parsed.compatibility.dynamic_memslots,
+            CompatibilityEvidence::Confirmed
+        );
+        assert_eq!(
+            parsed.compatibility.unplugged_inaccessible,
+            CompatibilityEvidence::Confirmed
+        );
+        assert!(parsed
+            .compatibility
+            .merge(VirtioMemCompatibility::confirmed())
+            .expect("external workload evidence should merge")
+            .validate_for_resize()
+            .is_ok());
     }
 }

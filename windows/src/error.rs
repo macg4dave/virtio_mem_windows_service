@@ -37,3 +37,15 @@ pub enum ConfigurationError {
     #[error("configuration duration cannot be represented in milliseconds")]
     DurationOverflow,
 }
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum RuntimeWiringError {
+    #[error("runtime configuration validation failed: {0}")]
+    Configuration(String),
+    #[error("native telemetry worker construction failed: {0}")]
+    WorkerConstruction(String),
+    #[error("native telemetry worker initialization failed: {0}")]
+    WorkerInitialization(String),
+    #[error("service host execution failed: {0}")]
+    HostExecution(String),
+}

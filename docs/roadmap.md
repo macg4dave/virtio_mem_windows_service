@@ -65,16 +65,18 @@ uses `dommemstat` by default when the guest QGA does not provide
     Service installation and lifecycle validation remain separate approved
     mutation work.
 - **Fresh convergence recheck (2026-08-18):** `win11_gpu` still reports
-    `requested=0 KiB` and `current=18432 KiB`. The QGA responses checked here
-    do not expose Windows driver `requested_size`/`plugged_size`; the
-    cross-layer driver mapping remains unverified.
+    `requested=0 KiB` and `current=0 KiB` after the latest Windows driver
+    update. The previous rollback convergence blocker is resolved. The QGA
+    responses checked here do not expose Windows driver
+    `requested_size`/`plugged_size`; the cross-layer driver mapping remains
+    unverified.
 - **Windows service running handoff (2026-08-18):** RHEL-side QGA checks
     confirm the guest is running and responds with hostname `ICE101`, but they
     cannot observe Windows SCM state directly. The native telemetry worker is
     therefore considered a Windows-side runtime claim until SCM/log evidence
     is supplied. QGA memory stats remain unavailable, while `dommemstat`
-    remains usable; virtio-mem still has `requested=0 KiB` and
-    `current=18432 KiB`.
+    remains usable; virtio-mem now reports `requested=0 KiB` and
+    `current=0 KiB` after the driver update.
 - **Windows demand-agent foundation (2026-08-18):** native
     `GlobalMemoryStatusEx`/`GetPerformanceInfo` collection, checked
     canonical-byte snapshots, bounded pressure ratios, provisional five-state
@@ -140,9 +142,9 @@ readiness in the remaining host-side work.
 | M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; elevated Program Files lifecycle validation passes, while event-log and QGA-account evidence remain |
 | M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now collect native Windows telemetry without opening the QGA device; trustworthy current-allocation and resize wiring remain |
 | M7 | Installation and recovery operations | [ ] | M5, M6 | Install/start/observe/stop/delete sequence passes; bounded recovery actions are verified |
-| M8 | Live QGA and KVM validation | [!] | M2 | Host probe succeeds repeatedly against the Windows KVM guest |
-| M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, and opt-in Bash live source/sink checks are implemented; live VM evidence remains |
-| M9a | Virtio-mem safety and compatibility gate | [ ] | M8, M9 | Host adapter documents the QEMU/libvirt limits, dynamic memslot requirements, and incompatible device classes before any live resize automation |
+| M8 | Live QGA and KVM validation | [~] | M2 | Read-only host probe succeeds repeatedly against the Windows KVM guest using the verified dommemstat fallback; Windows QGA pipe/ACL and native guest-agent memory-stat evidence remain |
+| M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, explicit system-libvirt Bash source/sink checks, and fail-closed actuation gates are implemented; live VM evidence remains |
+| M9a | Virtio-mem safety and compatibility gate | [~] | M8, M9 | Tri-state XML compatibility parsing, mergeable external evidence, conflict detection, and fail-closed resize enforcement are implemented; live evidence provider and incompatible workload/device review remain |
 | M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
 | M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, advisory safe floor, durable JSON-lines output, and generic stoppable worker are locally tested; main SCM construction, trustworthy allocation provider, and live workload evidence remain; no direct host actuation |
 | M10a | Cross-layer state observation | [ ] | M8, M9, M9a | Controlled evidence maps driver `requested_size`/`plugged_size` to QEMU/libvirt `requested`/`current` without treating the fields as interchangeable by assumption |
@@ -200,8 +202,11 @@ readiness in the remaining host-side work.
 
 - [x] Configurable Windows named-pipe client sends newline-delimited QGA JSON.
 - [x] Transport, empty-response, parser, and policy errors remain explicit.
-- [ ] Confirm newline framing, response correlation, and malformed envelope handling against captured QGA traffic.
-- [!] Validate the actual pipe path, permissions, QGA service, and response format on the Windows KVM guest.
+- [x] Confirm newline framing, response correlation, and malformed envelope
+    handling against deterministic captured-response fixtures; the Windows
+    transport uses a stable request id and requires one matching response
+    frame.
+- [ ] Validate the actual pipe path, permissions, QGA service, and response format on the Windows KVM guest.
 
 **Gate:** Three consecutive read-only QGA probes succeed on the real VM.
 
@@ -222,19 +227,20 @@ readiness in the remaining host-side work.
 
 - [x] Choose bytes (`u64`) as the canonical internal memory unit and document
     every conversion boundary.
-- [~] Reconcile QGA bytes, controller bytes, libvirt XML values, and any
+- [x] Reconcile QGA bytes, controller bytes, libvirt XML values, and any
     `virsh` command units before enabling a resize sink; the pure Rust
-    `VirtioMemState` contract and captured XML parser are implemented, but live
-    discovery and resize wiring remain.
-- [~] Reject zero size, undersized/non-power-of-two block size, zero or
-    out-of-range values, and unaligned values in the pure Rust contract; wire
-    it into every host adapter boundary when the XML adapter is added.
-- [~] Enforce `requested % block == 0`, `requested <= size`, and `block >= 1 MiB`
-    checks in the pure Rust contract; wire those checks into the host XML
-    adapter before issuing a resize request.
-- [ ] Add boundary tests for maximum values and unit conversion round trips.
-- [ ] Add compatibility checks for `dynamic-memslots`/`unplugged-inaccessible` and
-    known incompatible device classes before enabling live automation.
+    contract, captured XML parser, host XML source, and resize sink now use
+    checked canonical-byte/KiB boundaries. Live discovery remains separate.
+- [x] Reject zero size, undersized/non-power-of-two block size, zero or
+    out-of-range values, and unaligned values in the pure Rust contract and
+    host XML adapter.
+- [x] Enforce `requested % block == 0`, `requested <= size`, device-size
+    alignment, and `block >= 1 MiB` checks before issuing a resize request.
+- [x] Add boundary tests for maximum values and unit conversion round trips.
+- [~] Add compatibility checks for `dynamic-memslots`/`unplugged-inaccessible`
+    and known incompatible device classes before enabling live automation;
+    XML flags now parse as confirmed/rejected/unknown and unknown state blocks
+    the resize sink, while workload/device review remains operator evidence.
 
 **Gate:** A target size can be traced from QGA observation to host request with
 no ambiguous or implicit unit conversion.
@@ -257,7 +263,7 @@ no ambiguous or implicit unit conversion.
 
 ### F8. Concrete runtime wiring
 
-- [~] Replace the `main.rs` foundation stub with service/interactive-mode dispatch.
+- [x] Replace the `main.rs` foundation stub with service/interactive-mode dispatch.
 - [x] Connect interactive and SCM workers to native Windows memory telemetry;
     they do not open the QGA virtio-serial device owned by `QEMU-GA`.
 - [~] Implement guest-side demand/state acquisition; native telemetry is
@@ -265,8 +271,9 @@ no ambiguous or implicit unit conversion.
     virtio-mem `current` allocation.
 - [ ] Implement a safe resize-request sink without Linux command execution;
     defer until a trustworthy current-allocation provider exists.
-- [ ] Add structured error context at the service boundary.
-- [~] Add a deterministic fake state provider and resize sink for integration
+- [x] Add structured error context at the service boundary for configuration,
+    worker construction/initialization, and service-host execution failures.
+- [x] Add a deterministic fake state provider and resize sink for integration
     tests; local fakes now provide validated byte snapshots, while the live XML
     state provider and production resize sink remain.
 
@@ -306,17 +313,18 @@ evidence before live testing.
 
 ### V1. Guest Agent probe
 
-- [~] Requires a running RHEL/libvirt host and Windows KVM guest; first live
-    checks ran against `win11_gpu` on 2026-08-18.
+- [x] Requires a running RHEL/libvirt host and Windows KVM guest; read-only
+    checks completed against `win11_gpu` on 2026-08-18.
 - [x] Run host prerequisite checks.
 - [x] Confirm the virtio-serial channel name `org.qemu.guest_agent.0`.
 - [ ] Confirm QGA service availability and permissions in Windows.
-- [~] Run `guest-info` and the configured host memory-stat source at least
-    three times; `guest-info` succeeds, QGA `109.1.0` does not provide
+- [x] Run `guest-info` and the configured host memory-stat source at least
+    three times; `guest-info` succeeds, QGA `110.0.2` does not provide
     `guest-get-memory-stats`, and `dommemstat` is the verified fallback.
-- [~] Record QEMU, libvirt, QGA versions, latency, and observed response
-    fields; libvirt 11.10.0, QEMU API 11.10.0, hypervisor 10.1.0, and QGA
-    109.1.0 are captured, while direct QEMU CLI output is blocked by PATH.
+- [x] Record QEMU, libvirt, QGA versions, command latency, and observed
+    response fields; libvirt 11.10.0, QEMU API 11.10.0, hypervisor 10.1.0,
+    QGA 110.0.2, `guest-info` about 3913 ms, and `dommemstat` about 3374 ms
+    were captured on the RHEL host.
 - [ ] Capture the actual Windows pipe path and account/ACL behavior.
 - [ ] Repeat the probe after QGA restart and guest reboot.
 
@@ -324,7 +332,8 @@ evidence before live testing.
 
 - [x] Capture the virtio-mem alias and block size from live XML (`ua-virtiomem0`,
   2 MiB).
-- [x] Capture `requested`, `current`, and `size` values (0, 0, and 20 GiB).
+- [x] Capture `requested=1048576 KiB`, `current=1048576 KiB`, and
+    `size=20971520 KiB` (1 GiB active/requested, 20 GiB device maximum).
 - [ ] Confirm the block size is compatible with the host configuration and THP assumptions.
 - [ ] Check whether `dynamic-memslots=on` and `unplugged-inaccessible=on` are in use.
 - [ ] Select a reversible, aligned target within configured limits.

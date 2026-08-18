@@ -1,5 +1,174 @@
 # BACKLOG
 
+## 2026-08-18 M9 host adapter boundary alignment
+
+- Aligned `scripts/virtio-mem-host.sh` with the Rust resize sink's safety
+  contract: resize mode now requires explicit live XML confirmation of
+  `dynamic-memslots` and `unplugged-inaccessible`, plus an operator-confirmed
+  incompatible-workload review.
+- Snapshot mode remains read-only and can inspect the current VM without those
+  actuation acknowledgements.
+- The helper defaults to `qemu:///system` and supports `VIRSH_CONNECT` for an
+  explicitly selected alternative connection.
+- The current `win11_gpu` XML is expected to fail closed because the required
+  compatibility attributes are absent; no live resize was attempted.
+
+## 2026-08-18 M9a compatibility gate started
+
+- Added `VirtioMemCompatibility` with explicit `Confirmed`, `Rejected`, and
+  `Unknown` evidence states for XML flags and workload review.
+- Captured XML parses `dynamic-memslots`/`dynamicMemslots` and
+  `unplugged-inaccessible`/`unpluggedInaccessible` attributes when present.
+- `VirshResizeSink` now fails closed before `update-memory-device` unless both
+  required flags and workload review are confirmed. Independent evidence can
+  complete unknown XML fields, while conflicting evidence is rejected.
+- Added regression coverage for confirmed attributes, unknown evidence,
+  independent evidence merge, and conflicts.
+- The live `win11_gpu` XML lacks these attributes, so the gate correctly blocks
+  live resizing. `domxml-to-native qemu-argv` was unavailable, and workload or
+  incompatible-device absence cannot be inferred from the memory XML alone.
+- Local evidence: formatting, 17 core tests, 16 host tests, and focused Clippy
+  pass.
+
+## 2026-08-18 V2 live virtio-mem XML inspection
+
+- Read-only inspection of `win11_gpu` over `qemu:///system` found exactly one
+  selected virtio-mem device: alias `ua-virtiomem0`.
+- Live XML reports `size=20971520 KiB` (20 GiB), `block=2048 KiB` (2 MiB),
+  `requested=1048576 KiB`, and `current=1048576 KiB`; three convergence
+  rechecks remained equal at 1 GiB.
+- The device uses shared `memfd` backing. The captured XML does not expose
+  `dynamic-memslots` or `unplugged-inaccessible`, and native QEMU argument
+  conversion was unavailable, so the compatibility state remains unknown.
+- No prohibited device/workload class was positively identified from the
+  inspected XML, but XML alone cannot prove absence of `mlock`, RDMA
+  migration, or vhost-user workload dependencies.
+- Updated `scripts/virtio-mem-host.sh` to default to `qemu:///system` with a
+  `VIRSH_CONNECT` override. No resize or other mutation was attempted.
+
+## 2026-08-18 M8/V1 read-only guest validation
+
+- Completed the explicit `win11_gpu` RHEL read-only probe using
+  `qemu:///system`.
+- Host prerequisites passed; the domain is `running`; libvirt is 11.10.0,
+  QEMU API is 11.10.0, hypervisor is 10.1.0, and QGA is 110.0.2.
+- `guest-info` succeeded and the `org.qemu.guest_agent.0` virtio-serial
+  channel is connected at the expected libvirt path.
+- Three consecutive `dommemstat` fallback samples passed with
+  `actual=8388608 KiB`, `unused=4676156 KiB`, and
+  `available=9367852 KiB`.
+- Approximate full `virsh` command latencies were 3913 ms for `guest-info`
+  and 3374 ms for `dommemstat`; these include local libvirt/virsh startup
+  overhead and are not isolated QGA wire latency.
+- The connected QGA explicitly reports that `guest-get-memory-stats` is not
+  implemented. The helper now passes V1 using the documented dommemstat
+  fallback and defaults to `qemu:///system` with `VIRSH_CONNECT` override.
+- No guest command, reboot, resize, service installation, or systemd/libvirt
+  mutation was attempted. Windows-side QGA service state, pipe ACL behavior,
+  and native guest-agent memory-stat support remain open.
+
+## 2026-08-18 F8 concrete runtime wiring
+
+- Completed the interactive `run` path with validated configuration,
+  native Windows telemetry worker construction, and bounded `ServiceHost`
+  execution.
+- Preserved the same native telemetry boundary in SCM startup; the SCM path
+  does not open the QGA virtio-serial device or issue resize requests.
+- Added typed `RuntimeWiringError` context for configuration validation,
+  worker construction, and service-host execution, plus explicit SCM stage
+  labels for worker construction, initialization, and host execution.
+- Confirmed deterministic fake state-provider and resize-sink coverage remains
+  available for the shared polling harness; production current-allocation and
+  resize wiring remain intentionally deferred.
+
+## 2026-08-18 F5 guest transport boundary hardening
+
+- Added a stable correlation id to the Windows
+  `guest-get-memory-stats` request.
+- Added strict response validation for the Windows transport: exactly one
+  newline-delimited frame, matching response id, required `return` array, and
+  explicit rejection of empty, multiple, malformed, and QGA error envelopes.
+- Preserved the host adapter's compatibility parser for responses without an
+  id because host QGA is a separate transport boundary.
+- Added deterministic captured-envelope and framing regression tests.
+- The live Windows pipe path, ACL behavior, QGA service state, and three
+  consecutive guest probes remain blocked by the external KVM validation gate.
+
+## 2026-08-18 F6a contract and unit safety
+
+- Added shared checked canonical-byte/KiB conversion helpers and exact
+  round-trip/maximum-boundary tests.
+- Strengthened `VirtioMemState` to require a block-aligned device size in
+  addition to aligned requested/current/target values, with the existing
+  zero, range, minimum-block, power-of-two, and headroom checks preserved.
+- Applied the 1 MiB/power-of-two block contract to shared policy configuration
+  and reused checked conversion in the host resize sink.
+- Changed `/proc/meminfo` conversion from saturating to checked multiplication;
+  overflow now fails closed.
+- Local evidence: `cargo fmt --all -- --check`, 15 core tests, 16 host tests,
+  and focused Clippy pass. The complete Linux workspace remains blocked by
+  the pre-existing Windows-only SCM compilation boundary; validate the full
+  workspace on Windows/MSVC.
+- Compatibility flags (`dynamic-memslots`, `unplugged-inaccessible`) and
+  incompatible workload/device evidence remain open under M9a because they
+  require live QEMU/libvirt configuration and operator evidence.
+
+## 2026-08-18 `guest-get-memory-stats` live capability check
+
+- Confirmed on the running `win11_gpu` guest that QGA `110.0.2` does not
+  advertise `guest-get-memory-stats` in `guest-info`.
+- A direct request still fails with `The command guest-get-memory-stats has
+  not been found`.
+- The repository implementation is already complete in the shared parser,
+  Windows QGA boundary, host `VirshGuestAgent`, and validation helper. No
+  additional Rust implementation can add a command that the external Windows
+  QGA binary does not provide.
+- Enabling the command requires installing a Windows QGA build that includes
+  the memory-stats command, restarting the guest QGA service, and repeating
+  the three-sample validation. Keep the active host controller on the
+  verified `dommemstat` source until that guest-side change is complete.
+
+## 2026-08-18 RHEL controller installation and live validation
+
+- With explicit approval, created the dedicated `virtio-mem-host` system
+  account and `libvirt` supplementary-group access, installed the release
+  binary and templated systemd unit, deployed the `win11_gpu` configuration,
+  and enabled `virtio-mem-host@win11_gpu.service`.
+- Performed the approved reversible live grow of `ua-virtiomem0` from `0 KiB`
+  to `1073741824` bytes (1 GiB); forward convergence completed after two
+  samples and the target remains retained for controller validation.
+- Fixed the systemd unit to select `qemu:///system` and provide a writable
+  runtime cache directory for libvirt. The service account is `uid=972`,
+  primary group `virtio-mem-host`, supplementary group `libvirt`.
+- Live validation found that this Windows guest reports `dommemstat
+  available` above `actual` while `unused` remains valid. Updated the parser
+  to use conservative `unused` fallback semantics for that counter shape and
+  added a regression test.
+- Host validation passed after the fix: formatting, 15 host tests, release
+  build, and Clippy warnings-as-errors. The service is enabled and active;
+  latest journal entries contain no runtime errors.
+- Final live state: `ua-virtiomem0` has `requested=current=1048576 KiB`.
+
+## 2026-08-18 RHEL read-only recheck
+
+- Read-only validation against `win11_gpu` completed successfully on the RHEL
+  host: the domain is running, libvirt is 11.10.0, and QEMU reports API
+  11.10.0 / hypervisor 10.1.0.
+- `virsh dommemstat win11_gpu` reports `actual=8388608 KiB`,
+  `available=8319276 KiB`, and `usable=3398070 KiB`; `dommemstat` remains a
+  usable controller source.
+- QEMU Guest Agent responds at version `110.0.2`, but
+  `guest-get-memory-stats` remains unsupported. Keep
+  `VIRTIO_MEM_STATS_SOURCE=dommemstat`.
+- Live XML reports alias `ua-virtiomem0`, 20 GiB maximum, 2 MiB block, and
+  `requested=current=0 KiB`; the device is converged and no resize was
+  attempted.
+- `virtio-mem-host@win11_gpu.service` is not installed, enabled, or active;
+  no journal entries exist. Installation, account setup, configuration
+  deployment, and service start remain explicitly approved host mutations.
+- Corrected `host/systemd/virtio-mem-host.conf.example` to use the live alias
+  `ua-virtiomem0`.
+
 ## 2026-08-17 Documentation Handoff
 
 Imported applicable Windows service guidance from Microsoft Learn into
@@ -32,10 +201,21 @@ Execution source of truth. Update after every session.
   service startup blocker because the current service uses native
   `GlobalMemoryStatusEx`/`GetPerformanceInfo` telemetry and does not open the
   QGA virtio-serial device.
-- `virsh dommemstat win11_gpu` remains available. Fresh live XML still reports
-  virtio-mem `requested=0 KiB` and `current=18432 KiB`, so host resize testing
-  remains blocked until convergence; no resize or other VM mutation was
-  attempted.
+- `virsh dommemstat win11_gpu` remains available. A fresh post-driver-update
+  XML check reports virtio-mem `requested=0 KiB` and `current=0 KiB`, so the
+  previous convergence blocker is resolved. No resize or other VM mutation
+  was attempted.
+
+## 2026-08-18 driver-update convergence handoff
+
+- After the latest Windows driver was installed, the RHEL read-only check
+  observed `requested=0 KiB` and `current=0 KiB` for `ua-virtiomem0`.
+- ISSUE-005 is resolved as an observed convergence result. Direct driver
+  `requested_size`/`plugged_size` telemetry is still not exposed through the
+  checked QGA commands, so the cross-layer field mapping remains a separate
+  validation item.
+- The host controller remains uninstalled, and no resize was attempted in
+  this verification.
 
 ## 2026-08-18 Windows QGA device-path fix
 
@@ -183,7 +363,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are locally covered; live VM evidence, service registration, and QGA validation remain. |
-| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Workspace format, release build, 70 tests, and Clippy warnings-as-errors pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
+| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; checked canonical-byte/KiB boundaries; block-aligned device validation; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Focused core/host format, 31 tests, and Clippy pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, and a generic stoppable worker are implemented. Main SCM construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, event-log integration, and any host integration remain intentionally deferred. |
 
 ### 2026-08-18 live KVM handoff

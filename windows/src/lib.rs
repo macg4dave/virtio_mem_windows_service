@@ -21,8 +21,8 @@ pub use demand::{
     NativeMemoryTelemetry,
 };
 pub use error::{
-    ConfigurationError, MemoryStatsError, PollError, ServiceHostError, ServiceLoopError,
-    VirtioMemError,
+    ConfigurationError, MemoryStatsError, PollError, RuntimeWiringError, ServiceHostError,
+    ServiceLoopError, VirtioMemError,
 };
 pub use qga::{NamedPipeGuestAgent, DEFAULT_QGA_OPERATION_TIMEOUT};
 pub use runtime::{

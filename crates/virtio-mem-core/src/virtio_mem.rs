@@ -32,6 +32,14 @@ impl VirtioMemState {
                 self.block_size_bytes,
             ));
         }
+        if self.size_bytes < self.block_size_bytes
+            || !self.size_bytes.is_multiple_of(self.block_size_bytes)
+        {
+            return Err(VirtioMemError::SizeNotAligned {
+                size: self.size_bytes,
+                block: self.block_size_bytes,
+            });
+        }
         self.validate_value(self.requested_bytes, "requested")?;
         self.validate_value(self.current_bytes, "current")
     }
@@ -124,5 +132,39 @@ mod tests {
         assert!(valid_state()
             .validate_target(8 * GIB - MIN_HEADROOM_BYTES)
             .is_ok());
+    }
+
+    #[test]
+    fn rejects_device_sizes_that_cannot_be_represented_in_blocks() {
+        assert!(matches!(
+            VirtioMemState {
+                size_bytes: 8 * GIB + 1,
+                ..valid_state()
+            }
+            .validate(),
+            Err(VirtioMemError::SizeNotAligned { .. })
+        ));
+        assert!(matches!(
+            VirtioMemState {
+                size_bytes: BLOCK - 1,
+                ..valid_state()
+            }
+            .validate(),
+            Err(VirtioMemError::SizeNotAligned { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_maximum_values_that_break_alignment() {
+        assert!(matches!(
+            VirtioMemState {
+                size_bytes: u64::MAX,
+                block_size_bytes: BLOCK,
+                requested_bytes: BLOCK,
+                current_bytes: BLOCK,
+            }
+            .validate(),
+            Err(VirtioMemError::SizeNotAligned { .. })
+        ));
     }
 }

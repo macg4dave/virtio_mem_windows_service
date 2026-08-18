@@ -127,6 +127,10 @@ live XML parsing, a trustworthy Windows current-allocation provider, and the
 production resize sink remain to be implemented. The QGA named-pipe client is
 retained as an explicit adapter/test boundary, but the SCM worker does not
 open the QGA virtio-serial device; the host controller owns QGA requests.
+Interactive and SCM startup use the same native telemetry worker boundary and
+preserve stage-specific runtime-wiring context for configuration validation,
+worker construction/initialization, and service-host failures. No guest-side
+resize sink is constructed by this path.
 
 ## RPC & Interfaces
 

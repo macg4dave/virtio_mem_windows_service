@@ -212,7 +212,10 @@ VM or invoke a command shell.
 
 Create and validate the `virtio-mem-host` non-login service account's libvirt
 permissions before installing `host/systemd/virtio-mem-host@.service` and a
-per-instance configuration file. Observe the unit with
+per-instance configuration file. The unit explicitly selects
+`qemu:///system` and gives libvirt a writable per-service runtime cache via
+`RuntimeDirectory`; do not rely on the service account's default session URI
+or home directory. Observe the unit with
 `systemctl status virtio-mem-host@INSTANCE` and
 `journalctl -u virtio-mem-host@INSTANCE`. Failed QGA, XML, command, and
 convergence operations must exit non-zero; a restart rereads live state and
@@ -220,7 +223,7 @@ must never replay a prior resize request.
 
 #### Memory-stat source configuration
 
-The connected QGA (`109.1.0` on `win11_gpu`) does not implement
+The connected QGA (`110.0.2` on `win11_gpu`) does not implement
 `guest-get-memory-stats`, so `VIRTIO_MEM_STATS_SOURCE` defaults to
 `dommemstat`, which reads `virsh dommemstat <vm>` (virtio-balloon counters)
 instead. Before enabling the systemd unit, confirm with a read-only
@@ -229,6 +232,10 @@ instead. Before enabling the systemd unit, confirm with a read-only
 fields, the controller will fail closed with an explicit `GuestStats` error
 rather than guess. Set `VIRTIO_MEM_STATS_SOURCE=qga` only for a guest agent
 known to implement `guest-get-memory-stats`.
+
+Some Windows balloon reports may expose `available` above `actual`. The host
+parser treats that optional counter as out of range and conservatively falls
+back to `unused`; it does not use the impossible value for policy decisions.
 
 `VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES` is a required configuration value: the
 controller will not send a grow request unless the RHEL host's
@@ -367,15 +374,26 @@ The portable Rust tests additionally verify startup failure before `Running`,
 atomic stop signaling, cancellation wake-up, configuration validation, and
 that a stopped loop performs no new poll.
 
+The concrete runtime wiring tests verify that invalid configuration fails
+before worker construction with a stage-specific `RuntimeWiringError`. SCM
+startup preserves equivalent context for worker construction,
+initialization, and service-host execution; these paths do not construct a
+guest-side resize sink.
+
 QGA transport tests verify that a zero operation timeout is rejected before a
 pipe is opened, the default timeout is five seconds, and Windows timeout values
-are clamped to the valid millisecond range. On Windows, an overlapped I/O
-timeout calls `CancelIoEx` and closes the request handles before returning.
+are clamped to the valid millisecond range. Captured-envelope tests verify the
+newline-terminated request, stable response correlation id, required `return`
+array, matching response id, and rejection of empty, multiple, or malformed
+frames. On Windows, an overlapped I/O timeout calls `CancelIoEx` and closes the
+request handles before returning.
 
 The `VirtioMemState` contract tests additionally verify the canonical byte
 unit, minimum and power-of-two block size, requested/current/target alignment,
-device-size bounds, and rejection of zero values before a host resize sink is
-allowed to issue a request.
+device-size/block alignment, maximum-value boundaries, and rejection of zero
+values before a host resize sink is allowed to issue a request. Unit-boundary
+tests verify checked KiB-to-byte conversion, exact byte-to-KiB conversion,
+maximum representable round trips, and rejection of lossy conversion.
 
 Polling integration tests also verify that an invalid virtio-mem snapshot is
 rejected before QGA polling and that a proposed target is validated before the
@@ -385,6 +403,19 @@ XML contract tests cover alias extraction, mixed explicit units, unsupported
 units, malformed/incomplete state, wrong device model, conversion overflow,
 alignment, and device-size bounds. The parser is intentionally tested with
 captured XML strings; live `virsh` discovery remains host-side validation work.
+
+M9a compatibility tests cover explicit enabled attributes, disabled attributes,
+absent attributes, invalid attribute values, independently completed evidence,
+and conflicting sources. The resize sink must reject absent, disabled, or
+conflicting compatibility evidence before issuing an update; the live
+`win11_gpu` XML currently follows this fail-closed path because the required
+flags are not exposed and no external evidence provider is wired.
+
+The host memory-stat parser applies the same checked KiB-to-byte rule and
+rejects `/proc/meminfo` multiplication overflow. Compatibility settings such
+as `dynamic-memslots`/`unplugged-inaccessible` and workload/device exclusions
+remain a separate live XML and operator-evidence gate; they are not inferred
+from absent XML attributes.
 
 `XmlMemoryStateProvider` tests verify that source failures remain explicit and
 that valid XML snapshots are converted into the polling state provider without
@@ -492,7 +523,13 @@ bash scripts/virtio-mem-host.sh resize "$VM_NAME" "$VIRTIO_MEM_ALIAS" "$TARGET_B
 
 The helper requires `virsh` and `xmllint`, accepts only a constrained alias,
 requires exactly one matching virtio-mem device, and never retries or loops.
-The `resize` mode is the only mode that issues `virsh update-memory-device`.
+The helper defaults to `qemu:///system`; set `VIRSH_CONNECT` for another
+connection. The `resize` mode is the only mode that issues
+`virsh update-memory-device`. Resize mode also requires explicit live XML
+confirmation of `dynamic-memslots` and `unplugged-inaccessible`, plus
+`VIRTIO_MEM_WORKLOAD_REVIEW=confirmed` from the operator's incompatible-
+workload review. Snapshot mode remains read-only and does not require those
+actuation gates.
 
 ### Bash validation helpers
 

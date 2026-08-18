@@ -48,7 +48,9 @@ fn parse_mem_available(contents: &str) -> Result<u64, String> {
             .trim()
             .parse()
             .map_err(|_| format!("MemAvailable line is not a decimal kB value: {line}"))?;
-        return Ok(value_kib.saturating_mul(1024));
+        return value_kib
+            .checked_mul(1024)
+            .ok_or_else(|| format!("MemAvailable value overflows canonical bytes: {line}"));
     }
     Err("MemAvailable field was not found".to_owned())
 }
@@ -69,5 +71,10 @@ mod tests {
     #[test]
     fn rejects_missing_field() {
         assert!(parse_mem_available("MemTotal: 100 kB\n").is_err());
+    }
+
+    #[test]
+    fn rejects_kibibyte_overflow() {
+        assert!(parse_mem_available("MemAvailable: 18446744073709551615 kB\n").is_err());
     }
 }

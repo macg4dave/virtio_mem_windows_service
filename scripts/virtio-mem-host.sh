@@ -4,8 +4,8 @@ set -euo pipefail
 usage() {
   cat >&2 <<'USAGE'
 Usage:
-  virtio-mem-host.sh snapshot VM_NAME ALIAS
-  virtio-mem-host.sh resize VM_NAME ALIAS TARGET_BYTES
+  VIRSH_CONNECT=qemu:///system virtio-mem-host.sh snapshot VM_NAME ALIAS
+  VIRSH_CONNECT=qemu:///system virtio-mem-host.sh resize VM_NAME ALIAS TARGET_BYTES
 
 snapshot is read-only. resize is the only mode that issues a live update.
 USAGE
@@ -20,6 +20,7 @@ mode="$1"
 vm_name="$2"
 alias="$3"
 target_bytes="${4:-}"
+connect="${VIRSH_CONNECT:-qemu:///system}"
 
 if [[ "$mode" != "snapshot" && "$mode" != "resize" ]]; then
   usage
@@ -45,7 +46,7 @@ xml_snapshot() {
   # virsh dumpxml has no --live option; for a running domain its default
   # output is the live definition. --inactive is the explicit persistent
   # configuration selector and must not be used for resize validation.
-  virsh dumpxml "$vm_name"
+  virsh -c "$connect" dumpxml "$vm_name"
 }
 
 memory_xpath="/domain/devices/memory[@model='virtio-mem'][alias[@name='$alias']]"
@@ -64,6 +65,28 @@ xml_unit() {
   local xml="$1"
   local field="$2"
   xmllint --xpath "string(($memory_xpath//*[local-name()='$field']/@unit)[1])" - <<<"$xml"
+}
+
+xml_attribute() {
+  local xml="$1"
+  local name="$2"
+  xmllint --xpath "string(($memory_xpath)[1]/@$name)" - <<<"$xml"
+}
+
+compatibility_enabled() {
+  local field="$1"
+  local value="$2"
+  case "${value,,}" in
+    yes|on|true|1) ;;
+    '')
+      printf 'Refusing resize: live XML does not confirm %s.\n' "$field" >&2
+      return 1
+      ;;
+    *)
+      printf 'Refusing resize: live XML rejects or has unknown %s=%s.\n' "$field" "$value" >&2
+      return 1
+      ;;
+  esac
 }
 
 to_bytes() {
@@ -118,6 +141,12 @@ if (( block & (block - 1) )); then
   printf 'Refusing resize: block size is not a power of two (%d bytes).\n' "$block" >&2
   exit 1
 fi
+compatibility_enabled dynamic-memslots "$(xml_attribute "$xml" dynamic-memslots || true)"
+compatibility_enabled unplugged-inaccessible "$(xml_attribute "$xml" unplugged-inaccessible || true)"
+if [[ "${VIRTIO_MEM_WORKLOAD_REVIEW:-}" != "confirmed" ]]; then
+  printf 'Refusing resize: VIRTIO_MEM_WORKLOAD_REVIEW=confirmed is required.\n' >&2
+  exit 1
+fi
 if (( requested != current )); then
   printf 'Refusing resize: requested (%d) has not converged to current (%d).\n' "$requested" "$current" >&2
   exit 1
@@ -133,7 +162,7 @@ if (( target % block != 0 )); then
 fi
 
 printf 'Issuing approved live resize: VM=%s alias=%s target=%s bytes\n' "$vm_name" "$alias" "$target_bytes"
-virsh update-memory-device "$vm_name" \
+virsh -c "$connect" update-memory-device "$vm_name" \
   --alias "$alias" \
   --requested-size "$target" \
   --live
