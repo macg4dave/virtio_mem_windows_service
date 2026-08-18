@@ -35,9 +35,10 @@ cargo build --release
 Build this crate on Windows (or a host with an installed Windows Rust target
 and compatible linker). The RHEL development host does not currently contain
 the Windows target standard library or a Windows linker, so it cannot produce
-the service executable. The service already sends the QGA
-`guest-get-memory-stats` request; the connected guest agent must advertise
-that command for runtime collection to succeed.
+the service executable. The QGA client remains an explicit adapter boundary,
+but the Windows service does not open the QGA virtio-serial device because
+`QEMU-GA` owns it. Service startup uses native Windows telemetry; host-side QGA
+requests remain a RHEL/libvirt responsibility.
 
 ## Test
 
@@ -62,9 +63,12 @@ runtime requirements are:
 - Windows 11 with QEMU Guest Agent running
 - Windows service APIs available in the target environment
 
-The current runtime foundation includes a configurable named-pipe QEMU Guest
-Agent client, a mockable memory poller, and an adapter-based single poll
-iteration. It also includes a stoppable polling scheduler, portable
+The current runtime foundation includes a configurable QEMU Guest Agent client
+boundary for explicit adapter/testing use, a mockable memory poller, and an
+adapter-based single poll iteration. The Windows SCM and interactive workers
+use native `GlobalMemoryStatusEx`/`GetPerformanceInfo` telemetry rather than
+opening the QGA virtio-serial device, which is owned by the QEMU Guest Agent
+service. It also includes a stoppable polling scheduler, portable
 `ServiceHost` lifecycle wrapper, and a native SCM dispatcher that shares the
 same cancellation signal as the worker. `ServiceConfig` supplies validated
 service identity, endpoint, timing, least-privilege defaults, and versioned JSON

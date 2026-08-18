@@ -26,7 +26,8 @@ pub use error::{
 };
 pub use qga::{NamedPipeGuestAgent, DEFAULT_QGA_OPERATION_TIMEOUT};
 pub use runtime::{
-    DemandServiceWorker, GuestAgent, MemoryPoller, QgaPollingWorker, ServiceRuntime,
+    DemandServiceWorker, GuestAgent, MemoryPoller, NativeTelemetryWorker, QgaPollingWorker,
+    ServiceRuntime,
 };
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};

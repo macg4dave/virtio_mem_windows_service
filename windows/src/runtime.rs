@@ -3,6 +3,7 @@ use std::time::Duration;
 use crate::controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 use crate::demand::{
     DemandAgent, DemandAgentError, DemandReport, DemandReportPublisher, MemoryTelemetry,
+    MemoryTelemetrySnapshot,
 };
 use crate::error::{PollError, ServiceLoopError};
 use crate::service_host::{ServiceWorker, StopSignal};
@@ -11,6 +12,57 @@ use crate::stats::parse_memory_stats;
 
 pub trait GuestAgent {
     fn get_memory_stats(&mut self) -> Result<String, String>;
+}
+
+/// Windows-native telemetry worker used by the service lifecycle.
+///
+/// QEMU Guest Agent owns the virtio-serial device, so the Windows service must
+/// not open that device as a second client. Host-side QGA requests remain the
+/// responsibility of the RHEL/libvirt controller.
+#[derive(Debug)]
+pub struct NativeTelemetryWorker<T> {
+    telemetry: T,
+    interval: Duration,
+}
+
+impl<T> NativeTelemetryWorker<T>
+where
+    T: MemoryTelemetry,
+{
+    pub fn new(telemetry: T, interval: Duration) -> Result<Self, String> {
+        if interval.is_zero() {
+            return Err("native telemetry polling interval must be greater than zero".to_owned());
+        }
+        Ok(Self {
+            telemetry,
+            interval,
+        })
+    }
+
+    pub fn poll_once(&self) -> Result<MemoryTelemetrySnapshot, String> {
+        self.telemetry
+            .collect()
+            .map_err(|error| format!("native memory telemetry failed: {error}"))
+    }
+}
+
+impl<T> ServiceWorker for NativeTelemetryWorker<T>
+where
+    T: MemoryTelemetry + Send + 'static,
+{
+    fn initialize(&mut self, _stop: &StopSignal) -> Result<(), String> {
+        self.poll_once().map(|_| ())
+    }
+
+    fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
+        while !stop.is_cancelled() {
+            self.poll_once()?;
+            if !stop.is_cancelled() {
+                stop.wait(self.interval);
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Guest-side polling worker wired to the configured QEMU Guest Agent.
@@ -310,6 +362,35 @@ mod tests {
             worker.initialize(&StopSignal::new()),
             Err("initial QGA memory-stat acquisition failed: pipe unavailable".to_owned())
         );
+    }
+
+    #[test]
+    fn native_worker_validates_initial_telemetry() {
+        let mut worker = NativeTelemetryWorker::new(DemandTelemetryFixture, Duration::from_secs(1))
+            .expect("worker should be constructible");
+
+        worker
+            .initialize(&StopSignal::new())
+            .expect("native telemetry should validate");
+    }
+
+    #[test]
+    fn native_worker_preserves_telemetry_failure() {
+        let mut worker = NativeTelemetryWorker::new(FailingTelemetry, Duration::from_secs(1))
+            .expect("worker should be constructible");
+
+        assert_eq!(
+            worker.initialize(&StopSignal::new()),
+            Err("native memory telemetry failed: native Windows memory telemetry is unavailable on this platform".to_owned())
+        );
+    }
+
+    struct FailingTelemetry;
+
+    impl MemoryTelemetry for FailingTelemetry {
+        fn collect(&self) -> Result<MemoryTelemetrySnapshot, crate::demand::DemandError> {
+            Err(crate::demand::DemandError::UnsupportedPlatform)
+        }
     }
 
     struct StubState;

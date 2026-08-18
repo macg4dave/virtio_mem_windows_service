@@ -55,7 +55,13 @@ fn request_memory_stats(pipe_path: &str, timeout: Duration) -> Result<String, St
         .collect();
     let timeout_ms = duration_to_timeout_ms(timeout);
 
-    if unsafe { WaitNamedPipeW(wide_path.as_ptr(), timeout_ms) } == FALSE {
+    // QEMU's Windows virtio-serial channel is exposed as a device path under
+    // `\\.\Global\...`, not as a Win32 named pipe under `\\.\pipe\...`.
+    // WaitNamedPipeW rejects the device path with ERROR_BAD_PATHNAME (161),
+    // so only use it for actual named-pipe endpoints.
+    if pipe_path.to_ascii_lowercase().starts_with(r"\\.\pipe\")
+        && unsafe { WaitNamedPipeW(wide_path.as_ptr(), timeout_ms) } == FALSE
+    {
         return Err(format!("wait for {pipe_path}: {}", unsafe {
             GetLastError()
         }));
@@ -302,6 +308,17 @@ mod tests {
             agent.get_memory_stats(),
             Err("QEMU Guest Agent operation timeout must be greater than zero".to_owned())
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn waits_only_for_win32_named_pipe_paths() {
+        assert!(r"\\.\pipe\qga-test"
+            .to_ascii_lowercase()
+            .starts_with(r"\\.\pipe\"));
+        assert!(!r"\\.\Global\org.qemu.guest_agent.0"
+            .to_ascii_lowercase()
+            .starts_with(r"\\.\pipe\"));
     }
 
     #[cfg(windows)]

@@ -131,7 +131,7 @@ readiness in the remaining host-side work.
 | M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |
 | M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, demand-report path, timing, account, missing-file defaults, and validation model exist locally; ACL provisioning remains |
 | M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; elevated Program Files lifecycle validation passes, while event-log and QGA-account evidence remain |
-| M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now acquire configured QGA memory stats and fail visibly on transport/parser errors; trustworthy current-allocation and resize wiring remain |
+| M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now collect native Windows telemetry without opening the QGA device; trustworthy current-allocation and resize wiring remain |
 | M7 | Installation and recovery operations | [ ] | M5, M6 | Install/start/observe/stop/delete sequence passes; bounded recovery actions are verified |
 | M8 | Live QGA and KVM validation | [!] | M2 | Host probe succeeds repeatedly against the Windows KVM guest |
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, and opt-in Bash live source/sink checks are implemented; live VM evidence remains |
@@ -251,10 +251,10 @@ no ambiguous or implicit unit conversion.
 ### F8. Concrete runtime wiring
 
 - [~] Replace the `main.rs` foundation stub with service/interactive-mode dispatch.
-- [x] Connect `ServiceConfig` to `NamedPipeGuestAgent` with the configured
-    pipe path and operation timeout.
-- [~] Implement guest-side memory state acquisition; QGA memory statistics are
-    acquired and validated at worker initialization, but they do not establish
+- [x] Connect interactive and SCM workers to native Windows memory telemetry;
+    they do not open the QGA virtio-serial device owned by `QEMU-GA`.
+- [~] Implement guest-side demand/state acquisition; native telemetry is
+    collected and validated at worker initialization, but it does not establish
     virtio-mem `current` allocation.
 - [ ] Implement a safe resize-request sink without Linux command execution;
     defer until a trustworthy current-allocation provider exists.

@@ -26,8 +26,8 @@ const SERVICE_DELETE: DWORD = 0x00010000;
 const SERVICE_START: DWORD = 0x00000010;
 
 use crate::config::ServiceConfig;
-use crate::qga::NamedPipeGuestAgent;
-use crate::runtime::QgaPollingWorker;
+use crate::demand::NativeMemoryTelemetry;
+use crate::runtime::NativeTelemetryWorker;
 use crate::service_host::{ServiceHost, ServiceState, ServiceWorker, StopSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -343,20 +343,15 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
         }
     };
     let shutdown_timeout = config.shutdown_timeout;
-    let pipe_path = config.qga_pipe_path;
-    let qga_timeout = config.qga_operation_timeout;
     let poll_interval = config.poll_interval;
     let status_handle_value = status_handle as usize;
     let mut host = ServiceHost::with_stop_and_shutdown_timeout(
         move |service_stop: &StopSignal| {
-            let mut worker = QgaPollingWorker::new(
-                NamedPipeGuestAgent::with_operation_timeout(pipe_path.clone(), qga_timeout),
-                poll_interval,
-            )
-            .map_err(|error| format!("construct QGA worker: {error}"))?;
+            let mut worker = NativeTelemetryWorker::new(NativeMemoryTelemetry, poll_interval)
+                .map_err(|error| format!("construct native telemetry worker: {error}"))?;
             worker
                 .initialize(service_stop)
-                .map_err(|error| format!("initialize QGA worker: {error}"))?;
+                .map_err(|error| format!("initialize native telemetry worker: {error}"))?;
             let _ = publish_status(
                 status_handle_value as SERVICE_STATUS_HANDLE,
                 ScmServiceStatus::from_state(ServiceState::Running),

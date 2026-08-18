@@ -82,8 +82,10 @@ See [copilot-instructions.md](../.github/copilot-instructions.md) for detailed o
 
 The Rust runtime must treat the Windows Service Control Manager (SCM) as a
 lifecycle coordinator, not as the worker loop itself. SCM callbacks should do
-only bounded setup or shutdown coordination and return promptly; polling and
-QEMU Guest Agent work belong to the stoppable background runtime.
+only bounded setup or shutdown coordination and return promptly; native Windows
+telemetry belongs to the stoppable background runtime. QEMU Guest Agent
+requests are owned by the RHEL/libvirt host controller because the QGA process
+owns the Windows virtio-serial device.
 
 The SCM adapter must make lifecycle transitions observable and deterministic:
 
@@ -116,19 +118,15 @@ These rules are adapted from [Microsoft's Windows service walkthrough](https://l
 and its [current Windows service guidance](https://learn.microsoft.com/en-us/dotnet/core/extensions/windows-service); the implementation remains Rust-only.
 
 The current Rust implementation provides `ServiceHost`, `StopSignal`, a
-wakeable polling loop, validated `ServiceConfig` defaults, a native SCM
-callback/registration adapter, installation/start/stop/removal commands, the
-pure Rust `VirtioMemState` byte/alignment validator, a versioned JSON
-configuration loader, and a generic `DemandServiceWorker` that publishes
+wakeable native-telemetry polling loop, validated `ServiceConfig` defaults, a
+native SCM callback/registration adapter, installation/start/stop/removal
+commands, the pure Rust `VirtioMemState` byte/alignment validator, a versioned
+JSON configuration loader, and a generic `DemandServiceWorker` that publishes
 advisory reports through an injected JSON-lines sink. Event-log integration,
 live XML parsing, a trustworthy Windows current-allocation provider, and the
-production resize sink remain to be implemented. QEMU Guest Agent transactions
-have a configured operation deadline (5 seconds by default). The Windows
-transport uses overlapped I/O and `CancelIoEx`, so the polling caller returns
-instead of waiting indefinitely during connect, write, or response read; it
-deliberately avoids the non-cancellable synchronous `FlushFileBuffers` call.
-The main SCM entry point must
-not construct a demand worker until that allocation provider is available.
+production resize sink remain to be implemented. The QGA named-pipe client is
+retained as an explicit adapter/test boundary, but the SCM worker does not
+open the QGA virtio-serial device; the host controller owns QGA requests.
 
 ## RPC & Interfaces
 

@@ -10,6 +10,42 @@ complete by this documentation update.
 
 Execution source of truth. Update after every session.
 
+## 2026-08-18 Windows service runtime boundary fix
+
+- Confirmed the running `QEMU-GA` service owns the Windows virtio-serial
+  endpoint; a second guest process receives `open ...: 5`.
+- Added `NativeTelemetryWorker` and wired interactive/SCM startup to native
+  `GlobalMemoryStatusEx`/`GetPerformanceInfo` collection, so Windows service
+  startup no longer depends on opening the QGA device.
+- Retained the QGA client and parser as explicit adapter/test boundaries;
+  RHEL/libvirt remains the owner of host-side QGA requests.
+- Added native-worker startup/failure regression tests. Workspace tests now
+  pass with 71 tests and no failures.
+
+## 2026-08-18 Windows QGA device-path fix
+
+- Foreground service diagnostics reproduced startup failure as
+  `wait for \\.\Global\org.qemu.guest_agent.0: 161`.
+- Fixed `windows/src/qga.rs` to skip `WaitNamedPipeW` for the QEMU
+  virtio-serial device path under `\\.\Global\`; `WaitNamedPipeW` only accepts
+  `\\.\pipe\...` endpoints and returned `ERROR_BAD_PATHNAME`.
+- Added a regression test distinguishing Win32 named-pipe paths from the
+  QEMU device path. Formatting, Clippy, and all 69 workspace tests pass.
+- Rebuild and redeploy the Windows service binary before repeating SCM start.
+
+## 2026-08-18 guest-get-memory-stats clarification
+
+- Confirmed that `guest-get-memory-stats` is already implemented end to end in
+  the repository: the Windows named-pipe client sends the newline-delimited
+  request, the shared parser validates `stat-free`, `stat-total`, and optional
+  `stat-available`, and the host `virsh` adapter sends the same exact command.
+- Workspace validation passed with 78 tests and no failures.
+- No Rust change is required to add the command. The connected external QEMU
+  Guest Agent reports the command as unavailable, so enabling it requires
+  installing/upgrading/configuring a QGA build that implements the command on
+  the Windows guest. Until then, retain the host `dommemstat` fallback and do
+  not claim live QGA memory-stat support.
+
 ## 2026-08-18 Windows QGA/build handoff
 
 - Confirmed `windows/src/qga.rs` already sends the newline-delimited
