@@ -68,6 +68,13 @@ uses `dommemstat` by default when the guest QGA does not provide
     `requested=0 KiB` and `current=18432 KiB`. The QGA responses checked here
     do not expose Windows driver `requested_size`/`plugged_size`; the
     cross-layer driver mapping remains unverified.
+- **Windows service running handoff (2026-08-18):** RHEL-side QGA checks
+    confirm the guest is running and responds with hostname `ICE101`, but they
+    cannot observe Windows SCM state directly. The native telemetry worker is
+    therefore considered a Windows-side runtime claim until SCM/log evidence
+    is supplied. QGA memory stats remain unavailable, while `dommemstat`
+    remains usable; virtio-mem still has `requested=0 KiB` and
+    `current=18432 KiB`.
 - **Windows demand-agent foundation (2026-08-18):** native
     `GlobalMemoryStatusEx`/`GetPerformanceInfo` collection, checked
     canonical-byte snapshots, bounded pressure ratios, provisional five-state
