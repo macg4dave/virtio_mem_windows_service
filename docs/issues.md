@@ -30,6 +30,8 @@
 - The checked QGA responses expose no Windows driver `requested_size` or
   `plugged_size` values; driver state remains unverified through this boundary.
 - `virtio-mem-host@win11_gpu.service` is not installed and has no journal entries.
+- The Windows service cannot be marked SCM-verified from RHEL-only evidence;
+  obtain the Windows service status/log result from the guest separately.
 - No resize, guest command, reboot, service installation, or systemd/libvirt
   mutation was attempted. Do not issue another resize until convergence and
   the rollback behavior are understood.

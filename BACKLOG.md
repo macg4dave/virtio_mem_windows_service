@@ -22,6 +22,21 @@ Execution source of truth. Update after every session.
 - Added native-worker startup/failure regression tests. Workspace tests now
   pass with 71 tests and no failures.
 
+## 2026-08-18 running-service RHEL handoff
+
+- The guest is running and the QGA channel responds to `guest-info` and
+  `guest-get-host-name` (`ICE101`). The RHEL host cannot directly observe
+  Windows SCM state; service-running confirmation remains Windows-side
+  evidence.
+- `guest-get-memory-stats` remains unavailable, but this is not a Windows
+  service startup blocker because the current service uses native
+  `GlobalMemoryStatusEx`/`GetPerformanceInfo` telemetry and does not open the
+  QGA virtio-serial device.
+- `virsh dommemstat win11_gpu` remains available. Fresh live XML still reports
+  virtio-mem `requested=0 KiB` and `current=18432 KiB`, so host resize testing
+  remains blocked until convergence; no resize or other VM mutation was
+  attempted.
+
 ## 2026-08-18 Windows QGA device-path fix
 
 - Foreground service diagnostics reproduced startup failure as
