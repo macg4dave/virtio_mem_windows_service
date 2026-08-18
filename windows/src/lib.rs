@@ -25,7 +25,9 @@ pub use error::{
     VirtioMemError,
 };
 pub use qga::{NamedPipeGuestAgent, DEFAULT_QGA_OPERATION_TIMEOUT};
-pub use runtime::{DemandServiceWorker, GuestAgent, MemoryPoller, ServiceRuntime};
+pub use runtime::{
+    DemandServiceWorker, GuestAgent, MemoryPoller, QgaPollingWorker, ServiceRuntime,
+};
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};
 pub use service_loop::{poll_once, run_polling_loop, MemoryStateProvider, ResizeRequestSink};

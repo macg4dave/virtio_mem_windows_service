@@ -28,7 +28,7 @@ the V1 gate remains blocked.
 - **Local quality baseline:** on 2026-08-18 the workspace passed
     `cargo test --workspace --all-features`, `cargo clippy --workspace
     --all-targets --all-features -- -D warnings`, and `cargo build --workspace
-    --all-features`; the workspace currently reports 72 tests passing and 0
+    --all-features`; the workspace currently reports 77 tests passing and 0
     failures.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -66,7 +66,7 @@ the V1 gate remains blocked.
 ## Verified wins to preserve
 
 - **Local quality baseline:** the native Windows MSVC build, release build,
-    72 unit tests, and Clippy warnings-as-errors gate pass locally.
+    77 unit tests, and Clippy warnings-as-errors gate pass locally.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Clear boundaries:** guest Rust code does not invoke Linux commands; host
@@ -117,8 +117,8 @@ readiness in the remaining host-side work.
 | M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
 | M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |
 | M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, demand-report path, timing, account, missing-file defaults, and validation model exist locally; ACL provisioning remains |
-| M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; real guest/service-manager validation remains |
-| M6 | Concrete guest runtime wiring | [~] | M4, M5 | `main.rs` starts the configured worker and maps unexpected failures to a non-zero process result; live guest state/resize sink wiring still needs proof on a real VM |
+| M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; elevated Program Files lifecycle validation passes, while event-log and QGA-account evidence remain |
+| M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now acquire configured QGA memory stats and fail visibly on transport/parser errors; trustworthy current-allocation and resize wiring remain |
 | M7 | Installation and recovery operations | [ ] | M5, M6 | Install/start/observe/stop/delete sequence passes; bounded recovery actions are verified |
 | M8 | Live QGA and KVM validation | [!] | M2 | Host probe succeeds repeatedly against the Windows KVM guest |
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, and opt-in Bash live source/sink checks are implemented; live VM evidence remains |
@@ -229,17 +229,22 @@ no ambiguous or implicit unit conversion.
 - [~] Return a non-zero process result for unexpected worker failure.
 - [~] Add a local Windows service registration and stop path that uses the SCM
     APIs exposed by the currently installed `winapi` crate.
-- [ ] Validate the install/start/stop lifecycle on a real Windows guest with
-    service manager permissions and event-log visibility.
+- [~] Validate the install/start/stop lifecycle on a real Windows guest with
+    service manager permissions; the elevated Program Files run passed, while
+    event-log visibility and QGA-account access remain.
 
 **Gate:** SCM lifecycle tests pass on Windows and callbacks remain bounded/non-blocking.
 
 ### F8. Concrete runtime wiring
 
 - [~] Replace the `main.rs` foundation stub with service/interactive-mode dispatch.
-- [ ] Connect `ServiceConfig` to `NamedPipeGuestAgent`.
-- [ ] Implement guest-side memory state acquisition.
-- [ ] Implement a safe resize-request sink without Linux command execution.
+- [x] Connect `ServiceConfig` to `NamedPipeGuestAgent` with the configured
+    pipe path and operation timeout.
+- [~] Implement guest-side memory state acquisition; QGA memory statistics are
+    acquired and validated at worker initialization, but they do not establish
+    virtio-mem `current` allocation.
+- [ ] Implement a safe resize-request sink without Linux command execution;
+    defer until a trustworthy current-allocation provider exists.
 - [ ] Add structured error context at the service boundary.
 - [~] Add a deterministic fake state provider and resize sink for integration
     tests; local fakes now provide validated byte snapshots, while the live XML
@@ -262,9 +267,12 @@ evidence before live testing.
 
 ### F9. Installation and recovery
 
-- [ ] Define stable service name, display name, description, executable path, startup mode, and account.
+- [x] Define stable service name, display name, description, executable path,
+    startup mode, account, and bounded failure-action delays in the SCM
+    registration.
 - [ ] Install with the least-privileged account that can access the QGA channel.
-- [ ] Configure bounded restart delays only for unexpected failures.
+- [x] Configure bounded restart delays only for unexpected/non-crash failures;
+    live recovery behavior remains to be observed.
 - [ ] Verify event-log visibility and service status transitions.
 - [ ] Execute install → start → observe logs → stop → delete on a Windows test VM.
 - [ ] Verify service binary/configuration ACLs and QGA pipe access under the

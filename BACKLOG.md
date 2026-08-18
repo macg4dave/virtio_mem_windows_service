@@ -115,6 +115,48 @@ Tasks ready to start (Phase 2 - Core Functionality):
   blocker is the default `LocalService` account lacking traversal/read access
   to the executable under `C:\Users\Dave\github`; validate this before changing
   the least-privilege account or service security descriptor.
+- Elevated VS Code rerun confirmed the same result with explicit `sc.exe`:
+  release build, install, query, stop, and removal completed; start failed with
+  error 5. Read-only `icacls` confirmed the executable grants access to SYSTEM,
+  Administrators, and the developer account, but not `NT AUTHORITY\LocalService`.
+  No ACL was changed automatically. The service registration was removed after
+  the test.
+
+### 2026-08-18 Windows SCM deployment follow-up
+
+- The release binary was copied to `C:\Program Files\VirtioMemService` and
+  `LocalService` was granted recursive read/execute access.
+- The service reached `RUNNING` with a reported PID, stopped cleanly, and was
+  removed successfully. The final `sc.exe query` returned expected error
+  `1060`.
+- Event-log visibility, recovery actions, and QGA access under `LocalService`
+  remain open.
+
+### 2026-08-18 M6/F8 runtime wiring
+
+- Interactive and SCM workers now construct `NamedPipeGuestAgent` from the
+  validated configuration, apply the configured QGA operation timeout, and
+  acquire/parse memory statistics during initialization and polling.
+- QGA transport/parser failures now fail the worker visibly; no resize sink is
+  connected and no virtio-mem `current` allocation is inferred from QGA stats.
+- Deterministic worker tests cover successful initial acquisition and explicit
+  transport failure. A trustworthy current-allocation provider and production
+  resize sink remain required before actuation.
+
+### 2026-08-18 Windows service hardening
+
+- SCM installation now applies the configured service description and bounded
+  restart actions at 5, 30, and 60 seconds with a 24-hour reset period.
+- Failure actions are enabled for non-crash failures so unexpected worker
+  exits can be recovered without treating an intentional stop as a crash.
+- Live recovery behavior, Event Log visibility, and QGA access under
+  `LocalService` remain validation work; no automatic recovery fault was
+  induced during this session.
+- Corrected the VS Code SCM task artifact path: workspace release builds are
+  emitted under `target\release`, not `windows\target\release`. The corrected
+  binary showed the configured description and 5/30/60-second failure actions;
+  startup reached `START_PENDING` and then stopped with exit code 1 because the
+  guest QGA memory-stat command is unavailable. Cleanup removed the service.
 
 ### 2026-08-18 shell-safety and privilege handoff
 

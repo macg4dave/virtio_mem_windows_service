@@ -325,9 +325,29 @@ Get-Service VirtioMemService | Select-Object -Property Status, StartType
 The executable first attempts the SCM dispatcher when invoked as `run` (the
 default command with no arguments). If it is not launched by SCM, it falls
 back to the interactive worker host, which is useful for local lifecycle
-testing. The current worker is intentionally an idle, stoppable lifecycle
-harness; QGA state acquisition and a resize sink remain separate follow-up
-work and must not be inferred from a successful service start.
+testing. The current worker is a stoppable QGA acquisition harness: it reads
+and validates configured QGA memory statistics during initialization and each
+poll. It does not infer virtio-mem `current` allocation or invoke a resize
+sink, so successful QGA acquisition must not be treated as resize readiness.
+
+For SCM validation under the configured `LocalService` account, deploy the
+binary to `C:\Program Files\VirtioMemService` and grant that account
+read/execute access. Use `sc.exe` explicitly from an elevated VS Code terminal;
+PowerShell's `sc` alias is `Set-Content`. This deployment reached `RUNNING`,
+stopped cleanly, and removed successfully during local validation. Event-log,
+recovery, and QGA access evidence remain separate checks.
+
+Service installation also registers the configured description and bounded
+failure actions: restart after 5 seconds, 30 seconds, and 60 seconds, with a
+24-hour reset period. Recovery actions are enabled for non-crash failures so
+unexpected non-zero worker exits can be recovered; intentional stop remains a
+successful zero-exit lifecycle. Live recovery and Event Log evidence still
+require an installed-service observation.
+
+When using the workspace-level VS Code release task, use
+`target\release\virtio-mem-service.exe`. A crate-local build from `windows`
+uses `windows\target\release\virtio-mem-service.exe`; do not mix these paths,
+because the latter may be an older binary from a prior crate-local build.
 
 ### Windows service lifecycle testing
 

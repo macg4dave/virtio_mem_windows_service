@@ -13,6 +13,58 @@ pub trait GuestAgent {
     fn get_memory_stats(&mut self) -> Result<String, String>;
 }
 
+/// Guest-side polling worker wired to the configured QEMU Guest Agent.
+///
+/// This worker acquires and validates QGA memory statistics only. It does not
+/// infer virtio-mem allocation state and does not expose a resize sink.
+#[derive(Debug)]
+pub struct QgaPollingWorker<A> {
+    guest_agent: A,
+    interval: Duration,
+}
+
+impl<A> QgaPollingWorker<A>
+where
+    A: GuestAgent,
+{
+    pub fn new(guest_agent: A, interval: Duration) -> Result<Self, String> {
+        if interval.is_zero() {
+            return Err("QGA polling interval must be greater than zero".to_owned());
+        }
+        Ok(Self {
+            guest_agent,
+            interval,
+        })
+    }
+
+    pub fn poll_once(&mut self) -> Result<crate::stats::MemoryStats, String> {
+        let response = self.guest_agent.get_memory_stats()?;
+        crate::stats::parse_memory_stats(&response).map_err(|error| error.to_string())
+    }
+}
+
+impl<A> ServiceWorker for QgaPollingWorker<A>
+where
+    A: GuestAgent + Send + 'static,
+{
+    fn initialize(&mut self, _stop: &StopSignal) -> Result<(), String> {
+        self.poll_once()
+            .map(|_| ())
+            .map_err(|error| format!("initial QGA memory-stat acquisition failed: {error}"))
+    }
+
+    fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
+        while !stop.is_cancelled() {
+            self.poll_once()
+                .map_err(|error| format!("QGA memory-stat acquisition failed: {error}"))?;
+            if !stop.is_cancelled() {
+                stop.wait(self.interval);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct MemoryPoller<A> {
     guest_agent: A,
@@ -223,6 +275,41 @@ mod tests {
         fn get_memory_stats(&mut self) -> Result<String, String> {
             self.response.clone()
         }
+    }
+
+    #[test]
+    fn qga_worker_validates_initial_memory_stats_before_running() {
+        let mut worker = QgaPollingWorker::new(
+            StubGuestAgent {
+                response: Ok(r#"{"return":[
+                    {"stat":"stat-free","value":1048576},
+                    {"stat":"stat-total","value":16777216}
+                ]}"#
+                .to_owned()),
+            },
+            Duration::from_secs(1),
+        )
+        .expect("worker should be constructible");
+
+        worker
+            .initialize(&StopSignal::new())
+            .expect("initial QGA stats should validate");
+    }
+
+    #[test]
+    fn qga_worker_preserves_initial_transport_failure() {
+        let mut worker = QgaPollingWorker::new(
+            StubGuestAgent {
+                response: Err("pipe unavailable".to_owned()),
+            },
+            Duration::from_secs(1),
+        )
+        .expect("worker should be constructible");
+
+        assert_eq!(
+            worker.initialize(&StopSignal::new()),
+            Err("initial QGA memory-stat acquisition failed: pipe unavailable".to_owned())
+        );
     }
 
     struct StubState;

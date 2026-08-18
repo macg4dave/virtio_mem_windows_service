@@ -1,8 +1,8 @@
 use std::process;
 
 use virtio_mem_service::{
-    install_service, remove_service, run_as_service, start_service, stop_service, ServiceConfig,
-    ServiceHost, StopSignal,
+    install_service, remove_service, run_as_service, start_service, stop_service,
+    NamedPipeGuestAgent, QgaPollingWorker, ServiceConfig, ServiceHost,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,17 +30,15 @@ fn parse_command(args: &[String]) -> Option<ServiceCommand> {
 
 fn run_service(config: ServiceConfig) -> Result<(), String> {
     config.validate().map_err(|error| error.to_string())?;
-    let poll_interval = config.poll_interval;
+    let worker = QgaPollingWorker::new(
+        NamedPipeGuestAgent::with_operation_timeout(
+            config.qga_pipe_path.clone(),
+            config.qga_operation_timeout,
+        ),
+        config.poll_interval,
+    )?;
 
-    let mut host = ServiceHost::with_shutdown_timeout(
-        move |stop: &StopSignal| {
-            while !stop.is_cancelled() {
-                stop.wait(poll_interval);
-            }
-            Ok(())
-        },
-        config.shutdown_timeout,
-    );
+    let mut host = ServiceHost::with_shutdown_timeout(worker, config.shutdown_timeout);
     host.run().map_err(|error| error.to_string())?;
 
     Ok(())

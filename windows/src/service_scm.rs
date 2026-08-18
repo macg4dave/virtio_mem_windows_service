@@ -4,13 +4,16 @@ use std::os::windows::ffi::OsStrExt;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use winapi::ctypes::c_void;
-use winapi::shared::minwindef::{DWORD, FALSE};
+use winapi::shared::minwindef::{DWORD, FALSE, TRUE};
 use winapi::um::winsvc::{
-    ControlService, CreateServiceW, DeleteService, OpenSCManagerW, OpenServiceW,
-    RegisterServiceCtrlHandlerExW, SetServiceStatus, StartServiceCtrlDispatcherW, StartServiceW,
-    SC_MANAGER_CREATE_SERVICE, SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP,
-    SERVICE_CONTROL_SHUTDOWN, SERVICE_CONTROL_STOP, SERVICE_RUNNING, SERVICE_START_PENDING,
-    SERVICE_STATUS, SERVICE_STATUS_HANDLE, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING,
+    ChangeServiceConfig2W, ControlService, CreateServiceW, DeleteService, OpenSCManagerW,
+    OpenServiceW, RegisterServiceCtrlHandlerExW, SetServiceStatus, StartServiceCtrlDispatcherW,
+    StartServiceW, SC_ACTION, SC_ACTION_RESTART, SC_MANAGER_CREATE_SERVICE,
+    SERVICE_ACCEPT_SHUTDOWN, SERVICE_ACCEPT_STOP, SERVICE_CONFIG_DESCRIPTION,
+    SERVICE_CONFIG_FAILURE_ACTIONS, SERVICE_CONFIG_FAILURE_ACTIONS_FLAG, SERVICE_CONTROL_SHUTDOWN,
+    SERVICE_CONTROL_STOP, SERVICE_DESCRIPTIONW, SERVICE_FAILURE_ACTIONSW,
+    SERVICE_FAILURE_ACTIONS_FLAG, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS,
+    SERVICE_STATUS_HANDLE, SERVICE_STOP, SERVICE_STOPPED, SERVICE_STOP_PENDING,
     SERVICE_TABLE_ENTRYW,
 };
 
@@ -23,7 +26,9 @@ const SERVICE_DELETE: DWORD = 0x00010000;
 const SERVICE_START: DWORD = 0x00000010;
 
 use crate::config::ServiceConfig;
-use crate::service_host::{ServiceHost, ServiceState, StopSignal};
+use crate::qga::NamedPipeGuestAgent;
+use crate::runtime::QgaPollingWorker;
+use crate::service_host::{ServiceHost, ServiceState, ServiceWorker, StopSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScmServiceState {
@@ -207,6 +212,72 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
     }
 
     unsafe {
+        let description = to_wide(&registration.description);
+        let mut description_config = SERVICE_DESCRIPTIONW {
+            lpDescription: description.as_ptr() as *mut u16,
+        };
+        if ChangeServiceConfig2W(
+            service,
+            SERVICE_CONFIG_DESCRIPTION,
+            (&mut description_config as *mut SERVICE_DESCRIPTIONW).cast(),
+        ) == FALSE
+        {
+            let error = std::io::Error::last_os_error();
+            winapi::um::winsvc::CloseServiceHandle(service);
+            winapi::um::winsvc::CloseServiceHandle(manager);
+            return Err(format!("ChangeServiceConfig2W description failed: {error}"));
+        }
+
+        let mut actions = [
+            SC_ACTION {
+                Type: SC_ACTION_RESTART,
+                Delay: 5_000,
+            },
+            SC_ACTION {
+                Type: SC_ACTION_RESTART,
+                Delay: 30_000,
+            },
+            SC_ACTION {
+                Type: SC_ACTION_RESTART,
+                Delay: 60_000,
+            },
+        ];
+        let mut failure_actions = SERVICE_FAILURE_ACTIONSW {
+            dwResetPeriod: 86_400,
+            lpRebootMsg: std::ptr::null_mut(),
+            lpCommand: std::ptr::null_mut(),
+            cActions: actions.len() as DWORD,
+            lpsaActions: actions.as_mut_ptr(),
+        };
+        if ChangeServiceConfig2W(
+            service,
+            SERVICE_CONFIG_FAILURE_ACTIONS,
+            (&mut failure_actions as *mut SERVICE_FAILURE_ACTIONSW).cast(),
+        ) == FALSE
+        {
+            let error = std::io::Error::last_os_error();
+            winapi::um::winsvc::CloseServiceHandle(service);
+            winapi::um::winsvc::CloseServiceHandle(manager);
+            return Err(format!("ChangeServiceConfig2W recovery failed: {error}"));
+        }
+
+        let mut failure_flag = SERVICE_FAILURE_ACTIONS_FLAG {
+            fFailureActionsOnNonCrashFailures: TRUE,
+        };
+        if ChangeServiceConfig2W(
+            service,
+            SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+            (&mut failure_flag as *mut SERVICE_FAILURE_ACTIONS_FLAG).cast(),
+        ) == FALSE
+        {
+            let error = std::io::Error::last_os_error();
+            winapi::um::winsvc::CloseServiceHandle(service);
+            winapi::um::winsvc::CloseServiceHandle(manager);
+            return Err(format!(
+                "ChangeServiceConfig2W failure flag failed: {error}"
+            ));
+        }
+
         winapi::um::winsvc::CloseServiceHandle(service);
         winapi::um::winsvc::CloseServiceHandle(manager);
     }
@@ -261,8 +332,8 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
         status_handle,
         ScmServiceStatus::from_state(ServiceState::StartPending),
     );
-    let shutdown_timeout = match ServiceConfig::load_default() {
-        Ok(config) => config.shutdown_timeout,
+    let config = match ServiceConfig::load_default() {
+        Ok(config) => config,
         Err(_) => {
             let _ = publish_status(
                 status_handle,
@@ -271,17 +342,26 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
             return;
         }
     };
+    let shutdown_timeout = config.shutdown_timeout;
+    let pipe_path = config.qga_pipe_path;
+    let qga_timeout = config.qga_operation_timeout;
+    let poll_interval = config.poll_interval;
     let status_handle_value = status_handle as usize;
     let mut host = ServiceHost::with_stop_and_shutdown_timeout(
         move |service_stop: &StopSignal| {
+            let mut worker = QgaPollingWorker::new(
+                NamedPipeGuestAgent::with_operation_timeout(pipe_path.clone(), qga_timeout),
+                poll_interval,
+            )
+            .map_err(|error| format!("construct QGA worker: {error}"))?;
+            worker
+                .initialize(service_stop)
+                .map_err(|error| format!("initialize QGA worker: {error}"))?;
             let _ = publish_status(
                 status_handle_value as SERVICE_STATUS_HANDLE,
                 ScmServiceStatus::from_state(ServiceState::Running),
             );
-            while !service_stop.is_cancelled() {
-                service_stop.wait(std::time::Duration::from_secs(1));
-            }
-            Ok(())
+            worker.run(service_stop)
         },
         stop,
         shutdown_timeout,

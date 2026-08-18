@@ -24,7 +24,8 @@ workspace quality gate.
 
 ### 2. Complete concrete Windows runtime wiring
 
-- Connect `ServiceConfig` to `NamedPipeGuestAgent`.
+- **Implemented:** connect `ServiceConfig` to `NamedPipeGuestAgent` and acquire
+   validated QGA memory stats during worker initialization and each poll.
 - Provide a trustworthy current-allocation provider; do not infer it from
    configured limits or unrelated QGA totals.
 - Construct the advisory `DemandServiceWorker` from the service entry point.

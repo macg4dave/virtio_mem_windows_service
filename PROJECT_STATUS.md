@@ -24,7 +24,7 @@ Windows runtime wiring and live KVM evidence remain open.
 
 The 2026-08-18 local workspace gate passed:
 
-- 72 tests
+- 77 tests
 - `cargo build --workspace --all-features --release`
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features -- -D warnings`
@@ -32,8 +32,8 @@ The 2026-08-18 local workspace gate passed:
 
 ## Open implementation work
 
-- Wire `windows/src/main.rs` to the configured QGA client, demand worker, and a
-  trustworthy current-allocation provider.
+- Wire `windows/src/main.rs` to the configured QGA client and demand worker;
+  trustworthy current-allocation provider and resize sink remain open.
 - Enforce a configured QGA operation deadline with native overlapped
   connect/write/read and `CancelIoEx` cancellation; synchronous flush is
   intentionally avoided because it has no cancellable deadline.
