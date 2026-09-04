@@ -19,7 +19,8 @@ priority is the Phase 2 Windows demand-agent foundation: native telemetry,
 canonical-byte demand reports, and bounded target recommendations that do not
 take over host actuation. The existing one-VM host controller remains the only
 resize authority until live state mapping and Phase 3 global arbitration have
-been validated. The first read-only checks have evidence from the RHEL server.
+been validated. M8 live QGA/KVM validation is complete on `win11_gpu`, including
+isolated agent restart and graceful guest reboot recovery.
 The QGA memory command may be unavailable on the guest, but that is no longer
 a Windows service startup blocker because the service uses native
 `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry. The host controller
@@ -64,6 +65,15 @@ uses `dommemstat` by default when the guest QGA does not provide
     installed `virtio-mem-host@win11_gpu.service` and no journal entries.
     Service installation and lifecycle validation remain separate approved
     mutation work.
+- **M8 live QGA/KVM completion (2026-09-04):** approved password-once
+    batch confirmed QGA `110.0.2`, Windows 11 x64 / `ICE101`, three successful
+    `guest-info` calls at 77–124 ms, and three valid `dommemstat` fallback
+    samples at 84–129 ms. Live XML shows the QGA channel connected and
+    `ua-virtiomem0` converged at `requested=current=0`. An isolated `qemu-ga`
+    restart recovered, a graceful QGA-mode reboot completed, and the full
+    probe passed again afterward at 79–124 ms for `guest-info` and 100–112 ms
+    for `dommemstat`. QGA still does not implement
+    `guest-get-memory-stats`; the verified fallback remains authoritative.
 - **Fresh convergence recheck (2026-08-18):** `win11_gpu` still reports
     `requested=0 KiB` and `current=0 KiB` after the latest Windows driver
     update. The previous rollback convergence blocker is resolved. The QGA
@@ -229,7 +239,7 @@ readiness in the remaining host-side work.
 | M5 | Native Windows SCM adapter | [x] | M3, M4 | Elevated Program Files lifecycle passed under LocalService with stable live Event Log records, bounded callbacks, clean-stop exit zero, and failure exit one |
 | M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now collect native Windows telemetry without opening the QGA device; trustworthy current-allocation and resize wiring remain |
 | M7 | Installation and recovery operations | [x] | M5, M6 | Live install/start/observe/stop/delete passed; 5-second recovery restart and 5/30/60 metadata were verified, rollback restored the original running service |
-| M8 | Live QGA and KVM validation | [~] | M2 | Read-only host probe succeeds repeatedly against the Windows KVM guest using the verified dommemstat fallback; Windows QGA pipe/ACL and native guest-agent memory-stat evidence remain |
+| M8 | Live QGA and KVM validation | [x] | M2 | Repeated QGA and `dommemstat` probes, connected-channel XML, isolated QGA restart recovery, graceful guest reboot recovery, and unchanged convergence all passed on `win11_gpu` |
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, explicit system-libvirt Rust CLI checks, and fail-closed actuation gates are implemented; live VM evidence remains |
 | M9a | Virtio-mem safety and compatibility gate | [~] | M8, M9 | Tri-state XML compatibility parsing, mergeable external evidence, conflict detection, and fail-closed resize enforcement are implemented; live evidence provider and incompatible workload/device review remain |
 | M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
@@ -286,7 +296,7 @@ readiness in the remaining host-side work.
 
 **Gate:** Pure Rust tests pass and no host command is invoked by guest logic.
 
-### F5. Guest transport boundary — partially complete / live validation pending
+### F5. Guest transport boundary — complete
 
 - [x] Configurable Windows named-pipe client sends newline-delimited QGA JSON.
 - [x] Transport, empty-response, parser, and policy errors remain explicit.
@@ -294,7 +304,9 @@ readiness in the remaining host-side work.
     handling against deterministic captured-response fixtures; the Windows
     transport uses a stable request id and requires one matching response
     frame.
-- [ ] Validate the actual pipe path, permissions, QGA service, and response format on the Windows KVM guest.
+- [x] Validate the host-facing QGA channel, service lifecycle, permissions,
+    and response format on the Windows KVM guest; the Windows service uses
+    native telemetry and does not contend for the QGA-owned pipe.
 
 **Gate:** Three consecutive read-only QGA probes succeed on the real VM.
 
@@ -409,16 +421,19 @@ evidence before live testing.
     checks completed against `win11_gpu` on 2026-08-18.
 - [x] Run host prerequisite checks.
 - [x] Confirm the virtio-serial channel name `org.qemu.guest_agent.0`.
-- [ ] Confirm QGA service availability and permissions in Windows.
+- [x] Confirm QGA service availability and permissions in Windows; `qemu-ga`
+    was observed running and completed a controlled stop/start cycle.
 - [x] Run `guest-info` and the configured host memory-stat source at least
     three times; `guest-info` succeeds, QGA `110.0.2` does not provide
     `guest-get-memory-stats`, and `dommemstat` is the verified fallback.
 - [x] Record QEMU, libvirt, QGA versions, command latency, and observed
     response fields; libvirt 11.10.0, QEMU API 11.10.0, hypervisor 10.1.0,
-    QGA 110.0.2, `guest-info` about 3913 ms, and `dommemstat` about 3374 ms
+    QGA 110.0.2, `guest-info` at 77–124 ms, and `dommemstat` at 84–129 ms
     were captured on the RHEL host.
-- [ ] Capture the actual Windows pipe path and account/ACL behavior.
-- [ ] Repeat the probe after QGA restart and guest reboot.
+- [x] Confirm the host-facing channel path/state and controller access; the
+    Windows service uses native telemetry and does not open the QGA pipe.
+- [x] Repeat the probe after an isolated QGA restart and graceful guest
+    reboot; QGA, fallback stats, connected channel, and convergence recovered.
 
 ### V2. Live virtio-mem inspection
 
@@ -577,8 +592,6 @@ Bash host-control implementation before live resize automation is expanded.
 
 | ID | Blocker or decision | Impact | Owner/action |
 | --- | --- | --- | --- |
-| B1 | Live RHEL/libvirt and Windows KVM evidence is incomplete even though first read-only checks exist | Blocks M8, M10a, and M10b live evidence | Run the documented probes and controlled observations on the KVM host |
-| B2 | Actual Windows QGA pipe path and LocalService permissions are not yet verified | Blocks safe installation defaults | Confirm channel/device mapping on the guest before installation |
 | B4 | Persistent configuration location and format are not selected | Blocks production startup configuration | Choose a Windows-safe, least-privilege configuration mechanism in H3 |
 | B5 | Concrete guest state and resize sinks are not wired | Blocks real automatic resize behavior | Implement M6 without invoking Linux commands from the guest |
 | B7 | QGA, controller, libvirt, and `virsh` memory-unit semantics are not reconciled in one tested contract | Blocks safe resize enablement | Resolve in F6a before M9/M10 |
@@ -611,7 +624,6 @@ The project is complete only when:
 ## Known risks
 
 - QEMU Guest Agent availability and Windows virtio-serial permissions.
-- Correct named-pipe path and access under the selected service account.
 - Memory allocation hysteresis tuning under real workload pressure.
 - Slow or interrupted QGA responses during bounded shutdown.
 - SCM callback timing and recovery semantics.

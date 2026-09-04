@@ -28,6 +28,27 @@
 - This evidence does not prove Windows SCM state, QGA Windows service ACLs,
   or native driver memory-stat support.
 
+### M8/V1 fresh read-only evidence — 2026-09-04
+
+- One approved privileged batch read only `qemu:///system` and `win11_gpu`;
+  no VM, service, XML, or memory state was changed.
+- Three QGA `guest-info` requests succeeded in 77–124 ms against QGA
+  `110.0.2`; ping, Windows 11 x64 OS identity, and hostname `ICE101` also
+  succeeded.
+- QGA still reports `guest-get-memory-stats` as unavailable. Three
+  `dommemstat` samples succeeded in 84–129 ms with numeric `actual`, `unused`,
+  and `available` fields.
+- Live XML reports the host channel connected and `ua-virtiomem0` converged at
+  `requested=current=0`, with a 20 GiB maximum and 2 MiB block size.
+- The Windows service uses native telemetry and does not open the QGA pipe.
+  An isolated `qemu-ga` stop/start recovered, followed by a graceful QGA-mode
+  guest reboot and a complete successful post-reboot probe. Windows reported
+  the new boot time as 23:54:19.
+- The reboot-initiating QGA request lost its response as the guest shut down;
+  recovery was established from the new Windows boot time, running QGA
+  service, and subsequent host-side QGA/fallback/XML checks rather than from
+  the initiating command response alone.
+
 ### V2 live virtio-mem inspection — 2026-08-18
 
 - `ua-virtiomem0` is the unique selected virtio-mem device.

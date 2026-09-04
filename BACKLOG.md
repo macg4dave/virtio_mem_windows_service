@@ -1,5 +1,37 @@
 # BACKLOG
 
+## 2026-09-04 M8 fresh read-only QGA/KVM validation
+
+- Ran one approved, password-once privileged read batch against only
+  `qemu:///system` and `win11_gpu`; it made no host, VM, service, XML, or
+  memory changes and required no rollback.
+- QGA `110.0.2` answered three `guest-info` requests in 77–124 ms, plus
+  `guest-ping`, `guest-get-osinfo`, and `guest-get-host-name`; the guest is
+  Windows 11 x64 with hostname `ICE101`.
+- `guest-get-memory-stats` remains explicitly unsupported. Three
+  `dommemstat` fallback samples completed in 84–129 ms with numeric `actual`,
+  `unused`, and `available` fields.
+- Live XML confirmed the connected `org.qemu.guest_agent.0` channel and
+  `ua-virtiomem0` at a 20 GiB maximum, 2 MiB block size, and converged
+  `requested=current=0`.
+- The Windows service no longer opens the QGA pipe, so LocalService pipe ACLs
+  are not an M8 dependency. A controlled `qemu-ga` stop/start passed, a
+  graceful QGA-mode reboot completed at Windows boot time 23:54:19, and the
+  post-reboot host probe repeated all QGA, fallback, channel, and convergence
+  checks successfully. M8 is complete.
+
+## 2026-09-04 single-prompt privileged RHEL task workflow
+
+- Added a reusable agent prompt for consolidating an approved task's RHEL
+  `virsh`, `systemctl`, `journalctl`, and related inspection commands into one
+  reviewable temporary Bash script and one outer `sudo` invocation.
+- Task scripts live under the ignored `.vscode-artifacts/privileged-tasks/`
+  directory, contain no nested sudo or password handling, and are not standing
+  authorization for later tasks.
+- The operator still approves the exact batch and types the sudo password
+  directly; no credential cache, passwordless sudoers rule, or stored password
+  is introduced.
+
 ## 2026-08-18 M9c Rust-only host control migration
 
 - Added M9c to replace `scripts/virtio-mem-host.sh` with an authoritative Rust
@@ -466,7 +498,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Attached Windows QGA does not advertise `guest-get-memory-stats`; use the verified `dommemstat` fallback or replace the guest agent |
 | TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
@@ -634,6 +665,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-002 | QEMU Guest Agent validation | Copilot + Operator | 2026-09-04 | Repeated live QGA and `dommemstat` probes passed before and after an isolated `qemu-ga` restart and graceful `win11_gpu` reboot; QGA memory stats remain unsupported and the verified fallback remains authoritative. |
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
 | TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | 2026-08-18 | Added host-side virtio-mem semantics, compatibility limits, and live validation guidance based on official libvirt and QEMU documentation. |
@@ -643,9 +675,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 ## Blocked
 
-| ID | Title | Blocker | Owner | Workaround |
-| --- | --- | --- | --- | --- |
-| TASK-002 | QEMU Guest Agent validation | Attached Windows QGA does not advertise or implement `guest-get-memory-stats` | Copilot | Keep the verified `dommemstat` fallback or install a guest-agent build that exposes the required command. |
+No backlog task is currently classified as blocked. Remaining live resize and
+cross-layer mapping work retains explicit approval and compatibility gates.
 
 ## Architecture Decisions
 

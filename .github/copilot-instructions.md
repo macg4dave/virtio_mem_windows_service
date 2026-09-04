@@ -88,6 +88,14 @@ Read the architecture and design docs first:
   command structure itself must contain a single privileged entry point. If a
   batch fails because of authorization, stop at that boundary and report it
   instead of launching individual privileged retries.
+- For an RHEL task that needs more than one privileged command, follow
+  `.github/prompts/rhel-privileged-batch.prompt.md`. Materialize the complete
+  task-specific script below the ignored
+  `.vscode-artifacts/privileged-tasks/` directory, show its exact scope to the
+  operator, and invoke that script once with one outer `sudo`. The temporary
+  script must contain no `sudo`, password handling, open-ended command input,
+  or unrelated operations. Do not treat the script as standing authorization
+  for a later task.
 - Never ask the user to send a password, store credentials, or put a password
   in a script, environment file, command line, or repository. If the terminal
   prompts for sudo authentication, the user must type it directly; do not use

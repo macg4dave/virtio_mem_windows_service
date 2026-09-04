@@ -171,9 +171,10 @@ Validate the guest-agent path from the RHEL host with an explicit VM name:
 bash scripts/validate-guest-agent.sh VM_NAME 3
 ```
 
-The helper checks `guest-info` once and
-`guest-get-memory-stats` three times by default. It does not resize memory,
-restart the VM, or execute commands inside the guest.
+The helper checks `guest-info`, then uses `guest-get-memory-stats` when the
+agent provides it or validates `dommemstat` three times as the documented
+fallback. It does not resize memory, restart the VM, or execute commands
+inside the guest.
 
 On `win11_gpu` (QGA `110.0.2`), `guest-get-memory-stats` returns "command has
 not been found"; upgrading the guest's `qemu-guest-agent` build to one

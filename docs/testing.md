@@ -34,6 +34,14 @@ read-only report invocation rather than prefixing each `virsh` command with
 depend on the sudo timestamp cache to avoid prompts; the single outer `sudo`
 invocation is the batching guarantee.
 
+AI agents must use the repository's
+`.github/prompts/rhel-privileged-batch.prompt.md` workflow when a task needs
+multiple privileged RHEL commands. The agent creates a complete, task-specific
+script below the ignored `.vscode-artifacts/privileged-tasks/` directory for
+operator review, then runs that script through one outer `sudo bash` command.
+The operator enters the password directly once. The batch is scoped to that
+approved task and must not become a general privileged command runner.
+
 After that one-time setup, run read-only probes and the controller under the
 approved account or authorization context. If a particular test genuinely
 needs root, ask for approval first with the complete command, protected target,
@@ -511,11 +519,10 @@ Successful QGA reads were `guest-info`, `guest-ping`, `guest-get-osinfo`, and
 `guest-get-host-name`. The guest reported QGA version `109.1.0`, Windows 11
 x64, and hostname `ICE101`.
 
-The standard three-attempt probe is currently blocked at
-`guest-get-memory-stats`: the agent returns `command ... has not been found`,
-and `guest-info` does not advertise that command. This is a guest-agent
-capability issue, not a transport failure. No `guest-exec`, reboot, resize, or
-XML mutation was used during this check.
+QGA `guest-get-memory-stats` returns `command ... has not been found`, and
+`guest-info` does not advertise that command. This is a guest-agent capability
+issue, not a transport failure; three `dommemstat` samples are the validated
+fallback for this guest.
 
 The compatible `virsh dumpxml win11_gpu` inspection found virtio-mem alias
 `ua-virtiomem0`, size `20971520 KiB` (20 GiB), block `2048 KiB` (2 MiB), and
@@ -524,12 +531,18 @@ check was unavailable because that binary is not in the current PATH, although
 `virsh version` reported libvirt `11.10.0`, QEMU API `11.10.0`, and hypervisor
 `10.1.0`.
 
-Do not enable the host controller or attempt a resize until a supported,
-validated memory-stat source is available and the V1 gate is complete.
+On 2026-09-04, a controlled stop/start of the Windows `qemu-ga` service and a
+graceful QGA-mode reboot of `win11_gpu` both recovered. The complete host probe
+passed again after reboot, including three QGA identity reads, three
+`dommemstat` samples, connected channel XML, and
+`requested=current=0`. The reboot-initiating command may lose its response as
+QGA exits; determine success from bounded disappearance/recovery plus a fresh
+post-boot probe, never from the initiating response alone.
 
 On the RHEL host, validate the Windows guest agent and live device before enabling automatic updates:
 
-1. Confirm `guest-info` and `guest-get-memory-stats` succeed three times.
+1. Confirm `guest-info` and the configured QGA or `dommemstat` memory-stat
+   source succeed three times.
 2. Capture the virtio-mem alias, block size, `requested`, and `current` values from live XML.
 3. Perform one reversible aligned live resize manually.
 4. Confirm `current` converges before testing another request.
