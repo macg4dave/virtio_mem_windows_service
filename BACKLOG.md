@@ -1,5 +1,29 @@
 # BACKLOG
 
+## 2026-09-05 M9b live-controller start
+
+- The native RHEL gate passes with 22 core tests and 29 host tests after the
+  M9b change; initial live `win11_gpu` state was converged at
+  `requested=current=0`, with a 2 MiB block and working `dommemstat` fields.
+- Discovery found an already enabled `virtio-mem-host@win11_gpu.service` in a
+  persistent 15-second restart loop. Its installed 2026-08-18 binary predates
+  the zero-state fix and rejects the valid fully unplugged state; the current
+  repository binary has not yet been installed.
+- The shared controller policy also rejected a converged allocation below its
+  configured minimum, which made the documented zero-to-1-GiB installed-service
+  bootstrap impossible. M9b now treats that case as one aligned request to the
+  configured minimum while retaining convergence, compatibility, workload,
+  device-headroom, and host-headroom gates. Normal policy remains one block at
+  a time, and above-maximum state still fails closed.
+- One approved privileged batch stopped the stale loop, retained protected
+  backups, installed the checksum-verified current binary and a fixed
+  `win11_gpu` configuration, and started the existing enabled instance.
+- The installed controller requested the aligned 1 GiB minimum and converged
+  at `requested=current=1073741824`. A further poll interval retained the
+  target, the unit is enabled and active with `NRestarts=0`, and rollback did
+  not run. M9b is complete; interruption/reboot and cross-layer driver evidence
+  remain M10a/M10b work.
+
 ## 2026-09-05 M9a live compatibility gate
 
 - Added a bounded Rust QMP compatibility source that reads
@@ -542,7 +566,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are covered; native SCM registration is live-verified, while QGA transport and complete VM evidence remain. |
-| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | M9 and M9a live gates pass: Rust CLI state validation, QMP compatibility evidence, THP matching, incompatible-class review, exact dry run, and non-mutation are proven on `win11_gpu`; 50 core/host tests pass. M9b installed-controller and reversible-resize evidence remain required before enablement. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, a generic stoppable worker, and SCM Event Log integration are implemented. Main SCM runtime construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, and host integration remain. |
 
 ### 2026-08-18 live KVM handoff
@@ -703,6 +726,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
 | TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | 2026-08-18 | Added host-side virtio-mem semantics, compatibility limits, and live validation guidance based on official libvirt and QEMU documentation. |
+| TASK-008 | RHEL virtio-mem host controller | Copilot + Operator | 2026-09-05 | M9/M9a/M9b passed on `win11_gpu`: installed current Rust controller, fresh XML/QMP and workload gates, zero-to-1-GiB bootstrap, convergence, retained minimum, active systemd instance, and 51 passing core/host tests. |
 | TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | 2026-09-04 | Two fingerprint-pinned aggregate runs passed: 38 RHEL core/host tests, 59 native Windows tests, release builds, formatting, warnings-as-errors Clippy, and matching verified artifact hashes. |
 | TASK-010 | Rust host CLI replaces Bash resize helper | Copilot | 2026-09-04 | Rust owns alias-scoped snapshot/validation, exact dry-run arguments, explicitly applied one-shot resize, and shared safety gates; 44 core/host tests pass and the duplicate Bash helper is removed. |
 | TASK-012 | Windows installation and recovery operations | Copilot | 2026-09-04 | LocalService install/start/observe/stop/delete and rollback passed; events 1000–1003, failure event 2000, exit codes, and the first 5-second recovery restart were verified live. |

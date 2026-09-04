@@ -18,6 +18,7 @@
 | ISSUE-006 | Windows `dommemstat` reports `available` above balloon `actual` | Resolved by conservative fallback to `unused`; host controller is active on `win11_gpu` | `host/src/dommemstat.rs` regression test and live service validation | 2026-08-18 |
 | ISSUE-007 | Invalid service configuration was loaded before SCM dispatcher attachment, causing Windows error 1053 without status or Event Log context | Resolved by dispatching SCM before configuration loading; live invalid-config recovery emitted event 2000 and exit code 1 | `windows/src/main.rs` startup-route regression and M7 live validation | 2026-09-04 |
 | ISSUE-009 | Shared virtio-mem state validation rejected the live fully-unplugged `requested=current=0` state | Resolved by allowing zero observed state while retaining positive-target validation | `VirtioMemState` and live XML regression tests; M9 live CLI validation | 2026-09-05 |
+| ISSUE-010 | Host policy rejected a converged allocation below its configured minimum, preventing the installed controller from bootstrapping a fully unplugged device | Resolved with one aligned request to the configured minimum; normal policy remains one block at a time and above-maximum state fails closed | `plan_resize` regression test and M9b live zero-to-1-GiB systemd convergence | 2026-09-05 |
 
 ### M8/V1 read-only evidence — 2026-08-18
 

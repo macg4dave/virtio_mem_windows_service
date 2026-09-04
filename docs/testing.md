@@ -329,6 +329,20 @@ controller usable:
 4. Do not attempt this while a prior live test has not converged; check
    current `requested`/`current` via read-only `dumpxml` first.
 
+When the live device is fully unplugged (`requested=current=0`) and the
+configured minimum is 1 GiB, the controller uses its below-minimum bootstrap
+rule to request the aligned 1 GiB minimum once. Host-headroom, fresh XML,
+fresh QMP compatibility, workload-review, and convergence gates still apply.
+After convergence, ordinary policy resumes one block at a time and cannot
+shrink below the configured minimum.
+
+The installed-service procedure passed on `win11_gpu` on 2026-09-05. The
+controller replaced a stale pre-zero-state binary, started under the dedicated
+`virtio-mem-host` account, requested 1 GiB from a converged zero state, reached
+`requested=current=1073741824`, and retained that minimum after another poll.
+The enabled unit remained active with `NRestarts=0`; the protected backup was
+retained and rollback did not run.
+
 ### Running the Service Locally (Non-Service Mode)
 
 For debugging and testing without installing as a Windows service:

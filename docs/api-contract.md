@@ -230,7 +230,11 @@ The Rust controller consumes parsed memory stats plus the live virtio-mem
 - `NoChange` when memory is within the hysteresis band or a safe limit has
   been reached
 - `WaitForConvergence` when a previous resize is still pending
-- `Request { requested_bytes }` for one aligned block of growth or removal
+- `Request { requested_bytes }` for one aligned block of normal growth or
+  removal. A converged device below the configured minimum instead receives
+  one aligned bootstrap request to that minimum; this permits a fully
+  unplugged device to enter the managed range without hundreds of intermediate
+  requests.
 
 All `*_bytes` values are `u64` byte counts. No implicit conversion from GB,
 MiB, pages, or blocks is permitted at this boundary. A host adapter must
@@ -238,7 +242,9 @@ validate the device `size`, `block`, `requested`, `current`, and proposed target
 before forwarding a resize request.
 
 The controller never emits a target outside the configured minimum/maximum
-range and does not perform the host-side resize itself.
+range and does not perform the host-side resize itself. A converged allocation
+above the configured maximum remains an inconsistent state and fails closed;
+only the below-minimum bootstrap has explicit reconciliation behavior.
 
 ## RHEL host controller contract
 

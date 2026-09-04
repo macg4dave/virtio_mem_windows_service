@@ -48,8 +48,10 @@ exited with code one, and restarted in 5.05 seconds under the configured
 configuration, service security descriptor, absent ProgramData directory, and
 running service state.
 
-The RHEL host-controller artifact was rebuilt on 2026-09-04 at
-`target/release/virtio-mem-host`; its 25 package tests passed. The verified
+The RHEL host-controller artifact was rebuilt and installed on 2026-09-05 at
+`/usr/local/libexec/virtio-mem-host`; 22 core and 29 host tests passed. The
+enabled `virtio-mem-host@win11_gpu.service` completed a guarded zero-to-1-GiB
+bootstrap, converged, retained its minimum, and remains active. The verified
 Windows service artifact was built on the Win11 guest and fetched to
 `.vscode-artifacts/windows/virtio-mem-service.exe`.
 
@@ -57,13 +59,10 @@ Windows service artifact was built on the Win11 guest and fetched to
 
 - Wire `windows/src/main.rs` to the configured QGA client and demand worker;
   trustworthy current-allocation provider and resize sink remain open.
-- Confirm the corrected host XML discovery command and complete live systemd
-  validation; this host rejects a live option on `dumpxml`, and the controller
-  now uses the default `virsh dumpxml <vm>` form.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
-- Complete host compatibility checks, live systemd validation, and reversible
-  resize evidence.
+- Complete M10a/M10b cross-layer driver mapping, interruption/reboot recovery,
+  and a separately approved reversible end-to-end resize.
 
 ## External blockers
 

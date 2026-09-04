@@ -65,6 +65,12 @@ uses `dommemstat` by default when the guest QGA does not provide
     installed `virtio-mem-host@win11_gpu.service` and no journal entries.
     Service installation and lifecycle validation remain separate approved
     mutation work.
+- **M9b installed-controller completion (2026-09-05):** an approved privileged
+    batch replaced a stale pre-zero-state binary, installed the fixed
+    `win11_gpu` configuration, and started the existing enabled systemd
+    instance. The controller issued one guarded bootstrap from zero to the
+    aligned 1 GiB minimum, reached `requested=current=1073741824`, retained
+    that minimum after another poll, and remains active with no restart.
 - **M8 live QGA/KVM completion (2026-09-04):** approved password-once
     batch confirmed QGA `110.0.2`, Windows 11 x64 / `ICE101`, three successful
     `guest-info` calls at 77–124 ms, and three valid `dommemstat` fallback
@@ -255,7 +261,7 @@ readiness in the remaining host-side work.
 | M8 | Live QGA and KVM validation | [x] | M2 | Repeated QGA and `dommemstat` probes, connected-channel XML, isolated QGA restart recovery, graceful guest reboot recovery, and unchanged convergence all passed on `win11_gpu` |
 | M9 | Host virtio-mem XML adapter | [x] | M1, M8 | Live Rust CLI snapshot/validation, exact alias selection, canonical zero-state parsing, wrong-alias rejection, fail-closed dry run, and before/after non-mutation evidence pass on `win11_gpu` |
 | M9a | Virtio-mem safety and compatibility gate | [x] | M8, M9 | Fresh live QMP properties, THP/block match, explicit operator review, VFIO device classification, locked/RDMA/vhost-user exclusion, exact dry run, and XML non-mutation passed on `win11_gpu` |
-| M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
+| M9b | RHEL systemd host controller | [x] | M1, M8, M9, M9a | Installed one-VM systemd controller completed a guarded zero-to-1-GiB bootstrap on `win11_gpu`, converged, retained its minimum, and remains active without overlapping requests |
 | M9c | Rust host CLI replaces Bash resize helper | [x] | M9, M9a | Rust owns snapshot, validation, exact dry-run arguments, and explicitly applied resize commands; hermetic regression tests pass and the duplicate Bash helper is removed |
 | M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, advisory safe floor, durable JSON-lines output, and generic stoppable worker are locally tested; main SCM construction, trustworthy allocation provider, and live workload evidence remain; no direct host actuation |
 | M10a | Cross-layer state observation | [ ] | M8, M9, M9a | Controlled evidence maps driver `requested_size`/`plugged_size` to QEMU/libvirt `requested`/`current` without treating the fields as interchangeable by assumption |
@@ -459,8 +465,9 @@ evidence before live testing.
 - [x] Confirm the 2 MiB block size matches the host's 2 MiB THP PMD size.
 - [x] Confirm through live QMP that `dynamic-memslots=true` and
     `unplugged-inaccessible=on` are in use.
-- [ ] Select a reversible, aligned target within configured limits.
-- [ ] Confirm no update is issued while `requested != current`.
+- [x] Select a reversible, aligned target within configured limits (1 GiB).
+- [x] Confirm the installed controller sends one request and waits for
+    convergence before resuming policy evaluation.
 - [x] Confirm the VM and workload review: VFIO devices are GPU/audio/USB rather
     than NVMe, `mem-lock=off`, and no RDMA or unsupported vhost-user dependency
     is present or intended.

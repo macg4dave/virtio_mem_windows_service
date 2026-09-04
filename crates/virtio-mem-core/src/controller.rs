@@ -61,7 +61,12 @@ pub fn plan_resize(
     if requested_bytes != current_bytes {
         return Ok(ResizeDecision::WaitForConvergence);
     }
-    if current_bytes < config.min_memory_bytes || current_bytes > config.max_memory_bytes {
+    if current_bytes < config.min_memory_bytes {
+        return Ok(ResizeDecision::Request {
+            requested_bytes: config.min_memory_bytes,
+        });
+    }
+    if current_bytes > config.max_memory_bytes {
         return Err(MemoryStatsError::InconsistentValues);
     }
     if stats.free_bytes < config.lower_threshold_bytes {
@@ -151,6 +156,27 @@ mod tests {
         );
         assert_eq!(
             plan_resize(&stats(B), 20 * B, 16 * B, config()).expect("valid policy"),
+            ResizeDecision::WaitForConvergence
+        );
+    }
+
+    #[test]
+    fn bootstraps_a_converged_device_to_the_configured_minimum() {
+        const B: u64 = 1 << 20;
+        assert_eq!(
+            plan_resize(&stats(7 * B), 0, 0, config()).expect("valid bootstrap policy"),
+            ResizeDecision::Request {
+                requested_bytes: 8 * B
+            }
+        );
+        assert_eq!(
+            plan_resize(&stats(B), 4 * B, 4 * B, config()).expect("valid bootstrap policy"),
+            ResizeDecision::Request {
+                requested_bytes: 8 * B
+            }
+        );
+        assert_eq!(
+            plan_resize(&stats(B), 8 * B, 4 * B, config()).expect("pending bootstrap waits"),
             ResizeDecision::WaitForConvergence
         );
     }
