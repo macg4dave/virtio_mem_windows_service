@@ -68,6 +68,11 @@ For pinned, non-interactive milestone runs, the wrapper also accepts
 temporary host-key file and an optional operator-owned private-key path; it
 does not copy either credential into the repository.
 
+On `ice101.lan`, rustup's `.cargo\bin` proxy symlinks return Windows error 448
+through OpenSSH. The wrapper avoids changing the guest toolchain by resolving
+the active toolchain with `rustup which cargo` and invoking the real Cargo,
+rustc, rustdoc, rustfmt, and Clippy executables directly.
+
 ## Rust project dependencies
 
 The authoritative workspace manifest is [`../Cargo.toml`](../Cargo.toml). The

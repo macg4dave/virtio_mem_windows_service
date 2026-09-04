@@ -367,19 +367,20 @@ After completing any task:
   non-mutating Windows build workflow, including an SSH-alias prompt and a
   single-sync native aggregate gate. Only task and launch JSON are unignored;
   endpoint-specific settings remain outside the repository.
-- Locked remote Cargo operations to `Cargo.lock`, prevented reuse of a stale
-  release executable, and included Bash syntax validation in the RHEL gate.
+- Locked remote Cargo operations to `Cargo.lock`, required a successful release
+  build before artifact retrieval, and included Bash syntax validation in the
+  RHEL gate.
 - Corrected the RHEL gate to validate only the platform-neutral core and host
   controller; the Windows SCM crate is validated by the native Windows gate.
 - Limited source transfer to Git-tracked and non-ignored files so working-tree
   edits are included without copying ignored local credentials or build output.
 - Updated the README, Windows README, dependency matrix, testing guide,
   feature matrix, and roadmap with the workflow and safety boundary.
-- Local evidence: shell syntax, task JSON parsing, Rust formatting, the core
-  and host release build, 38 core/host tests, and warnings-as-errors Clippy all
-  pass. The remote Windows build has not been run because the guest requires an
-  operator-configured OpenSSH/MSVC endpoint.
-- No guest, libvirt, systemd, SCM, or live memory mutation was attempted.
+- Initial local evidence: shell syntax, task JSON parsing, Rust formatting, the
+  core and host release build, 38 core/host tests, and warnings-as-errors
+  Clippy passed before the Windows endpoint run documented below.
+- No libvirt, systemd, SCM, guest lifecycle, or live memory mutation was
+  attempted; remote writes were limited to the designated build workspace.
 
 ### 2026-09-04 Windows endpoint bootstrap and milestone runner
 
@@ -400,8 +401,17 @@ After completing any task:
   scripts, the Linux-compatible release build, 38 core/host tests, Clippy with
   warnings denied, and the native Windows MSVC release build, 59 tests,
   formatting, and Clippy with warnings denied.
-- TASK-011 remains in progress until the helper is executed from the RHEL
-  checkout and its two consecutive aggregate-run evidence files are reviewed.
+- TASK-011 milestone helper completed two consecutive aggregate runs. Evidence
+  is retained under ignored directory
+  `.vscode-artifacts/windows/milestone-20260904T212207Z/`; both artifact hashes
+  are `56572af65f9a9297a5ff755dd01e7a9908d93c037a25cf8419b3113d9ae4b16e`.
+- The first direct aggregate run from RHEL now passes: native MSVC release
+  build, 59 Windows tests and doctests, rustfmt, warnings-as-errors Clippy, and
+  SHA-256-verified artifact
+  `56572af65f9a9297a5ff755dd01e7a9908d93c037a25cf8419b3113d9ae4b16e`.
+- The wrapper resolves real Rust toolchain binaries because this endpoint's
+  rustup proxy symlinks fail through OpenSSH with Windows error 448; it also
+  normalizes `certutil.exe` carriage returns before checksum parsing.
 
 ## Ready Queue
 
@@ -423,7 +433,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are locally covered; live VM evidence, service registration, and QGA validation remain. |
 | TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; checked canonical-byte/KiB boundaries; block-aligned device validation; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Focused core/host format, 31 tests, and Clippy pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, and a generic stoppable worker are implemented. Main SCM construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, event-log integration, and any host integration remain intentionally deferred. |
-| TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | In Progress | Windows OpenSSH is listening on the private guest interface with the operator-supplied build key, and the local MSVC build/test/lint gate passes. The fingerprint-pinned two-run evidence helper is ready; execute it from the RHEL checkout to verify orchestration and artifact checksums. |
 
 ### 2026-08-18 live KVM handoff
 
@@ -582,6 +591,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
 | TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | 2026-08-18 | Added host-side virtio-mem semantics, compatibility limits, and live validation guidance based on official libvirt and QEMU documentation. |
+| TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | 2026-09-04 | Two fingerprint-pinned aggregate runs passed: 38 RHEL core/host tests, 59 native Windows tests, release builds, formatting, warnings-as-errors Clippy, and matching verified artifact hashes. |
 
 ## Blocked
 

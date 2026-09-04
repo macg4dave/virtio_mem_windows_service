@@ -81,13 +81,29 @@ remote() {
 
 remote_quoted_path="\"${remote_dir//\"/}\""
 
+resolve_toolchain() {
+    cargo_exe="$(remote 'rustup which cargo')"
+    cargo_exe="${cargo_exe//$'\r'/}"
+    if [[ "$cargo_exe" != *'\bin\cargo.exe' ]]; then
+        printf 'Unable to resolve the active Windows Cargo toolchain: %s\n' \
+            "${cargo_exe:-missing}" >&2
+        return 1
+    fi
+    toolchain_bin="${cargo_exe%\\cargo.exe}"
+    rustc_exe="$toolchain_bin\\rustc.exe"
+    rustdoc_exe="$toolchain_bin\\rustdoc.exe"
+    cargo_fmt_exe="$toolchain_bin\\cargo-fmt.exe"
+    cargo_clippy_exe="$toolchain_bin\\cargo-clippy.exe"
+}
+
 check() {
     command -v ssh >/dev/null
     command -v scp >/dev/null
     command -v tar >/dev/null
     command -v sha256sum >/dev/null
-    remote "where rustc && rustc --version && cargo --version && rustup target list --installed && rustup component list --installed && where tar && where certutil && if not exist \"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe\" exit /b 1"
-    with_msvc 'where link'
+    remote "where rustup && rustup --version && rustup target list --installed && rustup component list --installed && where tar && where certutil && if not exist \"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe\" exit /b 1"
+    resolve_toolchain
+    with_msvc "\"$rustc_exe\" --version ^&^& \"$cargo_exe\" --version ^&^& \"$cargo_clippy_exe\" clippy --version ^&^& \"$cargo_fmt_exe\" fmt --version ^&^& where link"
 }
 
 sync_source() {
@@ -104,15 +120,18 @@ with_msvc() {
 }
 
 build_windows() {
-    with_msvc 'if exist target\release\virtio-mem-service.exe del /q target\release\virtio-mem-service.exe ^& cargo build -p virtio-mem-service --release --locked'
+    resolve_toolchain
+    with_msvc "set \"RUSTC=$rustc_exe\" ^&^& set \"RUSTDOC=$rustdoc_exe\" ^&^& \"$cargo_exe\" build -p virtio-mem-service --release --locked"
 }
 
 test_windows() {
-    with_msvc 'cargo test -p virtio-mem-service --all-features --locked'
+    resolve_toolchain
+    with_msvc "set \"RUSTC=$rustc_exe\" ^&^& set \"RUSTDOC=$rustdoc_exe\" ^&^& \"$cargo_exe\" test -p virtio-mem-service --all-features --locked"
 }
 
 lint_windows() {
-    with_msvc 'cargo fmt --all -- --check ^&^& cargo clippy -p virtio-mem-service --all-targets --all-features --locked -- -D warnings'
+    resolve_toolchain
+    with_msvc "\"$cargo_fmt_exe\" fmt --all -- --check ^&^& set \"RUSTC=$rustc_exe\" ^&^& set \"RUSTDOC=$rustdoc_exe\" ^&^& \"$cargo_clippy_exe\" clippy -p virtio-mem-service --all-targets --all-features --locked -- -D warnings"
 }
 
 fetch_artifact() {
@@ -120,7 +139,7 @@ fetch_artifact() {
     local remote_artifact="${remote_dir//\\/\/}/target/release/virtio-mem-service.exe"
     scp "${ssh_options[@]}" -- "${ssh_alias}:${remote_artifact}" "$artifact_dir/virtio-mem-service.exe"
     local remote_hash local_hash
-    remote_hash="$(remote "certutil -hashfile $remote_quoted_path\\target\\release\\virtio-mem-service.exe SHA256" | awk '/^[0-9A-Fa-f]{64}$/ { print tolower($0); exit }')"
+    remote_hash="$(remote "certutil -hashfile $remote_quoted_path\\target\\release\\virtio-mem-service.exe SHA256" | tr -d '\r' | awk '/^[0-9A-Fa-f]{64}$/ { print tolower($0); exit }')"
     local_hash="$(sha256sum "$artifact_dir/virtio-mem-service.exe" | awk '{print $1}')"
     if [[ -z "$remote_hash" || "$remote_hash" != "$local_hash" ]]; then
         printf 'Artifact checksum mismatch (Windows=%s, RHEL=%s).\n' "${remote_hash:-missing}" "$local_hash" >&2

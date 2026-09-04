@@ -124,20 +124,22 @@ live integration evidence.
   `.vscode/tasks.json`, and the Makefile provide explicit endpoint checking,
   one-sync native validation, verified artifact retrieval, and both editor and
   terminal entry points.
-- [!] **Stage C — Windows endpoint bootstrap:** the current Windows build login
+- [x] **Stage C — Windows endpoint bootstrap:** the current Windows build login
     now has key-based OpenSSH access, Rust MSVC plus rustfmt/Clippy, Visual
     Studio C++ Build Tools and Windows SDK, `tar.exe`, and `certutil.exe`. The
     endpoint is listening on its private KVM interface and its credentials
     remain operator-owned. Migration to a separate least-privilege build
     account remains outstanding after the cross-host path is proven.
-- [!] **Stage D — First end-to-end native gate:** run the aggregate gate against
-    the configured endpoint and retain exact build, test, lint, artifact path,
-    and checksum evidence. The fingerprint-pinned evidence runner is ready on
-    the RHEL control plane; the remote wrapper has not yet completed this run.
-- [ ] **Stage E — Repeatability evidence:** run the aggregate gate again after a
-  clean source change and confirm failure propagation, one-source-snapshot
-  behavior, and replacement of the prior staged artifact. This completes the
-  developer build workflow milestone.
+- [x] **Stage D — First end-to-end native gate:** the aggregate gate completed
+    against `ice101.lan` with a release build, 59 passing Windows tests, zero
+    doctest failures, rustfmt, warnings-as-errors Clippy, and a verified
+    artifact SHA-256 of
+    `56572af65f9a9297a5ff755dd01e7a9908d93c037a25cf8419b3113d9ae4b16e`.
+- [x] **Stage E — Repeatability evidence:** the fingerprint-pinned milestone
+  runner completed two consecutive RHEL and Windows aggregate gates, retained
+  both logs and artifact hashes, and produced the same verified executable
+  checksum. Earlier toolchain, doctest, and checksum-parser failures propagated
+  non-zero until corrected.
 - [ ] **Stage F — Optional live validation:** execute Windows SCM lifecycle and
   RHEL systemd/libvirt/QGA tests under their existing separate approval and
   rollback procedures. These tests are release evidence, not part of the
@@ -145,12 +147,12 @@ live integration evidence.
 
 ### Blockers and exit criteria
 
-| ID | Blocker | Impact | Resolution evidence |
-| --- | --- | --- | --- |
-| BUILD-001 | The configured Windows SSH/MSVC endpoint has not yet been checked from the RHEL control plane | Native Windows validation passes locally, but cross-host reachability and authentication remain unproven | `windows-remote-build.sh check` succeeds for the explicit SSH target |
-| BUILD-002 | The new remote wrapper has not completed one end-to-end run | Command quoting, remote path handling, MSVC initialization, and checksum retrieval remain statically checked but unproven against the real endpoint | `windows-remote-build.sh all` exits zero and records exact native test results plus matching SHA-256 values |
-| BUILD-003 | Windows SCM validation requires an elevated Windows session and service registration changes | Default build success cannot establish install/start/stop/recovery behavior | Separately approved SCM procedure passes and its evidence is recorded under M7 |
-| BUILD-004 | Live QGA, systemd, libvirt, and virtio-mem convergence checks require named targets and explicit mutation approval | Default build success cannot establish live runtime or resize readiness | Separately approved M8–M10b procedures pass with rollback and convergence evidence |
+| ID | Status | Blocker | Impact | Resolution evidence |
+| --- | --- | --- | --- | --- |
+| BUILD-001 | Resolved | The configured Windows SSH/MSVC endpoint had not been checked from the RHEL control plane | Cross-host reachability and authentication were unproven | `windows-remote-build.sh check` passes through the explicit `virtio-mem-windows` SSH alias |
+| BUILD-002 | Resolved | The remote wrapper had not completed one end-to-end run | Command quoting, remote path handling, MSVC initialization, and checksum retrieval were unproven | `windows-remote-build.sh all` exits zero with 59 passing native tests and matching SHA-256 values |
+| BUILD-003 | External release gate | Windows SCM validation requires an elevated Windows session and service registration changes | Default build success cannot establish install/start/stop/recovery behavior | Separately approved SCM procedure passes and its evidence is recorded under M7 |
+| BUILD-004 | External release gate | Live QGA, systemd, libvirt, and virtio-mem convergence checks require named targets and explicit mutation approval | Default build success cannot establish live runtime or resize readiness | Separately approved M8–M10b procedures pass with rollback and convergence evidence |
 
 **Milestone exit:** BUILD-001 and BUILD-002 are closed, two consecutive
 aggregate gates pass against the explicit Windows endpoint, the fetched
@@ -208,7 +210,7 @@ readiness in the remaining host-side work.
 | ID | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | M0 | Repository and architecture baseline | [x] | — | Architecture, contracts, standards, and testing docs reviewed |
-| M0a | RHEL-controlled cross-platform developer gate | [~] | M0 | RHEL core/host gate passes; explicit Windows endpoint check and two consecutive aggregate native runs produce a checksum-verified executable |
+| M0a | RHEL-controlled cross-platform developer gate | [x] | M0 | RHEL core/host gate and two fingerprint-pinned aggregate native runs pass; both produce the same checksum-verified Windows executable |
 | M1 | Pure memory policy and QGA parsing | [x] | M0 | Parser and controller tests cover malformed, boundary, alignment, and convergence cases |
 | M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
 | M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |

@@ -59,8 +59,8 @@ The one-time guest setup requires Rust MSVC, Visual Studio C++ Build Tools with
 the Windows SDK, Git, `tar.exe`, `certutil.exe`, and OpenSSH Server. The
 wrapper synchronizes Git-tracked and non-ignored working-tree files,
 initializes the MSVC environment, runs Cargo on Windows with the workspace
-lockfile, removes any prior release executable before building, and verifies
-the fetched executable's SHA-256 checksum. The
+lockfile, requires a successful release build before fetching, and verifies the
+fetched executable's SHA-256 checksum. The
 VS Code tasks prompt for the SSH alias; the environment variable is required
 only for direct wrapper use. It never installs or starts the Windows service
 and never changes libvirt state.

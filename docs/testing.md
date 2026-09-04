@@ -84,6 +84,13 @@ for a complete gate so source is synchronized only once. The remote wrapper
 initializes the Visual Studio MSVC environment using `vswhere.exe`, so the SSH
 account must be able to access the installed Build Tools.
 
+The wrapper resolves the active Cargo toolchain with `rustup which cargo` and
+invokes its real executables. This is required on `ice101.lan` because its
+`.cargo\bin` rustup proxy symlinks fail through OpenSSH with Windows error 448
+even though the underlying MSVC toolchain is healthy. The wrapper also removes
+the carriage return from `certutil.exe` output before parsing the remote
+SHA-256.
+
 The equivalent terminal entry point is `make all-gates`. It requires
 `VIRTIO_MEM_WINDOWS_SSH`; `make build`, `make test`, and `make lint` run only
 the RHEL-compatible portion.
