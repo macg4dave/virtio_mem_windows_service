@@ -96,6 +96,11 @@ uses `dommemstat` by default when the guest QGA does not provide
     explicitly applied one-shot resize. It reuses compatibility, convergence,
     canonical-unit, device-headroom, and host-headroom gates; the duplicate
     Bash resize helper is removed.
+- **Windows recovery observability foundation (2026-09-04):** the SCM path
+    emits bounded Application Event Log lifecycle/failure records with stable
+    IDs and treats a worker exit without cancellation as a non-zero failure.
+    The native Windows gate passes; elevated live Event Log and restart-delay
+    observation remains under M7.
 
 ## RHEL-controlled build and test plan
 
@@ -220,9 +225,9 @@ readiness in the remaining host-side work.
 | M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
 | M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |
 | M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, demand-report path, timing, account, missing-file defaults, and validation model exist locally; ACL provisioning remains |
-| M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher and local Windows install/stop registration path are implemented; elevated Program Files lifecycle validation passes, while event-log and QGA-account evidence remain |
+| M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher, stable Event Log emission, and local Windows registration path are implemented; elevated Program Files lifecycle validation passes, while live log and QGA-account evidence remain |
 | M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now collect native Windows telemetry without opening the QGA device; trustworthy current-allocation and resize wiring remain |
-| M7 | Installation and recovery operations | [ ] | M5, M6 | Install/start/observe/stop/delete sequence passes; bounded recovery actions are verified |
+| M7 | Installation and recovery operations | [~] | M5, M6 | Event Log and intentional-stop/failure semantics pass native tests; live install/start/observe/stop/delete and bounded restart-delay evidence remain |
 | M8 | Live QGA and KVM validation | [~] | M2 | Read-only host probe succeeds repeatedly against the Windows KVM guest using the verified dommemstat fallback; Windows QGA pipe/ACL and native guest-agent memory-stat evidence remain |
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, explicit system-libvirt Rust CLI checks, and fail-closed actuation gates are implemented; live VM evidence remains |
 | M9a | Virtio-mem safety and compatibility gate | [~] | M8, M9 | Tri-state XML compatibility parsing, mergeable external evidence, conflict detection, and fail-closed resize enforcement are implemented; live evidence provider and incompatible workload/device review remain |
@@ -382,6 +387,8 @@ evidence before live testing.
 - [ ] Install with the least-privileged account that can access the QGA channel.
 - [x] Configure bounded restart delays only for unexpected/non-crash failures;
     live recovery behavior remains to be observed.
+- [x] Emit stable, bounded Windows Application Event Log records for SCM
+    lifecycle transitions and failures.
 - [ ] Verify event-log visibility and service status transitions.
 - [ ] Execute install → start → observe logs → stop → delete on a Windows test VM.
 - [ ] Verify service binary/configuration ACLs and QGA pipe access under the

@@ -122,9 +122,11 @@ wakeable native-telemetry polling loop, validated `ServiceConfig` defaults, a
 native SCM callback/registration adapter, installation/start/stop/removal
 commands, the pure Rust `VirtioMemState` byte/alignment validator, a versioned
 JSON configuration loader, and a generic `DemandServiceWorker` that publishes
-advisory reports through an injected JSON-lines sink. Event-log integration,
-live XML parsing, a trustworthy Windows current-allocation provider, and the
-production resize sink remain to be implemented. The QGA named-pipe client is
+advisory reports through an injected JSON-lines sink. The SCM path emits
+bounded lifecycle and failure records to the Windows Application Event Log
+with stable event IDs; live Event Log observation remains pending. Live XML
+parsing, a trustworthy Windows current-allocation provider, and the production
+resize sink remain to be implemented. The QGA named-pipe client is
 retained as an explicit adapter/test boundary, but the SCM worker does not
 open the QGA virtio-serial device; the host controller owns QGA requests.
 Interactive and SCM startup use the same native telemetry worker boundary and

@@ -399,6 +399,23 @@ unexpected non-zero worker exits can be recovered; intentional stop remains a
 successful zero-exit lifecycle. Live recovery and Event Log evidence still
 require an installed-service observation.
 
+The SCM path writes lifecycle and failure records to the Windows Application
+Event Log with source `VirtioMemService`. Query the latest records from an
+elevated Windows terminal with:
+
+```text
+wevtutil.exe qe Application /q:"*[System[Provider[@Name='VirtioMemService']]]" /f:text /c:20 /rd:true
+```
+
+Expected IDs are 1000 (start pending), 1001 (running), 1002 (stop requested),
+1003 (clean stop), 2000 (configuration failure), 2001 (worker failure), 2002
+(worker exited without cancellation), and 2003 (SCM status-publication
+failure). Messages are single-line and bounded. A normal stop must end with
+1003 and service exit code zero. A controlled startup/worker failure must emit
+a 2xxx event, report non-zero service exit, and follow the configured bounded
+restart delays. Preserve the original configuration and restore it before
+removing the service; do not combine this test with VM or memory mutation.
+
 When using the workspace-level VS Code release task, use
 `target\release\virtio-mem-service.exe`. A crate-local build from `windows`
 uses `windows\target\release\virtio-mem-service.exe`; do not mix these paths,

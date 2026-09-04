@@ -53,7 +53,8 @@ Clippy warnings-as-errors, and Bash syntax validation.
 - QGA connect/write/flush/read deadlines are not implemented yet.
 - The configured shutdown timeout is stored and validated but not yet enforced
   during worker termination.
-- Live Windows SCM, ACL, workload, and event-log validation remains open.
+- Windows SCM lifecycle records and failure classification are implemented;
+  live Event Log, recovery-delay, ACL, and workload validation remains open.
 - The connected guest's QGA does not provide `guest-get-memory-stats`; the
   `dommemstat` fallback still requires live verification.
 - Live resize remains subject to fresh XML validation and the

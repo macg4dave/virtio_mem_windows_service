@@ -111,8 +111,10 @@ agent foundation additionally collects native Windows memory counters through
 `GlobalMemoryStatusEx` and `GetPerformanceInfo`, validates canonical-byte
 snapshots, and emits a versioned advisory demand report without issuing a
 resize. `DemandAgent` exposes a testable one-cycle collection/publication
-boundary; wiring a persistent or event-log report sink into the SCM worker is
-still pending. The generic `DemandServiceWorker` and JSON-lines publisher are
+boundary; wiring its persistent report sink into the SCM worker is still
+pending. SCM lifecycle and failure events are separately emitted to the
+Windows Application Event Log with stable IDs and bounded messages. The
+generic `DemandServiceWorker` and JSON-lines publisher are
 available, but the SCM entry point intentionally waits for a validated
 current-allocation provider rather than guessing from QGA totals or limits.
 
@@ -125,6 +127,11 @@ cancellation from failure, and preserve unexpected worker failures as
 non-zero process exits so SCM recovery can act. Service registration must use a
 stable identity, documented configuration, and the least-privileged account
 that can access the QEMU Guest Agent channel.
+
+A worker exit without a stop/shutdown request is also treated as an unexpected
+non-zero failure. Only successful completion after cancellation is reported as
+a normal stop. Live Event Log and recovery-delay evidence remains part of the
+elevated operational sequence.
 
 The required operational verification sequence is **install → start → inspect
 logs → stop → remove**. The executable exposes matching `install`, `start`,

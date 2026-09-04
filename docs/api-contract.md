@@ -291,4 +291,15 @@ operations are not retried implicitly.
 `Stopped`, and `Failed` states. Worker failures are returned to the caller and
 transition the host to `Failed`; workers are not silently restarted. Windows
 Service Control Manager registration and callbacks remain a platform adapter
-around this lifecycle boundary.
+around this lifecycle boundary. An SCM worker that returns successfully
+without a stop or shutdown request is classified as an unexpected failure;
+SCM receives a non-zero exit code so its bounded recovery actions can run.
+Only successful completion after cancellation is an intentional zero-exit
+stop.
+
+The SCM adapter emits bounded, single-line Application Event Log records under
+source `VirtioMemService`. Stable IDs are `1000` start pending, `1001` running,
+`1002` stop requested, `1003` stopped, `2000` configuration failure, `2001`
+worker failure, `2002` unexpected worker exit, and `2003` SCM status-publication
+failure. Messages are limited to 2,048 Unicode scalar values and do not attach
+raw configuration contents.

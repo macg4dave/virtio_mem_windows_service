@@ -2,6 +2,7 @@ pub mod config;
 pub mod controller;
 pub mod demand;
 pub mod error;
+pub mod event_log;
 pub mod qga;
 pub mod runtime;
 pub mod service_host;
@@ -23,6 +24,9 @@ pub use demand::{
 pub use error::{
     ConfigurationError, MemoryStatsError, PollError, RuntimeWiringError, ServiceHostError,
     ServiceLoopError, VirtioMemError,
+};
+pub use event_log::{
+    ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
 };
 pub use qga::{NamedPipeGuestAgent, DEFAULT_QGA_OPERATION_TIMEOUT};
 pub use runtime::{

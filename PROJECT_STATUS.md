@@ -19,6 +19,9 @@ Windows runtime wiring and live KVM evidence remain open.
 - Authoritative Rust host CLI for alias-scoped snapshot/validation, exact
   dry-run argument reporting, and explicitly applied one-shot resize; the
   duplicate Bash resize implementation is removed.
+- Native Windows Application Event Log lifecycle/failure emission with stable
+  IDs, bounded messages, and non-zero recovery semantics for worker failures
+  or stopless exits.
 - Windows native demand telemetry using `GlobalMemoryStatusEx` and
   `GetPerformanceInfo`, versioned advisory reports, aligned recommendations,
   JSON-lines publication, and a generic stoppable demand worker.
@@ -32,6 +35,10 @@ The 2026-09-04 M9c native RHEL gate passed:
 - `cargo fmt --all -- --check`
 - `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
+
+The M7 Windows-native gate passes 63 tests with warnings denied and produced a
+checksum-verified executable with SHA-256
+`cdd1930e1f43ffdb6d5819c2fdfc792bd8a6f66f7f44c4f69e8e71f75a80dbaa`.
 
 The RHEL host-controller artifact was rebuilt on 2026-08-18 at
 `target/release/virtio-mem-host`; its 14 package tests passed. A Windows

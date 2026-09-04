@@ -27,6 +27,9 @@ const SERVICE_START: DWORD = 0x00000010;
 
 use crate::config::ServiceConfig;
 use crate::demand::NativeMemoryTelemetry;
+use crate::event_log::{
+    ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
+};
 use crate::runtime::NativeTelemetryWorker;
 use crate::service_host::{ServiceHost, ServiceState, ServiceWorker, StopSignal};
 
@@ -313,7 +316,8 @@ pub fn run_as_service() -> Result<bool, String> {
 
 unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
     let stop = StopSignal::new();
-    let service_name = to_wide(crate::config::DEFAULT_SERVICE_NAME);
+    let event_source = crate::config::DEFAULT_SERVICE_NAME.to_owned();
+    let service_name = to_wide(&event_source);
     let mut context = Box::new(ServiceContext {
         stop: stop.clone(),
         status_handle: std::ptr::null_mut(),
@@ -324,17 +328,54 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
         (&mut *context) as *mut ServiceContext as *mut _,
     );
     if status_handle.is_null() {
+        emit_event(
+            &event_source,
+            ServiceEvent::new(
+                ServiceEventId::StatusPublishFailed,
+                ServiceEventLevel::Error,
+                format!(
+                    "RegisterServiceCtrlHandlerExW failed: {}",
+                    std::io::Error::last_os_error()
+                ),
+            ),
+        );
         return;
     }
     context.status_handle = status_handle;
 
-    let _ = publish_status(
+    if let Err(error) = publish_status(
         status_handle,
         ScmServiceStatus::from_state(ServiceState::StartPending),
+    ) {
+        emit_event(
+            &event_source,
+            ServiceEvent::new(
+                ServiceEventId::StatusPublishFailed,
+                ServiceEventLevel::Error,
+                error,
+            ),
+        );
+        return;
+    }
+    emit_event(
+        &event_source,
+        ServiceEvent::new(
+            ServiceEventId::StartPending,
+            ServiceEventLevel::Information,
+            "service initialization started",
+        ),
     );
     let config = match ServiceConfig::load_default() {
         Ok(config) => config,
-        Err(_) => {
+        Err(error) => {
+            emit_event(
+                &event_source,
+                ServiceEvent::new(
+                    ServiceEventId::ConfigurationFailed,
+                    ServiceEventLevel::Error,
+                    format!("service configuration failed: {error}"),
+                ),
+            );
             let _ = publish_status(
                 status_handle,
                 ScmServiceStatus::from_state(ServiceState::Failed),
@@ -345,6 +386,8 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
     let shutdown_timeout = config.shutdown_timeout;
     let poll_interval = config.poll_interval;
     let status_handle_value = status_handle as usize;
+    let running_event_source = event_source.clone();
+    let stop_observer = stop.clone();
     let mut host = ServiceHost::with_stop_and_shutdown_timeout(
         move |service_stop: &StopSignal| {
             let mut worker = NativeTelemetryWorker::new(NativeMemoryTelemetry, poll_interval)
@@ -352,9 +395,18 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
             worker
                 .initialize(service_stop)
                 .map_err(|error| format!("runtime wiring / worker initialization: {error}"))?;
-            let _ = publish_status(
+            publish_status(
                 status_handle_value as SERVICE_STATUS_HANDLE,
                 ScmServiceStatus::from_state(ServiceState::Running),
+            )
+            .map_err(|error| format!("runtime wiring / publish running status: {error}"))?;
+            emit_event(
+                &running_event_source,
+                ServiceEvent::new(
+                    ServiceEventId::Running,
+                    ServiceEventLevel::Information,
+                    "service worker is running",
+                ),
             );
             worker.run(service_stop)
         },
@@ -364,12 +416,29 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
     let result = host
         .run()
         .map_err(|error| format!("runtime wiring / service host execution: {error}"));
-    let final_state = if result.is_ok() {
-        ServiceState::Stopped
-    } else {
-        ServiceState::Failed
-    };
-    let _ = publish_status(status_handle, ScmServiceStatus::from_state(final_state));
+    let stop_requested = stop_observer.is_cancelled();
+    if stop_requested {
+        emit_event(
+            &event_source,
+            ServiceEvent::new(
+                ServiceEventId::StopRequested,
+                ServiceEventLevel::Information,
+                "service cancellation was requested",
+            ),
+        );
+    }
+    let (final_state, event) = classify_service_exit(result, stop_requested);
+    emit_event(&event_source, event);
+    if let Err(error) = publish_status(status_handle, ScmServiceStatus::from_state(final_state)) {
+        emit_event(
+            &event_source,
+            ServiceEvent::new(
+                ServiceEventId::StatusPublishFailed,
+                ServiceEventLevel::Error,
+                error,
+            ),
+        );
+    }
 }
 
 unsafe extern "system" fn service_control_handler(
@@ -384,13 +453,59 @@ unsafe extern "system" fn service_control_handler(
     let context = &*(context as *const ServiceContext);
     if control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN {
         context.stop.cancel();
-        let _ = publish_status(
+        if publish_status(
             context.status_handle,
             ScmServiceStatus::from_state(ServiceState::StopPending),
-        );
+        )
+        .is_err()
+        {
+            return 1;
+        }
         0
     } else {
         1
+    }
+}
+
+fn classify_service_exit(
+    result: Result<(), String>,
+    stop_requested: bool,
+) -> (ServiceState, ServiceEvent) {
+    match (result, stop_requested) {
+        (Ok(()), true) => (
+            ServiceState::Stopped,
+            ServiceEvent::new(
+                ServiceEventId::Stopped,
+                ServiceEventLevel::Information,
+                "service stopped after cancellation",
+            ),
+        ),
+        (Ok(()), false) => (
+            ServiceState::Failed,
+            ServiceEvent::new(
+                ServiceEventId::UnexpectedExit,
+                ServiceEventLevel::Error,
+                "service worker exited without a stop request",
+            ),
+        ),
+        (Err(error), _) => (
+            ServiceState::Failed,
+            ServiceEvent::new(
+                ServiceEventId::WorkerFailed,
+                ServiceEventLevel::Error,
+                error,
+            ),
+        ),
+    }
+}
+
+fn emit_event(source: &str, event: ServiceEvent) {
+    let result = WindowsEventLog::open(source).and_then(|event_log| event_log.emit(&event));
+    if let Err(error) = result {
+        eprintln!(
+            "Windows Event Log publication failed for event {}: {error}",
+            event.id as u32
+        );
     }
 }
 
@@ -561,5 +676,29 @@ mod tests {
 
         assert_eq!(status.current_state, SERVICE_STOPPED as DWORD);
         assert_eq!(status.exit_code, 1);
+    }
+
+    #[test]
+    fn intentional_stop_is_successful_and_unexpected_exit_is_recoverable() {
+        let (state, event) = classify_service_exit(Ok(()), true);
+        assert_eq!(state, ServiceState::Stopped);
+        assert_eq!(event.id, ServiceEventId::Stopped);
+        assert_eq!(event.level, ServiceEventLevel::Information);
+
+        let (state, event) = classify_service_exit(Ok(()), false);
+        assert_eq!(state, ServiceState::Failed);
+        assert_eq!(event.id, ServiceEventId::UnexpectedExit);
+        assert_eq!(event.level, ServiceEventLevel::Error);
+        assert_eq!(ScmServiceStatus::from_state(state).exit_code, 1);
+    }
+
+    #[test]
+    fn worker_failure_is_recoverable_even_after_stop_was_requested() {
+        let (state, event) = classify_service_exit(Err("poll failed".to_owned()), true);
+
+        assert_eq!(state, ServiceState::Failed);
+        assert_eq!(event.id, ServiceEventId::WorkerFailed);
+        assert_eq!(event.message, "poll failed");
+        assert_eq!(ScmServiceStatus::from_state(state).exit_code, 1);
     }
 }

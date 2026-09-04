@@ -430,6 +430,24 @@ After completing any task:
   warnings-as-errors Clippy, and Bash syntax all pass. No live libvirt or VM
   mutation was attempted.
 
+### 2026-09-04 M7 recovery observability foundation
+
+- Added a native Windows Application Event Log sink with stable lifecycle and
+  failure IDs, bounded single-line messages, and an explicit publication
+  boundary.
+- SCM startup, running, stop request, clean stop, configuration failure,
+  worker failure, unexpected stopless exit, and status-publication failure now
+  produce distinct records.
+- A worker that exits without cancellation is now a non-zero SCM failure;
+  successful completion after stop/shutdown remains zero-exit. Deterministic
+  tests cover both classifications and failure after cancellation.
+- The native Windows release build, 63 tests, rustfmt, and warnings-as-errors
+  Clippy pass. The fetched executable SHA-256 is
+  `cdd1930e1f43ffdb6d5819c2fdfc792bd8a6f66f7f44c4f69e8e71f75a80dbaa`.
+- TASK-012 and M7 remain in progress pending separately approved elevated
+  install/start/Event Log/stop/remove and bounded recovery-delay evidence. No
+  SCM service state was changed in this session.
+
 ## Ready Queue
 
 Tasks ready to start (Phase 2 - Core Functionality):
@@ -449,6 +467,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are locally covered; live VM evidence, service registration, and QGA validation remain. |
 | TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; checked canonical-byte/KiB boundaries; block-aligned device validation; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Focused core/host format, 31 tests, and Clippy pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, and a generic stoppable worker are implemented. Main SCM construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, event-log integration, and any host integration remain intentionally deferred. |
+| TASK-012 | Windows installation and recovery operations | Copilot | In Progress | Native Event Log records and intentional-stop versus failure semantics pass 63 Windows tests; live elevated SCM lifecycle, Event Log, ACL, and bounded recovery-delay evidence remains a separate approval gate. |
 
 ### 2026-08-18 live KVM handoff
 
