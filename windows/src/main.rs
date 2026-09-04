@@ -46,13 +46,14 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = parse_command(&args);
 
-    let config = match ServiceConfig::load_default() {
-        Ok(config) => config,
-        Err(error) => {
-            eprintln!("service configuration failed: {error}");
-            process::exit(1);
-        }
-    };
+    if matches!(command, Some(ServiceCommand::Help)) {
+        println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]");
+        return;
+    }
+    if command.is_none() {
+        eprintln!("unknown command; use 'help' for usage");
+        process::exit(2);
+    }
     if matches!(command, Some(ServiceCommand::Run)) {
         match run_as_service() {
             Ok(true) => return,
@@ -63,6 +64,13 @@ fn main() {
             }
         }
     }
+    let config = match ServiceConfig::load_default() {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("service configuration failed: {error}");
+            process::exit(1);
+        }
+    };
     match command {
         Some(ServiceCommand::Install) => {
             if let Err(error) = install_service(&config) {
@@ -92,19 +100,13 @@ fn main() {
             }
             println!("service removed successfully");
         }
-        Some(ServiceCommand::Run) | None => {
-            if command.is_none() {
-                eprintln!("unknown command; use 'help' for usage");
-                process::exit(2);
-            }
+        Some(ServiceCommand::Run) => {
             if let Err(error) = run_service(config) {
                 eprintln!("virtio-mem service runtime failed: {error}");
                 process::exit(1);
             }
         }
-        Some(ServiceCommand::Help) => {
-            println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]");
-        }
+        Some(ServiceCommand::Help) | None => (),
     }
 }
 
