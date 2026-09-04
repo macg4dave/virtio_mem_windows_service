@@ -1,6 +1,6 @@
 # Project Status & Next Steps
 
-**Updated:** 2026-08-18
+**Updated:** 2026-09-04
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Local foundations are implemented and validated; concrete
 Windows runtime wiring and live KVM evidence remain open.
@@ -16,19 +16,21 @@ Windows runtime wiring and live KVM evidence remain open.
   adapter with install/start/stop/remove commands.
 - Host-side virtio-mem XML validation, bounded `virsh` adapters, `dommemstat`
   fallback, convergence suppression, device headroom, and host headroom gates.
+- Authoritative Rust host CLI for alias-scoped snapshot/validation, exact
+  dry-run argument reporting, and explicitly applied one-shot resize; the
+  duplicate Bash resize implementation is removed.
 - Windows native demand telemetry using `GlobalMemoryStatusEx` and
   `GetPerformanceInfo`, versioned advisory reports, aligned recommendations,
   JSON-lines publication, and a generic stoppable demand worker.
 
 ## Current evidence
 
-The 2026-08-18 local workspace gate passed:
+The 2026-09-04 M9c native RHEL gate passed:
 
-- 77 tests before the latest host-parser regression test (the current count is
-  reported by the validation run below).
-- `cargo build --workspace --all-features --release`
+- 44 core/host tests (19 core and 25 host), with no failures.
+- `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
 
 The RHEL host-controller artifact was rebuilt on 2026-08-18 at

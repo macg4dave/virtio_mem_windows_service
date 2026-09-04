@@ -216,15 +216,18 @@ The Rust Windows crate also uses `quick-xml` for pure parsing of captured
 libvirt snapshots. This parser does not invoke `virsh`, libvirt, or Linux
 commands; live discovery remains outside the guest service boundary.
 
-The opt-in host resize helper additionally requires `xmllint` and `virsh`.
-`xmllint` is used only to select and validate the explicitly named device from
-the live XML; the helper does not perform broad VM discovery.
+The Rust host CLI requires `virsh` for explicitly scoped live XML reads and
+approved updates. Its XML selection, unit conversion, compatibility checks,
+and resize policy are implemented in Rust and do not require `xmllint`.
+Separate legacy diagnostic harnesses such as `preview-memory-decision.sh` and
+`live-resize-test.sh` still require the tools they check at startup; they are
+not the authoritative host actuation interface.
 
 ## RHEL host-controller deployment
 
-The `host/` crate is a Rust systemd controller, not a replacement for the
-explicit Bash validation helpers. Each templated systemd instance manages one
-VM and one virtio-mem alias; it does not discover domains broadly.
+The `host/` crate provides both the systemd controller and the authoritative
+explicit host CLI. Each templated systemd instance manages one VM and one
+virtio-mem alias; it does not discover domains broadly.
 
 Run the native RHEL gate before installation:
 

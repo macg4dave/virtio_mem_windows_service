@@ -10,6 +10,27 @@ pub struct VirshResizeSink<C> {
     external_compatibility: VirtioMemCompatibility,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PreparedResize {
+    arguments: Vec<String>,
+    current_bytes: u64,
+    target_bytes: u64,
+}
+
+impl PreparedResize {
+    pub(crate) fn arguments(&self) -> &[String] {
+        &self.arguments
+    }
+
+    pub(crate) fn current_bytes(&self) -> u64 {
+        self.current_bytes
+    }
+
+    pub(crate) fn target_bytes(&self) -> u64 {
+        self.target_bytes
+    }
+}
+
 impl<C> VirshResizeSink<C> {
     pub fn new(command: C, vm_name: impl Into<String>, alias: impl Into<String>) -> Self {
         Self {
@@ -28,16 +49,13 @@ impl<C> VirshResizeSink<C> {
 
 impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
     fn request_resize(&self, requested_bytes: u64) -> Result<(), String> {
-        let arguments = self.prepare_resize(requested_bytes)?;
-        self.command
-            .run(&arguments)
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        let prepared = self.prepare_resize(requested_bytes)?;
+        self.apply_prepared(prepared)
     }
 }
 
 impl<C: VirshCommand> VirshResizeSink<C> {
-    pub fn prepare_resize(&self, requested_bytes: u64) -> Result<Vec<String>, String> {
+    pub(crate) fn prepare_resize(&self, requested_bytes: u64) -> Result<PreparedResize, String> {
         let snapshot = self
             .command
             .run(&["dumpxml".to_owned(), self.vm_name.clone()])
@@ -59,15 +77,26 @@ impl<C: VirshCommand> VirshResizeSink<C> {
         }
         let requested_kib = bytes_to_kibibytes(requested_bytes)
             .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
-        Ok(vec![
-            "update-memory-device".to_owned(),
-            self.vm_name.clone(),
-            "--alias".to_owned(),
-            self.alias.clone(),
-            "--requested-size".to_owned(),
-            requested_kib.to_string(),
-            "--live".to_owned(),
-        ])
+        Ok(PreparedResize {
+            arguments: vec![
+                "update-memory-device".to_owned(),
+                self.vm_name.clone(),
+                "--alias".to_owned(),
+                self.alias.clone(),
+                "--requested-size".to_owned(),
+                requested_kib.to_string(),
+                "--live".to_owned(),
+            ],
+            current_bytes: state.current_bytes,
+            target_bytes: requested_bytes,
+        })
+    }
+
+    pub(crate) fn apply_prepared(&self, prepared: PreparedResize) -> Result<(), String> {
+        self.command
+            .run(prepared.arguments())
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 }
 

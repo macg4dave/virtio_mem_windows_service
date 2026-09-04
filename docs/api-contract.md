@@ -254,6 +254,20 @@ the configured alias and require `requested == current`. A successful command
 response does not prove completion: subsequent snapshots decide convergence.
 The controller never replays a resize request after a process restart.
 
+The same Rust adapters back explicit CLI operations:
+
+- `snapshot VM ALIAS` validates that the alias selects exactly one virtio-mem
+  device before returning the live domain XML.
+- `validate VM ALIAS` reports canonical-byte state and compatibility evidence
+  without mutation.
+- `resize VM ALIAS TARGET_BYTES` is a dry run unless `--apply` is supplied.
+  It requires explicit workload-review evidence and a positive host-headroom
+  reserve, then reports the exact `virsh` argument vector.
+
+Dry-run and apply share the XML, compatibility, convergence, unit, device-
+headroom, and host-headroom checks. Apply executes only the already prepared
+argument vector, once, without a shell, retry, or convergence claim.
+
 ## Guest Polling Boundary
 
 `MemoryPoller` obtains a `GetMemoryStats` response through the `GuestAgent`

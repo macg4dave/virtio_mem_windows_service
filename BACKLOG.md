@@ -413,6 +413,23 @@ After completing any task:
   rustup proxy symlinks fail through OpenSSH with Windows error 448; it also
   normalizes `certutil.exe` carriage returns before checksum parsing.
 
+### 2026-09-04 M9c Rust-only host CLI
+
+- Added authoritative Rust `snapshot`, `validate`, and `resize` subcommands
+  for one explicit VM and alias. Resize is a dry run unless `--apply` is
+  supplied and reports its complete `virsh` argument vector.
+- Reused the shared XML, compatibility, convergence, canonical-unit, device-
+  headroom, and host-headroom contracts. The operator must explicitly confirm
+  the incompatible-workload review and provide a positive host reserve.
+- Added hermetic regression tests proving snapshot/validation are read-only,
+  dry-run sends no update, apply sends exactly one prepared update, and
+  insufficient host headroom fails before actuation.
+- Removed `scripts/virtio-mem-host.sh` without leaving a replacement copy of
+  its XML parsing, arithmetic, compatibility, or resize policy in Bash.
+- Local evidence: release build, rustfmt check, 19 core tests, 25 host tests,
+  warnings-as-errors Clippy, and Bash syntax all pass. No live libvirt or VM
+  mutation was attempted.
+
 ## Ready Queue
 
 Tasks ready to start (Phase 2 - Core Functionality):
@@ -424,7 +441,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | 2-3 hours | M4/M6 local service foundation; live workload evidence and runtime publication remain |
-| TASK-010 | Rust host CLI replaces Bash resize helper | Copilot | Ready | 3-5 hours | M9/M9a XML, compatibility, unit, convergence, and headroom contracts implemented; replace and remove `scripts/virtio-mem-host.sh` |
 
 ## In Progress
 
@@ -592,6 +608,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | 2026-08-18 | Added host-side virtio-mem semantics, compatibility limits, and live validation guidance based on official libvirt and QEMU documentation. |
 | TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | 2026-09-04 | Two fingerprint-pinned aggregate runs passed: 38 RHEL core/host tests, 59 native Windows tests, release builds, formatting, warnings-as-errors Clippy, and matching verified artifact hashes. |
+| TASK-010 | Rust host CLI replaces Bash resize helper | Copilot | 2026-09-04 | Rust owns alias-scoped snapshot/validation, exact dry-run arguments, explicitly applied one-shot resize, and shared safety gates; 44 core/host tests pass and the duplicate Bash helper is removed. |
 
 ## Blocked
 

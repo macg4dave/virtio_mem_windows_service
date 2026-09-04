@@ -547,7 +547,7 @@ For a live update, use the alias explicitly and keep the request aligned to the 
 ```bash
 virsh update-memory-device "$VM_NAME" \
   --alias "$VIRTIO_MEM_ALIAS" \
-  --requested-size "$TARGET_BYTES" \
+  --requested-size "$TARGET_KIB" \
   --live
 ```
 
@@ -555,36 +555,53 @@ Expected behavior from the docs:
 
 - The live XML may show `requested != current` while QEMU and the guest are converging.
 - The service must wait for convergence before issuing the next resize request.
+- `virsh --requested-size` uses KiB by default; convert canonical bytes
+  exactly and reject a target that is not divisible by 1024.
 - A request that is not an integer multiple of the block size is invalid.
 - The host should treat the live XML as authoritative, not just the last command response.
 
 This is the required safety gate for live validation: if `requested` and `current` are still diverged, the controller must not keep sending resize changes.
 
-The repository currently provides an explicit Bash host helper while M9c
-migrates these operations into the Rust host CLI:
+The Rust host CLI is authoritative for explicit snapshot, validation, dry-run,
+and applied resize operations. Build it with the native RHEL gate before use:
 
 ```bash
-# Read-only: capture the selected live virtio-mem XML
-bash scripts/virtio-mem-host.sh snapshot "$VM_NAME" "$VIRTIO_MEM_ALIAS" > live-memory.xml
+# Read-only: capture live XML after confirming the selected alias exists once
+target/release/virtio-mem-host snapshot \
+  "$VM_NAME" "$VIRTIO_MEM_ALIAS" --connect qemu:///system > live-memory.xml
 
-# Opt-in live action: validates convergence, size, block, and alignment first
-bash scripts/virtio-mem-host.sh resize "$VM_NAME" "$VIRTIO_MEM_ALIAS" "$TARGET_BYTES"
+# Read-only: print the selected device's canonical-byte state and XML evidence
+target/release/virtio-mem-host validate \
+  "$VM_NAME" "$VIRTIO_MEM_ALIAS" --connect qemu:///system
+
+# Read-only dry run: print the exact validated virsh argument vector
+target/release/virtio-mem-host resize \
+  "$VM_NAME" "$VIRTIO_MEM_ALIAS" "$TARGET_BYTES" \
+  --workload-reviewed \
+  --host-min-headroom-bytes 4294967296 \
+  --connect qemu:///system
 ```
 
-The helper requires `virsh` and `xmllint`, accepts only a constrained alias,
-requires exactly one matching virtio-mem device, and never retries or loops.
-The helper defaults to `qemu:///system`; set `VIRSH_CONNECT` for another
-connection. The `resize` mode is the only mode that issues
-`virsh update-memory-device`. Resize mode also requires explicit live XML
-confirmation of `dynamic-memslots` and `unplugged-inaccessible`, plus
-`VIRTIO_MEM_WORKLOAD_REVIEW=confirmed` from the operator's incompatible-
-workload review. Snapshot mode remains read-only and does not require those
-actuation gates.
+The CLI defaults to `qemu:///system` and accepts a constrained alias. Snapshot
+and validate issue only `virsh dumpxml`. Resize defaults to dry-run and does
+not issue `update-memory-device` unless `--apply` is present. Both dry-run and
+apply require fresh XML confirmation of `dynamic-memslots` and
+`unplugged-inaccessible`, `requested == current`, a block-aligned canonical-
+byte target with device headroom, explicit `--workload-reviewed` operator
+evidence, and a positive host reserve. Grow operations read
+`/proc/meminfo` and fail closed unless `MemAvailable` covers the growth delta
+plus `--host-min-headroom-bytes`; shrink operations do not require available
+host RAM.
 
-M9c is the required migration milestone before broader live host automation.
-The Rust CLI must become authoritative for snapshot, validation, dry-run, and
-applied resize behavior. The Bash helper must not retain a second copy of the
-safety policy and will be removed after migration validation.
+After reviewing the dry-run vector and obtaining approval for the exact VM,
+alias, target, and expected live mutation, repeat the same command with
+`--apply`. A successful `virsh` return only means the request was accepted;
+observe fresh XML until `requested == current` before any subsequent request.
+The CLI performs one request and never loops or retries.
+
+The former `scripts/virtio-mem-host.sh` implementation was removed in M9c, so
+that helper no longer duplicates the Rust XML, arithmetic, compatibility, or
+resize policy.
 
 ### Bash validation helpers
 

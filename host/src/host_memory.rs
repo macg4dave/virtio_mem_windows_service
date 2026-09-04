@@ -10,6 +10,24 @@ pub trait HostMemorySource {
     fn available_bytes(&self) -> Result<u64, String>;
 }
 
+pub(crate) fn validate_grow_headroom(
+    current_bytes: u64,
+    target_bytes: u64,
+    available_bytes: u64,
+    minimum_headroom_bytes: u64,
+) -> Result<(), String> {
+    if target_bytes <= current_bytes {
+        return Ok(());
+    }
+    let grow_bytes = target_bytes - current_bytes;
+    if grow_bytes > available_bytes || available_bytes - grow_bytes < minimum_headroom_bytes {
+        return Err(format!(
+            "host headroom is insufficient: available={available_bytes} grow={grow_bytes} minimum_headroom={minimum_headroom_bytes}"
+        ));
+    }
+    Ok(())
+}
+
 pub struct ProcMeminfoSource {
     path: String,
 }
@@ -76,5 +94,18 @@ mod tests {
     #[test]
     fn rejects_kibibyte_overflow() {
         assert!(parse_mem_available("MemAvailable: 18446744073709551615 kB\n").is_err());
+    }
+
+    #[test]
+    fn grow_headroom_accepts_exact_reserve_and_shrinks() {
+        assert_eq!(validate_grow_headroom(4, 6, 5, 3), Ok(()));
+        assert_eq!(validate_grow_headroom(6, 4, 0, 3), Ok(()));
+        assert_eq!(validate_grow_headroom(4, 4, 0, 3), Ok(()));
+    }
+
+    #[test]
+    fn grow_headroom_rejects_reserve_shortfall_and_growth_beyond_available() {
+        assert!(validate_grow_headroom(4, 6, 4, 3).is_err());
+        assert!(validate_grow_headroom(4, 10, 5, 0).is_err());
     }
 }

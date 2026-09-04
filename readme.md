@@ -94,8 +94,9 @@ See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 - Live resize tests are opt-in, bounded, aligned, and reversible by default.
 - Direct `viomem.sys` user-mode control remains deferred until a supported
   interface is proven.
-- Host snapshot, validation, and resize policy is being consolidated into the
-  Rust host CLI under milestone M9c; the current Bash helper is temporary.
+- Host snapshot, validation, dry-run, and explicitly applied resize policy is
+  owned by the Rust host CLI; the duplicate Bash resize helper has been
+  removed.
 
 ## Quick start
 

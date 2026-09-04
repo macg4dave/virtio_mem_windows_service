@@ -8,7 +8,7 @@ use virtio_mem_core::{
 };
 
 use crate::config::HostConfig;
-use crate::host_memory::HostMemorySource;
+use crate::host_memory::{validate_grow_headroom, HostMemorySource};
 
 pub trait GuestStatsSource {
     fn get_memory_stats(&self) -> Result<MemoryStats, String>;
@@ -115,20 +115,18 @@ where
             .map_err(|error| HostRuntimeError::Controller(error.to_string()))?;
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if requested_bytes > state.current_bytes {
-                    let delta = requested_bytes - state.current_bytes;
                     let host_available = self
                         .host_memory
                         .available_bytes()
                         .map_err(HostRuntimeError::HostMemory)?;
-                    let headroom_after = host_available.saturating_sub(delta);
-                    if delta > host_available
-                        || headroom_after < self.config.host_min_headroom_bytes
-                    {
+                    if let Err(error) = validate_grow_headroom(
+                        state.current_bytes,
+                        requested_bytes,
+                        host_available,
+                        self.config.host_min_headroom_bytes,
+                    ) {
                         eprintln!(
-                            "virtio-mem-host: blocking grow to {requested_bytes} bytes; \
-                             host available={host_available} delta={delta} \
-                             min_headroom={}",
-                            self.config.host_min_headroom_bytes
+                            "virtio-mem-host: blocking grow to {requested_bytes} bytes; {error}"
                         );
                         wait_interruptibly(stop, self.config.poll_interval);
                         continue;
