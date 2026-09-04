@@ -74,6 +74,19 @@ uses `dommemstat` by default when the guest QGA does not provide
     probe passed again afterward at 79–124 ms for `guest-info` and 100–112 ms
     for `dommemstat`. QGA still does not implement
     `guest-get-memory-stats`; the verified fallback remains authoritative.
+- **M9 live Rust XML-adapter completion (2026-09-05):** the authoritative
+    Rust CLI selected `ua-virtiomem0`, reported the live 20 GiB size, 2 MiB
+    block, and `requested=current=0` state in canonical bytes, rejected a
+    nonexistent alias, and failed closed on unknown M9a compatibility evidence.
+    Before/after live XML SHA-256 values matched. The shared contract now
+    accepts zero observed state while continuing to reject zero targets.
+- **M9a live compatibility completion (2026-09-05):** a bounded Rust QMP
+    source confirmed `dynamic-memslots=true` and
+    `unplugged-inaccessible=on` on the selected live QOM device. The 2 MiB
+    block matches host THP, native arguments show `mem-lock=off`, three VFIO
+    devices were identified as GPU/audio/USB rather than NVMe, and the operator
+    confirmed no RDMA or unsupported vhost-user workload dependency. The exact
+    dry-run vector passed without `--apply` and live XML remained unchanged.
 - **Fresh convergence recheck (2026-08-18):** `win11_gpu` still reports
     `requested=0 KiB` and `current=0 KiB` after the latest Windows driver
     update. The previous rollback convergence blocker is resolved. The QGA
@@ -240,8 +253,8 @@ readiness in the remaining host-side work.
 | M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now collect native Windows telemetry without opening the QGA device; trustworthy current-allocation and resize wiring remain |
 | M7 | Installation and recovery operations | [x] | M5, M6 | Live install/start/observe/stop/delete passed; 5-second recovery restart and 5/30/60 metadata were verified, rollback restored the original running service |
 | M8 | Live QGA and KVM validation | [x] | M2 | Repeated QGA and `dommemstat` probes, connected-channel XML, isolated QGA restart recovery, graceful guest reboot recovery, and unchanged convergence all passed on `win11_gpu` |
-| M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, explicit system-libvirt Rust CLI checks, and fail-closed actuation gates are implemented; live VM evidence remains |
-| M9a | Virtio-mem safety and compatibility gate | [~] | M8, M9 | Tri-state XML compatibility parsing, mergeable external evidence, conflict detection, and fail-closed resize enforcement are implemented; live evidence provider and incompatible workload/device review remain |
+| M9 | Host virtio-mem XML adapter | [x] | M1, M8 | Live Rust CLI snapshot/validation, exact alias selection, canonical zero-state parsing, wrong-alias rejection, fail-closed dry run, and before/after non-mutation evidence pass on `win11_gpu` |
+| M9a | Virtio-mem safety and compatibility gate | [x] | M8, M9 | Fresh live QMP properties, THP/block match, explicit operator review, VFIO device classification, locked/RDMA/vhost-user exclusion, exact dry run, and XML non-mutation passed on `win11_gpu` |
 | M9b | RHEL systemd host controller | [~] | M1, M8, M9, M9a | Shared Rust policy core and one-VM-per-instance systemd controller perform bounded QGA/XML/resize operations with no overlapping requests; live evidence remains |
 | M9c | Rust host CLI replaces Bash resize helper | [x] | M9, M9a | Rust owns snapshot, validation, exact dry-run arguments, and explicitly applied resize commands; hermetic regression tests pass and the duplicate Bash helper is removed |
 | M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, advisory safe floor, durable JSON-lines output, and generic stoppable worker are locally tested; main SCM construction, trustworthy allocation provider, and live workload evidence remain; no direct host actuation |
@@ -331,9 +344,10 @@ readiness in the remaining host-side work.
     `virsh` command units before enabling a resize sink; the pure Rust
     contract, captured XML parser, host XML source, and resize sink now use
     checked canonical-byte/KiB boundaries. Live discovery remains separate.
-- [x] Reject zero size, undersized/non-power-of-two block size, zero or
-    out-of-range values, and unaligned values in the pure Rust contract and
-    host XML adapter.
+- [x] Reject zero size, undersized/non-power-of-two block size, zero resize
+    targets, out-of-range values, and unaligned values in the pure Rust
+    contract and host XML adapter; observed requested/current may be zero for
+    a fully unplugged device.
 - [x] Enforce `requested % block == 0`, `requested <= size`, device-size
     alignment, and `block >= 1 MiB` checks before issuing a resize request.
 - [x] Add boundary tests for maximum values and unit conversion round trips.
@@ -439,13 +453,17 @@ evidence before live testing.
 
 - [x] Capture the virtio-mem alias and block size from live XML (`ua-virtiomem0`,
   2 MiB).
-- [x] Capture `requested=1048576 KiB`, `current=1048576 KiB`, and
-    `size=20971520 KiB` (1 GiB active/requested, 20 GiB device maximum).
-- [ ] Confirm the block size is compatible with the host configuration and THP assumptions.
-- [ ] Check whether `dynamic-memslots=on` and `unplugged-inaccessible=on` are in use.
+- [x] Capture the fresh `requested=0 KiB`, `current=0 KiB`, and
+    `size=20971520 KiB` state (fully unplugged and converged, with a 20 GiB
+    device maximum).
+- [x] Confirm the 2 MiB block size matches the host's 2 MiB THP PMD size.
+- [x] Confirm through live QMP that `dynamic-memslots=true` and
+    `unplugged-inaccessible=on` are in use.
 - [ ] Select a reversible, aligned target within configured limits.
 - [ ] Confirm no update is issued while `requested != current`.
-- [ ] Confirm the chosen VM, host, and workload do not rely on incompatible virtio-mem features.
+- [x] Confirm the VM and workload review: VFIO devices are GPU/audio/USB rather
+    than NVMe, `mem-lock=off`, and no RDMA or unsupported vhost-user dependency
+    is present or intended.
 
 ### V3. End-to-end resize
 
@@ -596,8 +614,6 @@ Bash host-control implementation before live resize automation is expanded.
 | B5 | Concrete guest state and resize sinks are not wired | Blocks real automatic resize behavior | Implement M6 without invoking Linux commands from the guest |
 | B7 | QGA, controller, libvirt, and `virsh` memory-unit semantics are not reconciled in one tested contract | Blocks safe resize enablement | Resolve in F6a before M9/M10 |
 | B9 | Shutdown timeout is configured but not yet enforced by the worker host | Stop-pending behavior cannot be proven | Add bounded join/worker termination policy in M3/M5 |
-| B11 | Official virtio-mem guidance shows compatibility and safety limits that are not yet codified in the host contract | The controller can make unsafe assumptions about resize behavior or valid host configurations | Add the QEMU/libvirt compatibility gate and explicit validation checks in M9a before live automation |
-| B12 | Contemporary virtio-mem guidance recommends `dynamic-memslots=on` with `unplugged-inaccessible=on` for safe unplugged memory handling | The host may misread unplugged-memory semantics without this configuration | Document and verify the host/guest configuration assumptions during V2 and M9a |
 | B13 | Native Windows telemetry and the versioned demand-report contract lack live workload evidence | Blocks production tuning and global-controller inputs, but not Windows service startup | Collect live workload evidence for `GlobalMemoryStatusEx`/`GetPerformanceInfo` reports without changing host actuation authority |
 | B14 | Driver `plugged_size` versus libvirt `current` has not been validated as one cross-layer state mapping | Blocks global pool accounting and safe reclaim | Capture the same controlled resize through driver, QEMU, and libvirt observation before treating actual allocation as interchangeable |
 

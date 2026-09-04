@@ -40,13 +40,20 @@ impl VirtioMemState {
                 block: self.block_size_bytes,
             });
         }
-        self.validate_value(self.requested_bytes, "requested")?;
-        self.validate_value(self.current_bytes, "current")
+        self.validate_state_value(self.requested_bytes, "requested")?;
+        self.validate_state_value(self.current_bytes, "current")
     }
 
     pub fn validate_target(self, target_bytes: u64) -> Result<(), VirtioMemError> {
         self.validate()?;
-        self.validate_value(target_bytes, "target")?;
+        if target_bytes == 0 {
+            return Err(VirtioMemError::ValueOutsideSize {
+                name: "target",
+                value: target_bytes,
+                size: self.size_bytes,
+            });
+        }
+        self.validate_state_value(target_bytes, "target")?;
         if self.size_bytes.saturating_sub(target_bytes) < MIN_HEADROOM_BYTES {
             return Err(VirtioMemError::TargetLacksHeadroom {
                 target: target_bytes,
@@ -57,8 +64,12 @@ impl VirtioMemState {
         Ok(())
     }
 
-    fn validate_value(self, value_bytes: u64, name: &'static str) -> Result<(), VirtioMemError> {
-        if value_bytes == 0 || value_bytes > self.size_bytes {
+    fn validate_state_value(
+        self,
+        value_bytes: u64,
+        name: &'static str,
+    ) -> Result<(), VirtioMemError> {
+        if value_bytes > self.size_bytes {
             return Err(VirtioMemError::ValueOutsideSize {
                 name,
                 value: value_bytes,
@@ -92,6 +103,22 @@ mod tests {
     #[test]
     fn validates_state_and_target() {
         assert!(valid_state().validate_target(6 * GIB).is_ok());
+    }
+
+    #[test]
+    fn accepts_fully_unplugged_observed_state_but_rejects_zero_target() {
+        let unplugged = VirtioMemState {
+            requested_bytes: 0,
+            current_bytes: 0,
+            ..valid_state()
+        };
+
+        assert!(unplugged.validate().is_ok());
+        assert!(matches!(
+            unplugged.validate_target(0),
+            Err(VirtioMemError::ValueOutsideSize { name: "target", .. })
+        ));
+        assert!(unplugged.validate_target(BLOCK).is_ok());
     }
     #[test]
     fn rejects_invalid_values() {

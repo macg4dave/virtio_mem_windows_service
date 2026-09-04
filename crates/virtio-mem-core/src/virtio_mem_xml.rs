@@ -312,6 +312,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_fully_unplugged_live_state() {
+        let xml = valid_xml()
+            .replace(
+                "<requested unit='MiB'>4</requested>",
+                "<requested unit='MiB'>0</requested>",
+            )
+            .replace(
+                "<current unit='MiB'>4</current>",
+                "<current unit='MiB'>0</current>",
+            );
+        let parsed = parse_virtio_mem_xml(&xml)
+            .expect("zero requested/current is a valid fully unplugged state");
+
+        assert_eq!(parsed.memory.requested_bytes, 0);
+        assert_eq!(parsed.memory.current_bytes, 0);
+    }
+
+    #[test]
     fn rejects_unsupported_unit_and_overflow() {
         assert!(matches!(
             parse_virtio_mem_xml(&valid_xml().replace("unit='MiB'", "unit='MB'")),

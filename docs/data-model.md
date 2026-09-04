@@ -79,11 +79,19 @@ The host-side state model is intentionally conservative because virtio-mem is no
 
 The live state is not a binary success flag. A request can be accepted by QEMU and still remain pending for some time while the guest kernel plugs or unplugs blocks. The controller therefore treats `current` as the authoritative safety boundary for the next decision, and it does not send another request until `requested` and `current` converge.
 
+Compatibility evidence is refreshed separately from state. The host reads
+`dynamic-memslots` and `unplugged-inaccessible` from the alias-selected live
+QOM device through bounded QMP requests, merges that evidence with any XML
+values, and requires an explicit operator workload review. Missing, disabled,
+malformed, or conflicting evidence prevents resize preparation.
+
 This model is aligned with libvirt behavior: a resize request is serviced asynchronously, and the guest's ability to free memory or hotunplug blocks can delay or prevent full convergence.
 
 The pure Rust `VirtioMemState` contract validates that device size, requested,
-current, and target values are positive, within `size`, and aligned to a
-power-of-two block that is at least 1 MiB. Host XML parsing must construct and
+and current values are within `size` and block aligned. Observed `requested`
+and `current` may both be zero when the device is fully unplugged; a proposed
+resize target must remain positive, within `size`, block aligned, and subject
+to the fixed device-headroom floor. Host XML parsing must construct and
 validate this state before a resize sink can issue a request.
 
 The upstream `viomem.sys` driver has corresponding fields named

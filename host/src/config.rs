@@ -19,6 +19,8 @@ pub enum HostConfigError {
     InvalidDuration,
     #[error("VIRTIO_MEM_STATS_SOURCE must be 'dommemstat' or 'qga': {0}")]
     InvalidStatsSource(String),
+    #[error("VIRTIO_MEM_WORKLOAD_REVIEWED must be 'true' or 'false': {0}")]
+    InvalidConfirmation(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,7 @@ pub struct HostConfig {
     pub virsh_binary: String,
     pub stats_source: StatsSource,
     pub host_min_headroom_bytes: u64,
+    pub workload_reviewed: bool,
 }
 
 impl HostConfig {
@@ -74,6 +77,7 @@ impl HostConfig {
                 .unwrap_or_else(|_| "virsh".to_owned()),
             stats_source,
             host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
+            workload_reviewed: confirmation("VIRTIO_MEM_WORKLOAD_REVIEWED")?,
         };
         config.validate()?;
         Ok(config)
@@ -125,6 +129,19 @@ fn positive(name: &'static str) -> Result<u64, HostConfigError> {
         .ok_or(HostConfigError::InvalidPositiveInteger { name, value })
 }
 
+fn confirmation(name: &'static str) -> Result<bool, HostConfigError> {
+    let value = required(name)?;
+    parse_confirmation(&value)
+}
+
+fn parse_confirmation(value: &str) -> Result<bool, HostConfigError> {
+    match value {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        _ => Err(HostConfigError::InvalidConfirmation(value.to_owned())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,7 +160,18 @@ mod tests {
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
             host_min_headroom_bytes: 1,
+            workload_reviewed: false,
         };
         assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
+    }
+
+    #[test]
+    fn parses_only_explicit_workload_review_confirmation() {
+        assert_eq!(parse_confirmation("true"), Ok(true));
+        assert_eq!(parse_confirmation("false"), Ok(false));
+        assert!(matches!(
+            parse_confirmation("TRUE"),
+            Err(HostConfigError::InvalidConfirmation(_))
+        ));
     }
 }

@@ -1,13 +1,14 @@
 use virtio_mem_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility};
 
+use crate::compatibility_source::{CompatibilitySource, FixedCompatibilitySource};
 use crate::runtime::ResizeSink;
 use crate::virsh::VirshCommand;
 
-pub struct VirshResizeSink<C> {
+pub struct VirshResizeSink<C, E = FixedCompatibilitySource> {
     command: C,
     vm_name: String,
     alias: String,
-    external_compatibility: VirtioMemCompatibility,
+    compatibility_source: E,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -31,30 +32,42 @@ impl PreparedResize {
     }
 }
 
-impl<C> VirshResizeSink<C> {
+impl<C> VirshResizeSink<C, FixedCompatibilitySource> {
     pub fn new(command: C, vm_name: impl Into<String>, alias: impl Into<String>) -> Self {
         Self {
             command,
             vm_name: vm_name.into(),
             alias: alias.into(),
-            external_compatibility: VirtioMemCompatibility::unknown(),
+            compatibility_source: FixedCompatibilitySource::default(),
         }
     }
 
     pub fn with_external_compatibility(mut self, compatibility: VirtioMemCompatibility) -> Self {
-        self.external_compatibility = compatibility;
+        self.compatibility_source = FixedCompatibilitySource::new(compatibility);
         self
     }
 }
 
-impl<C: VirshCommand> ResizeSink for VirshResizeSink<C> {
+impl<C, E> VirshResizeSink<C, E> {
+    /// Replace static compatibility evidence with a live or injected source.
+    pub fn with_compatibility_source<N>(self, compatibility_source: N) -> VirshResizeSink<C, N> {
+        VirshResizeSink {
+            command: self.command,
+            vm_name: self.vm_name,
+            alias: self.alias,
+            compatibility_source,
+        }
+    }
+}
+
+impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, E> {
     fn request_resize(&self, requested_bytes: u64) -> Result<(), String> {
         let prepared = self.prepare_resize(requested_bytes)?;
         self.apply_prepared(prepared)
     }
 }
 
-impl<C: VirshCommand> VirshResizeSink<C> {
+impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
     pub(crate) fn prepare_resize(&self, requested_bytes: u64) -> Result<PreparedResize, String> {
         let snapshot = self
             .command
@@ -64,7 +77,7 @@ impl<C: VirshCommand> VirshResizeSink<C> {
             .map_err(|error| error.to_string())?;
         snapshot
             .compatibility
-            .merge(self.external_compatibility)
+            .merge(self.compatibility_source.compatibility()?)
             .map_err(|error| error.to_string())?
             .validate_for_resize()
             .map_err(|error| error.to_string())?;

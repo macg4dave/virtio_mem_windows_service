@@ -1,10 +1,9 @@
 use std::io::Write;
 use std::time::Duration;
 
-use virtio_mem_core::{
-    parse_virtio_mem_xml_for_alias, CompatibilityEvidence, VirtioMemCompatibility,
-};
+use virtio_mem_core::{parse_virtio_mem_xml_for_alias, CompatibilityEvidence};
 
+use crate::compatibility_source::{CompatibilitySource, VirshQmpCompatibilitySource};
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
 use crate::resize_sink::VirshResizeSink;
 use crate::virsh::{Virsh, VirshCommand};
@@ -186,6 +185,16 @@ fn run_with<H: HostMemorySource, W: Write>(
             host_min_headroom_bytes,
         } => {
             let virsh = Virsh::with_connection("virsh", DEFAULT_TIMEOUT, &connection);
+            let compatibility_source = VirshQmpCompatibilitySource::new(
+                virsh.clone(),
+                vm.clone(),
+                alias.clone(),
+                if workload_reviewed {
+                    CompatibilityEvidence::Confirmed
+                } else {
+                    CompatibilityEvidence::Unknown
+                },
+            );
             run_resize_with(
                 virsh,
                 ResizeOptions {
@@ -194,10 +203,10 @@ fn run_with<H: HostMemorySource, W: Write>(
                     target_bytes,
                     connection,
                     apply,
-                    workload_reviewed,
                     host_min_headroom_bytes,
                 },
                 host_memory,
+                compatibility_source,
                 output,
             )
         }
@@ -257,27 +266,18 @@ struct ResizeOptions {
     target_bytes: u64,
     connection: String,
     apply: bool,
-    workload_reviewed: bool,
     host_min_headroom_bytes: u64,
 }
 
-fn run_resize_with<C: VirshCommand, H: HostMemorySource, W: Write>(
+fn run_resize_with<C: VirshCommand, H: HostMemorySource, E: CompatibilitySource, W: Write>(
     command: C,
     options: ResizeOptions,
     host_memory: H,
+    compatibility_source: E,
     output: &mut W,
 ) -> Result<(), String> {
-    let external_compatibility = VirtioMemCompatibility {
-        dynamic_memslots: CompatibilityEvidence::Unknown,
-        unplugged_inaccessible: CompatibilityEvidence::Unknown,
-        workload_review: if options.workload_reviewed {
-            CompatibilityEvidence::Confirmed
-        } else {
-            CompatibilityEvidence::Unknown
-        },
-    };
     let sink = VirshResizeSink::new(command, options.vm, options.alias)
-        .with_external_compatibility(external_compatibility);
+        .with_compatibility_source(compatibility_source);
     let prepared = sink.prepare_resize(options.target_bytes)?;
     if prepared.target_bytes() > prepared.current_bytes() {
         validate_grow_headroom(
@@ -309,7 +309,9 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::compatibility_source::FixedCompatibilitySource;
     use crate::virsh::VirshError;
+    use virtio_mem_core::VirtioMemCompatibility;
 
     const GIB: u64 = 1 << 30;
     const CONVERGED_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></devices></domain>";
@@ -344,7 +346,6 @@ mod tests {
             target_bytes: 6 * GIB,
             connection: DEFAULT_CONNECTION.to_owned(),
             apply,
-            workload_reviewed: true,
             host_min_headroom_bytes: GIB,
         }
     }
@@ -407,6 +408,7 @@ mod tests {
             },
             resize_options(false),
             FakeHostMemory(4 * GIB),
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
             &mut output,
         )
         .expect("valid dry run");
@@ -462,6 +464,7 @@ mod tests {
             },
             resize_options(true),
             FakeHostMemory(4 * GIB),
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
             &mut output,
         )
         .expect("valid apply");
@@ -484,6 +487,7 @@ mod tests {
             },
             resize_options(true),
             FakeHostMemory(2 * GIB),
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
             &mut output,
         )
         .expect_err("reserve shortfall must fail closed");

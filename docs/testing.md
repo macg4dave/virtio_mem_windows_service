@@ -301,6 +301,14 @@ An insufficient-headroom check is not treated as a fatal error; the
 controller logs and waits for the next poll interval rather than crashing the
 systemd unit.
 
+`VIRTIO_MEM_WORKLOAD_REVIEWED` is also required. Set it to `true` only after
+the explicitly scoped VM has been reviewed for VFIO-NVMe, RDMA migration,
+`mlock`, and unsupported vhost-user dependencies; `false` preserves unknown
+workload evidence and blocks resize preparation. Independently of that
+operator statement, the controller refreshes `dynamic-memslots` and
+`unplugged-inaccessible` from the selected QOM device through bounded QMP
+requests before every prepared resize.
+
 #### Testing through the installed host service, not the standalone script
 
 The standalone `scripts/live-resize-test.sh` script is a pre-installation
@@ -469,8 +477,9 @@ request handles before returning.
 
 The `VirtioMemState` contract tests additionally verify the canonical byte
 unit, minimum and power-of-two block size, requested/current/target alignment,
-device-size/block alignment, maximum-value boundaries, and rejection of zero
-values before a host resize sink is allowed to issue a request. Unit-boundary
+device-size/block alignment, maximum-value boundaries, acceptance of zero
+observed state, and rejection of zero targets before a host resize sink is
+allowed to issue a request. Unit-boundary
 tests verify checked KiB-to-byte conversion, exact byte-to-KiB conversion,
 maximum representable round trips, and rejection of lossy conversion.
 
@@ -485,10 +494,9 @@ captured XML strings; live `virsh` discovery remains host-side validation work.
 
 M9a compatibility tests cover explicit enabled attributes, disabled attributes,
 absent attributes, invalid attribute values, independently completed evidence,
-and conflicting sources. The resize sink must reject absent, disabled, or
-conflicting compatibility evidence before issuing an update; the live
-`win11_gpu` XML currently follows this fail-closed path because the required
-flags are not exposed and no external evidence provider is wired.
+conflicting sources, and live QMP bool/string values. Before every prepared
+resize, the host sink queries the selected QOM device and rejects unavailable,
+disabled, malformed, or conflicting QMP/XML evidence.
 
 The host memory-stat parser applies the same checked KiB-to-byte rule and
 rejects `/proc/meminfo` multiplication overflow. Compatibility settings such
@@ -620,13 +628,28 @@ target/release/virtio-mem-host resize \
 The CLI defaults to `qemu:///system` and accepts a constrained alias. Snapshot
 and validate issue only `virsh dumpxml`. Resize defaults to dry-run and does
 not issue `update-memory-device` unless `--apply` is present. Both dry-run and
-apply require fresh XML confirmation of `dynamic-memslots` and
+apply require fresh QMP/XML confirmation of `dynamic-memslots` and
 `unplugged-inaccessible`, `requested == current`, a block-aligned canonical-
 byte target with device headroom, explicit `--workload-reviewed` operator
 evidence, and a positive host reserve. Grow operations read
 `/proc/meminfo` and fail closed unless `MemAvailable` covers the growth delta
 plus `--host-min-headroom-bytes`; shrink operations do not require available
 host RAM.
+
+Observed `requested` and `current` may both be zero for a fully unplugged
+device; live M9 validation on `win11_gpu` exercises this state. Zero remains
+invalid as a resize target. On 2026-09-05, the Rust CLI snapshot matched the
+direct live XML hash, canonical-byte validation passed, a wrong alias was
+rejected, and a no-`--apply` dry run failed closed on unknown compatibility
+evidence. Identical before/after XML hashes confirmed non-mutation.
+
+Live M9a validation on 2026-09-05 confirmed both selected-device QMP
+properties, a 2 MiB block/THP match, `mem-lock=off`, and no VFIO-NVMe, RDMA,
+or unsupported vhost-user dependency. The operator completed the workload
+review. The CLI produced the exact 2 MiB dry-run vector without `--apply`, and
+the before/after XML hashes matched. Systemd configuration must set
+`VIRTIO_MEM_WORKLOAD_REVIEWED=true` only after the same review; `false` keeps
+resize preparation fail-closed.
 
 After reviewing the dry-run vector and obtaining approval for the exact VM,
 alias, target, and expected live mutation, repeat the same command with

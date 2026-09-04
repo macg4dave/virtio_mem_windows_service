@@ -19,7 +19,7 @@ host validation environment.
 | --- | --- | --- | --- |
 | Rust development | `rustc`, `cargo`, `rustfmt`, `clippy` | Rust 1.70+; edition 2021 | Build, test, format, and lint the service |
 | Rust target | Windows x64 target/toolchain | Windows 11 target | Build the guest service |
-| Rust serialization | `serde` with `derive`, `serde_json` | Locked in `windows/Cargo.lock` | Parse QEMU Guest Agent JSON |
+| Rust serialization | `serde` with `derive`, `serde_json` | Locked in the workspace `Cargo.lock` | Parse QGA JSON and live QMP compatibility responses |
 | Rust errors | `thiserror`, `anyhow` | Locked in `windows/Cargo.lock` | Typed and contextual errors |
 | Rust telemetry | `tracing`, `tracing-subscriber` | Locked in `windows/Cargo.lock` | Service logging foundation |
 | Windows API | `winapi` features: `processthreadsapi`, `winbase`, `sysinfoapi`, `winnt` | Locked in `windows/Cargo.lock` | Windows process, service, and memory APIs |
@@ -85,7 +85,7 @@ versions and must be retained for reproducible builds.
 ### Runtime dependencies
 
 - `serde` with the `derive` feature: deserializes QGA memory-stat responses.
-- `serde_json`: parses the QGA JSON envelope and stat entries.
+- `serde_json`: parses QGA JSON and host-side live QMP compatibility responses.
 - `thiserror`: defines typed parser and controller-policy errors.
 - `anyhow`: available for application-level contextual errors.
 - `tracing`: provides structured event and metric logging.

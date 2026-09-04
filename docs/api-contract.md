@@ -164,6 +164,11 @@ The official libvirt/QEMU model treats virtio-mem as a NUMA-aware memory balloon
 
 `requested` must be an integer multiple of `block` and must never exceed `size`. `current` may lag behind `requested` while the guest reclaims or plugs blocks; the controller must treat `requested != current` as an in-flight resize and avoid issuing another change until the guest settles.
 
+Observed `requested` and `current` may both be zero when the virtio-mem device
+is fully unplugged. Zero is therefore valid live state, but it is not a valid
+resize target: every requested target must be positive, block aligned, within
+the device size, and satisfy the fixed device-headroom requirement.
+
 When more than one virtio-mem device is present, `virsh` must be directed with `--alias` because the update API cannot infer which device should be resized. The host-side controller should therefore treat the alias as part of the contract and should validate the live XML against the selected alias after each request.
 
 ### Virtio-mem compatibility gate
@@ -245,14 +250,18 @@ use a command shell. Its host calls are:
 - `virsh qemu-agent-command <vm> {"execute":"guest-get-memory-stats"}`
 - `virsh dumpxml <vm>` (the default for a running domain; `--inactive` is not
   used for live resize validation)
+- `virsh qemu-monitor-command <vm> <qom-get-request>` for the selected
+  device's `dynamic-memslots` and `unplugged-inaccessible` properties
 - `virsh update-memory-device <vm> --alias <alias> --requested-size <kib> --live`
 
 The implementation must bound each command, capture a non-zero exit status
 with its diagnostic output, and treat it as an explicit failure. Before the
-update command, the controller must read and validate a fresh XML snapshot for
-the configured alias and require `requested == current`. A successful command
-response does not prove completion: subsequent snapshots decide convergence.
-The controller never replays a resize request after a process restart.
+update command, the controller must read and validate a fresh XML snapshot and
+fresh QMP compatibility properties for the configured alias, require an
+explicit workload-review confirmation, and require `requested == current`.
+A successful command response does not prove completion: subsequent snapshots
+decide convergence. The controller never replays a resize request after a
+process restart.
 
 The same Rust adapters back explicit CLI operations:
 

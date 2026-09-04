@@ -51,11 +51,14 @@ The RHEL controller is a Rust process supervised by a templated systemd unit.
 Each unit instance owns one explicitly configured VM name and virtio-mem alias;
 it must not enumerate domains or manage multiple VMs through an implicit
 configuration. Its only host integration is bounded, argument-safe `virsh`
-subprocess calls for QGA statistics, live XML snapshots, and approved live
-resize requests. It never invokes a shell or administers Windows processes.
+subprocess calls for QGA statistics, live XML snapshots, live QMP compatibility
+properties, and approved live resize requests. It never invokes a shell or
+administers Windows processes.
 
 The controller uses the same byte-based state and resize policy as the Windows
-service. Before a resize, it validates the selected live XML state and target.
+service. Before a resize, it validates the selected live XML state and target,
+reads `dynamic-memslots` and `unplugged-inaccessible` from the selected live
+QOM device, and requires a separately recorded operator workload review.
 After a request, it waits for `requested` and `current` to converge and never
 sends a follow-up request while they differ. Invalid configuration, failed QGA
 calls, malformed XML, failed resize commands, and convergence timeouts are

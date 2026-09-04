@@ -1,5 +1,39 @@
 # BACKLOG
 
+## 2026-09-05 M9a live compatibility gate
+
+- Added a bounded Rust QMP compatibility source that reads
+  `dynamic-memslots` and `unplugged-inaccessible` from the selected live QOM
+  device before every prepared resize. Disabled, malformed, missing, and
+  conflicting evidence remains fail-closed.
+- Added required systemd configuration `VIRTIO_MEM_WORKLOAD_REVIEWED`; only
+  literal `true` records the operator review as confirmed. The CLI retains its
+  explicit `--workload-reviewed` acknowledgement.
+- Live QMP on `win11_gpu` reported `dynamic-memslots=true` and
+  `unplugged-inaccessible=on`. The 2 MiB block matches the 2 MiB host THP PMD
+  size and native QEMU arguments report `mem-lock=off`.
+- The reviewed VFIO devices are an NVIDIA GPU, its audio function, and an AMD
+  USB controller; none is NVMe. No RDMA or vhost-user indicator was found, and
+  the operator confirmed those workload classes are not intended.
+- The Rust CLI produced the exact one-block dry-run vector without `--apply`;
+  identical before/after XML SHA-256 values prove non-mutation. M9a is
+  complete; applied resize/convergence remains M9b/M10b scope.
+
+## 2026-09-05 M9 live Rust XML-adapter validation
+
+- Fixed the shared state contract to accept a fully unplugged live
+  virtio-mem device (`requested=current=0`) while continuing to reject a zero
+  resize target. Added direct state and captured-XML regression tests.
+- The native RHEL gate passes with 21 core tests and 25 host tests, release
+  build, formatting, warnings-as-errors Clippy, and Bash syntax.
+- One approved read-only Rust CLI batch selected `ua-virtiomem0` from live
+  `win11_gpu` XML and reported size 20 GiB, block 2 MiB, and converged
+  `requested=current=0` in canonical bytes.
+- The live CLI rejected a nonexistent alias and rejected a one-block dry run
+  because `dynamic-memslots` and `unplugged-inaccessible` evidence is unknown.
+  Identical before/after XML SHA-256 values prove the batch did not mutate the
+  domain. M9 is complete; M9a compatibility evidence remains.
+
 ## 2026-09-04 M8 fresh read-only QGA/KVM validation
 
 - Ran one approved, password-once privileged read batch against only
@@ -508,7 +542,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are covered; native SCM registration is live-verified, while QGA transport and complete VM evidence remain. |
-| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; checked canonical-byte/KiB boundaries; block-aligned device validation; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Focused core/host format, 31 tests, and Clippy pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
+| TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | M9 and M9a live gates pass: Rust CLI state validation, QMP compatibility evidence, THP matching, incompatible-class review, exact dry run, and non-mutation are proven on `win11_gpu`; 50 core/host tests pass. M9b installed-controller and reversible-resize evidence remain required before enablement. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, a generic stoppable worker, and SCM Event Log integration are implemented. Main SCM runtime construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, and host integration remain. |
 
 ### 2026-08-18 live KVM handoff

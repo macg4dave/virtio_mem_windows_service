@@ -17,6 +17,7 @@
 | ISSUE-005 | Virtio-mem rollback left `requested` and `current` divergent after the earlier 1 GiB test | Resolved after the updated Windows driver was installed; fresh XML reports `requested=0 KiB` and `current=0 KiB` | Fresh read-only `virsh dumpxml win11_gpu` convergence check | 2026-08-18 |
 | ISSUE-006 | Windows `dommemstat` reports `available` above balloon `actual` | Resolved by conservative fallback to `unused`; host controller is active on `win11_gpu` | `host/src/dommemstat.rs` regression test and live service validation | 2026-08-18 |
 | ISSUE-007 | Invalid service configuration was loaded before SCM dispatcher attachment, causing Windows error 1053 without status or Event Log context | Resolved by dispatching SCM before configuration loading; live invalid-config recovery emitted event 2000 and exit code 1 | `windows/src/main.rs` startup-route regression and M7 live validation | 2026-09-04 |
+| ISSUE-009 | Shared virtio-mem state validation rejected the live fully-unplugged `requested=current=0` state | Resolved by allowing zero observed state while retaining positive-target validation | `VirtioMemState` and live XML regression tests; M9 live CLI validation | 2026-09-05 |
 
 ### M8/V1 read-only evidence — 2026-08-18
 
@@ -57,6 +58,31 @@
 - Shared memfd backing is present, but `dynamic-memslots` and
   `unplugged-inaccessible` are not exposed in the captured XML; compatibility
   remains unknown pending a supported QEMU/libvirt inspection path.
+
+### M9 live Rust XML-adapter evidence — 2026-09-05
+
+- The CLI snapshot matched the direct live XML SHA-256
+  `04d1b8f989ea49354038c2576530d0a3c73798b4531a21938fb1fc15ef2fb1d8`.
+- Validation selected `ua-virtiomem0` exactly and reported
+  `size_bytes=21474836480`, `block_size_bytes=2097152`, and
+  `requested_bytes=current_bytes=0`.
+- A nonexistent alias was rejected. A one-block dry run without `--apply`
+  failed closed because live compatibility evidence remains unknown.
+- The post-check live XML hash was identical; no resize or XML mutation was
+  issued. M9a remains responsible for compatibility and workload evidence.
+
+### M9a live compatibility evidence — 2026-09-05
+
+- QMP reported `dynamic-memslots=true` and
+  `unplugged-inaccessible=on` for `/machine/peripheral/ua-virtiomem0`.
+- The device's 2 MiB block matches the host's 2 MiB THP PMD size, and native
+  QEMU arguments report `mem-lock=off`.
+- Three VFIO devices map to an NVIDIA GPU, its audio function, and an AMD USB
+  controller; none is VFIO-NVMe. No RDMA or vhost-user indicator was found,
+  and the operator confirmed those workload dependencies are not intended.
+- The Rust CLI emitted the exact 2 MiB dry-run argument vector without
+  `--apply`. Before/after XML SHA-256 values matched at
+  `29878e19597b6ef69f5b18a3490f4804f4fe11710d35d5052cdfdf00ecd7739d`.
 
 ## Guidelines
 

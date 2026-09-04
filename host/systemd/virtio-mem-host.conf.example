@@ -24,3 +24,8 @@ VIRTIO_MEM_STATS_SOURCE=dommemstat
 # Required: a grow request is blocked unless the RHEL host's /proc/meminfo
 # MemAvailable covers the requested delta plus this reserve.
 VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES=4294967296
+
+# Required explicit operator evidence. Set true only after reviewing this VM
+# and workload for vfio-nvme, RDMA migration, mlock, and unsupported vhost-user
+# dependencies. False keeps resize preparation fail-closed.
+VIRTIO_MEM_WORKLOAD_REVIEWED=false
