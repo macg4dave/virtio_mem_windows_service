@@ -124,15 +124,16 @@ live integration evidence.
   `.vscode/tasks.json`, and the Makefile provide explicit endpoint checking,
   one-sync native validation, verified artifact retrieval, and both editor and
   terminal entry points.
-- [!] **Stage C — Windows endpoint bootstrap:** configure a dedicated Windows
-  build account with key-based OpenSSH access, Rust MSVC plus rustfmt/Clippy,
-  Visual Studio C++ Build Tools and Windows SDK, `tar.exe`, and
-  `certutil.exe`. The endpoint and credentials remain operator-owned and must
-  not be committed to the repository.
+- [!] **Stage C — Windows endpoint bootstrap:** the current Windows build login
+    now has key-based OpenSSH access, Rust MSVC plus rustfmt/Clippy, Visual
+    Studio C++ Build Tools and Windows SDK, `tar.exe`, and `certutil.exe`. The
+    endpoint is listening on its private KVM interface and its credentials
+    remain operator-owned. Migration to a separate least-privilege build
+    account remains outstanding after the cross-host path is proven.
 - [!] **Stage D — First end-to-end native gate:** run the aggregate gate against
-  the configured endpoint and retain exact build, test, lint, artifact path,
-  and checksum evidence. This is blocked on Stage C; the remote wrapper has
-  not yet been exercised end to end.
+    the configured endpoint and retain exact build, test, lint, artifact path,
+    and checksum evidence. The fingerprint-pinned evidence runner is ready on
+    the RHEL control plane; the remote wrapper has not yet completed this run.
 - [ ] **Stage E — Repeatability evidence:** run the aggregate gate again after a
   clean source change and confirm failure propagation, one-source-snapshot
   behavior, and replacement of the prior staged artifact. This completes the
@@ -146,7 +147,7 @@ live integration evidence.
 
 | ID | Blocker | Impact | Resolution evidence |
 | --- | --- | --- | --- |
-| BUILD-001 | No operator-configured Windows SSH/MSVC build endpoint has been supplied to the workflow | Native Windows build, tests, lint, and artifact verification cannot be run from RHEL | `windows-remote-build.sh check` succeeds for the explicit SSH alias |
+| BUILD-001 | The configured Windows SSH/MSVC endpoint has not yet been checked from the RHEL control plane | Native Windows validation passes locally, but cross-host reachability and authentication remain unproven | `windows-remote-build.sh check` succeeds for the explicit SSH target |
 | BUILD-002 | The new remote wrapper has not completed one end-to-end run | Command quoting, remote path handling, MSVC initialization, and checksum retrieval remain statically checked but unproven against the real endpoint | `windows-remote-build.sh all` exits zero and records exact native test results plus matching SHA-256 values |
 | BUILD-003 | Windows SCM validation requires an elevated Windows session and service registration changes | Default build success cannot establish install/start/stop/recovery behavior | Separately approved SCM procedure passes and its evidence is recorded under M7 |
 | BUILD-004 | Live QGA, systemd, libvirt, and virtio-mem convergence checks require named targets and explicit mutation approval | Default build success cannot establish live runtime or resize readiness | Separately approved M8–M10b procedures pass with rollback and convergence evidence |

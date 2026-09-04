@@ -11,6 +11,8 @@ Required environment:
 Optional environment:
   VIRTIO_MEM_WINDOWS_DIR   Windows workspace path (default: C:\Users\Public\virtio-mem-build)
   VIRTIO_MEM_WINDOWS_ARTIFACTS  Local artifact directory (default: .vscode-artifacts/windows)
+  VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE  Pinned SSH known-hosts file
+  VIRTIO_MEM_WINDOWS_IDENTITY_FILE  Private key used for the build endpoint
 EOF
     exit 2
 }
@@ -29,9 +31,12 @@ fi
 
 remote_dir="${VIRTIO_MEM_WINDOWS_DIR:-C:\\Users\\Public\\virtio-mem-build}"
 artifact_dir="${VIRTIO_MEM_WINDOWS_ARTIFACTS:-.vscode-artifacts/windows}"
+known_hosts_file="${VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE:-}"
+identity_file="${VIRTIO_MEM_WINDOWS_IDENTITY_FILE:-}"
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 archive="$(mktemp "${TMPDIR:-/tmp}/virtio-mem-windows.XXXXXX.tar")"
 trap 'rm -f "$archive"' EXIT
+ssh_options=(-o BatchMode=yes)
 
 if [[ "$artifact_dir" != /* ]]; then
     artifact_dir="$repo_root/$artifact_dir"
@@ -51,8 +56,27 @@ case "$remote_dir" in
         ;;
 esac
 
+if [[ -n "$known_hosts_file" ]]; then
+    [[ -f "$known_hosts_file" ]] || {
+        printf 'Pinned known-hosts file does not exist: %s\n' "$known_hosts_file" >&2
+        exit 2
+    }
+    ssh_options+=(
+        -o "UserKnownHostsFile=$known_hosts_file"
+        -o StrictHostKeyChecking=yes
+    )
+fi
+
+if [[ -n "$identity_file" ]]; then
+    [[ -f "$identity_file" ]] || {
+        printf 'SSH identity file does not exist: %s\n' "$identity_file" >&2
+        exit 2
+    }
+    ssh_options+=(-o IdentitiesOnly=yes -i "$identity_file")
+fi
+
 remote() {
-    ssh -- "$ssh_alias" "cmd.exe /d /c $1"
+    ssh "${ssh_options[@]}" -- "$ssh_alias" "cmd.exe /d /c $1"
 }
 
 remote_quoted_path="\"${remote_dir//\"/}\""
@@ -70,7 +94,7 @@ sync_source() {
     git -C "$repo_root" ls-files --cached --others --exclude-standard -z |
         tar -C "$repo_root" --null --files-from=- -cf "$archive"
     remote "if not exist $remote_quoted_path mkdir $remote_quoted_path"
-    scp -- "$archive" "${ssh_alias}:virtio-mem-windows-source.tar"
+    scp "${ssh_options[@]}" -- "$archive" "${ssh_alias}:virtio-mem-windows-source.tar"
     remote "tar -xf virtio-mem-windows-source.tar -C $remote_quoted_path && del /q virtio-mem-windows-source.tar"
 }
 
@@ -94,7 +118,7 @@ lint_windows() {
 fetch_artifact() {
     mkdir -p "$artifact_dir"
     local remote_artifact="${remote_dir//\\/\/}/target/release/virtio-mem-service.exe"
-    scp -- "${ssh_alias}:${remote_artifact}" "$artifact_dir/virtio-mem-service.exe"
+    scp "${ssh_options[@]}" -- "${ssh_alias}:${remote_artifact}" "$artifact_dir/virtio-mem-service.exe"
     local remote_hash local_hash
     remote_hash="$(remote "certutil -hashfile $remote_quoted_path\\target\\release\\virtio-mem-service.exe SHA256" | awk '/^[0-9A-Fa-f]{64}$/ { print tolower($0); exit }')"
     local_hash="$(sha256sum "$artifact_dir/virtio-mem-service.exe" | awk '{print $1}')"

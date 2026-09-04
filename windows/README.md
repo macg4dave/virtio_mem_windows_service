@@ -51,6 +51,9 @@ the checked-in VS Code tasks or the Bash wrapper directly:
   `C:\Users\Public\virtio-mem-build`.
 - `VIRTIO_MEM_WINDOWS_ARTIFACTS` — optional local staging path; defaults to
   `.vscode-artifacts/windows`.
+- `VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE` — optional pinned SSH host-key file.
+- `VIRTIO_MEM_WINDOWS_IDENTITY_FILE` — optional private-key path for
+  non-interactive authentication.
 
 The one-time guest setup requires Rust MSVC, Visual Studio C++ Build Tools with
 the Windows SDK, Git, `tar.exe`, `certutil.exe`, and OpenSSH Server. The
@@ -61,6 +64,11 @@ the fetched executable's SHA-256 checksum. The
 VS Code tasks prompt for the SSH alias; the environment variable is required
 only for direct wrapper use. It never installs or starts the Windows service
 and never changes libvirt state.
+
+For the two-run milestone check, use
+`scripts/complete-windows-build-milestone.sh` from the RHEL checkout as
+documented in `docs/testing.md`. It verifies a supplied ED25519 host
+fingerprint without changing the operator's persistent SSH configuration.
 
 See [`../docs/testing.md`](../docs/testing.md) for the task sequence and the
 separate approval gate for deployment.

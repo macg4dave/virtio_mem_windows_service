@@ -381,6 +381,28 @@ After completing any task:
   operator-configured OpenSSH/MSVC endpoint.
 - No guest, libvirt, systemd, SCM, or live memory mutation was attempted.
 
+### 2026-09-04 Windows endpoint bootstrap and milestone runner
+
+- Enabled the Windows OpenSSH Server for automatic startup on the private KVM
+  guest interface and installed the operator-supplied build key using the
+  hardened administrator key-file ACL.
+- Confirmed the ED25519 host fingerprint, active TCP/22 listener, Rust 1.97.1
+  MSVC target, Visual Studio 2022 x64 build environment, and native Windows
+  release build, formatting, 59 tests, and warnings-as-errors Clippy gate.
+- Added `scripts/complete-windows-build-milestone.sh` to pin an explicitly
+  supplied host fingerprint in a temporary known-hosts file, check the remote
+  toolchain, run `make all-gates` twice, and retain logs plus artifact hashes in
+  the ignored artifact directory.
+- Extended the remote wrapper with optional pinned known-hosts and identity-file
+  inputs. Neither the host key nor private key is copied into the repository or
+  persistent SSH configuration.
+- Local validation passes: `bash -n scripts/*.sh`, ShellCheck for both affected
+  scripts, the Linux-compatible release build, 38 core/host tests, Clippy with
+  warnings denied, and the native Windows MSVC release build, 59 tests,
+  formatting, and Clippy with warnings denied.
+- TASK-011 remains in progress until the helper is executed from the RHEL
+  checkout and its two consecutive aggregate-run evidence files are reviewed.
+
 ## Ready Queue
 
 Tasks ready to start (Phase 2 - Core Functionality):
@@ -388,7 +410,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
 | TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Live RHEL/libvirt host and Windows guest unavailable in this environment |
-| TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | Blocked | 1-2 hours after endpoint setup | Operator-configured Windows OpenSSH/MSVC endpoint; then two consecutive `make all-gates` runs with recorded native results and matching checksums |
 | TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
@@ -402,6 +423,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are locally covered; live VM evidence, service registration, and QGA validation remain. |
 | TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; checked canonical-byte/KiB boundaries; block-aligned device validation; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Focused core/host format, 31 tests, and Clippy pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, and a generic stoppable worker are implemented. Main SCM construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, event-log integration, and any host integration remain intentionally deferred. |
+| TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | In Progress | Windows OpenSSH is listening on the private guest interface with the operator-supplied build key, and the local MSVC build/test/lint gate passes. The fingerprint-pinned two-run evidence helper is ready; execute it from the RHEL checkout to verify orchestration and artifact checksums. |
 
 ### 2026-08-18 live KVM handoff
 
@@ -566,7 +588,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Blocker | Owner | Workaround |
 | --- | --- | --- | --- | --- |
 | TASK-002 | QEMU Guest Agent validation | No live RHEL/libvirt host or Windows guest is attached | Copilot | Run `scripts/validate-guest-agent.sh` on the KVM host. |
-| TASK-011 | RHEL-controlled cross-platform developer gate | Windows OpenSSH/MSVC endpoint is not configured for the wrapper, so the native aggregate path and artifact checksum exchange are unverified | Operator + Copilot | Configure the prerequisites in `docs/dependencies.md`, run `windows-remote-build.sh check`, then run and record two consecutive aggregate gates. |
 
 ## Architecture Decisions
 

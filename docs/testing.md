@@ -88,6 +88,23 @@ The equivalent terminal entry point is `make all-gates`. It requires
 `VIRTIO_MEM_WINDOWS_SSH`; `make build`, `make test`, and `make lint` run only
 the RHEL-compatible portion.
 
+To collect TASK-011 milestone evidence, run the fingerprint-pinned helper from
+the RHEL checkout. It checks the endpoint first, executes `make all-gates`
+twice, and stores both logs and staged executable hashes under the ignored
+`.vscode-artifacts/windows/milestone-TIMESTAMP/` directory:
+
+```bash
+bash scripts/complete-windows-build-milestone.sh \
+  WINDOWS_SSH_ALIAS SHA256:EXPECTED_ED25519_HOST_FINGERPRINT \
+  ~/.ssh/OPTIONAL_PRIVATE_KEY
+```
+
+Omit the private-key argument when the alias or `ssh-agent` already selects the
+correct key. The helper uses a temporary known-hosts file, refuses a host-key
+mismatch, and does not modify `~/.ssh/config` or `~/.ssh/known_hosts`. Success
+requires both aggregate runs to exit zero and each fetched artifact to pass the
+wrapper's Windows/RHEL SHA-256 comparison.
+
 The Windows tasks are deliberately not deployment tasks. They never install,
 start, stop, or remove the Windows service and never change RHEL systemd,
 libvirt, QEMU, or guest memory. Keep service installation and live resize as

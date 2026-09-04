@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Rust: debug interactive service",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}\\windows\\target\\debug\\virtio-mem-service.exe",
+            "args": ["run"],
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Rust: build debug",
+            "sourceLanguages": ["rust"]
+        }
+    ]
+}
