@@ -3,6 +3,7 @@ use std::time::Duration;
 use virtio_mem_core::parse_virtio_mem_xml_for_alias;
 
 use crate::resize_sink::VirshResizeSink;
+use crate::runtime::ResizeSink;
 use crate::virsh::{Virsh, VirshCommand};
 
 const DEFAULT_CONNECTION: &str = "qemu:///system";
@@ -108,8 +109,7 @@ pub fn run(command: CliCommand) -> Result<(), String> {
             let xml = virsh
                 .run(&["dumpxml".to_owned(), vm])
                 .map_err(|error| error.to_string())?;
-            parse_virtio_mem_xml_for_alias(&xml, &alias)
-                .map_err(|error| error.to_string())?;
+            parse_virtio_mem_xml_for_alias(&xml, &alias).map_err(|error| error.to_string())?;
             print!("{xml}");
             Ok(())
         }
@@ -122,8 +122,8 @@ pub fn run(command: CliCommand) -> Result<(), String> {
             let xml = virsh
                 .run(&["dumpxml".to_owned(), vm])
                 .map_err(|error| error.to_string())?;
-            let snapshot = parse_virtio_mem_xml_for_alias(&xml, &alias)
-                .map_err(|error| error.to_string())?;
+            let snapshot =
+                parse_virtio_mem_xml_for_alias(&xml, &alias).map_err(|error| error.to_string())?;
             println!("alias={}", snapshot.alias);
             println!("size_bytes={}", snapshot.memory.size_bytes);
             println!("block_size_bytes={}", snapshot.memory.block_size_bytes);

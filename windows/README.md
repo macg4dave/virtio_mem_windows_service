@@ -40,6 +40,31 @@ but the Windows service does not open the QGA virtio-serial device because
 `QEMU-GA` owns it. Service startup uses native Windows telemetry; host-side QGA
 requests remain a RHEL/libvirt responsibility.
 
+### Build from VS Code on RHEL
+
+The supported RHEL workflow builds this crate natively in the Windows KVM
+guest. Configure an SSH alias and workspace path in the environment, then run
+the checked-in VS Code tasks or the Bash wrapper directly:
+
+- `VIRTIO_MEM_WINDOWS_SSH` — required SSH config alias for the Windows guest.
+- `VIRTIO_MEM_WINDOWS_DIR` — optional remote path; defaults to
+  `C:\Users\Public\virtio-mem-build`.
+- `VIRTIO_MEM_WINDOWS_ARTIFACTS` — optional local staging path; defaults to
+  `.vscode-artifacts/windows`.
+
+The one-time guest setup requires Rust MSVC, Visual Studio C++ Build Tools with
+the Windows SDK, Git, `tar.exe`, `certutil.exe`, and OpenSSH Server. The
+wrapper synchronizes Git-tracked and non-ignored working-tree files,
+initializes the MSVC environment, runs Cargo on Windows with the workspace
+lockfile, removes any prior release executable before building, and verifies
+the fetched executable's SHA-256 checksum. The
+VS Code tasks prompt for the SSH alias; the environment variable is required
+only for direct wrapper use. It never installs or starts the Windows service
+and never changes libvirt state.
+
+See [`../docs/testing.md`](../docs/testing.md) for the task sequence and the
+separate approval gate for deployment.
+
 ## Test
 
 ```bash

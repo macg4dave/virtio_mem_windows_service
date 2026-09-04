@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt clean help
+.PHONY: build test lint fmt clean help windows-build windows-test host-build host-test windows-native all-gates
 
 help:
 	@echo "Virtual Memory Controller - Build Targets"
@@ -10,7 +10,11 @@ help:
 	@echo "  make host-test        - Run RHEL host-controller tests"
 	@echo ""
 	@echo "Automation:"
-	@echo "  make lint             - Lint the Rust component"
+	@echo "  make build            - Build RHEL-compatible crates"
+	@echo "  make test             - Test RHEL-compatible crates"
+	@echo "  make lint             - Lint RHEL-compatible crates"
+	@echo "  make windows-native   - Run the native Windows gate over SSH"
+	@echo "  make all-gates        - Run RHEL and native Windows gates"
 	@echo "  make fmt              - Format Rust code"
 	@echo "  make clean            - Clean Rust build artifacts"
 
@@ -27,16 +31,23 @@ host-test:
 	cargo test -p virtio-mem-host
 
 build:
-	cargo build --workspace --release
-	@echo "✓ Rust workspace built"
+	cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked
+	@echo "✓ RHEL-compatible Rust crates built"
 
 test:
-	cargo test --workspace
-	@echo "✓ Rust workspace tests passed"
+	cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
+	@echo "✓ RHEL-compatible Rust crate tests passed"
 
 lint:
-	cargo clippy --workspace --all-targets --all-features -- -D warnings
+	cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings
 	@echo "✓ Linting complete"
+
+windows-native:
+	bash scripts/windows-remote-build.sh all
+
+all-gates:
+	bash scripts/build-rust.sh
+	bash scripts/windows-remote-build.sh all
 
 fmt:
 	cargo fmt --all

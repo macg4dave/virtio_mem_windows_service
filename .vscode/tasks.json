@@ -1,0 +1,123 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "RHEL: full local gate",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/build-rust.sh"],
+      "problemMatcher": []
+    },
+    {
+      "label": "RHEL: host environment check",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/check-environment.sh"],
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: check remote toolchain",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "check"],
+      "options": {
+        "env": {
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: synchronize source",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "sync"],
+      "options": {
+        "env": {
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: native release build",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "build"],
+      "options": {
+        "env": {
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+        }
+      },
+      "dependsOn": "Windows: synchronize source",
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: native tests",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "test"],
+      "options": {
+        "env": {
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+        }
+      },
+      "dependsOn": "Windows: synchronize source",
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: native format and clippy",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "lint"],
+      "options": {
+        "env": {
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+        }
+      },
+      "dependsOn": "Windows: synchronize source",
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: fetch verified artifact",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "fetch"],
+      "options": {
+        "env": {
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: full native gate",
+      "type": "shell",
+      "command": "bash",
+      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "all"],
+      "options": {
+        "env": {
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Build: all non-mutating gates",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "RHEL: full local gate",
+        "Windows: full native gate"
+      ],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "windowsSshAlias",
+      "type": "promptString",
+      "description": "SSH config alias for the Windows build guest",
+      "default": "virtio-mem-windows"
+    }
+  ]
+}

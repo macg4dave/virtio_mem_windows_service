@@ -13,6 +13,7 @@
 | Logging and metrics | Planned | Both | Both | Rust | Per-service logging |
 | Error handling and recovery | In Progress | Both | Both | Rust | Explicit runtime and resize failures are covered locally; live host recovery remains blocked |
 | Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, Rust validation, virtio-mem inspection, read-only decision preview, and guarded reversible live-resize test helpers added; live resize remains explicitly opt-in |
+| RHEL-controlled cross-platform developer gate | Blocked | Both | Ops | Bash + VS Code tasks | RHEL core/host gate and SSH orchestration are implemented; completion requires an operator-configured Windows OpenSSH/MSVC endpoint and two recorded aggregate runs with checksum-verified artifacts |
 | Native Windows memory telemetry | In Progress | Windows | Demand agent | Rust | `GlobalMemoryStatusEx` and `GetPerformanceInfo` collector implemented with checked byte conversion and deterministic validation tests; live workload evidence remains |
 | Versioned Windows demand report | In Progress | Windows | Demand agent | Rust | Version 1 raw counters, bounded pressure ratios, five provisional demand states, aligned bounded target, and safe-floor recommendation implemented; remains advisory |
 | Durable demand report output | In Progress | Windows | Demand agent | Rust | Validated JSON-lines publisher and generic stoppable worker implemented; ProgramData ACL setup, event-log integration, and production allocation provider remain |

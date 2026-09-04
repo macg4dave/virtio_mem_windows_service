@@ -84,6 +84,78 @@ uses `dommemstat` by default when the guest QGA does not provide
     are implemented behind deterministic tests. A one-cycle collection and
     injected publication boundary is also implemented; the report cannot
     directly actuate virtio-mem.
+- **VS Code RHEL-to-Windows build workflow (2026-09-04):** added a
+    non-mutating Bash/VS Code task path that synchronizes the working tree to a
+    Windows KVM build guest, initializes MSVC, runs native Cargo validation,
+    and verifies the fetched service executable by SHA-256. The guest-side
+    OpenSSH, Rust MSVC, and Visual Studio Build Tools bootstrap remains an
+    operator setup step; service deployment and live KVM changes remain
+    separate approval gates.
+
+## RHEL-controlled build and test plan
+
+### Goal and boundary
+
+Use the RHEL development host as the single control plane while executing each
+check on its supported platform:
+
+1. RHEL builds, tests, and lints `virtio-mem-core` and `virtio-mem-host`, then
+   validates Rust formatting and Bash syntax.
+2. RHEL synchronizes Git-tracked and non-ignored working-tree files to one
+   explicitly configured Windows SSH endpoint.
+3. Windows initializes the native MSVC environment and performs the locked
+   service release build, unit tests, rustfmt check, and warnings-as-errors
+   Clippy check.
+4. RHEL retrieves `virtio-mem-service.exe` and accepts it only when its local
+   SHA-256 matches the checksum calculated on Windows.
+
+The aggregate entry points are the VS Code **Build: all non-mutating gates**
+task and `VIRTIO_MEM_WINDOWS_SSH=ALIAS make all-gates`. They do not install or
+start either service, modify libvirt or systemd, change guest memory, or claim
+live integration evidence.
+
+### Delivery stages
+
+- [x] **Stage A — Native RHEL gate:** `scripts/build-rust.sh` uses the workspace
+  lockfile and validates the shared core and host controller without trying to
+  compile Windows SCM APIs for Linux. Current evidence is a release build, 38
+  passing core/host tests, rustfmt, warnings-as-errors Clippy, and Bash syntax.
+- [x] **Stage B — RHEL orchestration:** `scripts/windows-remote-build.sh`,
+  `.vscode/tasks.json`, and the Makefile provide explicit endpoint checking,
+  one-sync native validation, verified artifact retrieval, and both editor and
+  terminal entry points.
+- [!] **Stage C — Windows endpoint bootstrap:** configure a dedicated Windows
+  build account with key-based OpenSSH access, Rust MSVC plus rustfmt/Clippy,
+  Visual Studio C++ Build Tools and Windows SDK, `tar.exe`, and
+  `certutil.exe`. The endpoint and credentials remain operator-owned and must
+  not be committed to the repository.
+- [!] **Stage D — First end-to-end native gate:** run the aggregate gate against
+  the configured endpoint and retain exact build, test, lint, artifact path,
+  and checksum evidence. This is blocked on Stage C; the remote wrapper has
+  not yet been exercised end to end.
+- [ ] **Stage E — Repeatability evidence:** run the aggregate gate again after a
+  clean source change and confirm failure propagation, one-source-snapshot
+  behavior, and replacement of the prior staged artifact. This completes the
+  developer build workflow milestone.
+- [ ] **Stage F — Optional live validation:** execute Windows SCM lifecycle and
+  RHEL systemd/libvirt/QGA tests under their existing separate approval and
+  rollback procedures. These tests are release evidence, not part of the
+  default non-mutating developer gate.
+
+### Blockers and exit criteria
+
+| ID | Blocker | Impact | Resolution evidence |
+| --- | --- | --- | --- |
+| BUILD-001 | No operator-configured Windows SSH/MSVC build endpoint has been supplied to the workflow | Native Windows build, tests, lint, and artifact verification cannot be run from RHEL | `windows-remote-build.sh check` succeeds for the explicit SSH alias |
+| BUILD-002 | The new remote wrapper has not completed one end-to-end run | Command quoting, remote path handling, MSVC initialization, and checksum retrieval remain statically checked but unproven against the real endpoint | `windows-remote-build.sh all` exits zero and records exact native test results plus matching SHA-256 values |
+| BUILD-003 | Windows SCM validation requires an elevated Windows session and service registration changes | Default build success cannot establish install/start/stop/recovery behavior | Separately approved SCM procedure passes and its evidence is recorded under M7 |
+| BUILD-004 | Live QGA, systemd, libvirt, and virtio-mem convergence checks require named targets and explicit mutation approval | Default build success cannot establish live runtime or resize readiness | Separately approved M8–M10b procedures pass with rollback and convergence evidence |
+
+**Milestone exit:** BUILD-001 and BUILD-002 are closed, two consecutive
+aggregate gates pass against the explicit Windows endpoint, the fetched
+executable is checksum-verified, and exact native Windows plus RHEL results are
+recorded. BUILD-003 and BUILD-004 intentionally remain outside this milestone
+and do not block ordinary developer builds.
 
 ## Verified wins to preserve
 
@@ -135,6 +207,7 @@ readiness in the remaining host-side work.
 | ID | Milestone | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- |
 | M0 | Repository and architecture baseline | [x] | — | Architecture, contracts, standards, and testing docs reviewed |
+| M0a | RHEL-controlled cross-platform developer gate | [~] | M0 | RHEL core/host gate passes; explicit Windows endpoint check and two consecutive aggregate native runs produce a checksum-verified executable |
 | M1 | Pure memory policy and QGA parsing | [x] | M0 | Parser and controller tests cover malformed, boundary, alignment, and convergence cases |
 | M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
 | M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |

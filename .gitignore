@@ -12,7 +12,10 @@
 
 # Editor
 /.vs/
-/.vscode/
+/.vscode/*
+!/.vscode/
+!/.vscode/tasks.json
+!/.vscode/launch.json
 *.user
 *.sln.DotSettings.user
 launchSettings.json
@@ -32,3 +35,4 @@ Thumbs.db
 # Logs
 *.log
 logs/
+.vscode-artifacts/

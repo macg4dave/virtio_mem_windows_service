@@ -35,6 +35,32 @@ host validation environment.
 | Guest device | Configured virtio-mem device and known alias | Required for resize tests | Exercise requested/current memory convergence |
 | Host virtualization stack | libvirt, QEMU API, hypervisor | Observed `11.10.0` (libvirt), `11.10.0` (QEMU API), `10.1.0` (hypervisor) on the RHEL host | Reported by `virsh version`/`guest-info` during the 2026-08-18 probe |
 
+## Remote Windows build endpoint
+
+The RHEL host is the VS Code control plane, not the Windows linker host. The
+Windows service must be built natively in the Windows KVM guest because the
+crate targets `x86_64-pc-windows-msvc` and uses Windows APIs. The supported
+workflow uses OpenSSH from RHEL to the guest and the checked-in
+`scripts/windows-remote-build.sh` wrapper.
+
+The one-time Windows endpoint setup requires:
+
+- Windows 11 x64 with a dedicated build account;
+- OpenSSH Server and key-based access from the RHEL development account;
+- Rust stable with the MSVC target, Cargo, rustfmt, and Clippy;
+- Visual Studio C++ Build Tools with the MSVC x64 workload and Windows SDK;
+- Git, `tar.exe`, and `certutil.exe`.
+
+The wrapper requires `VIRTIO_MEM_WINDOWS_SSH`, an SSH config alias. It accepts
+`VIRTIO_MEM_WINDOWS_DIR` for the remote workspace and
+`VIRTIO_MEM_WINDOWS_ARTIFACTS` for local artifact staging. Do not put private
+keys, passwords, or endpoint-specific credentials in the repository or task
+definitions. The wrapper transfers Git-tracked and non-ignored working-tree
+files, runs locked Cargo commands on Windows, and verifies the downloaded
+executable with SHA-256. It does not install the service, edit
+ProgramData, change SCM state, call `virsh update-memory-device`, or mutate
+the KVM guest.
+
 ## Rust project dependencies
 
 The authoritative workspace manifest is [`../Cargo.toml`](../Cargo.toml). The
@@ -82,13 +108,15 @@ bash scripts/build-rust.sh
 
 The script runs:
 
-1. `cargo fmt --all -- --check`
-2. `cargo build --release`
-3. `cargo test`
-4. `cargo clippy --all-targets --all-features -- -D warnings`
+1. `cargo fmt --all -- --check`;
+2. a locked release build of `virtio-mem-core` and `virtio-mem-host`;
+3. locked tests for those RHEL-compatible packages;
+4. warnings-as-errors Clippy for those packages; and
+5. Bash syntax validation for every repository script.
 
-The service does not require a live VM for parser and controller-policy unit
-tests. A complete native linker/toolchain is required for the full build.
+The Windows service is intentionally excluded from this native RHEL command
+because its SCM adapter requires Windows APIs. The remote native Windows gate
+tests that crate and its shared-core dependency without requiring a live VM.
 
 ## RHEL host setup
 
@@ -186,13 +214,10 @@ The `host/` crate is a Rust systemd controller, not a replacement for the
 explicit Bash validation helpers. Each templated systemd instance manages one
 VM and one virtio-mem alias; it does not discover domains broadly.
 
-Build the workspace before installation:
+Run the native RHEL gate before installation:
 
 ```bash
-cargo build --workspace --release
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo fmt --all -- --check
+bash scripts/build-rust.sh
 ```
 
 Install the release binary at `/usr/local/libexec/virtio-mem-host`, the unit at

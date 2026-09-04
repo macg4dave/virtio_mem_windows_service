@@ -112,15 +112,32 @@ bash scripts/check-environment.sh
 
 ```bash
 cargo fmt --all -- --check
-cargo build --workspace --all-features --release
-cargo test --workspace --all-features
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked
+cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
+cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings
 bash -n scripts/*.sh
 ```
 
-These checks are hermetic and do not require a live VM.
+These checks are hermetic and do not require a live VM. The Windows-only crate
+is compiled, tested, and linted by the native Windows gate below.
 
-### 3. Validate a guest-agent connection
+### 3. Build the Windows service from this RHEL VS Code workspace
+
+The Windows service uses the MSVC target and must be linked by Windows. After
+one-time OpenSSH, Rust MSVC, and Visual Studio Build Tools setup in the Windows
+KVM guest, run the `Build: all non-mutating gates` task and enter its requested
+SSH config alias. The task synchronizes source, builds and tests on Windows,
+and stages a checksum-verified
+`.vscode-artifacts/windows/virtio-mem-service.exe` on RHEL.
+
+The VS Code task prompts for the SSH alias. For direct terminal use, run
+`VIRTIO_MEM_WINDOWS_SSH=ALIAS bash scripts/windows-remote-build.sh all`.
+
+This task does not install or start the service and does not change libvirt,
+systemd, QEMU, or guest memory. See [`docs/testing.md`](docs/testing.md) and
+[`windows/README.md`](windows/README.md) for endpoint prerequisites.
+
+### 4. Validate a guest-agent connection
 
 On the approved RHEL/libvirt host, use an explicit VM name:
 
@@ -132,7 +149,7 @@ Read the [QEMU Guest Agent setup guide](docs/qemu-ga-setup.md) first. The
 current guest may report that `guest-get-memory-stats` is unavailable; the host
 controller uses the verified `dommemstat` fallback rather than guessing.
 
-### 4. Preview before changing memory
+### 5. Preview before changing memory
 
 Use the read-only decision preview with the approved host configuration:
 

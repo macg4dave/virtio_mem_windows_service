@@ -10,9 +10,9 @@ The normal Rust validation path does not require root and should be run as the
 regular development user:
 
 - `cargo fmt --all -- --check`
-- `cargo build --workspace --release`
-- `cargo test --workspace`
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+- `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
+- `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
+- `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
 
 Do not wrap these commands in `sudo`; doing so can create root-owned build
@@ -54,16 +54,44 @@ guest prerequisite matrix.
 
 #### VS Code workflow
 
-The repository includes `.vscode/tasks.json` and `.vscode/launch.json` so the
-normal validation path can be run without an administrator terminal:
+The repository includes `.vscode/tasks.json` so the normal non-mutating
+validation path can be run from VS Code without an administrator terminal:
 
-- **Rust: full local gate** — format check, workspace tests, Clippy, and a
-  release build in sequence.
-- **Rust: test workspace** — focused `cargo test --workspace --all-features`.
-- **Rust: clippy workspace** — warnings-as-errors linting.
-- **Rust: format check** — repository-wide rustfmt verification.
-- **Rust: debug interactive service** — launches the non-SCM `run` mode through
-  CodeLLDB; stop it with the debugger stop control or cancellation path.
+- **RHEL: full local gate** — format and Bash syntax checks plus native release
+  build, tests, and Clippy for the shared core and RHEL host controller. The
+  Windows-only crate is intentionally validated by the native Windows gate.
+- **Windows: check remote toolchain** — verifies SSH, Rust MSVC, the linker,
+  archive tooling, and checksum tooling on the Windows build guest.
+- **Windows: synchronize source** — transfers the working tree while omitting
+  Git metadata, build output, and local artifact staging.
+- **Windows: native release build** — runs `cargo build` in the Windows guest.
+- **Windows: native tests** — runs the Windows crate tests in the guest.
+- **Windows: native format and clippy** — runs rustfmt and warnings-as-errors
+  Clippy in the guest.
+- **Windows: fetch verified artifact** — downloads the executable and compares
+  its Windows-side SHA-256 with the RHEL-side checksum.
+- **Windows: full native gate** — checks the endpoint, synchronizes once, then
+  builds, tests, lints, and fetches the artifact from that working tree.
+- **Build: all non-mutating gates** — runs the RHEL and Windows validation
+  tasks and fetches the verified Windows artifact.
+
+The VS Code tasks prompt for the `VIRTIO_MEM_WINDOWS_SSH` SSH config alias and
+default it to `virtio-mem-windows`. When invoking the wrapper directly, export
+that variable in the shell. Optionally set `VIRTIO_MEM_WINDOWS_DIR` and
+`VIRTIO_MEM_WINDOWS_ARTIFACTS`; the defaults are documented in
+`windows/README.md`. Prefer the aggregate task or the wrapper's `all` command
+for a complete gate so source is synchronized only once. The remote wrapper
+initializes the Visual Studio MSVC environment using `vswhere.exe`, so the SSH
+account must be able to access the installed Build Tools.
+
+The equivalent terminal entry point is `make all-gates`. It requires
+`VIRTIO_MEM_WINDOWS_SSH`; `make build`, `make test`, and `make lint` run only
+the RHEL-compatible portion.
+
+The Windows tasks are deliberately not deployment tasks. They never install,
+start, stop, or remove the Windows service and never change RHEL systemd,
+libvirt, QEMU, or guest memory. Keep service installation and live resize as
+separate operator-approved procedures below.
 
 The SCM tasks are deliberately separate and marked **(elevated)**. Open VS
 Code itself as Administrator before using them. They invoke `sc.exe` explicitly;
@@ -196,13 +224,10 @@ current guest's missing `guest-get-memory-stats` capability will leave the QGA
 columns as unavailable, but XML `requested/current` convergence can still be
 observed.
 
-Run the full workspace gate before installing the controller:
+Run the native RHEL gate before installing the controller:
 
 ```bash
-cargo fmt --all -- --check
-cargo build --workspace --release
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+bash scripts/build-rust.sh
 ```
 
 Host tests are hermetic: cover environment configuration, restricted aliases,

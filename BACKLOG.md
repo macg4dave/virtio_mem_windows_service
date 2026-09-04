@@ -358,6 +358,29 @@ After completing any task:
 5. Document any handoff notes or blockers in the task card
 6. Move completed tasks to the **Completed** section
 
+### 2026-09-04 VS Code RHEL-to-Windows build workflow
+
+- Added `scripts/windows-remote-build.sh` for explicit SSH connectivity,
+  source synchronization, native Windows MSVC build/test/lint, artifact fetch,
+  and cross-host SHA-256 verification.
+- Added checked-in `.vscode/tasks.json` tasks for the local RHEL gate and
+  non-mutating Windows build workflow, including an SSH-alias prompt and a
+  single-sync native aggregate gate. Only task and launch JSON are unignored;
+  endpoint-specific settings remain outside the repository.
+- Locked remote Cargo operations to `Cargo.lock`, prevented reuse of a stale
+  release executable, and included Bash syntax validation in the RHEL gate.
+- Corrected the RHEL gate to validate only the platform-neutral core and host
+  controller; the Windows SCM crate is validated by the native Windows gate.
+- Limited source transfer to Git-tracked and non-ignored files so working-tree
+  edits are included without copying ignored local credentials or build output.
+- Updated the README, Windows README, dependency matrix, testing guide,
+  feature matrix, and roadmap with the workflow and safety boundary.
+- Local evidence: shell syntax, task JSON parsing, Rust formatting, the core
+  and host release build, 38 core/host tests, and warnings-as-errors Clippy all
+  pass. The remote Windows build has not been run because the guest requires an
+  operator-configured OpenSSH/MSVC endpoint.
+- No guest, libvirt, systemd, SCM, or live memory mutation was attempted.
+
 ## Ready Queue
 
 Tasks ready to start (Phase 2 - Core Functionality):
@@ -365,6 +388,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
 | TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Live RHEL/libvirt host and Windows guest unavailable in this environment |
+| TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | Blocked | 1-2 hours after endpoint setup | Operator-configured Windows OpenSSH/MSVC endpoint; then two consecutive `make all-gates` runs with recorded native results and matching checksums |
 | TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
@@ -542,6 +566,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Blocker | Owner | Workaround |
 | --- | --- | --- | --- | --- |
 | TASK-002 | QEMU Guest Agent validation | No live RHEL/libvirt host or Windows guest is attached | Copilot | Run `scripts/validate-guest-agent.sh` on the KVM host. |
+| TASK-011 | RHEL-controlled cross-platform developer gate | Windows OpenSSH/MSVC endpoint is not configured for the wrapper, so the native aggregate path and artifact checksum exchange are unverified | Operator + Copilot | Configure the prerequisites in `docs/dependencies.md`, run `windows-remote-build.sh check`, then run and record two consecutive aggregate gates. |
 
 ## Architecture Decisions
 
