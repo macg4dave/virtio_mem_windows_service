@@ -1,5 +1,18 @@
 # BACKLOG
 
+## 2026-09-05 M10a cross-layer state observation started
+
+- Claimed M10a after M9b completed with `win11_gpu` converged at a retained
+  1 GiB allocation. This task must observe the same controlled operation at
+  the Windows `viomem.sys` driver and QEMU/libvirt layers before treating
+  driver `requested_size`/`plugged_size` as equivalent to host
+  `requested`/`current`.
+- Initial scope is read-only discovery of an existing supported driver-state
+  surface and a bounded evidence procedure. Direct driver IOCTL additions,
+  driver forks/builds/signing/installation, kernel debugging changes, and any
+  further live resize remain out of scope without their own design and
+  explicit approval.
+
 ## 2026-09-05 M9b live-controller start
 
 - The native RHEL gate passes with 22 core tests and 29 host tests after the
@@ -567,6 +580,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | --- | --- | --- | --- | --- |
 | TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are covered; native SCM registration is live-verified, while QGA transport and complete VM evidence remain. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, a generic stoppable worker, and SCM Event Log integration are implemented. Main SCM runtime construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, and host integration remain. |
+| TASK-010 | Cross-layer virtio-mem state observation | Copilot | In Progress | M10a claimed after M9b; identify a supported read-only Windows driver-state surface, then correlate one separately approved controlled operation with QEMU/libvirt `requested`/`current` without assuming field equivalence. |
 
 ### 2026-08-18 live KVM handoff
 
