@@ -441,12 +441,24 @@ After completing any task:
 - A worker that exits without cancellation is now a non-zero SCM failure;
   successful completion after stop/shutdown remains zero-exit. Deterministic
   tests cover both classifications and failure after cancellation.
-- The native Windows release build, 63 tests, rustfmt, and warnings-as-errors
+- The native Windows release build, 64 tests, rustfmt, and warnings-as-errors
   Clippy pass. The fetched executable SHA-256 is
-  `cdd1930e1f43ffdb6d5819c2fdfc792bd8a6f66f7f44c4f69e8e71f75a80dbaa`.
-- TASK-012 and M7 remain in progress pending separately approved elevated
-  install/start/Event Log/stop/remove and bounded recovery-delay evidence. No
-  SCM service state was changed in this session.
+  `2dc1bf9df309e86c39119890cad8c7419de831e3276ba36b920535a72ed26c8e`.
+- Live `ice101.lan` validation passed candidate install/start/observe/stop/
+  remove under `LocalService`. Events 1000–1003 and exit zero proved the clean
+  lifecycle; invalid configuration emitted event 2000, exited one, and started
+  a second process 5.05 seconds later under the configured recovery policy.
+- Live validation found and fixed pre-dispatch configuration loading, which
+  previously produced SCM error 1053 without service status or event context.
+  `windows/src/main.rs` now attaches to SCM before configuration loading and
+  has a startup-route regression test.
+- Classic `/f:text` rendering is not authoritative without a registered
+  message resource; XML EventData contains the correct bounded strings. This
+  packaging gap is tracked as ISSUE-008.
+- Rollback restored the original binary SHA-256
+  `5ac0f46e402606a9a71f95318b6338f1649879b1b5389a54e992b3dae9e459d3`,
+  service security descriptor, recovery configuration, absent ProgramData
+  directory, and running state. The temporary backup was removed.
 
 ## Ready Queue
 
@@ -454,7 +466,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Live RHEL/libvirt host and Windows guest unavailable in this environment |
+| TASK-002 | QEMU Guest Agent validation | Copilot | Blocked | 2-3 hours | Attached Windows QGA does not advertise `guest-get-memory-stats`; use the verified `dommemstat` fallback or replace the guest agent |
 | TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
@@ -464,10 +476,9 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are locally covered; live VM evidence, service registration, and QGA validation remain. |
+| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are covered; native SCM registration is live-verified, while QGA transport and complete VM evidence remain. |
 | TASK-008 | RHEL virtio-mem host controller | Copilot | In Progress | Added the workspace and shared Rust core; bounded argument-safe `virsh` QGA/XML/resize adapters; checked canonical-byte/KiB boundaries; block-aligned device validation; alias-selected live XML parsing; convergence suppression; signal-driven systemd runtime; unit/configuration artifacts; and regression tests. Focused core/host format, 31 tests, and Clippy pass locally. Live RHEL/libvirt validation, service-account authorization, compatibility gate, and reversible resize evidence remain required before enablement. |
-| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, and a generic stoppable worker are implemented. Main SCM construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, event-log integration, and any host integration remain intentionally deferred. |
-| TASK-012 | Windows installation and recovery operations | Copilot | In Progress | Native Event Log records and intentional-stop versus failure semantics pass 63 Windows tests; live elevated SCM lifecycle, Event Log, ACL, and bounded recovery-delay evidence remains a separate approval gate. |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, a generic stoppable worker, and SCM Event Log integration are implemented. Main SCM runtime construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, and host integration remain. |
 
 ### 2026-08-18 live KVM handoff
 
@@ -628,12 +639,13 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | 2026-08-18 | Added host-side virtio-mem semantics, compatibility limits, and live validation guidance based on official libvirt and QEMU documentation. |
 | TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | 2026-09-04 | Two fingerprint-pinned aggregate runs passed: 38 RHEL core/host tests, 59 native Windows tests, release builds, formatting, warnings-as-errors Clippy, and matching verified artifact hashes. |
 | TASK-010 | Rust host CLI replaces Bash resize helper | Copilot | 2026-09-04 | Rust owns alias-scoped snapshot/validation, exact dry-run arguments, explicitly applied one-shot resize, and shared safety gates; 44 core/host tests pass and the duplicate Bash helper is removed. |
+| TASK-012 | Windows installation and recovery operations | Copilot | 2026-09-04 | LocalService install/start/observe/stop/delete and rollback passed; events 1000–1003, failure event 2000, exit codes, and the first 5-second recovery restart were verified live. |
 
 ## Blocked
 
 | ID | Title | Blocker | Owner | Workaround |
 | --- | --- | --- | --- | --- |
-| TASK-002 | QEMU Guest Agent validation | No live RHEL/libvirt host or Windows guest is attached | Copilot | Run `scripts/validate-guest-agent.sh` on the KVM host. |
+| TASK-002 | QEMU Guest Agent validation | Attached Windows QGA does not advertise or implement `guest-get-memory-stats` | Copilot | Keep the verified `dommemstat` fallback or install a guest-agent build that exposes the required command. |
 
 ## Architecture Decisions
 

@@ -15,6 +15,28 @@ pub enum ServiceCommand {
     Help,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupRoute {
+    Reject,
+    Help,
+    DispatchThenLoadConfiguration,
+    LoadConfiguration,
+}
+
+fn startup_route(command: Option<ServiceCommand>) -> StartupRoute {
+    match command {
+        None => StartupRoute::Reject,
+        Some(ServiceCommand::Help) => StartupRoute::Help,
+        Some(ServiceCommand::Run) => StartupRoute::DispatchThenLoadConfiguration,
+        Some(
+            ServiceCommand::Install
+            | ServiceCommand::Start
+            | ServiceCommand::Stop
+            | ServiceCommand::Remove,
+        ) => StartupRoute::LoadConfiguration,
+    }
+}
+
 fn parse_command(args: &[String]) -> Option<ServiceCommand> {
     let command = args.first().map(String::as_str).unwrap_or("run");
     match command {
@@ -45,16 +67,21 @@ fn run_service(config: ServiceConfig) -> Result<(), RuntimeWiringError> {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let command = parse_command(&args);
+    let route = startup_route(command);
 
-    if matches!(command, Some(ServiceCommand::Help)) {
-        println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]");
-        return;
+    match route {
+        StartupRoute::Reject => {
+            eprintln!("unknown command; use 'help' for usage");
+            process::exit(2);
+        }
+        StartupRoute::Help => {
+            println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]");
+            return;
+        }
+        StartupRoute::DispatchThenLoadConfiguration => {}
+        StartupRoute::LoadConfiguration => {}
     }
-    if command.is_none() {
-        eprintln!("unknown command; use 'help' for usage");
-        process::exit(2);
-    }
-    if matches!(command, Some(ServiceCommand::Run)) {
+    if route == StartupRoute::DispatchThenLoadConfiguration {
         match run_as_service() {
             Ok(true) => return,
             Ok(false) => {}
@@ -157,5 +184,17 @@ mod tests {
             Some(ServiceCommand::Help)
         );
         assert_eq!(parse_command(&[String::from("unknown")]), None);
+    }
+
+    #[test]
+    fn service_run_dispatches_before_configuration_loading() {
+        assert_eq!(
+            startup_route(Some(ServiceCommand::Run)),
+            StartupRoute::DispatchThenLoadConfiguration
+        );
+        assert_eq!(
+            startup_route(Some(ServiceCommand::Install)),
+            StartupRoute::LoadConfiguration
+        );
     }
 }

@@ -130,8 +130,9 @@ that can access the QEMU Guest Agent channel.
 
 A worker exit without a stop/shutdown request is also treated as an unexpected
 non-zero failure. Only successful completion after cancellation is reported as
-a normal stop. Live Event Log and recovery-delay evidence remains part of the
-elevated operational sequence.
+a normal stop. The elevated lifecycle and first 5-second recovery restart are
+live-verified. Query XML `EventData` for the bounded insertion strings; classic
+formatted descriptions remain pending message-resource packaging.
 
 The required operational verification sequence is **install → start → inspect
 logs → stop → remove**. The executable exposes matching `install`, `start`,

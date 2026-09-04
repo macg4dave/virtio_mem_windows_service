@@ -302,4 +302,6 @@ source `VirtioMemService`. Stable IDs are `1000` start pending, `1001` running,
 `1002` stop requested, `1003` stopped, `2000` configuration failure, `2001`
 worker failure, `2002` unexpected worker exit, and `2003` SCM status-publication
 failure. Messages are limited to 2,048 Unicode scalar values and do not attach
-raw configuration contents.
+raw configuration contents. Consumers must currently read the XML `EventData`
+insertion string; classic formatted descriptions require a registered message
+resource and are not yet part of the contract (ISSUE-008).

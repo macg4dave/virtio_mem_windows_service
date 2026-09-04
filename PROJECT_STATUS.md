@@ -36,15 +36,22 @@ The 2026-09-04 M9c native RHEL gate passed:
 - `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
 
-The M7 Windows-native gate passes 63 tests with warnings denied and produced a
+The M7 Windows-native gate passes 64 tests with warnings denied and produced a
 checksum-verified executable with SHA-256
-`cdd1930e1f43ffdb6d5819c2fdfc792bd8a6f66f7f44c4f69e8e71f75a80dbaa`.
+`2dc1bf9df309e86c39119890cad8c7419de831e3276ba36b920535a72ed26c8e`.
 
-The RHEL host-controller artifact was rebuilt on 2026-08-18 at
-`target/release/virtio-mem-host`; its 14 package tests passed. A Windows
-service artifact is not available from this host because the Windows Rust
-target and a Windows linker are not installed. The Windows service must be
-built on the Win11 guest or another Windows build host.
+Live M7 validation on `ice101.lan` passed the LocalService
+install/start/observe/stop/delete sequence. Event IDs 1000–1003 were observed
+for a clean lifecycle with exit code zero. Invalid configuration emitted 2000,
+exited with code one, and restarted in 5.05 seconds under the configured
+5/30/60-second policy. Rollback restored the original binary hash, recovery
+configuration, service security descriptor, absent ProgramData directory, and
+running service state.
+
+The RHEL host-controller artifact was rebuilt on 2026-09-04 at
+`target/release/virtio-mem-host`; its 25 package tests passed. The verified
+Windows service artifact was built on the Win11 guest and fetched to
+`.vscode-artifacts/windows/virtio-mem-service.exe`.
 
 ## Open implementation work
 
@@ -53,8 +60,8 @@ built on the Win11 guest or another Windows build host.
 - Confirm the corrected host XML discovery command and complete live systemd
   validation; this host rejects a live option on `dumpxml`, and the controller
   now uses the default `virsh dumpxml <vm>` form.
-- Provision ProgramData and service ACLs, event-log output, and real SCM
-  installation/recovery behavior.
+- Provision ProgramData/configuration ACLs and package a classic Event Log
+  message resource; SCM lifecycle/recovery and raw XML EventData are verified.
 - Complete host compatibility checks, live systemd validation, and reversible
   resize evidence.
 

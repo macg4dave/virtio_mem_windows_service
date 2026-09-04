@@ -99,8 +99,9 @@ uses `dommemstat` by default when the guest QGA does not provide
 - **Windows recovery observability foundation (2026-09-04):** the SCM path
     emits bounded Application Event Log lifecycle/failure records with stable
     IDs and treats a worker exit without cancellation as a non-zero failure.
-    The native Windows gate passes; elevated live Event Log and restart-delay
-    observation remains under M7.
+    Live M7 validation completed a clean lifecycle and observed the first
+    configured recovery restart 5.05 seconds after an invalid-config failure.
+    Raw XML EventData is authoritative until message-resource packaging lands.
 
 ## RHEL-controlled build and test plan
 
@@ -161,14 +162,14 @@ live integration evidence.
 | --- | --- | --- | --- | --- |
 | BUILD-001 | Resolved | The configured Windows SSH/MSVC endpoint had not been checked from the RHEL control plane | Cross-host reachability and authentication were unproven | `windows-remote-build.sh check` passes through the explicit `virtio-mem-windows` SSH alias |
 | BUILD-002 | Resolved | The remote wrapper had not completed one end-to-end run | Command quoting, remote path handling, MSVC initialization, and checksum retrieval were unproven | `windows-remote-build.sh all` exits zero with 59 passing native tests and matching SHA-256 values |
-| BUILD-003 | External release gate | Windows SCM validation requires an elevated Windows session and service registration changes | Default build success cannot establish install/start/stop/recovery behavior | Separately approved SCM procedure passes and its evidence is recorded under M7 |
+| BUILD-003 | Resolved | Windows SCM validation required an elevated Windows session and service registration changes | Default build success could not establish install/start/stop/recovery behavior | M7 live lifecycle and 5-second recovery restart passed on `ice101.lan` with full rollback |
 | BUILD-004 | External release gate | Live QGA, systemd, libvirt, and virtio-mem convergence checks require named targets and explicit mutation approval | Default build success cannot establish live runtime or resize readiness | Separately approved M8–M10b procedures pass with rollback and convergence evidence |
 
 **Milestone exit:** BUILD-001 and BUILD-002 are closed, two consecutive
 aggregate gates pass against the explicit Windows endpoint, the fetched
 executable is checksum-verified, and exact native Windows plus RHEL results are
-recorded. BUILD-003 and BUILD-004 intentionally remain outside this milestone
-and do not block ordinary developer builds.
+recorded. BUILD-003 is now closed by M7 evidence. BUILD-004 remains outside
+this milestone and does not block ordinary developer builds.
 
 ## Verified wins to preserve
 
@@ -225,9 +226,9 @@ readiness in the remaining host-side work.
 | M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
 | M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |
 | M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, demand-report path, timing, account, missing-file defaults, and validation model exist locally; ACL provisioning remains |
-| M5 | Native Windows SCM adapter | [~] | M3, M4 | SCM dispatcher, stable Event Log emission, and local Windows registration path are implemented; elevated Program Files lifecycle validation passes, while live log and QGA-account evidence remain |
+| M5 | Native Windows SCM adapter | [x] | M3, M4 | Elevated Program Files lifecycle passed under LocalService with stable live Event Log records, bounded callbacks, clean-stop exit zero, and failure exit one |
 | M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now collect native Windows telemetry without opening the QGA device; trustworthy current-allocation and resize wiring remain |
-| M7 | Installation and recovery operations | [~] | M5, M6 | Event Log and intentional-stop/failure semantics pass native tests; live install/start/observe/stop/delete and bounded restart-delay evidence remain |
+| M7 | Installation and recovery operations | [x] | M5, M6 | Live install/start/observe/stop/delete passed; 5-second recovery restart and 5/30/60 metadata were verified, rollback restored the original running service |
 | M8 | Live QGA and KVM validation | [~] | M2 | Read-only host probe succeeds repeatedly against the Windows KVM guest using the verified dommemstat fallback; Windows QGA pipe/ACL and native guest-agent memory-stat evidence remain |
 | M9 | Host virtio-mem XML adapter | [~] | M1, M8 | Captured XML alias/unit parsing, state validation, injectable XML state-provider boundary, explicit system-libvirt Rust CLI checks, and fail-closed actuation gates are implemented; live VM evidence remains |
 | M9a | Virtio-mem safety and compatibility gate | [~] | M8, M9 | Tri-state XML compatibility parsing, mergeable external evidence, conflict detection, and fail-closed resize enforcement are implemented; live evidence provider and incompatible workload/device review remain |
@@ -332,19 +333,19 @@ readiness in the remaining host-side work.
 **Gate:** A target size can be traced from QGA observation to host request with
 no ambiguous or implicit unit conversion.
 
-### F7. Native Windows service integration — in progress locally
+### F7. Native Windows service integration — complete
 
-- [~] Implement the Rust SCM dispatcher and service callback adapter.
-- [~] Report `SERVICE_START_PENDING` with bounded wait hints/checkpoints.
-- [~] Report `SERVICE_RUNNING` only after worker initialization succeeds.
-- [~] Accept stop and system-shutdown controls and signal `StopSignal`.
-- [~] Report `SERVICE_STOP_PENDING` during bounded shutdown, then `SERVICE_STOPPED`.
-- [~] Return a non-zero process result for unexpected worker failure.
-- [~] Add a local Windows service registration and stop path that uses the SCM
+- [x] Implement the Rust SCM dispatcher and service callback adapter.
+- [x] Report `SERVICE_START_PENDING` with bounded wait hints/checkpoints.
+- [x] Report `SERVICE_RUNNING` only after worker initialization succeeds.
+- [x] Accept stop and system-shutdown controls and signal `StopSignal`.
+- [x] Report `SERVICE_STOP_PENDING` during bounded shutdown, then `SERVICE_STOPPED`.
+- [x] Return a non-zero process result for unexpected worker failure.
+- [x] Add a local Windows service registration and stop path that uses the SCM
     APIs exposed by the currently installed `winapi` crate.
-- [~] Validate the install/start/stop lifecycle on a real Windows guest with
-    service manager permissions; the elevated Program Files run passed, while
-    event-log visibility and QGA-account access remain.
+- [x] Validate the install/start/stop lifecycle on a real Windows guest with
+    service manager permissions; the elevated Program Files run and raw Event
+    Log observation passed under `LocalService`.
 
 **Gate:** SCM lifecycle tests pass on Windows and callbacks remain bounded/non-blocking.
 
@@ -384,16 +385,18 @@ evidence before live testing.
 - [x] Define stable service name, display name, description, executable path,
     startup mode, account, and bounded failure-action delays in the SCM
     registration.
-- [ ] Install with the least-privileged account that can access the QGA channel.
+- [x] Install with the configured `LocalService` account; the current native
+    telemetry worker does not open the QGA-owned channel.
 - [x] Configure bounded restart delays only for unexpected/non-crash failures;
-    live recovery behavior remains to be observed.
+    live failure exit and the first 5-second recovery restart are verified.
 - [x] Emit stable, bounded Windows Application Event Log records for SCM
     lifecycle transitions and failures.
-- [ ] Verify event-log visibility and service status transitions.
-- [ ] Execute install → start → observe logs → stop → delete on a Windows test VM.
-- [ ] Verify service binary/configuration ACLs and QGA pipe access under the
-    selected least-privilege account.
-- [ ] Verify upgrade, rollback, and removal leave no stale service process or
+- [x] Verify raw Event Log visibility and service status transitions.
+- [x] Execute install → start → observe logs → stop → delete on a Windows test VM.
+- [~] Verify service binary/configuration ACLs under the selected
+    least-privilege account; binary read/execute passed, while ProgramData ACL
+    provisioning remains because the default configuration path was absent.
+- [x] Verify upgrade, rollback, and removal leave no stale service process or
     configuration behind.
 
 **Gate:** Recovery does not trigger for intentional stop and does not create a tight restart loop.
@@ -576,10 +579,8 @@ Bash host-control implementation before live resize automation is expanded.
 | --- | --- | --- | --- |
 | B1 | Live RHEL/libvirt and Windows KVM evidence is incomplete even though first read-only checks exist | Blocks M8, M10a, and M10b live evidence | Run the documented probes and controlled observations on the KVM host |
 | B2 | Actual Windows QGA pipe path and LocalService permissions are not yet verified | Blocks safe installation defaults | Confirm channel/device mapping on the guest before installation |
-| B3 | Real guest SCM install/start/stop/remove validation is not complete | Blocks M7 operational evidence | Validate the implemented adapter on a Windows guest with service-manager permissions and event-log visibility |
 | B4 | Persistent configuration location and format are not selected | Blocks production startup configuration | Choose a Windows-safe, least-privilege configuration mechanism in H3 |
 | B5 | Concrete guest state and resize sinks are not wired | Blocks real automatic resize behavior | Implement M6 without invoking Linux commands from the guest |
-| B6 | Event-log and recovery policy are not implemented | Blocks operational failure recovery | Implement H1/H2 and verify intentional versus unexpected exits |
 | B7 | QGA, controller, libvirt, and `virsh` memory-unit semantics are not reconciled in one tested contract | Blocks safe resize enablement | Resolve in F6a before M9/M10 |
 | B9 | Shutdown timeout is configured but not yet enforced by the worker host | Stop-pending behavior cannot be proven | Add bounded join/worker termination policy in M3/M5 |
 | B11 | Official virtio-mem guidance shows compatibility and safety limits that are not yet codified in the host contract | The controller can make unsafe assumptions about resize behavior or valid host configurations | Add the QEMU/libvirt compatibility gate and explicit validation checks in M9a before live automation |

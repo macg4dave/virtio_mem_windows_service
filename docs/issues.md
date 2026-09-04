@@ -7,6 +7,7 @@
 | ISSUE-002 | Hysteresis tuning for memory allocation | Open | Linux | Medium |
 | ISSUE-003 | Error handling for libvirt communication | Open | Linux | High |
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
+| ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
 
 ## Resolved Issues
 
@@ -15,6 +16,7 @@
 | ISSUE-001 | QEMU Guest Agent availability on Windows 11; connected QGA 110.0.2 does not provide `guest-get-memory-stats` | Resolved in code; `dommemstat` fields verified on `win11_gpu`; guest capability still requires a replacement QGA build | `host/src/dommemstat.rs`, `VIRTIO_MEM_STATS_SOURCE` config | 2026-08-18 |
 | ISSUE-005 | Virtio-mem rollback left `requested` and `current` divergent after the earlier 1 GiB test | Resolved after the updated Windows driver was installed; fresh XML reports `requested=0 KiB` and `current=0 KiB` | Fresh read-only `virsh dumpxml win11_gpu` convergence check | 2026-08-18 |
 | ISSUE-006 | Windows `dommemstat` reports `available` above balloon `actual` | Resolved by conservative fallback to `unused`; host controller is active on `win11_gpu` | `host/src/dommemstat.rs` regression test and live service validation | 2026-08-18 |
+| ISSUE-007 | Invalid service configuration was loaded before SCM dispatcher attachment, causing Windows error 1053 without status or Event Log context | Resolved by dispatching SCM before configuration loading; live invalid-config recovery emitted event 2000 and exit code 1 | `windows/src/main.rs` startup-route regression and M7 live validation | 2026-09-04 |
 
 ### M8/V1 read-only evidence — 2026-08-18
 
