@@ -147,6 +147,22 @@ snapshot is the authoritative allocation value. Driver trace records, when
 explicitly and safely captured, are diagnostic evidence about notification,
 branch selection, and failure behavior rather than an accounting input.
 
+### Correlated behavior evidence
+
+`BehaviorEvidenceDocument` is the versioned, operation-scoped M10a2 model used
+to validate captured behavior before making cross-layer claims. Its identity
+is repeated in every sample so records from another operation, VM, or device
+cannot be silently combined. Sequence and monotonic time are strictly
+increasing; wall-clock time cannot move backwards. All memory fields have an
+explicit `bytes` unit.
+
+The required layers are alias-scoped libvirt state, Windows `viomem` health,
+and host-controller state. Host state supplies converged `before` and `after`
+endpoints with stable device geometry; intermediate observation and recovery
+states may be divergent. `DriverTrace` is optional and remains diagnostic.
+The model validates supplied driver values against host geometry but does not
+use them for allocation accounting.
+
 ### Persistence
 
 Currently, state is transient (no database). State is recalculated on each poll cycle.

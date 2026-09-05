@@ -1,5 +1,6 @@
 //! Platform-neutral virtio-mem state, policy, and QEMU Guest Agent parsing.
 
+pub mod behavior_evidence;
 pub mod compatibility;
 pub mod controller;
 pub mod error;
@@ -8,6 +9,10 @@ pub mod units;
 pub mod virtio_mem;
 pub mod virtio_mem_xml;
 
+pub use behavior_evidence::{
+    parse_behavior_evidence, BehaviorEvidenceDocument, BehaviorEvidenceError, EvidenceIdentity,
+    EvidenceKind, EvidenceSample, EvidenceUnit, HostEvidencePhase, BEHAVIOR_EVIDENCE_VERSION,
+};
 pub use compatibility::{
     CompatibilityEvidence, VirtioMemCompatibility, VirtioMemCompatibilityError,
 };

@@ -1,7 +1,9 @@
 use std::io::Write;
 use std::time::Duration;
 
-use virtio_mem_core::{parse_virtio_mem_xml_for_alias, CompatibilityEvidence};
+use virtio_mem_core::{
+    parse_behavior_evidence, parse_virtio_mem_xml_for_alias, CompatibilityEvidence,
+};
 
 use crate::compatibility_source::{CompatibilitySource, VirshQmpCompatibilitySource};
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
@@ -13,6 +15,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    Evidence {
+        path: String,
+    },
     Snapshot {
         vm: String,
         alias: String,
@@ -38,8 +43,16 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     let Some(mode) = args.first().map(String::as_str) else {
         return Ok(None);
     };
-    if !matches!(mode, "snapshot" | "validate" | "resize") {
+    if !matches!(mode, "evidence" | "snapshot" | "validate" | "resize") {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
+    }
+    if mode == "evidence" {
+        if args.len() != 2 || args[1].trim().is_empty() {
+            return Err(usage().to_owned());
+        }
+        return Ok(Some(CliCommand::Evidence {
+            path: args[1].clone(),
+        }));
     }
     let (minimum, maximum) = if mode == "resize" { (7, 10) } else { (3, 5) };
     if args.len() < minimum || args.len() > maximum {
@@ -145,7 +158,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --workload-reviewed --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
+    "Usage: virtio-mem-host evidence FILE\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --workload-reviewed --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -159,6 +172,11 @@ fn run_with<H: HostMemorySource, W: Write>(
     output: &mut W,
 ) -> Result<(), String> {
     match command {
+        CliCommand::Evidence { path } => {
+            let json = std::fs::read_to_string(&path)
+                .map_err(|error| format!("failed to read evidence file {path}: {error}"))?;
+            run_evidence_with(&json, output)
+        }
         CliCommand::Snapshot {
             vm,
             alias,
@@ -211,6 +229,18 @@ fn run_with<H: HostMemorySource, W: Write>(
             )
         }
     }
+}
+
+fn run_evidence_with<W: Write>(json: &str, output: &mut W) -> Result<(), String> {
+    let document = parse_behavior_evidence(json).map_err(|error| error.to_string())?;
+    writeln!(output, "evidence_valid version={}", document.version)
+        .map_err(|error| error.to_string())?;
+    writeln!(output, "operation_id={}", document.identity.operation_id)
+        .map_err(|error| error.to_string())?;
+    writeln!(output, "vm_name={}", document.identity.vm_name).map_err(|error| error.to_string())?;
+    writeln!(output, "device_alias={}", document.identity.device_alias)
+        .map_err(|error| error.to_string())?;
+    writeln!(output, "samples={}", document.samples.len()).map_err(|error| error.to_string())
 }
 
 fn run_snapshot_with<C: VirshCommand, W: Write>(
@@ -357,6 +387,12 @@ mod tests {
     #[test]
     fn parses_snapshot_and_resize_modes() {
         assert_eq!(
+            parse_args(&args(&["evidence", "capture.json"])).expect("evidence"),
+            Some(CliCommand::Evidence {
+                path: "capture.json".to_owned(),
+            })
+        );
+        assert_eq!(
             parse_args(&args(&["snapshot", "guest", "memory0"])).expect("snapshot"),
             Some(CliCommand::Snapshot {
                 vm: "guest".to_owned(),
@@ -387,6 +423,8 @@ mod tests {
         assert!(parse_args(&args(&["snapshot", "guest", "memory0", "--unknown"])).is_err());
         assert!(parse_args(&args(&["unknown"])).is_err());
         assert!(parse_args(&args(&["validate", "guest", "bad/alias"])).is_err());
+        assert!(parse_args(&args(&["evidence"])).is_err());
+        assert!(parse_args(&args(&["evidence", "capture.json", "extra"])).is_err());
         assert!(parse_args(&args(&[
             "resize",
             "guest",
@@ -396,6 +434,29 @@ mod tests {
             "1073741824"
         ]))
         .is_err());
+    }
+
+    #[test]
+    fn validates_correlated_evidence_without_live_commands() {
+        let identity =
+            r#"{"operation_id":"op-1","vm_name":"win11_gpu","device_alias":"ua-virtiomem0"}"#;
+        let json = format!(
+            r#"{{"version":1,"identity":{identity},"samples":[
+                {{"identity":{identity},"sequence":1,"wall_clock_unix_millis":1000,"monotonic_millis":10,"source_id":"libvirt:qemu:///system","unit":"bytes","layer":"host_libvirt","phase":"before","size_bytes":8589934592,"block_size_bytes":2097152,"requested_bytes":1073741824,"current_bytes":1073741824}},
+                {{"identity":{identity},"sequence":2,"wall_clock_unix_millis":1001,"monotonic_millis":20,"source_id":"windows-scm:ice101","unit":"bytes","layer":"windows_health","viomem_running":true}},
+                {{"identity":{identity},"sequence":3,"wall_clock_unix_millis":1002,"monotonic_millis":30,"source_id":"systemd:rhel-host","unit":"bytes","layer":"controller_state","enabled":true,"active":false}},
+                {{"identity":{identity},"sequence":4,"wall_clock_unix_millis":1003,"monotonic_millis":40,"source_id":"libvirt:qemu:///system","unit":"bytes","layer":"host_libvirt","phase":"after","size_bytes":8589934592,"block_size_bytes":2097152,"requested_bytes":1075838976,"current_bytes":1075838976}}
+            ]}}"#
+        );
+        let mut output = Vec::new();
+        run_evidence_with(&json, &mut output).expect("valid evidence");
+        assert_eq!(
+            String::from_utf8(output).expect("UTF-8 output"),
+            "evidence_valid version=1\noperation_id=op-1\nvm_name=win11_gpu\ndevice_alias=ua-virtiomem0\nsamples=4\n"
+        );
+
+        let mixed = json.replacen("\"operation_id\":\"op-1\"", "\"operation_id\":\"other\"", 1);
+        assert!(run_evidence_with(&mixed, &mut Vec::new()).is_err());
     }
 
     #[test]

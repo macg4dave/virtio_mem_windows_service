@@ -48,7 +48,7 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest platform-specific gates pass 22 shared-core tests, 29 RHEL-host
+The latest platform-specific gates pass 29 shared-core tests, 30 RHEL-host
 tests, and 64 native-Windows tests. These are separate supported-platform
 results, not one cross-platform workspace run. Release builds, formatting,
 Clippy warnings-as-errors, and Bash syntax validation also pass in their

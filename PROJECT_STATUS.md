@@ -35,7 +35,7 @@ guest; upstream Windows virtio-mem support remains technology preview.
 
 The latest native RHEL gate passed:
 
-- 22 shared-core and 29 host tests, with no failures.
+- 29 shared-core and 30 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -102,9 +102,15 @@ Windows service artifact was built on the Win11 guest and fetched to
   deployments.
 - Live read-only inspection of signed `viomem.sys` `100.102.104.29400` found
   no supported user-mode state query. The upstream state record is available
-  only through filterable kernel debug output. This limits installed-driver
-  diagnosis but does not block host allocation accounting; optional capture
-  requires separate protected-guest approval.
+  only through filterable kernel debug output. A signed, checksum-verified,
+  bounded no-resize DbgViewCLI lifecycle capture loaded and unloaded its
+  temporary driver without reboot, driver restart, boot logging, or debug-
+  filter change, but observed no matching informational record. This limits
+  installed-driver diagnosis but does not block host allocation accounting.
+- M10a2's shared-core evidence contract is implemented and hermetically tested:
+  required host, Windows-health, controller, identity, explicit-unit, ordering,
+  and converged-endpoint evidence fails closed when incomplete or mixed;
+  driver trace remains optional.
 
 The previous live convergence incident was resolved on 2026-08-18 at zero.
 That evidence is historical: M9b subsequently bootstrapped and converged the

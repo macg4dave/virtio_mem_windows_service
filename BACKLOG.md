@@ -1,5 +1,36 @@
 # BACKLOG
 
+## 2026-09-05 M10a1 qualification and M10a2 evidence harness
+
+- Downloaded DbgView 5.02 from Microsoft's Sysinternals endpoint and recorded
+  package SHA-256 `a8454253756af10667b82faf2323de536f0b7084d732acba63803df01ce4c316`.
+  The staged `dbgviewcli.exe` SHA-256 was
+  `2d3128bf2338fa25873173f265504515801d1e76d6215efa511e00dc825c3cf7`,
+  and Windows SignTool verified its Microsoft signature and timestamp chain.
+- An approved 60-second/1,000-line/1-MiB no-resize kernel capture loaded
+  `Dbgv.sys` and stopped on its duration bound. It did not enable boot logging,
+  create a debug-print filter, restart `viomem`, reboot, resize, or change host
+  controller state. No `Memory config` line appeared; this is inconclusive for
+  informational-message filtering, not evidence that the driver emitted none.
+- DbgView extracted `Dbgv.sys` to its working directory rather than the staged
+  directory. An approved no-reboot recovery reintroduced only its temporary
+  SCM key, let DbgViewCLI use its normal unload path, and removed the locked
+  image and executable. `Dbgv` and both DbgView processes are absent;
+  `viomem` remains running; live libvirt and the active controller remain
+  converged at 1 GiB. One empty `HKCU\Software\Sysinternals` container key
+  remains pending exact cleanup, so M10a1 is recorded as partial rather than
+  complete.
+- Completed TASK-015/M10a2 with a versioned shared-core JSON evidence contract.
+  It requires repeated operation/VM/device identity, explicit byte units,
+  source identity, strict sequence/monotonic ordering, nondecreasing wall time,
+  stable device geometry, converged before/after libvirt endpoints, Windows
+  health, and controller state. Driver trace is optional diagnostic evidence.
+- Seven new deterministic tests accept trace-present/trace-absent records and
+  reject mixed identity, unit ambiguity, clock/sequence regression, missing
+  layers/endpoints, divergent endpoints, geometry drift, and invalid trace
+  values. The focused shared-core gate passes 29 tests and Clippy warnings-as-
+  errors.
+
 ## 2026-09-05 M10a allocation-contract redesign
 
 - Reframed M10a after reviewing Virtio 1.2, the pinned QEMU/libvirt contract,
@@ -666,7 +697,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-015 | M10a2 correlated behavior-evidence harness | Copilot | Ready | 2-3 hours | Require host state, Windows health, controller state, identity, units, ordering, and convergence; accept driver trace as optional diagnostic input |
 | TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | Ready | 4-6 hours | Fingerprint backend, slot/VFIO budget, balloon, workload/device, topology, trust, and version evidence; fail closed on drift |
 | TASK-020 | M10c host-side current-allocation join | Copilot | Ready | 3-5 hours | Join fresh raw Windows telemetry with alias-scoped live libvirt `current` and calculate the target on the host |
 | TASK-025 | M9e host telemetry correctness and freshness | Copilot | Ready | 3-5 hours | Correct `dommemstat` balloon semantics, enforce `last-update` freshness, and replace the QGA-only Bash preview with Rust controller logic |
@@ -681,7 +711,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Milestone | Owner | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- | --- |
-| TASK-014 | M10a1 optional driver diagnostic qualification | Copilot + Operator | Optional | Explicit protected-guest approval | Bounded signed-tool capture accounts for filtering, `Dbgv.sys`, process, artifacts, and cleanup without persistent debug configuration |
+| TASK-014 | M10a1 optional driver diagnostic qualification | Copilot + Operator | In Progress | Empty Sysinternals parent-key cleanup | Signed bounded no-resize capture and driver/process cleanup passed without persistent debug configuration; remove the empty parent key to restore the exact registry baseline |
 | TASK-016 | M10a3 optional bounded driver observation | Copilot + Operator | Optional | TASK-015, explicit mutation approval | A predeclared operation and recovery target are correlated without assuming shrink is guaranteed rollback; controller state is restored |
 | TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | Concrete unmet diagnostic need | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
 | TASK-021 | M10d demand envelope and bounded delivery | Copilot | Planned | TASK-020 | Versioned identity/freshness/provenance envelope, replay rules, ACLs, partial-record handling, and retention/rotation tests pass |
@@ -856,6 +886,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-024 | Upstream virtio-mem deep audit | Copilot | 2026-09-05 | Pinned and reconciled upstream QEMU/libvirt/QGA/virtio-win constraints; added M9e/TASK-025, expanded M9d/M10b/M11, selected the M10c host-side join, and documented the trusted development-only support boundary. |
 | TASK-013 | M10a allocation-authority contract | Copilot | 2026-09-05 | Virtio 1.2 and pinned implementation sources establish requested/plugged semantics; alias-scoped live libvirt `current` is authoritative and driver tracing is diagnostic. |
 | TASK-017 | M10a4 state-contract adoption | Copilot | 2026-09-05 | Architecture, API, data, testing, roadmap, status, issue, and feature docs adopt host allocation authority and decouple optional driver tracing from accounting/simulation. |
+| TASK-015 | M10a2 correlated behavior-evidence harness | Copilot | 2026-09-05 | Added bounded version-1 shared-core JSON validation for repeated identity, explicit bytes, ordered timestamps, required host/Windows/controller layers, stable geometry, converged endpoints, and optional aligned driver diagnostics; seven focused tests pass. |
 
 ## Blocked
 

@@ -925,3 +925,26 @@ gates:
   the approval procedure above. M7–M9b evidence already passes.
 - Optional M10a1/M10a3 diagnostics require explicit protected-guest approval;
   they do not block M9d/M9e, M10c/M10d, or hermetic M11 simulation.
+
+### M10a2 hermetic behavior-evidence validation
+
+Run the shared-core gate without a VM or administrator privileges:
+
+```bash
+cargo test -p virtio-mem-core --all-features --locked behavior_evidence
+cargo test -p virtio-mem-host --all-features --locked validates_correlated_evidence
+cargo clippy -p virtio-mem-core --all-targets --all-features --locked -- -D warnings
+```
+
+The focused tests accept correlated records with and without driver trace and
+reject missing or unknown units, mixed operation/VM identity, non-increasing
+sequence or monotonic time, backwards wall-clock time, missing Windows or
+controller layers, absent or divergent convergence endpoints, changed host
+geometry, and invalid driver diagnostic values. These are hermetic parser
+tests; they do not authorize or perform a live resize.
+
+Validate an assembled document with the read-only CLI path:
+
+```bash
+target/release/virtio-mem-host evidence /path/to/behavior-evidence.json
+```

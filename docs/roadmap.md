@@ -301,8 +301,8 @@ readiness in the remaining host-side work.
 | M10c | Host-side current-allocation join | [ ] | M9e, M10 | A fresh raw Windows telemetry envelope is joined on the host with alias-scoped live libvirt `current`, and the host calculates the target; Windows never guesses allocation, receives an allocation feed, or invokes host tools |
 | M10d | Demand envelope and bounded delivery | [ ] | M10c | A versioned envelope supplies VM/service/session identity, wall-clock and monotonic ordering, sequence, allocation provenance, freshness rules, ACLs, retention/rotation, and malformed/partial-record rejection |
 | M10a | Allocation-authority contract | [x] | M8, M9, M9a | Virtio 1.2 plus pinned QEMU/libvirt/virtio-win sources define `requested`/`current` semantics; live alias-scoped libvirt `current` is authoritative and driver debug output is diagnostic, not an accounting dependency |
-| M10a1 | Optional driver diagnostic qualification | [ ] | M8, M9a | If operationally useful, checksum-recorded `DbgViewCLI` performs bounded capture without boot logging, persistent debug-filter changes, driver restart, or reboot; filtering, `Dbgv.sys`, process, and artifacts are accounted for |
-| M10a2 | Correlated behavior-evidence harness | [ ] | M8, M9a | A hermetic versioned evidence format requires monotonic/wall-clock timestamps, QEMU/libvirt state, Windows health, controller state, identity, units, and correlation; driver records are optional diagnostic inputs |
+| M10a1 | Optional driver diagnostic qualification | [~] | M8, M9a | Signed DbgViewCLI completed a bounded no-resize kernel capture without boot/debug-filter/viomem/reboot changes; no matching informational record appeared and one empty Sysinternals parent key awaits exact cleanup |
+| M10a2 | Correlated behavior-evidence harness | [x] | M8, M9a | Versioned shared-core JSON validation requires ordered clocks, repeated operation/VM/device identity, explicit bytes, stable/converged libvirt endpoints, Windows health, and controller state; driver records are optional diagnostics |
 | M10a3 | Optional bounded driver observation | [ ] | M9b, M10a2 | A separately approved operation uses a predeclared target and non-convergence recovery plan; it does not describe shrink as guaranteed rollback and prefers prior disposable-guest rehearsal |
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
 | M10aX | Conditional driver status-interface feasibility | [ ] | Concrete unmet diagnostic need | Only if host observation plus bounded tracing cannot meet an operational diagnostic requirement, a separate proposal covers interface security, driver build/signing/install, compatibility, tests, and rollback |
@@ -569,10 +569,10 @@ or provenance-free demand input before evaluating policy.
 
 - [x] **M10a/M10a4:** pin the Virtio and implementation-source mapping and make
     alias-scoped live libvirt `current` authoritative for host accounting.
-- [ ] **M10a1, optional:** qualify checksum-recorded bounded kernel-debug
+- [~] **M10a1, optional:** qualify checksum-recorded bounded kernel-debug
     capture as an installed-driver diagnostic, accounting for debug-message
     filtering and capture-driver/process/artifact cleanup.
-- [ ] **M10a2:** define and hermetically test a versioned correlated behavior
+- [x] **M10a2:** define and hermetically test a versioned correlated behavior
     format that fails closed on missing required host/Windows-health layers,
     ambiguous units, mixed operations, or incomplete convergence; accept
     driver trace as optional diagnostic evidence.

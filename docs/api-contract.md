@@ -258,6 +258,29 @@ installed-driver behavior evidence. It is still required when a test claims
 to explain a Windows notification, plug/unplug attempt, or no-progress shrink,
 but it is not required to calculate host pool accounting.
 
+### Correlated behavior-evidence format
+
+M10a2 defines behavior-evidence document version `1` as a hermetic JSON
+contract. A document carries one top-level identity (`operation_id`,
+`vm_name`, and `device_alias`) and an ordered `samples` array. Every sample
+must repeat that exact identity and provide a strictly increasing `sequence`
+and `monotonic_millis`, a nondecreasing `wall_clock_unix_millis`, a nonempty
+`source_id`, the explicit unit `bytes`, and one tagged evidence layer.
+
+The required layers are `host_libvirt`, `windows_health`, and
+`controller_state`; `driver_trace` is optional. Host samples carry stable
+device geometry and phases named `before`, `observation`, `recovery`, or
+`after`. Exactly one `before` and one later `after` endpoint are required and
+both must be converged. Every host state is validated by `VirtioMemState`.
+
+When driver trace is present, its `requested_size_bytes` and
+`plugged_size_bytes` must fit and align to the host device geometry, but they
+never replace live libvirt `current` as allocation authority. Parsing fails
+closed on unsupported versions, malformed JSON, missing or unknown units,
+invalid or mixed identity, non-monotonic ordering, missing required layers,
+divergent endpoints, geometry drift, and invalid trace values. Documents are
+limited to 10,000 samples and identifiers to 128 bytes.
+
 The pure `parse_virtio_mem_xml` adapter accepts a captured libvirt XML
 snapshot, requires the `virtio-mem` model and alias, converts `B`, `KiB`,
 `MiB`, and `GiB` values to canonical bytes with checked arithmetic, and
@@ -337,6 +360,8 @@ process restart.
 
 The same Rust adapters back explicit CLI operations:
 
+- `evidence FILE` reads and validates one M10a2 JSON document without issuing
+  any live host or guest command;
 - `snapshot VM ALIAS` validates that the alias selects exactly one virtio-mem
   device before returning the live domain XML.
 - `validate VM ALIAS` reports canonical-byte state and compatibility evidence

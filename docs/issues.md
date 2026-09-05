@@ -105,7 +105,8 @@
 - The upstream worker formats both state fields in a `Memory config` debug
   message. `EVENT_TRACING` is commented out, so the shipped path uses kernel
   debug print rather than a registered WPP provider; the format string is
-  present in the installed binary. No suitable capture tool is installed.
+  present in the installed binary. DbgViewCLI is not persistently installed;
+  it is staged only for separately approved bounded captures.
 - `systeminfo` reports aggregate total physical memory, but that value is not
   accepted as driver-state evidence because it cannot distinguish requested
   from plugged state or identify the selected virtio-mem device.
@@ -123,6 +124,23 @@
   messages may also be filtered before capture. Tool qualification and any
   resize require explicit scopes, and the first attempt must not enable boot
   logging, persist debug-filter changes, restart the driver, or reboot.
+
+### M10a1 bounded capture qualification — 2026-09-05
+
+- Microsoft-signed DbgViewCLI 5.02 passed Windows signature verification and
+  matching RHEL/Windows SHA-256 checks before execution.
+- A 60-second capture used kernel-only mode, a `Memory config` include filter,
+  a 1,000-line bound, and a 1 MiB log bound. It stopped on time without resize,
+  boot logging, debug-filter changes, `viomem` restart, or reboot.
+- No matching line was captured. This qualifies the bounded tool lifecycle but
+  does not prove that informational `viomem` output can pass the current Windows
+  debug-print filter.
+- DbgView initially left its working-directory `Dbgv.sys` image locked after
+  deleting the SCM entry. A separately approved two-second recovery capture
+  used DbgViewCLI's normal unload path, after which the image, executable,
+  process, and `Dbgv` service entry were absent. One empty Sysinternals parent
+  registry key remains scheduled for exact cleanup; it has no values or debug
+  settings.
 
 ### M10a allocation-contract review — 2026-09-05
 
