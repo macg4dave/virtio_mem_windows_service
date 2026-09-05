@@ -16,8 +16,10 @@ lifecycle/recovery path are implemented and tested. The
 workspace contains an installed, active single-VM host controller with
 XML/state validation and a bounded runtime loop. The next unprivileged
 implementation priority is the Phase 2 demand-report integration contract:
-decide current-allocation ownership, add freshness and identity to the report
-envelope, and bound durable delivery. The existing one-VM host controller
+implement the selected host-side allocation join, add freshness and identity
+to the report envelope, and bound durable delivery. M9d must complete and bind
+the expanded compatibility attestation, while new M9e corrects and
+freshness-qualifies host telemetry. The existing one-VM host controller
 remains the only resize authority until live state mapping and Phase 3 global
 arbitration have been validated. M8 live QGA/KVM validation is complete on `win11_gpu`, including
 isolated agent restart and graceful guest reboot recovery.
@@ -28,8 +30,11 @@ separate signed-driver status-interface project.
 The QGA memory command may be unavailable on the guest, but that is no longer
 a Windows service startup blocker because the service uses native
 `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry. The host controller
-uses `dommemstat` by default when the guest QGA does not provide
-`guest-get-memory-stats`.
+uses `dommemstat` by default. The upstream audit found that
+`guest-get-memory-stats` is not an upstream QGA command and that the current
+`dommemstat` parser misuses balloon `actual` as a total-like bound. `win11_gpu`
+is a fully trusted development/test guest; Windows virtio-mem remains
+technology preview.
 
 ## Verified evidence
 
@@ -79,8 +84,10 @@ uses `dommemstat` by default when the guest QGA does not provide
     `ua-virtiomem0` converged at `requested=current=0`. An isolated `qemu-ga`
     restart recovered, a graceful QGA-mode reboot completed, and the full
     probe passed again afterward at 79–124 ms for `guest-info` and 100–112 ms
-    for `dommemstat`. QGA still does not implement
-    `guest-get-memory-stats`; the verified fallback remains authoritative.
+    for `dommemstat`. QGA does not implement the nonstandard
+    `guest-get-memory-stats` extension. The fallback is observable but is not
+    production freshness-qualified until M9e; live libvirt `current` remains
+    authoritative for virtio-mem allocation.
 - **M9 live Rust XML-adapter completion (2026-09-05):** the authoritative
     Rust CLI selected `ua-virtiomem0`, reported the live 20 GiB size, 2 MiB
     block, and `requested=current=0` state in canonical bytes, rejected a
@@ -94,6 +101,14 @@ uses `dommemstat` by default when the guest QGA does not provide
     devices were identified as GPU/audio/USB rather than NVMe, and the operator
     confirmed no RDMA or unsupported vhost-user workload dependency. The exact
     dry-run vector passed without `--apply` and live XML remained unchanged.
+    This evidence applies to the exact trusted development configuration;
+    M9d now owns the broader upstream-attestation fingerprint.
+- **Upstream audit (2026-09-05):** pinned review found incomplete
+    `dommemstat` semantics/freshness, a non-upstream QGA memory command,
+    additional backend/slot/VFIO/balloon/version compatibility inputs, an
+    unqualified Windows shrink retry path, and unsafe independent multi-instance
+    reservation. Findings are tracked by M9d, M9e, M10b, M10c, and M11 in
+    [`upstream-virtio-mem-audit.md`](upstream-virtio-mem-audit.md).
 - **Historical convergence recheck (2026-08-18; superseded by the 1 GiB M9b state):** `win11_gpu` reported
     `requested=0 KiB` and `current=0 KiB` after the latest Windows driver
     update. The previous rollback convergence blocker is resolved. The QGA

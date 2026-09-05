@@ -2,12 +2,13 @@
 
 | Feature | Status | Owner | Component | Language | Notes |
 | --------- | -------- | ------- | ----------- | ---------- | ------- |
-| Legacy QGA memory adapter | Complete | Windows | Adapter/test boundary | Rust | Framing, parsing, deadlines, cancellation, and errors are tested; production workers use native telemetry and do not open the QGA-owned device |
+| Custom guest-agent memory adapter | Experimental | Windows | Adapter/test boundary | Rust | `guest-get-memory-stats` is not upstream QGA; framing, parsing, deadlines, cancellation, and errors are tested only for an exact custom/downstream implementation, while production workers use native telemetry |
 | Poll Windows memory availability | In Progress | Windows | Service | Rust | Native telemetry and stoppable worker are implemented; production publication, current-allocation ownership, and workload evidence remain |
 | Validate virtio-mem state | Complete | Host | Ops | Rust | Live authoritative Rust CLI snapshot/validation passes for `ua-virtiomem0`, including canonical fully-unplugged state and wrong-alias rejection; actuation compatibility/workload evidence remains separately tracked by M9a |
-| RHEL virtio-mem controller | Complete | Host | Service | Rust + systemd | Installed controller completed a guarded zero-to-1-GiB bootstrap on `win11_gpu`, converged and retained its minimum; fresh XML/QMP, `dommemstat`, device/host headroom, THP, workload, and no-overlap gates passed |
+| RHEL virtio-mem controller | In Progress | Host | Service | Rust + systemd | Installed controller completed a guarded zero-to-1-GiB bootstrap on trusted development guest `win11_gpu`; M9d full attestation, M9e stats freshness/semantics, and M10b shrink/recovery qualification remain |
 | Windows service memory collection | Complete | Windows | Service | Rust | Interactive and SCM paths collect and validate `GlobalMemoryStatusEx`/`GetPerformanceInfo` telemetry; publication is tracked separately |
-| QEMU Guest Agent integration | Complete | Host | Validation | Bash + Rust | Repeated live QGA and `dommemstat` probes passed before and after isolated QGA restart and graceful guest reboot; QGA memory stats are unsupported, so the verified fallback remains authoritative |
+| QEMU Guest Agent integration | Complete | Host | Health/identity validation | Bash + Rust | Repeated advertised QGA commands passed across restart/reboot; upstream QGA has no `guest-get-memory-stats`, and production Windows telemetry is independent |
+| Host memory-stat correctness and freshness | Planned | Host | Adapter/policy | Rust | M9e corrects `dommemstat actual` balloon semantics, validates `last-update`, and replaces the QGA-only Bash preview with the controller source path |
 | Service lifecycle hosting | Complete | Windows | Service | Rust | Elevated LocalService install/start/observe/stop/delete passed; raw Event Log transitions, clean exit, non-zero failure, and the first 5-second recovery restart were observed live |
 | Service configuration | In Progress | Windows | Service | Rust | ProgramData versioned JSON, schema/basic validation, defaults, startup loading, and recovery metadata are implemented; production ACLs, atomic updates, migration, and stronger account/path/duration bounds remain |
 | Logging and metrics | In Progress | Both | Both | Rust | Windows SCM lifecycle and failure records are live-verified in XML EventData; classic text descriptions need message-resource packaging and broader metrics remain |
@@ -18,12 +19,14 @@
 | Versioned Windows demand report | In Progress | Windows | Demand agent | Rust | Version 1 raw counters, bounded pressure ratios, five provisional demand states, aligned bounded target, and safe-floor recommendation implemented; remains advisory |
 | Demand report output | In Progress | Windows | Demand agent | Rust | Append-only JSON-lines publisher and generic worker are tested; production allocation ownership, identity/freshness envelope, ACLs, partial-record handling, retention, and rotation remain |
 | Four-level memory target model | In Progress | Both | Contract | Rust | Configured minimum, safe floor, desired target, and observed current allocation are represented and tested; cross-layer current-allocation evidence remains |
-| Virtio-mem compatibility gate | Complete | Host | Adapter | Rust | Fresh selected-device QMP confirms both required properties; THP, VFIO device classes, `mem-lock=off`, RDMA/vhost-user absence, explicit workload review, exact dry run, and non-mutation passed live |
-| Compatibility-attestation drift guard | Planned | Host | Safety | Rust | M9d will bind operator review to a live domain/QEMU fingerprint and fail closed after configuration drift |
+| Virtio-mem compatibility gate | In Progress | Host | Adapter | Rust | Initial trusted `win11_gpu` QMP/THP/VFIO/workload evidence passed; M9d must fingerprint complete backend, slot/mapping, balloon, incompatible-workload, topology, trust, and version evidence |
+| Compatibility-attestation drift guard | Planned | Host | Safety | Rust | M9d binds the complete review to a live domain/QEMU fingerprint and fails closed after configuration drift |
 | Driver/QEMU state reconciliation | Blocked | Both | Integration | Rust + Bash | M10a1–M10a4 now separate capture qualification, evidence harness, one-block mapping, and contract adoption; M10aX is conditional only if bounded debug capture fails |
-| Current-allocation/report join | Planned | Both | Contract | Rust | M10c selects a host join or validated allocation feed without granting Windows host-control authority |
+| Current-allocation/report join | Planned | Both | Contract | Rust | M10c implements the selected host-side join of fresh raw Windows telemetry with alias-scoped live libvirt `current`; Windows receives no host-control authority or allocation feed |
 | Report freshness and bounded delivery | Planned | Both | Contract | Rust | M10d adds identity, timestamps, session/sequence, provenance, replay rules, ACLs, partial-record handling, retention, and rotation |
-| Single-VM recovery matrix | Planned | Host | Integration | Rust + Bash | M10b covers rejection, timeout, non-convergence, interruption, reboot, cancellation, and restart without replay or overlap |
+| Windows automatic shrink | Unqualified | Host + driver | Integration | Rust + Bash | Remains planned default-off until M10b proves autonomous retry, bounded same-target re-notification, or controlled failed-shrink recovery |
+| Single-VM recovery matrix | Planned | Host | Integration | Rust + Bash | M10b covers rejection, timeout, non-convergence, Windows shrink progress/recovery, interruption, reboot, cancellation, and restart without replay or overlap |
+| Multi-controller/device actuation | Deferred | Host | Global controller | Rust | Upstream supports multiple devices, but Phase 2 permits one active controller/device on this development host until M11 provides atomic global reservation |
 | Global VM pool accounting | Planned | Host | Global controller | Rust | Host reserve and actual observed VM allocations; Phase 3 |
 | Growth and reclaim priorities | Planned | Host | Global controller | Rust | Separate per-VM growth and reclaim priority; Phase 3 |
 | Trend-aware safe reclaim | Planned | Both | Policy | Rust | Rolling history, safe floors, bounded aligned steps, and convergence gates; Phase 3 |
@@ -31,8 +34,12 @@
 
 ## Platform Support
 
-- **Windows Service**: Windows 11, requires Rust 1.70+
-- **Host automation**: RHEL host with Bash tooling and libvirt validation
+- **Windows Service**: Windows 11 x64 technology preview; requires Rust 1.70+
+- **Validated guest**: fully trusted development/test KVM guest `win11_gpu`;
+  no production or untrusted-guest support claim
+- **Host automation**: RHEL host with Bash tooling and libvirt validation;
+  hard QEMU/libvirt memory limit recommended for `win11_gpu` and mandatory for
+  future untrusted/production guests
 
 ## Language Constraints
 

@@ -1,13 +1,20 @@
 # API Contract
 
-## QEMU Guest Agent Interface
+## Experimental custom guest-agent memory interface
 
 ### GetMemoryStats
 
-The guest-side transport sends the request as one newline-delimited JSON
-message over the configured Windows virtio-serial/QEMU Guest Agent pipe. The
-pipe path is supplied to `NamedPipeGuestAgent`; the client does not discover
-or modify host-side libvirt resources.
+`guest-get-memory-stats` is absent from the upstream QEMU Guest Agent schemas
+reviewed for QEMU 9.1, 10.1, and master. The interface below documents the
+repository's implemented parser/transport boundary; it is not an upstream QGA
+contract. It may be enabled only for a separately identified and validated
+custom/downstream guest agent that implements this exact extension.
+
+The guest-side transport sends one newline-delimited JSON message over its
+configured test/adapter pipe. The pipe path is supplied to
+`NamedPipeGuestAgent`; the client does not discover or modify host-side
+libvirt resources. Production Windows workers use native telemetry and do not
+open the QGA-owned virtio-serial channel.
 
 Request:
 
@@ -41,34 +48,37 @@ omitted by the guest agent, it falls back to `stat-free`. Values greater than
 `stat-total` are rejected as inconsistent. The Windows transport requires a
 matching response `id`, a `return` array, and exactly one newline-delimited
 response frame. The compatibility parser used by host-side adapters accepts
-responses without an id because the host request remains a separate adapter
-boundary.
+responses without an id because the host request remains a separate
+experimental adapter boundary.
 
 ### Host memory-stat source (`VIRTIO_MEM_STATS_SOURCE`)
 
 The RHEL host controller's connected guest agent (QGA 110.0.2 on `win11_gpu`)
-does not implement `guest-get-memory-stats` (see `docs/issues.md` ISSUE-001),
-so the controller cannot rely on that command alone. `HostConfig` selects the
-memory-stat source with `VIRTIO_MEM_STATS_SOURCE`:
+does not implement the custom command. `HostConfig` selects the memory-stat
+source with `VIRTIO_MEM_STATS_SOURCE`:
 
 - `dommemstat` (default): reads `virsh dommemstat <vm>`, a virtio-balloon
-  driver counter that does not require the guest agent. It requires the
-  domain to have `actual` and `unused` fields; `available` is used if present,
-  otherwise `unused` is reused. This behavior is live verified on `win11_gpu`;
-  any new VM still requires its own evidence because the fields depend on a
-  functioning virtio-balloon driver/service in that guest.
-- `qga`: uses `guest-get-memory-stats` as before, for guest agents that
-  implement it.
+  driver counter that does not require QGA. The current implementation
+  requires `actual` and `unused`, accepts `available` only when it is no
+  greater than `actual`, and does not parse `last-update`. The upstream audit
+  found those bounds are semantically wrong: `actual` is balloon state, not
+  whole-guest or virtio-mem allocation. M9e will correct the mapping and add
+  freshness validation. The fields have been observed on `win11_gpu`, but the
+  source is not production-qualified yet.
+- `qga`: uses the experimental `guest-get-memory-stats` extension. It must not
+  be selected merely because an upstream QGA version is new enough; the exact
+  advertised downstream capability has to be validated first.
 
-Both sources produce the same `MemoryStats { free_bytes, available_bytes,
-total_bytes }` value consumed by the shared policy engine, so switching
-sources does not change `plan_resize` behavior.
+Both current adapters produce the legacy `MemoryStats { free_bytes,
+available_bytes, total_bytes }` value consumed by the shared policy engine.
+That common shape does not make their `total_bytes` fields equivalent to live
+virtio-mem allocation. Alias-scoped libvirt `current` remains authoritative.
 
 ## Phase 2 Windows demand report
 
-The demand-agent contract is additive to the existing QGA/dommemstat contract.
-It describes what Windows observes and recommends; it does not grant the
-guest authority to allocate host memory.
+The demand-agent contract is separate from host QGA health and `dommemstat`.
+Version 1 describes what Windows observes and a locally calculated
+recommendation; it does not grant the guest authority to allocate host memory.
 
 The implemented versioned report is:
 
@@ -155,12 +165,12 @@ and tests those behaviors.
 
 Fresh live libvirt state is authoritative for Phase 2 allocation. The Windows
 service has no supported driver status API and must not invoke libvirt or infer
-allocation from aggregate physical memory. M10c must select one explicit
-integration model: either the host joins raw Windows telemetry with its
-allocation snapshot and calculates the recommendation, or a validated
-host-to-guest allocation feed supplies provenance and freshness. Until then,
-the production SCM worker validates native telemetry but does not publish
-`DemandReport` values.
+allocation from aggregate physical memory. The M10c decision is a host-side
+join: Windows publishes a fresh, versioned raw telemetry envelope; the host
+joins it with alias-scoped live libvirt `current` and calculates the target.
+There is no host-to-guest allocation feed and no guest resize authority. Until
+M10c/M10d implement that contract, the production SCM worker validates native
+telemetry but does not publish `DemandReport` values.
 
 ## Memory Change Request
 
@@ -190,7 +200,13 @@ is fully unplugged. Zero is therefore valid live state, but it is not a valid
 resize target: every requested target must be positive, block aligned, within
 the device size, and satisfy the fixed device-headroom requirement.
 
-When more than one virtio-mem device is present, `virsh` must be directed with `--alias` because the update API cannot infer which device should be resized. The host-side controller should therefore treat the alias as part of the contract and should validate the live XML against the selected alias after each request.
+When more than one virtio-mem device is present, `virsh` must be directed with
+`--alias` because the update API cannot infer which device should be resized.
+The host-side controller therefore treats the alias as part of the contract
+and validates live XML against it after each request. Despite upstream
+multi-device support, Phase 2 permits only one active controller/device on the
+development host because independent instances do not share an atomic host
+reservation. M11 owns expansion to multiple active targets.
 
 ### Virtio-mem compatibility gate
 
@@ -200,12 +216,26 @@ must explicitly confirm both `dynamic-memslots` and
 `Unknown` and fail closed; they are never treated as enabled by default. XML
 evidence may be merged with an independent QEMU/configuration evidence source,
 but conflicting evidence is rejected. The combined gate also requires
-separate operator evidence that the VM/workload does not use incompatible
-classes such as `vfio-nvme`, RDMA migration, `mlock`, or unsupported vhost-user
-workloads. Those workload facts cannot be inferred reliably from the
-virtio-mem memory element alone.
+separate operator evidence for the complete reviewed configuration. M9d must
+bind vDPA, RDMA migration, VFIO-NVMe, `mlock`, encrypted/secure virtualization,
+active virtio-balloon resize, vhost-user backend/version and memory-slot
+budget, VFIO DMA mapping budget, backend page/sparse/reserve/preallocation/
+sharing/core-dump properties, NUMA placement, topology, and deployed QEMU,
+libvirt, machine, and driver versions into a fingerprint. These facts cannot
+be inferred reliably from the virtio-mem memory element alone.
 
 This is a key operational difference from a DIMM or balloon model: virtio-mem is not a simple single-step memory resize, and guest cooperation is required to unplug or plug memory blocks safely.
+
+QEMU does not yet provide balloon-like protection against access to all
+unplugged memory. A hard QEMU/libvirt cgroup memory limit is recommended
+defense-in-depth for the fully trusted development/test `win11_gpu` guest and
+is mandatory for untrusted or production guests.
+
+The installed Windows driver has not been shown to retry an incomplete shrink
+without another event. Automatic shrink must remain disabled by default until
+M10b proves autonomous retry, bounded idempotent same-target re-notification,
+or a controlled failed-shrink recovery path. This control is planned, not yet
+implemented.
 
 ### Driver and state terminology
 
@@ -239,7 +269,7 @@ source trait and never invokes `virsh` or Linux commands.
 ## Stability Rules
 
 - Do not change request/response format without updating this document
-- Maintain backward compatibility with existing QEMU Guest Agent versions
+- Never infer support for a custom QGA command from a QGA version number
 - Version any breaking changes to the protocol
 - Do not issue another resize while `requested` and `current` differ
 
@@ -274,7 +304,9 @@ virtio-mem alias. The alias is restricted to letters, digits, `_`, `.`, and
 `-`. The controller invokes `virsh` with a fixed argument vector; it does not
 use a command shell. Its host calls are:
 
-- `virsh qemu-agent-command <vm> {"execute":"guest-get-memory-stats"}`
+- optional `virsh qemu-agent-command <vm>
+  {"execute":"guest-get-memory-stats"}` only after validating the exact
+  custom/downstream capability
 - `virsh dumpxml <vm>` (the default for a running domain; `--inactive` is not
   used for live resize validation)
 - `virsh qemu-monitor-command <vm> <qom-get-request>` for the selected

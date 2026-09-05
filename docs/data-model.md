@@ -2,11 +2,12 @@
 
 ## Memory State
 
-### Controller State
+### Legacy policy input state
 
-- `current_free_bytes`: Last `stat-free` value from QEMU Guest Agent
-- `current_available_bytes`: Last `stat-available` value, or `stat-free` when unavailable
-- `current_total_bytes`: Total allocated memory in Windows
+- `current_free_bytes`: Last free/unused value from the selected stats adapter
+- `current_available_bytes`: Last available value, or free/unused fallback
+- `current_total_bytes`: Adapter-specific total-like value; it is not
+  authoritative virtio-mem allocation
 - `target_requested_bytes`: Next size to request from virtio-mem
 - `virtio_mem_requested_bytes`: Live requested size from virtio-mem XML
 - `virtio_mem_current_bytes`: Live active size from virtio-mem XML
@@ -53,10 +54,11 @@ This keeps native telemetry and recommendation generation independent from QGA,
 libvirt, and any future report transport. Publication failure is observable and
 does not trigger a resize fallback.
 
-No production owner currently supplies that allocation on Windows. M10c must
-define whether the host calculates demand after joining raw telemetry with live
-libvirt state or provides a validated allocation feed. Aggregate physical
-memory, configured limits, and QGA totals are not allocation substitutes.
+No production owner currently supplies that allocation to the calculator.
+M10c will move the production join to the host: Windows publishes raw telemetry
+and the host combines it with alias-scoped live libvirt `current` before
+calculating demand. Aggregate physical memory, configured limits, QGA totals,
+and balloon `actual` are not allocation substitutes.
 
 The M10d envelope must add VM and service identity, UTC sample time,
 monotonic/session ordering, a boot or service-session identifier, sequence or
@@ -82,6 +84,24 @@ The controller evaluates the last parsed `stat-free` value once per poll:
 Every target is clamped to the configured minimum and maximum and both limits
 must be aligned to `block_size_bytes`.
 
+Automatic shrink is not yet a supported Windows production path. M10b must add
+a default-off shrink control and prove how an incomplete driver unplug is
+retried or recovered before the host may enable automatic reclaim.
+
+### Host memory-stat snapshot
+
+The current `dommemstat` adapter maps libvirt balloon counters into the legacy
+`MemoryStats` shape. Libvirt `actual` is the current balloon value; it does not
+include virtio-mem memory and must not bound `unused` or `available`. An
+`available > actual` sample is therefore not inherently inconsistent.
+
+M9e introduces an explicit source snapshot with observation time and
+`last-update` provenance. Policy must reject missing, stale, future, and
+non-advancing samples according to configured bounds. The alias-scoped live
+libvirt `current` field remains the only authoritative virtio-mem allocation
+input. The QGA-shaped stats adapter is experimental and valid only for a
+separately identified custom/downstream guest agent.
+
 ### Live XML semantics
 
 The host-side state model is intentionally conservative because virtio-mem is not instantaneous. The libvirt live XML reports the following values as a snapshot of host-visible guest memory state:
@@ -98,6 +118,11 @@ Compatibility evidence is refreshed separately from state. The host reads
 QOM device through bounded QMP requests, merges that evidence with any XML
 values, and requires an explicit operator workload review. Missing, disabled,
 malformed, or conflicting evidence prevents resize preparation.
+
+M9d extends that evidence with a fingerprint over the live domain/QEMU
+configuration, memory backend and NUMA placement, memory-slot and VFIO mapping
+budgets, incompatible device/workload classes, active balloon-resize state,
+topology, and deployed versions.
 
 This model is aligned with libvirt behavior: a resize request is serviced asynchronously, and the guest's ability to free memory or hotunplug blocks can delay or prevent full convergence.
 

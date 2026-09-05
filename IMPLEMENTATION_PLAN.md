@@ -27,10 +27,11 @@ workspace quality gate.
 - **Superseded production path:** `NamedPipeGuestAgent` remains a tested legacy
    adapter boundary, but interactive and SCM workers use native Windows
    telemetry and do not open the QGA-owned device.
-- Complete M10c to decide whether the host joins authoritative libvirt
-   allocation with raw guest telemetry or supplies a validated allocation
-   feed. Do not infer allocation from limits, QGA totals, or aggregate physical
-   memory, and do not add a guest resize sink.
+- Complete M10c using the recorded host-side join: publish a fresh, versioned
+   raw Windows telemetry envelope, join it on the host with alias-scoped live
+   libvirt `current`, and calculate the target there. Do not infer allocation
+   from limits, QGA totals, balloon `actual`, or aggregate physical memory, and
+   do not add a guest resize sink or host-allocation feed to Windows.
 - Complete M10d before constructing the production publisher: add report
    identity, freshness, ordering, provenance, bounded retention, ACL, and
    partial-record behavior.
@@ -53,24 +54,43 @@ formatted Event Log message-resource packaging remain.
 
 ### 4. Complete the virtio-mem compatibility gate
 
-- Verify `dommemstat` fields on the target guest.
 - Confirm live XML alias, size, block, `requested`, and `current` values.
 - Verify `dynamic-memslots` and `unplugged-inaccessible` requirements where
    supported.
-- Rule out documented incompatible workloads and device classes.
+- Bind the reviewed live domain, QEMU command line/properties, memory backend,
+   memory-slot and VFIO mapping budgets, active balloon-resize state, topology,
+   and deployed versions into one M9d fingerprint.
+- Rule out or explicitly qualify vDPA, RDMA migration, VFIO-NVMe, `mlock`,
+   encrypted/secure virtualization, incompatible vhost-user backends, and
+   sparse/preallocated/shared/core-dump/NUMA backend combinations.
 - Add maximum-value and unit-conversion round-trip coverage.
 
-### 5. Validate the one-VM host controller
+### 5. Correct and freshness-qualify host telemetry (M9e)
+
+- Treat `dommemstat actual` as a balloon value, not a whole-guest total or an
+   upper bound for `unused`/`available`.
+- Parse and enforce bounded `last-update` freshness; reject missing, stale,
+   future, and non-advancing evidence where policy requires a fresh sample.
+- Keep alias-scoped live libvirt `current` authoritative for allocation.
+- Replace the QGA-only Bash decision preview with a Rust command that reuses
+   the controller's configured source and freshness checks.
+- Retain `guest-get-memory-stats` only as an opt-in custom/downstream adapter;
+   it is not part of upstream QGA.
+
+### 6. Validate the one-VM host controller
 
 - Install the templated systemd service under the approved service account.
 - Exercise one reversible aligned resize through the installed service.
 - Confirm convergence suppression, host headroom checks, bounded failures,
    signal handling, and restart behavior.
 
-**Gate:** no automatic resize until live QGA/dommemstat, XML compatibility, and
-convergence evidence pass.
+**Gate:** no expansion of automatic resize until host telemetry is fresh,
+live XML and the full compatibility attestation pass, and the device is
+converged. Phase 2 permits only one active controller/device on the development
+host. A hard QEMU/libvirt memory limit is recommended for trusted `win11_gpu`
+and mandatory for any untrusted or production guest.
 
-### 6. Replace the Bash host helper with a Rust CLI (M9c) — implemented
+### 7. Replace the Bash host helper with a Rust CLI (M9c) — implemented
 
 - **Implemented:** Rust subcommands provide read-only `snapshot` and
   `validate` operations.
@@ -89,7 +109,7 @@ read-only and guarded-live regression cases.
 
 ## Phase 3 — Global arbitration
 
-### 6. Prove cross-layer state mapping
+### 8. Prove cross-layer state mapping
 
 Observe the same controlled operation through Windows driver state and
 libvirt/QEMU state. Do not treat `requested_size`/`plugged_size` as equivalent
@@ -116,11 +136,12 @@ Use **M10aX** only if M10a1 proves bounded debug capture is unsuitable. That
 conditional milestone produces a separate signed-driver interface proposal;
 it does not authorize driver implementation or installation.
 
-### 7. Build hermetic global-pool simulation
+### 9. Build hermetic global-pool simulation
 
 Before this phase, complete M9d compatibility-attestation drift protection,
-M10c current-allocation ownership, M10d report delivery/freshness, M10a4 state
-mapping, and the M10b failure/recovery matrix.
+M9e host-stat correctness/freshness, M10c host-side allocation join, M10d
+report delivery/freshness, M10a4 state mapping, and the M10b failure/recovery
+matrix.
 
 - Model host reserve, actual VM allocations, pool-free capacity, stale reports,
    and in-flight operations.
@@ -128,10 +149,13 @@ mapping, and the M10b failure/recovery matrix.
 - Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY` states.
 - Prove aligned, bounded reclaim and stop-on-pressure behavior.
 
-### 8. Add controlled reclaim and actuation
+### 10. Add controlled reclaim and actuation
 
 - Add rolling demand history and conservative safe floors.
 - Reclaim one aligned step at a time and wait for convergence.
+- Keep automatic Windows shrinking disabled by default until M10b proves
+   autonomous retry, safe bounded same-target re-notification, or a controlled
+   failed-shrink recovery path.
 - Fail closed on stale or inconsistent evidence.
 - Keep direct driver IOCTL work deferred unless a separate signed-driver track
    proves a supported interface.

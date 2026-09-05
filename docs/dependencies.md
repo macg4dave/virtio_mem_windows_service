@@ -29,8 +29,8 @@ host validation environment.
 | Host CLI | `virsh` | From libvirt client | Query QGA and inspect/update VM state |
 | JSON validation | `jq` | Current distribution package | Validate QGA responses in Bash |
 | Host shell | Bash | 4.0+ | Run repository scripts |
-| Guest OS | Windows 11 x64 under QEMU/KVM | Required | Run the service and QEMU Guest Agent |
-| Guest agent | QEMU Guest Agent x64 | Installed and running; observed `110.0.2` on `win11_gpu` | Provide `guest-info`; `guest-get-memory-stats` requires QGA built from upstream QEMU 9.1+ and is not implemented in the observed build |
+| Guest OS | Windows 11 x64 under QEMU/KVM | Technology-preview development/test target | Run the service and QEMU Guest Agent; `win11_gpu` is fully trusted, not a production support claim |
+| Guest agent | QEMU Guest Agent x64 | Installed and running; observed `110.0.2` on `win11_gpu` | Provide advertised upstream commands such as `guest-info`; `guest-get-memory-stats` is not an upstream QGA command |
 | Guest channel | Virtio-serial channel `org.qemu.guest_agent.0` | Required | Connect libvirt/QEMU to QGA |
 | Guest device | Configured virtio-mem device and known alias | Required for resize tests | Exercise requested/current memory convergence |
 | Host virtualization stack | libvirt, QEMU API, hypervisor | Observed `11.10.0` (libvirt), `11.10.0` (QEMU API), `10.1.0` (hypervisor) on the RHEL host | Reported by `virsh version`/`guest-info` during the 2026-08-18 probe |
@@ -171,18 +171,19 @@ Validate the guest-agent path from the RHEL host with an explicit VM name:
 bash scripts/validate-guest-agent.sh VM_NAME 3
 ```
 
-The helper checks `guest-info`, then uses `guest-get-memory-stats` when the
-agent provides it or validates `dommemstat` three times as the documented
-fallback. It does not resize memory, restart the VM, or execute commands
-inside the guest.
+The helper checks `guest-info`, then probes the experimental
+`guest-get-memory-stats` extension and falls back to validating `dommemstat`
+three times when it is absent. It does not resize memory, restart the VM, or
+execute commands inside the guest.
 
 On `win11_gpu` (QGA `110.0.2`), `guest-get-memory-stats` returns "command has
-not been found"; upgrading the guest's `qemu-guest-agent` build to one
-compiled from upstream QEMU 9.1+ (for example, a newer `virtio-win` package)
-is required for that command to work. The host controller does not depend on
-it: `VIRTIO_MEM_STATS_SOURCE` defaults to `dommemstat`, which reads `virsh
-dommemstat` and has verified `actual`/`unused`/`available` fields on this
-guest. See `docs/issues.md` (ISSUE-001) and `host/src/config.rs`.
+not been found". The command is also absent from the reviewed upstream QGA
+schemas for QEMU 9.1, 10.1, and master, so an upstream QGA upgrade is not a
+remedy. Select `VIRTIO_MEM_STATS_SOURCE=qga` only for an exact custom/downstream
+agent known to implement the extension. The default `dommemstat` source has
+live-observed `actual`/`unused`/`available` fields, but M9e must correct its
+balloon semantics and add `last-update` freshness before production use. See
+[`upstream-virtio-mem-audit.md`](upstream-virtio-mem-audit.md).
 
 ## Live virtio-mem requirements
 
@@ -207,11 +208,29 @@ The official virtio-mem guidance adds several operational constraints that affec
 - `requested-size` must be an integer multiple of the device's `block-size` and cannot exceed the device's maximum size.
 - `block-size` is the hotplug granularity and should typically be at least the guest's THP size; a 2 MiB block is the common default for x86 systems.
 
-- The guest can fail to fulfill a shrink request if it cannot free or hotunplug memory reliably; a request can therefore succeed at the host while the guest remains below the target for a time.
-- QEMU does not currently provide the same protection for unplugged memory that virtio-balloon does; operators should use cgroups or other host-side limits to avoid memory overcommit.
+- The guest can fail to fulfill a shrink request if it cannot free or hotunplug
+  memory reliably. The reviewed Windows driver exposes no obvious periodic
+  retry timer, so automatic shrink remains disabled-by-default planned work
+  until M10b proves bounded progress or recovery.
+- QEMU does not currently provide the same protection for unplugged memory
+  that virtio-balloon does. A hard QEMU/libvirt cgroup memory limit is
+  recommended defense-in-depth for fully trusted development guest
+  `win11_gpu` and mandatory for untrusted or production guests.
 - `dynamic-memslots=on` is recommended where supported because it reduces metadata and can make unplugged memory inaccessible, but it must be used with `unplugged-inaccessible=on`.
-- Some workloads or devices remain incompatible with virtio-mem, including `vdpa`, `RDMA migration`, `vfio-nvme`, `mlock`-based usage, and several vhost-user devices such as DPDK/SPDK.
-- The memory backend should generally use sparse storage semantics: `reserve=off` and `prealloc=off` for virtio-mem backends, while the virtio-mem device itself may use `prealloc=on` when appropriate.
+- M9d must fingerprint vDPA, RDMA migration, VFIO-NVMe, `mlock`,
+  encrypted/secure virtualization, active balloon resize, vhost-user
+  backend/version and memory-slot limits, VFIO DMA mappings, topology, and
+  deployed versions. DPDK/SPDK vhost-user combinations remain unsupported.
+- Dynamic memory slots require enough vhost capacity; validate
+  `max_mem_regions >= 509` where applicable and pin known-compatible
+  libvhost-user/QEMU or rust-vmm/vhost combinations.
+- The memory backend should generally use sparse storage semantics:
+  `reserve=off` and backend `prealloc=off`, with device `prealloc=on` when
+  appropriate. M9d also records backend type, page/block size, sharing,
+  core-dump, sparse-filesystem, and NUMA placement.
+- Virtio-balloon statistics/free-page reporting may coexist, but independent
+  balloon inflation/deflation or set-memory resizing must not compete with
+  virtio-mem actuation.
 
 The Rust Windows crate also uses `quick-xml` for pure parsing of captured
 libvirt snapshots. This parser does not invoke `virsh`, libvirt, or Linux
@@ -274,8 +293,12 @@ These constraints are not optional recommendations for a future improvement; the
   Windows guest described above.
 - As of 2026-08-18, `win11_gpu` reports libvirt `11.10.0`, QEMU API `11.10.0`,
   hypervisor `10.1.0`, and QGA `110.0.2`; `guest-info` succeeds repeatedly but
-  `guest-get-memory-stats` is unimplemented on this QGA build, so `dommemstat`
-  remains the verified default stats source.
+  the nonstandard `guest-get-memory-stats` extension is absent. `dommemstat`
+  remains the observed default source pending M9e freshness qualification.
+- The installed signed Windows virtio-mem driver is
+  `100.102.104.29400`, corresponding to upstream `mm314`. Windows virtio-mem
+  is technology preview; only the fully trusted development/test `win11_gpu`
+  stack is currently validated.
 
 ## Related documentation
 
@@ -284,3 +307,4 @@ These constraints are not optional recommendations for a future improvement; the
 - [`qemu-ga-setup.md`](qemu-ga-setup.md) — guest-agent installation and channel setup.
 - [`testing.md`](testing.md) — local and live validation strategy.
 - [`engineering-standards.md`](engineering-standards.md) — toolchain and language policy.
+- [`upstream-virtio-mem-audit.md`](upstream-virtio-mem-audit.md) — pinned upstream compatibility findings.

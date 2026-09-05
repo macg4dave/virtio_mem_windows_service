@@ -49,12 +49,27 @@ No additional languages are permitted in source code, scripts, build tooling, or
 
 - Run one explicitly configured VM and virtio-mem alias per systemd instance;
   do not implement broad VM discovery or implicit multi-target scheduling.
+- Permit only one active Phase 2 controller/device on the development host;
+  multiple independent instances cannot safely reserve the same host pool
+  before M11 global arbitration.
 - Invoke `virsh` through fixed argument vectors with a finite timeout; never
   use a shell, string interpolation, or an unbounded external command.
 - Refresh and validate the selected live XML immediately before a resize. Do
   not issue a request while `requested != current` or replay one after restart.
 - Bind workload compatibility authorization to the reviewed live domain/QEMU
-  configuration; fail closed when its fingerprint changes.
+  configuration, backend, memory-slot/VFIO budgets, incompatible workload and
+  device classes, balloon-resize state, topology, and deployed versions; fail
+  closed when its fingerprint changes.
+- Preserve source semantics: `dommemstat actual` is a balloon value, not a
+  whole-guest total or virtio-mem allocation. Require explicit bounded
+  freshness and reject stale, future, or non-advancing policy evidence.
+- Treat `guest-get-memory-stats` as a custom/downstream QGA extension, never as
+  an upstream version guarantee. Keep upstream QGA use to advertised commands.
+- Require a hard QEMU/libvirt memory limit for production or untrusted guests.
+  It is recommended defense-in-depth for the fully trusted development/test
+  `win11_gpu` exception.
+- Keep automatic Windows shrink disabled by default until M10b qualifies
+  driver progress and bounded recovery.
 - Use `SIGTERM` and `SIGINT` for one wakeable cancellation path. Operational
   failures must produce contextual journal output and a non-zero process exit.
 - Configure an explicit non-login service account and verify its least-privilege

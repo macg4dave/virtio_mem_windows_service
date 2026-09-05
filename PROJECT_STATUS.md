@@ -4,7 +4,9 @@
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
 actuation are live validated. Trustworthy demand publication, cross-layer
-state mapping, configuration-drift protection, and recovery hardening remain.
+state mapping, host-stat freshness, complete compatibility attestation, and
+recovery hardening remain. `win11_gpu` is a fully trusted development/test KVM
+guest; upstream Windows virtio-mem support remains technology preview.
 
 ## Completed locally
 
@@ -59,27 +61,43 @@ Windows service artifact was built on the Win11 guest and fetched to
 
 ## Open implementation work
 
-- Decide current-allocation ownership in M10c, then wire native telemetry to a
-  demand publisher without adding guest actuation. Production currently runs
-  `NativeTelemetryWorker` and discards each validated sample.
+- Implement the M10c host-side join: publish a fresh raw Windows telemetry
+  envelope, join it with alias-scoped live libvirt `current`, and calculate
+  the target on the host without adding guest actuation. Production currently
+  runs `NativeTelemetryWorker` and discards each validated sample.
 - Add the M10d report envelope and delivery contract: VM/service/session
   identity, timestamps and sequence, allocation provenance, freshness/replay
   rules, partial-record handling, ACLs, and retention/rotation.
 - Bind the current static workload-review authorization to a live
-  domain/QEMU configuration fingerprint in M9d.
+  domain/QEMU configuration fingerprint in M9d, expanding the attestation to
+  all audited backend, memory-slot, VFIO, vDPA/RDMA/vhost-user, balloon,
+  secure-virtualization, topology, and version constraints.
+- Complete M9e host-telemetry correctness and freshness: fix `dommemstat`
+  balloon semantics, validate `last-update`, and replace the QGA-only Bash
+  decision preview with the controller's Rust source path.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
 - Complete M10a1 capture qualification, M10a2 evidence harness, M10a3
   one-block mapping, M10a4 contract adoption, and the M10b failure/recovery
-  matrix. Use M10aX
+  matrix, including Windows shrink retry/recovery qualification and a
+  default-off automatic-shrink control. Use M10aX
   only if bounded kernel-debug capture is not viable.
 
 ## External blockers
 
-- The attached Windows QGA does not advertise `guest-get-memory-stats`; the
-  host controller uses the verified `dommemstat` fallback by default.
+- `guest-get-memory-stats` is absent from upstream QGA schemas; upgrading an
+  upstream QGA is not a remedy. The custom adapter remains experimental and
+  the host controller uses `dommemstat` by default.
+- `dommemstat actual` is balloon state, not whole-guest or virtio-mem
+  allocation, and source freshness is not checked yet. M9e is required before
+  this telemetry is considered production-qualified.
 - Live resize remains gated by fresh XML validation and
   `requested == current` convergence at the time of each request.
+- Automatic Windows shrink is unqualified, and Phase 2 supports only one
+  active controller/device on this development host until M10b and M11.
+- A hard QEMU/libvirt cgroup memory limit is recommended defense-in-depth for
+  trusted `win11_gpu`; it is mandatory for future untrusted or production
+  deployments.
 - Driver `plugged_size` versus libvirt `current` remains an unverified
   cross-layer mapping.
 - Live read-only inspection of signed `viomem.sys` `100.102.104.29400` found
@@ -99,6 +117,7 @@ same device at 1 GiB. Neither state proves direct driver-field mapping.
 - [docs/architecture.md](docs/architecture.md)
 - [docs/feature-matrix.md](docs/feature-matrix.md)
 - [docs/testing.md](docs/testing.md)
+- [docs/upstream-virtio-mem-audit.md](docs/upstream-virtio-mem-audit.md)
 
 Status is maintained alongside `BACKLOG.md` after each implementation session.
 <!-- End of status document. -->

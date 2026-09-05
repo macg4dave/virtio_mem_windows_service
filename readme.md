@@ -14,6 +14,11 @@ validated; trustworthy Windows demand publication and recovery hardening remain.
 This project explores predictable memory coordination for a Windows 11 guest
 running on QEMU/KVM with a `virtio-mem` device.
 
+The currently validated `win11_gpu` deployment is a fully trusted,
+development/test-only KVM guest. Upstream classifies Windows virtio-mem as
+unstable technology preview, so this repository does not claim production or
+untrusted-guest support.
+
 The long-term goal is a system that can:
 
 - observe Windows memory pressure using native telemetry;
@@ -60,13 +65,28 @@ documented gates.
 - Windows SCM lifecycle and the first bounded recovery restart are
   live-verified under `LocalService`; ProgramData ACL, formatted Event Log
   message-resource packaging, and workload validation remain open.
-- The connected guest's QGA does not provide `guest-get-memory-stats`; the
-  `dommemstat` fallback is live verified and is the host default.
+- `guest-get-memory-stats` is not an upstream QGA command. The connected QGA
+  does not provide it; the adapter is retained only for a separately validated
+  custom/downstream agent. `dommemstat` is the host default, but its semantics
+  and freshness require M9e hardening before production use.
 - Live resize remains subject to fresh XML validation and the
   `requested == current` convergence gate before every request.
 - The installed single-VM controller is active. Its workload compatibility
   approval is currently a static boolean and must be bound to a live
-  configuration fingerprint before configuration drift can be trusted.
+  configuration fingerprint before configuration drift can be trusted. The
+  full M9d review also covers memory backends, memory-slot and VFIO budgets,
+  vDPA/RDMA/vhost-user/VFIO-NVMe/`mlock`, balloon-resize conflicts, and
+  deployed versions.
+- Windows shrink retry behavior is not qualified. M10b must prove bounded
+  progress/recovery and add a default-off automatic-shrink control before
+  automated reclaim is supported.
+- Phase 2 supports one active controller for one explicitly named VM/device on
+  this development host. Multi-controller/device actuation waits for M11
+  global arbitration.
+- Because `win11_gpu` is fully trusted, a hard QEMU/libvirt cgroup memory limit
+  is recommended defense-in-depth here. It is mandatory for any future
+  production or untrusted guest because QEMU does not fully protect unplugged
+  memory from guest access.
 
 See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 
@@ -75,14 +95,15 @@ See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 ```text
 ┌──────────────────────── Windows 11 guest ────────────────────────┐
 │                                                                   │
-│  Native memory telemetry ──► Advisory demand report               │
+│  Native memory telemetry ──► Versioned raw telemetry envelope      │
 │  Windows service             (Rust, canonical bytes)               │
 └───────────────────────────────────────────────────────────────────┘
                              │ future versioned report transport
                              ▼
 ┌──────────────────────────── RHEL host ────────────────────────────────┐
 │  Rust host controller                                                 │
-│    ├─ observes host-side QGA health or dommemstat                     │
+│    ├─ joins fresh telemetry with live libvirt current                 │
+│    ├─ observes host-side QGA health and dommemstat                     │
 │    ├─ validates live virtio-mem XML                                   │
 │    ├─ checks host headroom                                             │
 │    └─ issues one aligned request and waits for convergence             │
@@ -156,7 +177,8 @@ bash scripts/validate-guest-agent.sh VM_NAME 3
 
 Read the [QEMU Guest Agent setup guide](docs/qemu-ga-setup.md) first. The
 current guest may report that `guest-get-memory-stats` is unavailable; the host
-controller uses the verified `dommemstat` fallback rather than guessing.
+controller uses `dommemstat` rather than guessing. That source is live-observed
+but not production freshness-qualified until M9e completes.
 
 ### 5. Preview before changing memory
 
@@ -184,6 +206,7 @@ For a live resize, follow the approval and rollback procedure in
 | [`docs/feature-matrix.md`](docs/feature-matrix.md) | Feature status by component |
 | [`docs/testing.md`](docs/testing.md) | Local, host, guest, and live validation procedures |
 | [`docs/issues.md`](docs/issues.md) | Known incidents and unresolved issues |
+| [`docs/upstream-virtio-mem-audit.md`](docs/upstream-virtio-mem-audit.md) | Pinned upstream findings and resulting project decisions |
 | [`docs/engineering-standards.md`](docs/engineering-standards.md) | Coding and safety standards |
 
 ## Repository layout

@@ -7,20 +7,20 @@
 | ISSUE-002 | Hysteresis tuning for memory allocation | Open | Linux | Medium |
 | ISSUE-003 | Error handling for libvirt communication | Open | Linux | High |
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
+| ISSUE-006 | `dommemstat` treats balloon `actual` as a whole-guest upper bound and does not validate `last-update` freshness | Reopened; M9e/TASK-025 | Host telemetry | High |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
 | ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode query for `requested_size`/`plugged_size`; the available state message is kernel-debug output | Blocked pending explicit guest tracing/resize approval or a separate signed-driver interface project | Cross-layer state observation | High |
-| ISSUE-012 | Production Windows telemetry samples are discarded because current-allocation ownership is unresolved | Open; M10c | Demand integration | High |
+| ISSUE-012 | Production Windows telemetry samples are discarded pending the selected host-side allocation join | Open; architecture decided, implementation M10c | Demand integration | High |
 | ISSUE-013 | Demand report v1 lacks freshness/identity/provenance and the JSON-lines sink has no retention/rotation contract | Open; M10d | Demand delivery | High |
-| ISSUE-014 | Host workload approval is a static boolean and can outlive the reviewed domain/QEMU configuration | Open; M9d | Host safety | High |
-| ISSUE-015 | Active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b | Host recovery | High |
+| ISSUE-014 | Host workload approval is a static boolean and omits audited backend, memory-slot/VFIO budget, balloon, incompatible-workload, topology, trust, and version evidence | Open; M9d | Host safety | High |
+| ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b, automatic shrink must become default-off until qualified | Host recovery | High |
 
 ## Resolved Issues
 
 | ID | Description | Status | Fix Reference | Date Resolved |
 | --- | ----------- | ------ | -------------- | ------------- |
-| ISSUE-001 | QEMU Guest Agent availability on Windows 11; connected QGA 110.0.2 does not provide `guest-get-memory-stats` | Resolved in code; `dommemstat` fields verified on `win11_gpu`; guest capability still requires a replacement QGA build | `host/src/dommemstat.rs`, `VIRTIO_MEM_STATS_SOURCE` config | 2026-08-18 |
+| ISSUE-001 | Host controller depended on unavailable `guest-get-memory-stats` | Resolved by configurable `dommemstat` default; upstream audit confirms the command is not upstream QGA and the retained adapter is custom/experimental | `host/src/dommemstat.rs`, `VIRTIO_MEM_STATS_SOURCE` config | 2026-08-18; clarified 2026-09-05 |
 | ISSUE-005 | Virtio-mem rollback left `requested` and `current` divergent after the earlier 1 GiB test | Resolved after the updated Windows driver was installed; fresh XML reports `requested=0 KiB` and `current=0 KiB` | Fresh read-only `virsh dumpxml win11_gpu` convergence check | 2026-08-18 |
-| ISSUE-006 | Windows `dommemstat` reports `available` above balloon `actual` | Resolved by conservative fallback to `unused`; host controller is active on `win11_gpu` | `host/src/dommemstat.rs` regression test and live service validation | 2026-08-18 |
 | ISSUE-007 | Invalid service configuration was loaded before SCM dispatcher attachment, causing Windows error 1053 without status or Event Log context | Resolved by dispatching SCM before configuration loading; live invalid-config recovery emitted event 2000 and exit code 1 | `windows/src/main.rs` startup-route regression and M7 live validation | 2026-09-04 |
 | ISSUE-009 | Shared virtio-mem state validation rejected the live fully-unplugged `requested=current=0` state | Resolved by allowing zero observed state while retaining positive-target validation | `VirtioMemState` and live XML regression tests; M9 live CLI validation | 2026-09-05 |
 | ISSUE-010 | Host policy rejected a converged allocation below its configured minimum, preventing the installed controller from bootstrapping a fully unplugged device | Resolved with one aligned request to the configured minimum; normal policy remains one block at a time and above-maximum state fails closed | `plan_resize` regression test and M9b live zero-to-1-GiB systemd convergence | 2026-09-05 |
@@ -137,6 +137,29 @@
   unchanged, so M9d will bind approval to a configuration fingerprint.
 - These gaps block production report ingestion and expansion of automatic
   actuation, but they do not invalidate the completed M7–M9b evidence.
+
+### Upstream virtio-mem audit — 2026-09-05
+
+- The reviewed upstream QGA schemas for QEMU 9.1, 10.1, and master do not
+  define `guest-get-memory-stats`; an upstream agent upgrade is not a remedy.
+- Libvirt `dommemstat actual` is balloon state, and QEMU excludes virtio-mem
+  from balloon size accounting. `available > actual` is not inherently
+  invalid. The parser's total-like bounds and missing freshness checks reopen
+  ISSUE-006 under M9e.
+- `dynamic-memslots` and `unplugged-inaccessible` are only part of the required
+  attestation. M9d now covers backend, slot/mapping, incompatible workload,
+  balloon-resize, topology, trust, and version evidence.
+- Source inspection suggests the Windows driver may not periodically retry a
+  no-progress shrink. This is an inference requiring M10b live evidence;
+  automatic shrinking must gain a default-off control before qualification.
+- `win11_gpu` is explicitly a fully trusted development/test KVM guest.
+  QEMU/libvirt cgroup containment is recommended defense-in-depth for this VM
+  and mandatory for future untrusted or production guests.
+- Phase 2 is restricted to one active controller/device on the development
+  host. M10c is fixed to a host-side telemetry/libvirt allocation join, and
+  M11 owns multi-target reservation and arbitration.
+- Full source notes and pinned revisions are in
+  [`upstream-virtio-mem-audit.md`](upstream-virtio-mem-audit.md).
 
 ## Guidelines
 

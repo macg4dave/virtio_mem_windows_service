@@ -4,6 +4,10 @@
 
 This system manages dynamic memory allocation for a Windows 11 guest running under QEMU using virtio-mem. The repository is intentionally scoped to Rust and Bash only; any runtime service will be implemented as a Rust program rather than a Go controller.
 
+The validated `win11_gpu` instance is a fully trusted development/test KVM
+guest. Upstream Windows virtio-mem support is technology preview; production
+and untrusted-guest operation are outside the current support boundary.
+
 ### Components
 
 - **Windows Service (Rust)**: Guest-side native memory telemetry, advisory demand calculation/publication, cancellation, and service lifecycle hosting
@@ -14,7 +18,7 @@ This system manages dynamic memory allocation for a Windows 11 guest running und
 ### Data Flow
 
 ```text
-Windows demand agent ── future versioned report transport ──► Host policy
+Windows demand agent ── future raw telemetry envelope ─────► Host policy
 QEMU Guest Agent ── virtio-serial/libvirt ─────────────────► Host health adapter
 Live libvirt/QEMU state ───────────────────────────────────► Host controller
 Host controller ── validated aligned request ──────────────► virtio-mem device
@@ -22,17 +26,17 @@ Host controller ── validated aligned request ──────────�
 
 ### Phase 2 and Phase 3 ownership
 
-Phase 2 is a transition architecture. The Windows service may measure guest
-memory and report a demand recommendation, but the existing one-VM RHEL host
-controller remains the allocation and actuation authority. The Windows service
-does not invoke Linux commands, modify libvirt, or directly control
-`viomem.sys`.
+Phase 2 is a transition architecture. The Windows service measures guest
+memory and will publish a fresh raw telemetry envelope. The one-VM RHEL host
+joins that envelope with alias-scoped live libvirt `current`, calculates the
+recommendation, and remains the allocation and actuation authority. The
+Windows service does not invoke Linux commands, modify libvirt, receive a host
+allocation feed, or directly control `viomem.sys`.
 
 The Phase 3 target separates the system into three cooperating layers:
 
-1. **Windows demand agent:** collects native Windows telemetry and reports raw
-    measurements, pressure, demand state, desired target, and safe-floor
-    recommendation.
+1. **Windows demand agent:** collects and publishes fresh, versioned native
+    Windows telemetry and may classify guest-local pressure.
 2. **Per-VM QEMU/libvirt adapter:** validates an aligned target, changes
     virtio-mem `requested`, and observes asynchronous `current` convergence.
 3. **Linux global controller:** owns host reserve, VM pool accounting, and
@@ -41,6 +45,12 @@ The Phase 3 target separates the system into three cooperating layers:
 See [`future-architecture.md`](future-architecture.md) for the target design.
 Multi-VM arbitration and global pool ownership are not implemented by the
 current Phase 2 controller.
+
+Although upstream QEMU/libvirt can model multiple virtio-mem devices, Phase 2
+supports only one active controller managing one explicitly named VM/device on
+this development host. Separate per-instance host-reserve checks do not
+provide global reservation atomicity. Multi-controller/device actuation is
+unsupported until M11 owns the host pool.
 
 ## RHEL host controller lifecycle and boundaries
 
@@ -57,7 +67,11 @@ service. Before a resize, it validates the selected live XML state and target,
 reads `dynamic-memslots` and `unplugged-inaccessible` from the selected live
 QOM device, and requires a separately recorded operator workload review. The
 current review is a static boolean; M9d must bind it to a fingerprint of the
-reviewed live domain/QEMU configuration and fail closed when it changes.
+reviewed live domain/QEMU configuration and fail closed when it changes. That
+attestation includes the selected memory backend and NUMA placement, block/page
+size, memory-slot and VFIO mapping budgets, vDPA/RDMA/VFIO-NVMe/`mlock` and
+secure-virtualization exclusions, vhost-user backend/version compatibility,
+active balloon resizing, device topology, and deployed stack versions.
 After a request, it waits for `requested` and `current` to converge and never
 sends a follow-up request while they differ. Invalid configuration, failed QGA
 calls, malformed XML, failed resize commands, and convergence timeouts are
@@ -72,9 +86,9 @@ These concerns are intentionally separate:
 - **Policy** produces a recommendation or global allocation decision.
 - **Actuation** changes virtio-mem and reports whether the guest converged.
 
-The Phase 2 Windows service owns guest measurement and recommendation only. The
-host controller owns the currently implemented allocation decision and resize
-request. A future global Linux controller will own cross-VM policy.
+The Phase 2 Windows service owns guest measurement only. The host owns the
+planned M10c join, recommendation, allocation decision, and resize request. A
+future global Linux controller will own cross-VM policy.
 
 ## Service Boundaries
 
@@ -129,8 +143,8 @@ advisory reports through an injected JSON-lines sink. The SCM path emits
 bounded lifecycle and failure records to the Windows Application Event Log
 with stable event IDs; raw XML EventData and recovery behavior are verified
 live. Production still runs `NativeTelemetryWorker` and discards validated
-samples. M10c must decide whether the host joins libvirt allocation with raw
-telemetry or supplies a validated allocation feed; M10d must add report
+samples. M10c will implement the host-side join of fresh raw telemetry with
+live libvirt allocation; M10d must add report
 freshness, identity, provenance, ACL, and retention semantics. No Windows
 production resize sink is permitted. The QGA named-pipe client is
 retained as an explicit adapter/test boundary, but the SCM worker does not
@@ -190,7 +204,14 @@ procedure.
     request plus a configured reserve (`VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES`)
     before sending it; insufficient headroom blocks the request for that
     poll cycle instead of failing the service.
-- When the connected QEMU Guest Agent does not implement
-    `guest-get-memory-stats`, the host controller must use an alternative
-    memory-stat source (`virsh dommemstat`) rather than proceed without
-    metrics; see `docs/api-contract.md`.
+- When the connected QEMU Guest Agent does not implement the nonstandard
+    `guest-get-memory-stats` extension, the host controller uses
+    `virsh dommemstat`; M9e must correct its balloon semantics and enforce
+    `last-update` freshness before it is production-qualified.
+- QEMU does not completely prevent guest access to unplugged memory. A hard
+    QEMU/libvirt cgroup memory limit is recommended defense-in-depth for fully
+    trusted development guest `win11_gpu` and mandatory for untrusted or
+    production deployments.
+- Automatic Windows shrinking remains unqualified. M10b must add a default-off
+    control and prove a bounded retry/re-notification/recovery model before
+    automated reclaim is supported.
