@@ -27,7 +27,7 @@ been measured.
 │ GlobalMemoryStatusEx         │
 │ GetPerformanceInfo           │
 │ Optional paging/trend data   │
-│ Demand state and targets     │
+│ Raw telemetry + pressure     │
 └──────────────┬───────────────┘
                │ versioned demand report
                ▼
@@ -36,6 +36,7 @@ been measured.
 │                              │
 │ Host reserve and pressure    │
 │ VM pool accounting           │
+│ Telemetry/allocation join    │
 │ Growth/reclaim arbitration   │
 │ Allocation decisions         │
 └──────────────┬───────────────┘
@@ -64,7 +65,7 @@ been measured.
 
 | Concern | Owner | Rule |
 | --- | --- | --- |
-| Windows memory measurement | Windows service | Report observations and recommendations; do not allocate globally. |
+| Windows memory measurement | Windows service | Publish fresh raw observations and optional guest-local pressure; do not calculate from guessed host allocation or allocate globally. |
 | Global RAM pool | Linux controller | The only owner of cross-VM capacity and allocation accounting. |
 | Per-VM actuation | QEMU/libvirt adapter and virtio-mem | Apply an aligned target asynchronously and report convergence. |
 | Host safety | Linux controller and host adapter | Reserve host capacity and fail closed when evidence is stale or incomplete. |
@@ -79,6 +80,12 @@ write recovery, and reader-handoff rules.
 
 The Windows service must not invoke Linux commands, mutate libvirt state, or
 open an undocumented driver control path as part of the initial design.
+
+The current `win11_gpu` deployment is a fully trusted development/test guest
+and Windows virtio-mem remains technology preview. QEMU does not completely
+protect unplugged memory from guest access, so a hard QEMU/libvirt cgroup
+memory limit is recommended defense-in-depth for this guest and mandatory for
+any untrusted or production deployment.
 
 ## Phase 2 boundary
 
@@ -96,11 +103,14 @@ resize path:
 Phase 2 does **not** implement multi-VM arbitration, automatic global reclaim,
 or direct `viomem.sys` IOCTLs.
 
-The unresolved M10c ownership decision is how to combine native telemetry with
-host-authoritative current allocation. Preferred designs either calculate the
-recommendation on the host after joining raw guest telemetry with live libvirt
-state, or provide a validated allocation feed to the guest. The Windows
-service must never guess allocation or acquire host-control authority.
+M10c uses one explicit model: the host calculates the recommendation after
+joining a fresh, versioned raw Windows telemetry envelope with alias-scoped
+live libvirt `current`. The Windows service never guesses allocation, receives
+a host-allocation feed, or acquires host-control authority.
+
+Phase 2 permits one active controller/device on the development host. Per-VM
+instances do not share an atomic reservation, so upstream multi-device support
+does not authorize multi-controller actuation before the Phase 3 pool exists.
 
 ## Phase 3 global pool model
 
@@ -151,9 +161,9 @@ configured maximum ─ administrative/device ceiling
 ```
 
 The Windows agent may calculate `desired target` and recommend a `safe floor`,
-but the Linux controller decides whether either recommendation is accepted.
-A safe floor is advisory until it has been validated against workload history
-and actual virtio-mem convergence.
+in local version-1 tests, but production target calculation moves to the Linux
+controller after the M10c join. A safe floor is advisory until it has been
+validated against workload history and actual virtio-mem convergence.
 
 ## Arbitration policy
 
@@ -169,6 +179,19 @@ in-flight operations, and host pressure.
 Per-VM actuation authorization must also be bound to the reviewed live
 domain/QEMU configuration. A static workload-review boolean is insufficient:
 configuration fingerprint drift must revoke authorization and require review.
+The fingerprint includes memory backend/page/NUMA properties, slot and VFIO
+mapping budgets, active balloon resizing, incompatible workloads/devices,
+topology, trust classification, and deployed versions.
+
+Host-side `dommemstat` is pressure telemetry, not allocation authority:
+`actual` is balloon state and can legitimately be below `unused` or
+`available`. M9e must validate `last-update`; live alias-scoped libvirt
+`current` remains the allocation input.
+
+The reviewed Windows driver is event driven and has no obvious periodic retry
+timer for a no-progress shrink. Automatic reclaim is not currently qualified;
+M10b must add a default-off control and prove autonomous retry, safe bounded
+same-target re-notification, or a controlled failed-shrink recovery path.
 
 The initial global states are:
 

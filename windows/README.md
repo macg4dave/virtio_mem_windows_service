@@ -3,6 +3,10 @@
 Rust service that collects native Windows memory telemetry and will publish
 advisory demand reports. It does not own host actuation or the QGA channel.
 
+The validated `win11_gpu` target is a fully trusted development/test KVM guest.
+Upstream Windows virtio-mem is technology preview; this crate does not claim
+production or untrusted-guest support.
+
 ## Project Rules
 
 This service must use Rust only. No C# or PowerShell code is allowed in this repository.
@@ -36,7 +40,8 @@ cargo build --release
 Build this crate on Windows (or a host with an installed Windows Rust target
 and compatible linker). The RHEL development host does not currently contain
 the Windows target standard library or a Windows linker, so it cannot produce
-the service executable. The QGA client remains an explicit adapter boundary,
+the service executable. The `guest-get-memory-stats` client remains an
+experimental custom/downstream adapter boundary—not an upstream QGA API—
 but the Windows service does not open the QGA virtio-serial device because
 `QEMU-GA` owns it. Service startup uses native Windows telemetry; host-side QGA
 requests remain a RHEL/libvirt responsibility.
@@ -119,10 +124,11 @@ pending. SCM lifecycle and failure events are separately emitted to the
 Windows Application Event Log with stable IDs and bounded messages. The
 generic `DemandServiceWorker` and JSON-lines publisher are
 available, but the SCM entry point currently runs `NativeTelemetryWorker` and
-discards each validated sample. Before publication is wired, the architecture
-must decide whether the host joins authoritative libvirt allocation with raw
-guest telemetry or supplies a validated allocation feed. Report freshness,
-identity, retention, and ACL requirements are also still open.
+discards each validated sample. Before publication is wired, M10c must
+implement the selected architecture: Windows publishes a fresh raw telemetry
+envelope, and the host joins it with alias-scoped live libvirt `current` before
+calculating the target. Windows receives no host allocation feed. Report
+freshness, identity, retention, and ACL requirements are also still open.
 
 ## Service hosting rules
 

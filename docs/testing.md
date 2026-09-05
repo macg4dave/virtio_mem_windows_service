@@ -164,6 +164,12 @@ explicit VM's state, virtio-mem XML, and QGA memory statistics, then mirrors the
 shared policy thresholds and block alignment checks. It never invokes
 `update-memory-device` and is safe to use before enabling the systemd unit.
 
+This helper is now a legacy diagnostic, not a faithful preview of the deployed
+default: it calls the non-upstream `guest-get-memory-stats` extension and does
+not reuse the controller's `dommemstat` source/freshness logic. M9e/TASK-025
+must replace it with a Rust decision command before decision-preview output is
+used as policy evidence.
+
 The policy values must be supplied as environment variables matching the host
 controller configuration. The script returns status `0` for `NO CHANGE`, `10`
 when a resize **would** be requested, and `20` when the decision is blocked or
@@ -180,9 +186,9 @@ set +a
 bash scripts/preview-memory-decision.sh "$VIRTIO_MEM_VM_NAME" "$VIRTIO_MEM_ALIAS"
 ```
 
-The current `win11_gpu` guest is expected to return `BLOCKED` until its QEMU
-Guest Agent provides `guest-get-memory-stats`; this confirms that the preview
-refuses to guess when the required observation is missing.
+The current `win11_gpu` guest is expected to return `BLOCKED` because upstream
+QGA does not provide `guest-get-memory-stats`. This validates only that the
+legacy helper refuses to guess; upgrading upstream QGA will not unblock it.
 
 #### Reversible live-resize test
 
@@ -256,6 +262,12 @@ current guest's missing `guest-get-memory-stats` capability will leave the QGA
 columns as unavailable, but XML `requested/current` convergence can still be
 observed.
 
+For Windows shrink tests, convergence timeout is not proof that the installed
+driver will retry. Source review found no obvious periodic retry timer. Do not
+enable unattended shrink until M10b proves autonomous retry, safe bounded
+same-target re-notification, or a controlled failed-shrink recovery path and
+the controller has a default-off automatic-shrink control.
+
 Run the native RHEL gate before installing the controller:
 
 ```bash
@@ -280,19 +292,24 @@ must never replay a prior resize request.
 
 #### Memory-stat source configuration
 
-The connected QGA (`110.0.2` on `win11_gpu`) does not implement
-`guest-get-memory-stats`, so `VIRTIO_MEM_STATS_SOURCE` defaults to
+The connected QGA (`110.0.2` on `win11_gpu`) does not implement the custom
+`guest-get-memory-stats` extension, so `VIRTIO_MEM_STATS_SOURCE` defaults to
 `dommemstat`, which reads `virsh dommemstat <vm>` (virtio-balloon counters)
 instead. Before enabling the systemd unit, confirm with a read-only
 `virsh dommemstat win11_gpu` that the domain reports `actual` and `unused`
 (and ideally `available`); if the balloon driver does not report these
 fields, the controller will fail closed with an explicit `GuestStats` error
-rather than guess. Set `VIRTIO_MEM_STATS_SOURCE=qga` only for a guest agent
-known to implement `guest-get-memory-stats`.
+rather than guess. Set `VIRTIO_MEM_STATS_SOURCE=qga` only for an exact
+custom/downstream agent validated to implement the extension; upstream QGA
+version alone is never evidence.
 
 Some Windows balloon reports may expose `available` above `actual`. The host
-parser treats that optional counter as out of range and conservatively falls
-back to `unused`; it does not use the impossible value for policy decisions.
+parser currently treats that optional counter as out of range and falls back
+to `unused`. The upstream audit found this is incorrect: `actual` is balloon
+state, not a whole-guest upper bound, so `available > actual` is not inherently
+impossible. The parser also ignores `last-update`. M9e must add regression
+tests for missing, stale, future, and non-advancing timestamps and for
+`unused`/`available > actual` before the source is production-qualified.
 
 `VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES` is a required configuration value: the
 controller will not send a grow request unless the RHEL host's
@@ -302,9 +319,12 @@ controller logs and waits for the next poll interval rather than crashing the
 systemd unit.
 
 `VIRTIO_MEM_WORKLOAD_REVIEWED` is also required. Set it to `true` only after
-the explicitly scoped VM has been reviewed for VFIO-NVMe, RDMA migration,
-`mlock`, and unsupported vhost-user dependencies; `false` preserves unknown
-workload evidence and blocks resize preparation. Independently of that
+the explicitly scoped VM has been reviewed for vDPA, VFIO-NVMe, RDMA migration,
+`mlock`, encrypted/secure virtualization, active balloon resize, vhost-user
+backend/version and slot capacity, VFIO mapping budget, backend sparse/reserve/
+preallocation/share/core-dump/page-size/NUMA properties, topology, and deployed
+versions. `false` preserves unknown workload evidence and blocks resize
+preparation. Independently of that
 operator statement, the controller refreshes `dynamic-memslots` and
 `unplugged-inaccessible` from the selected QOM device through bounded QMP
 requests before every prepared resize.
@@ -544,9 +564,9 @@ Successful QGA reads were `guest-info`, `guest-ping`, `guest-get-osinfo`, and
 x64, and hostname `ICE101`.
 
 QGA `guest-get-memory-stats` returns `command ... has not been found`, and
-`guest-info` does not advertise that command. This is a guest-agent capability
-issue, not a transport failure; three `dommemstat` samples are the validated
-fallback for this guest.
+`guest-info` does not advertise that command. This is expected for upstream
+QGA, not a transport failure; three `dommemstat` samples prove observability,
+while M9e still has to qualify their semantics and freshness.
 
 The compatible `virsh dumpxml win11_gpu` inspection found virtio-mem alias
 `ua-virtiomem0`, size `20971520 KiB` (20 GiB), block `2048 KiB` (2 MiB), and
@@ -723,9 +743,9 @@ handoff contract, so this proves local append/flush behavior only. The default
 path is under `C:\ProgramData\VirtioMemService`; installation must provision
 the directory and least-privilege ACLs before enabling unattended service
 output. The main SCM
-worker remains unconnected to publication until M10c selects the
-current-allocation ownership model; tests must not substitute a configured
-minimum, aggregate physical memory, or QGA total for that state.
+worker remains unconnected to publication until M10c implements the selected
+host-side join; tests must not substitute a configured minimum, aggregate
+physical memory, QGA total, or balloon `actual` for live libvirt `current`.
 
 The native collector calls `GlobalMemoryStatusEx` for physical memory and
 `GetPerformanceInfo` for page-based commit/system counters. Page counters are
@@ -734,16 +754,23 @@ failures and invalid snapshots return explicit errors. The report is version 1
 and serializes canonical-byte values; it is advisory only and has no resize
 interface.
 
-### M9d/M10c/M10d hermetic gates
+### M9d/M9e/M10c/M10d hermetic gates
 
 Before expanding live actuation or enabling unattended demand publication:
 
 - M9d tests must hash the reviewed domain/QEMU configuration, accept an exact
   match, and fail closed on changed aliases, incompatible device classes,
-  relevant QMP properties, memory backing, or workload declarations.
-- M10c tests must prove the selected allocation join uses a fresh,
-  alias-scoped host allocation with explicit provenance. Missing, stale,
-  cross-VM, or conflicting allocation state must prevent publication.
+  QMP properties, memory backend/page/NUMA attributes, slot and VFIO mapping
+  budgets, balloon-resize state, topology, trust classification, deployed
+  versions, or workload declarations.
+- M9e tests must accept `unused` and `available` above balloon `actual`, retain
+  `available` when otherwise valid, and reject missing, stale, future, or
+  non-advancing `last-update`. The Rust decision CLI must use the controller's
+  configured source and produce the same decision as one runtime cycle.
+- M10c tests must prove the host joins a fresh raw Windows envelope with a
+  fresh alias-scoped live libvirt `current` snapshot and calculates the target
+  there. Missing, stale, cross-VM, or conflicting state must prevent policy;
+  no host allocation feed or guest resize interface is permitted.
 - M10d tests must reject unsupported versions, stale timestamps, replayed or
   non-monotonic sequences, wrong VM/session identity, missing provenance,
   truncated lines, oversized records, and partial writes. Retention/rotation
@@ -753,6 +780,21 @@ Before expanding live actuation or enabling unattended demand publication:
 
 The demand report must be read-only with respect to virtio-mem. A passing local
 collector test does not prove that QEMU/libvirt or `viomem.sys` converges.
+
+### Trusted development deployment boundary
+
+`win11_gpu` is a fully trusted development/test KVM guest and the only
+currently supported live topology is one active controller managing its one
+explicit virtio-mem alias. Validate that no second controller instance is
+active before a Phase 2 mutation. Multiple devices may exist upstream, but
+multi-controller/device actuation waits for M11 atomic global reservation.
+
+Because QEMU does not completely protect unplugged memory from guest access,
+record a hard QEMU/libvirt cgroup memory limit for untrusted or production
+tests; absence is a hard failure. For trusted `win11_gpu`, record whether the
+limit exists and treat it as recommended defense-in-depth, not a current gate.
+This trust exception must not be copied to another VM without an explicit
+support-profile change.
 
 ## Phase 3 driver and global-controller validation
 
@@ -874,5 +916,6 @@ The cross-layer work is split into explicit validation gates:
 - Further live QEMU Guest Agent, libvirt, tracing, reboot, service, or resize
   validation requires the named RHEL host/Windows guest, explicit scope, and
   the approval procedure above. M7–M9b evidence already passes.
-- M10a1 is blocked on approved bounded kernel-debug capture; M10c/M10d and
-  M9d remain unprivileged design/test work and should proceed independently.
+- M10a1 is blocked on approved bounded kernel-debug capture; M9d/M9e and
+  M10c/M10d remain unprivileged design/test work and should proceed
+  independently.

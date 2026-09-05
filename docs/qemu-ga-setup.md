@@ -100,14 +100,17 @@ If you get an error like `"command not found"` or `"timed out"`, verify:
 - VM was restarted after XML changes
 - QEMU/libvirt versions support Guest Agent
 
-## Step 4: Validate Memory Stats API
+## Step 4: Probe the optional custom memory extension
 
-Test the memory stats endpoint:
+`guest-get-memory-stats` is not defined by upstream QGA in the reviewed QEMU
+9.1, 10.1, or master schemas. Do not upgrade upstream QGA expecting this
+command to appear. The following read-only request is only a capability probe
+for an explicitly identified custom/downstream guest agent:
 
 ```bash
 virsh qemu-agent-command win11_gpu '{"execute":"guest-get-memory-stats"}'
 
-# Expected output (example):
+# Possible custom-extension output (example):
 # {
 #   "return": [
 #     { "stat": "stat-free", "value": 2147483648 },
@@ -117,7 +120,9 @@ virsh qemu-agent-command win11_gpu '{"execute":"guest-get-memory-stats"}'
 # }
 ```
 
-**Field meanings**:
+If upstream QGA returns `command ... has not been found`, that is the expected
+result and does not indicate broken QGA connectivity. If a custom agent
+implements the extension, its repository-specific field meanings are:
 
 - `stat-free`: Free memory in bytes (not including caches)
 - `stat-total`: Total allocated memory in bytes
@@ -148,7 +153,10 @@ Record the following for the project documentation:
 - [ ] QEMU version: `qemu-system-x86_64 --version`
 - [ ] libvirt version: `virsh version`
 - [ ] Guest Agent version: (captured from guest-info output)
-- [ ] Response latency for guest-get-memory-stats (milliseconds)
+- [ ] Whether an exact custom/downstream `guest-get-memory-stats` provider is
+      installed; otherwise record the expected absence
+- [ ] Response latency and `last-update` freshness for the configured host
+      memory-stat source
 - [ ] Consistency: Run 3+ consecutive queries and verify results
 - [ ] Socket stability: Test 100+ rapid consecutive commands
 
@@ -167,10 +175,12 @@ implicitly:
 bash scripts/validate-guest-agent.sh win11_gpu 3
 ```
 
-The helper validates `guest-info` once and then validates the configured
-memory-stat source for the requested number of attempts. When
-`guest-get-memory-stats` is unavailable, it fails over to `virsh dommemstat`
-and requires numeric `actual` and `unused` fields. It defaults to
+The helper validates `guest-info` once, probes the custom memory extension,
+and then validates the configured memory-stat source for the requested number
+of attempts. When the extension is unavailable, it falls back to
+`virsh dommemstat` and requires numeric `actual` and `unused` fields. Current
+code does not validate `last-update`; M9e tracks that production prerequisite.
+It defaults to
 `qemu:///system`; set `VIRSH_CONNECT` to use another libvirt URI. It does not
 resize memory, restart the VM, or execute commands inside the guest.
 
@@ -190,13 +200,16 @@ approval):
 
 ### Issue: "command not found"
 
-**Cause**: QEMU Guest Agent doesn't support `guest-get-memory-stats` or old version.
+**Cause**: Upstream QEMU Guest Agent does not define
+`guest-get-memory-stats`; absence is independent of upstream version.
 
 **Solution**:
 
-1. Verify whether the advertised capability list contains the command.
-2. Use the repository helper and its validated `dommemstat` fallback when the
-   command is absent.
+1. Verify the advertised capability list rather than assuming support from a
+   version number.
+2. Use the repository helper and its `dommemstat` default when the custom
+   command is absent. Treat it as development telemetry until M9e adds
+   freshness and correct balloon semantics.
 3. Do not treat an absent Windows QGA command as a Windows service failure.
 
 ### Issue: JSON parsing errors
@@ -212,7 +225,7 @@ approval):
 ## Example: Manual Integration Checks
 
 The repository helper above replaces the earlier ad-hoc script. Equivalent
-manual checks are:
+manual connectivity and optional-extension checks are:
 
 ```bash
 #!/bin/bash
@@ -230,8 +243,11 @@ checkout does not preserve executable bits, run `chmod +x scripts/*.sh`.
 QGA setup is successful for the current project when:
 
 - [ ] `virsh qemu-agent-command` returns JSON responses (not errors)
-- [ ] `guest-get-memory-stats` returns valid memory values, or the repository
-      helper obtains valid `actual`/`unused` values from `dommemstat`
+- [ ] Advertised upstream QGA commands such as `guest-info` return valid JSON
+- [ ] The optional custom memory extension is explicitly identified, or its
+      expected absence is recorded and `dommemstat` is observable
+- [ ] Before production use, M9e validates `dommemstat last-update` freshness
+      and corrects balloon `actual` semantics
 - [ ] Multiple consecutive commands succeed without timeout
 - [ ] Responses are documented and reviewed
 
@@ -249,5 +265,7 @@ Once validated:
 As of 2026-09-04, `win11_gpu` reports QGA `110.0.2`. Repeated `guest-info`
 calls, isolated QGA restart recovery, and graceful guest reboot recovery pass.
 This build does not implement `guest-get-memory-stats`; repeated numeric
-`dommemstat` samples are the verified host fallback. These facts do not imply
-that the Windows demand service uses the QGA channel.
+`dommemstat` samples show the default source is observable. They do not prove
+freshness or make balloon `actual` authoritative for whole-guest/virtio-mem
+allocation; M9e owns that correction. These facts do not imply that the
+Windows demand service uses the QGA channel.

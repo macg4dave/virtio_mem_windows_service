@@ -1,5 +1,30 @@
 # BACKLOG
 
+## 2026-09-05 upstream virtio-mem audit and milestone update
+
+- Completed TASK-024, a pinned review of the virtio-mem site, QEMU/libvirt
+  documentation and QGA schemas, and the Windows `viomem` source corresponding
+  to the installed driver.
+- Reopened ISSUE-006 and added M9e/TASK-025: `dommemstat actual` is balloon
+  state rather than whole-guest allocation, `available > actual` is valid, and
+  the current adapter does not check `last-update` freshness.
+- Confirmed `guest-get-memory-stats` is not an upstream QGA command. The
+  existing adapter remains an experimental custom/downstream boundary; an
+  upstream QGA upgrade is not a remedy.
+- Expanded M9d/TASK-019 to fingerprint backend, memory-slot/VFIO budget,
+  balloon-resize, incompatible-workload, topology, trust, and version evidence.
+- Selected the M10c/TASK-020 architecture: Windows publishes a fresh raw
+  telemetry envelope; the host joins alias-scoped live libvirt `current` and
+  calculates the target. No host allocation feed or guest actuation is added.
+- Expanded M10b/TASK-022 with Windows shrink retry/recovery qualification and
+  a required default-off automatic-shrink control until that evidence passes.
+- Restricted Phase 2 to one active controller/device on the development host;
+  M11 owns multi-target reservation. `win11_gpu` is a fully trusted
+  development/test guest, so a hard QEMU/libvirt memory limit is recommended
+  defense-in-depth here and mandatory for future untrusted/production guests.
+- Full findings and source pins are in
+  `docs/upstream-virtio-mem-audit.md`. No live host or guest state changed.
+
 ## 2026-09-05 whole-roadmap reconciliation
 
 - Reconciled every project document against the current Rust implementation
@@ -388,18 +413,18 @@ Execution source of truth. Update after every session.
   QEMU device path. Formatting, Clippy, and all 69 workspace tests pass.
 - Rebuild and redeploy the Windows service binary before repeating SCM start.
 
-## 2026-08-18 guest-get-memory-stats clarification
+## 2026-08-18 guest-get-memory-stats clarification — superseded by 2026-09-05 upstream audit
 
-- Confirmed that `guest-get-memory-stats` is already implemented end to end in
-  the repository: the Windows named-pipe client sends the newline-delimited
-  request, the shared parser validates `stat-free`, `stat-total`, and optional
-  `stat-available`, and the host `virsh` adapter sends the same exact command.
+- Confirmed that the custom `guest-get-memory-stats` adapter is implemented end
+  to end in the repository: the Windows named-pipe client sends the newline-
+  delimited request, the shared parser validates `stat-free`, `stat-total`, and
+  optional `stat-available`, and the host `virsh` adapter sends the same exact
+  command.
 - Workspace validation passed with 78 tests and no failures.
-- No Rust change is required to add the command. The connected external QEMU
-  Guest Agent reports the command as unavailable, so enabling it requires
-  installing/upgrading/configuring a QGA build that implements the command on
-  the Windows guest. Until then, retain the host `dommemstat` fallback and do
-  not claim live QGA memory-stat support.
+- No Rust change is required to add the custom adapter. The later pinned audit
+  established that upstream QGA does not define the command, so an upstream
+  upgrade is not a remedy. Enable it only with an exact validated downstream
+  implementation; otherwise use `dommemstat` subject to M9e.
 
 ## 2026-08-18 Windows QGA/build handoff
 
@@ -413,10 +438,10 @@ Execution source of truth. Update after every session.
   `x86_64-pc-windows-gnu` is not installed and no MinGW, Clang, LLD, or MSVC
   linker is available. Build `virtio-mem-service` on the Windows guest or a
   Windows build host, then validate the QGA command there.
-- The live QGA still does not advertise `guest-get-memory-stats`; installing
-  or updating the external Windows QEMU Guest Agent remains required for
-  native QGA memory-stat support. The host `dommemstat` fallback remains the
-  default and is already implemented.
+- The live QGA still does not advertise `guest-get-memory-stats`. The later
+  upstream audit confirms that this is expected; only a custom/downstream
+  implementation could provide it. The host `dommemstat` adapter remains the
+  default and is implemented, with correctness/freshness work in TASK-025.
 
 ## 2026-08-18 privileged-probe batching handoff
 
@@ -615,14 +640,15 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
 | TASK-015 | M10a2 correlated capture harness | Copilot | Ready | 2-3 hours | Hermetic versioned evidence records and parser/correlation tests; no privileged capture required |
-| TASK-019 | M9d compatibility-attestation drift guard | Copilot | Ready | 2-3 hours | Bind workload approval to a live configuration fingerprint and fail closed on drift |
-| TASK-020 | M10c current-allocation ownership | Copilot | Ready | 2-3 hours | Decide and test how host-authoritative allocation is joined with guest telemetry without guest actuation |
+| TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | Ready | 4-6 hours | Fingerprint backend, slot/VFIO budget, balloon, workload/device, topology, trust, and version evidence; fail closed on drift |
+| TASK-020 | M10c host-side current-allocation join | Copilot | Ready | 3-5 hours | Join fresh raw Windows telemetry with alias-scoped live libvirt `current` and calculate the target on the host |
+| TASK-025 | M9e host telemetry correctness and freshness | Copilot | Ready | 3-5 hours | Correct `dommemstat` balloon semantics, enforce `last-update` freshness, and replace the QGA-only Bash preview with Rust controller logic |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry and the version-1 advisory calculator/publisher are implemented. Production runs `NativeTelemetryWorker` and discards samples; TASK-020 must decide allocation ownership before publication, and TASK-021 must add freshness/identity/retention semantics. ProgramData ACLs and live workload tuning remain. |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry and the version-1 advisory calculator/publisher are implemented. Production runs `NativeTelemetryWorker` and discards samples; TASK-020 implements the selected host-side allocation join, and TASK-021 adds freshness/identity/retention semantics. ProgramData ACLs and live workload tuning remain. |
 
 ## Planned
 
@@ -632,7 +658,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-017 | M10a4 state-contract decision | Copilot | Planned | TASK-016 | Contract documents define authoritative fields and transition semantics from the captured evidence |
 | TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | TASK-014 failure only | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
 | TASK-021 | M10d demand envelope and bounded delivery | Copilot | Planned | TASK-020 | Versioned identity/freshness/provenance envelope, replay rules, ACLs, partial-record handling, and retention/rotation tests pass |
-| TASK-022 | M10b single-VM failure/recovery matrix | Copilot + Operator | Planned | TASK-016, TASK-017 | Deterministic and live rejection, timeout, non-convergence, reboot, cancellation, and restart evidence proves no replay or overlap |
+| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned | TASK-016, TASK-017, TASK-025 | Add a default-off automatic-shrink control and prove bounded shrink retry/re-notification/recovery plus rejection, timeout, non-convergence, reboot, cancellation, and restart without replay or overlap |
 
 ### 2026-08-18 live KVM handoff
 
@@ -789,7 +815,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
 | TASK-001 | Rust service scaffolding | Copilot | 2026-09-04 | Service lifecycle, configuration, SCM adapter, native telemetry worker, legacy QGA adapter boundary, cancellation, error handling, and live SCM validation are complete; demand publication continues under TASK-009. |
-| TASK-002 | QEMU Guest Agent validation | Copilot + Operator | 2026-09-04 | Repeated live QGA and `dommemstat` probes passed before and after an isolated `qemu-ga` restart and graceful `win11_gpu` reboot; QGA memory stats remain unsupported and the verified fallback remains authoritative. |
+| TASK-002 | QEMU Guest Agent validation | Copilot + Operator | 2026-09-04 | Repeated live advertised-QGA and `dommemstat` probes passed across agent restart and guest reboot; later audit classified the QGA memory adapter as custom and moved `dommemstat` semantics/freshness to TASK-025. |
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
 | TASK-004 | Windows memory polling policy | Copilot | 2026-08-18 | Parser, policy, adapter loop, wakeable polling, and service-hosting tests pass; production telemetry publication is tracked by TASK-009/TASK-020. |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | 2026-08-18 | Framing, response correlation, malformed input, bounded overlapped I/O, operation timeout, and cancellation are tested as an adapter boundary; Windows production telemetry does not open QGA. |
@@ -800,6 +826,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-010 | Rust host CLI replaces Bash resize helper | Copilot | 2026-09-04 | Rust owns alias-scoped snapshot/validation, exact dry-run arguments, explicitly applied one-shot resize, and shared safety gates; 44 core/host tests pass and the duplicate Bash helper is removed. |
 | TASK-012 | Windows installation and recovery operations | Copilot | 2026-09-04 | LocalService install/start/observe/stop/delete and rollback passed; events 1000–1003, failure event 2000, exit codes, and the first 5-second recovery restart were verified live. |
 | TASK-023 | Whole-roadmap documentation reconciliation | Copilot | 2026-09-05 | Reconciled ownership, current evidence, test counts, milestones, blockers, task states, and stale historical claims across all project documentation. |
+| TASK-024 | Upstream virtio-mem deep audit | Copilot | 2026-09-05 | Pinned and reconciled upstream QEMU/libvirt/QGA/virtio-win constraints; added M9e/TASK-025, expanded M9d/M10b/M11, selected the M10c host-side join, and documented the trusted development-only support boundary. |
 
 ## Blocked
 
@@ -809,6 +836,23 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-014 | M10a1 driver observability qualification | Copilot + Operator | Blocked | Requires explicit approval to stage checksum-recorded signed `DbgViewCLI`, run a bounded elevated no-resize kernel capture on `ice101.lan`, prove the capture engine is operational, and account for process, `Dbgv.sys`, artifacts, and cleanup; this gate does not claim driver-state evidence. |
 
 ## Architecture Decisions
+
+### 2026-09-05 upstream audit decisions
+
+- `win11_gpu` is a fully trusted development/test-only KVM guest. Windows
+  virtio-mem is treated as technology preview, not production support.
+- A hard QEMU/libvirt cgroup memory limit is recommended defense-in-depth for
+  this trusted guest and mandatory for any future untrusted/production guest.
+- M10c uses a host-side join: Windows publishes fresh raw telemetry, while the
+  host joins alias-scoped live libvirt `current` and calculates the target.
+- `guest-get-memory-stats` is a custom/downstream adapter contract, not an
+  upstream QGA capability. Upstream QGA remains a health/identity channel.
+- `dommemstat actual` is balloon state, so M9e corrects its bounds and adds
+  source freshness before production qualification.
+- Phase 2 permits one active controller/device on the development host. M11
+  must provide atomic global reservation before multi-target actuation.
+- Windows automatic shrink must gain a default-off control and remain disabled
+  until M10b proves a bounded retry or recovery path.
 
 ### 2026-08-18 demand-agent and global-controller design review
 
