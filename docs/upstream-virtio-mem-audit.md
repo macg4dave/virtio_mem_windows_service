@@ -27,6 +27,13 @@ technology preview and this project does not claim production support.
   and QGA schemas for QEMU 9.1, 10.1, and current master.
 - The virtio-win [`viomem` driver source](https://github.com/virtio-win/kvm-guest-drivers-windows/tree/master/viomem)
   and the source corresponding to the installed signed driver.
+- The [Virtio 1.2 memory-device specification](https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html),
+  the [libvirt memory-device contract](https://libvirt.org/kbase/memorydevices.html),
+  and QEMU's [`MEMORY_DEVICE_SIZE_CHANGE`](https://gitlab.com/qemu-project/qemu/-/blob/master/qapi/machine.json)
+  contract.
+- Microsoft's [DebugView](https://learn.microsoft.com/sysinternals/downloads/debugview)
+  and [kernel debug-message filtering](https://learn.microsoft.com/windows-hardware/drivers/debugger/reading-and-filtering-debugging-messages)
+  documentation.
 
 The website is useful design guidance, but it is not a release manifest. It
 simultaneously describes Windows support as unstable technology preview and
@@ -139,6 +146,32 @@ raw telemetry envelope; the host will join it with alias-scoped live libvirt
 `current` and calculate the desired target. Windows must not guess allocation,
 receive host-control authority, or invoke host tools. Demand report v1 remains
 a local calculator/test foundation and is not production-ingestion ready.
+
+### 8. Host allocation semantics do not depend on driver debug capture
+
+The Virtio memory-device specification defines `requested_size` and
+`plugged_size` as read-only device-configuration fields: the device changes the
+request and must update the plugged count to reflect block state. The reviewed
+virtio-win worker reads those fields directly and compares them to select plug
+or unplug work. QEMU/libvirt expose requested intent and guest-cooperative
+allocation as alias-scoped `requested` and `current`; QEMU emits a memory-device
+size-change event when the guest changes the provided size.
+
+The repository therefore treats live libvirt `current` as the authoritative
+host allocation value for the pinned stack. The driver's `Memory config` debug
+record echoes device configuration; it can validate notification timing,
+installed-binary behavior, and failure diagnosis, but it is not an independent
+accounting source. Missing user-mode driver telemetry no longer blocks M10c,
+M10d, or hermetic M11 simulation.
+
+Bounded kernel capture remains optional and operator-approved. A qualification
+attempt must account for Windows debug-print filtering as well as the capture
+process and temporary `Dbgv.sys`; a successful no-resize tool run alone does
+not prove that informational viomem records can reach the capture buffer. It
+must not silently enable boot logging, persist a debug-filter registry change,
+restart the driver, or reboot the guest. Automatic shrink remains blocked on
+M10b behavioral and recovery evidence, regardless of whether diagnostic trace
+is available.
 
 ## Preserved invariants
 

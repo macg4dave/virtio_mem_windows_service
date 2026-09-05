@@ -14,9 +14,10 @@ The system separates three concerns that must not compete for authority:
 3. **Actuation:** request and observe virtio-mem changes.
 
 Phase 2 establishes the Windows demand-agent foundation while retaining the
-current single-VM host controller and its conservative convergence rules. Phase
-3 adds global arbitration only after the state mapping and live behavior have
-been measured.
+current single-VM host controller and its conservative convergence rules. The
+Virtio contract and pinned implementation sources establish host allocation
+semantics; Phase 3 simulation can use that contract while installed-driver
+diagnostics and live shrink behavior remain separately qualified.
 
 ## Target component model
 
@@ -266,14 +267,22 @@ The preferred integration order is:
 3. correlate driver state through supported observation or tracing;
 4. only then consider a narrowly scoped read-only driver status interface.
 
-## State terminology and validation gap
+## State terminology and authority
 
 The Phase 2 host contract uses libvirt XML fields `requested` and `current`.
 The upstream driver uses `requested_size` and `plugged_size`. These fields are
-conceptually related but must not be declared interchangeable without live
-validation across QEMU, libvirt, and the Windows driver. Phase 3 must capture
-both views during controlled, reversible tests and document the observed
-mapping.
+the read-only device-configuration forms of the same requested and plugged
+allocation under the Virtio memory-device specification. The reviewed Windows
+worker reads them directly and compares them to choose plug or unplug work.
+For the pinned stack, alias-scoped libvirt `current` is the authoritative host
+allocation value and `requested != current` denotes an in-flight or stalled
+operation.
+
+Kernel-debug capture of the driver's `Memory config` record validates how the
+installed binary received and acted on a notification, but it echoes device
+configuration and is not a second accounting authority. It is diagnostic
+evidence for live behavior and shrink recovery, not a prerequisite for global
+pool simulation.
 
 The repository's 1 GiB `MIN_HEADROOM_BYTES` rule remains a device safety
 headroom invariant. It is not a universal Windows minimum-memory rule and must
@@ -283,15 +292,16 @@ not be presented as a substitute for a configured VM minimum or a host reserve.
 
 1. **Phase 2 telemetry:** implement native collection and deterministic demand
    calculation without changing host actuation authority.
-2. **State observation:** validate the mapping between Windows driver values,
-   QEMU state, and libvirt `current` using read-only and explicitly approved
-   reversible tests.
+2. **State evidence:** pin the Virtio/QEMU/libvirt/driver source contract and
+   build a correlated evidence harness; use explicitly approved kernel capture
+   only for installed-driver diagnostics.
 3. **Phase 3 arbitration:** add one Linux global pool model and simulated
    multi-VM arbitration before connecting live actuation.
 4. **Controlled reclaim:** add trend-aware safe floors, one aligned step at a
    time, convergence waits, and stop-on-pressure behavior.
-5. **Optional driver interface:** investigate a supported read-only driver state
-   interface only if QEMU/libvirt observation cannot provide the required data.
+5. **Optional driver interface:** investigate a supported read-only driver
+   status interface only if a concrete operational diagnostic need cannot be
+   met by QEMU/libvirt observation and bounded tracing.
 
 No automatic shrink policy should be enabled based solely on instantaneous
 available memory or on an unverified driver assumption.

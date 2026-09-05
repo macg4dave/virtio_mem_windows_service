@@ -3,9 +3,11 @@
 **Updated:** 2026-09-05
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
-actuation are live validated. Trustworthy demand publication, cross-layer
-state mapping, host-stat freshness, complete compatibility attestation, and
-recovery hardening remain. `win11_gpu` is a fully trusted development/test KVM
+actuation are live validated. Trustworthy demand publication, host-stat
+freshness, complete compatibility attestation, and recovery hardening remain.
+The allocation-authority contract is established from Virtio and pinned
+implementation sources; optional driver tracing remains diagnostic.
+`win11_gpu` is a fully trusted development/test KVM
 guest; upstream Windows virtio-mem support remains technology preview.
 
 ## Completed locally
@@ -77,11 +79,11 @@ Windows service artifact was built on the Win11 guest and fetched to
   decision preview with the controller's Rust source path.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
-- Complete M10a1 capture qualification, M10a2 evidence harness, M10a3
-  one-block mapping, M10a4 contract adoption, and the M10b failure/recovery
-  matrix, including Windows shrink retry/recovery qualification and a
-  default-off automatic-shrink control. Use M10aX
-  only if bounded kernel-debug capture is not viable.
+- Complete the M10a2 correlated behavior-evidence harness and the M10b
+  failure/recovery matrix, including Windows shrink retry/recovery
+  qualification and a default-off automatic-shrink control. M10a1/M10a3
+  kernel tracing is optional diagnostic work; use M10aX only for a concrete
+  diagnostic requirement unmet by host observation and bounded tracing.
 
 ## External blockers
 
@@ -98,17 +100,16 @@ Windows service artifact was built on the Win11 guest and fetched to
 - A hard QEMU/libvirt cgroup memory limit is recommended defense-in-depth for
   trusted `win11_gpu`; it is mandatory for future untrusted or production
   deployments.
-- Driver `plugged_size` versus libvirt `current` remains an unverified
-  cross-layer mapping.
 - Live read-only inspection of signed `viomem.sys` `100.102.104.29400` found
   no supported user-mode state query. The upstream state record is available
-  only through kernel debug output, so M10a requires separate approval for a
-  bounded protected-guest capture and reversible resize (or a separate signed-
-  driver interface project).
+  only through filterable kernel debug output. This limits installed-driver
+  diagnosis but does not block host allocation accounting; optional capture
+  requires separate protected-guest approval.
 
 The previous live convergence incident was resolved on 2026-08-18 at zero.
 That evidence is historical: M9b subsequently bootstrapped and converged the
-same device at 1 GiB. Neither state proves direct driver-field mapping.
+same device at 1 GiB. These observations prove convergence, while the
+requested/plugged field semantics come from the pinned protocol/source chain.
 
 ## References
 

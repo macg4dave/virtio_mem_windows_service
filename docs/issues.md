@@ -9,7 +9,7 @@
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
 | ISSUE-006 | `dommemstat` treats balloon `actual` as a whole-guest upper bound and does not validate `last-update` freshness | Reopened; M9e/TASK-025 | Host telemetry | High |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
-| ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode query for `requested_size`/`plugged_size`; the available state message is kernel-debug output | Blocked pending explicit guest tracing/resize approval or a separate signed-driver interface project | Cross-layer state observation | High |
+| ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; does not block host allocation accounting or simulation | Windows observability | Medium |
 | ISSUE-012 | Production Windows telemetry samples are discarded pending the selected host-side allocation join | Open; architecture decided, implementation M10c | Demand integration | High |
 | ISSUE-013 | Demand report v1 lacks freshness/identity/provenance and the JSON-lines sink has no retention/rotation contract | Open; M10d | Demand delivery | High |
 | ISSUE-014 | Host workload approval is a static boolean and omits audited backend, memory-slot/VFIO budget, balloon, incompatible-workload, topology, trust, and version evidence | Open; M9d | Host safety | High |
@@ -114,13 +114,29 @@
   aggregate physical memory. This is a useful baseline, not cross-layer field
   mapping evidence.
 - No resize, reboot, driver/service change, trace session, registry write, or
-  host mutation was performed. M10a remains blocked pending separate approval
-  for the protected guest tracing and reversible-resize operation.
-- Microsoft's signed Sysinternals `dbgviewcli.exe` is the preferred next
+  host mutation was performed. The missing query limits installed-driver
+  diagnosis but no longer blocks the source-established host allocation
+  contract.
+- Microsoft's signed Sysinternals `dbgviewcli.exe` is the preferred optional
   capture candidate because it can bound and filter kernel `DbgPrint` output.
-  It requires Administrator rights and auto-loads `Dbgv.sys`, so staging it,
-  running it, stopping the host controller, resizing, rolling back, and cleanup
-  must be one separately approved operation.
+  It requires Administrator rights and auto-loads `Dbgv.sys`; informational
+  messages may also be filtered before capture. Tool qualification and any
+  resize require explicit scopes, and the first attempt must not enable boot
+  logging, persist debug-filter changes, restart the driver, or reboot.
+
+### M10a allocation-contract review — 2026-09-05
+
+- Virtio 1.2 defines `requested_size` and `plugged_size` as read-only device
+  configuration, and the pinned virtio-win worker reads those values directly.
+- QEMU/libvirt expose requested intent and guest-cooperative allocation as
+  alias-scoped `requested` and `current`; live libvirt `current` remains the
+  host accounting authority.
+- Driver debug output echoes device configuration and is useful for diagnosing
+  notification, branch, and failure behavior, but is not an independent state
+  source. M10c/M10d and hermetic M11 simulation no longer depend on capture.
+- Automatic shrink remains blocked on M10b recovery evidence. Any live test
+  must use a named recovery target and must not claim shrink is guaranteed
+  rollback.
 
 ### Whole-roadmap audit — 2026-09-05
 

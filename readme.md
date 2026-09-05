@@ -57,7 +57,8 @@ documented gates.
 ### Important limitations
 
 - The Windows entry point collects native telemetry but does not yet publish
-  demand reports. Current-allocation ownership must be decided before the
+  demand reports. Current-allocation ownership is now fixed at the host's
+  alias-scoped live libvirt `current`; M10c must implement that join before the
   existing calculator can be wired without guessing.
 - Demand report version 1 has no freshness, VM/session identity, sequence, or
   allocation-provenance envelope, and its JSON-lines sink has no retention or
@@ -71,6 +72,10 @@ documented gates.
   and freshness require M9e hardening before production use.
 - Live resize remains subject to fresh XML validation and the
   `requested == current` convergence gate before every request.
+- The signed Windows driver has no supported user-mode diagnostic state query.
+  Optional bounded kernel tracing may help explain notification or shrink
+  failures, but it is not an allocation source or a prerequisite for host
+  accounting.
 - The installed single-VM controller is active. Its workload compatibility
   approval is currently a static boolean and must be bound to a live
   configuration fingerprint before configuration drift can be trusted. The

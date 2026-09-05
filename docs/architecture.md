@@ -171,9 +171,12 @@ supports `VIRTIO_MEM_F_ACPI_PXM` and
 
 The Windows service must not duplicate page selection or assume that it can
 unplug arbitrary memory. A supported user-mode IOCTL/status API has not been
-established, so direct driver communication is deferred. The relationship
-between driver `plugged_size` and libvirt `current` requires live validation
-before it becomes a shared accounting contract.
+established, so direct driver communication is deferred. The Virtio 1.2
+device contract and the pinned QEMU/libvirt and virtio-win sources establish
+that driver `requested_size`/`plugged_size` are the device-side forms of the
+requested and plugged allocation represented by host `requested`/`current`.
+The host contract therefore uses alias-scoped live libvirt `current` as its
+allocation authority; it does not consume a duplicate guest-side state feed.
 
 The upstream driver is built as a KMDF/Visual Studio solution with separate
 VirtIO/WDF library dependencies and Win10/Win11 architecture configurations.
@@ -188,7 +191,10 @@ upstream source formats both values only for kernel debug output: its WPP build
 switch is disabled and it defines no I/O queue/device-control callback. A
 kernel-debug capture is therefore an operational mutation of the protected
 guest, not a normal service API, and requires its own approval and rollback
-procedure.
+procedure. Such capture is optional diagnostic evidence for the installed
+binary and becomes important when explaining notification timing, branch
+selection, or a no-progress shrink. Its absence does not block host allocation
+accounting or hermetic global-pool simulation.
 
 ## Safety policy
 

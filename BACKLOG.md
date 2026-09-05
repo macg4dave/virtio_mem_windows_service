@@ -1,5 +1,30 @@
 # BACKLOG
 
+## 2026-09-05 M10a allocation-contract redesign
+
+- Reframed M10a after reviewing Virtio 1.2, the pinned QEMU/libvirt contract,
+  the matching virtio-win worker, and current Microsoft kernel-capture
+  behavior. Device `requested_size`/`plugged_size` are read-only device
+  configuration consumed by the driver; host `requested`/`current` represent
+  requested intent and guest-cooperative allocation.
+- Completed TASK-013 and TASK-017: alias-scoped live libvirt `current` is the
+  host allocation authority. Driver debug output echoes device configuration
+  and is diagnostic evidence, not a second accounting source or a prerequisite
+  for M10c/M10d or hermetic M11 simulation.
+- Kept TASK-015 Ready with a revised evidence contract: QEMU/libvirt state,
+  Windows health, controller state, identity, units, ordering, and convergence
+  are required; a driver trace record is optional.
+- Reclassified TASK-014 and TASK-016 as optional operator-approved diagnostics.
+  Initial DbgView qualification must account for Windows debug-print filtering
+  and must not enable boot logging, persist debug-filter registry changes,
+  restart the driver, or reboot the guest.
+- Removed the assumption that a 2 MiB growth followed by shrink is guaranteed
+  reversible. Any live observation needs a predeclared non-convergence recovery
+  target and should be rehearsed on a disposable guest when practical.
+- M10b still blocks automatic shrink and live multi-target actuation. M11
+  hermetic simulation may proceed once M9e and M10d provide trustworthy inputs;
+  live expansion also requires M9d and M10b.
+
 ## 2026-09-05 upstream virtio-mem audit and milestone update
 
 - Completed TASK-024, a pinned review of the virtio-mem site, QEMU/libvirt
@@ -37,7 +62,8 @@
   current-allocation ownership, M10d/TASK-021 for report freshness and bounded
   delivery, and M10b/TASK-022 for the single-VM failure/recovery matrix.
 - M10a2/TASK-015 is now Ready and hermetic; its evidence parser does not depend
-  on privileged M10a1 capture. M10a3 depends on both.
+  on privileged M10a1 capture. The later M10a redesign made driver trace an
+  optional evidence layer and removed it as an accounting dependency.
 - Dated handoffs remain historical evidence and are subordinate to the current
   snapshot in `PROJECT_STATUS.md`.
 
@@ -62,11 +88,11 @@
   with both fields, but `EVENT_TRACING` is disabled and the shipped binary
   routes the message to kernel debug output. The string is present in the live
   binary; no compatible debugger/capture tool is installed on the guest.
-- M10a is blocked at the protected-guest boundary. Completing it now requires
-  a separately approved, bounded kernel-debug capture during one reversible
-  resize, or a separately designed, built, signed, installed, and rolled-back
-  read-only driver status interface. Aggregate Windows physical memory is not
-  accepted as a substitute for the two driver fields.
+- At this point in the investigation M10a was treated as blocked at the
+  protected-guest boundary. The later allocation-contract redesign supersedes
+  that conclusion: bounded capture is optional diagnostic evidence, and
+  aggregate Windows physical memory remains pressure telemetry rather than an
+  allocation substitute.
 - The same discovery pass recorded a non-mutating baseline: live libvirt
   remained converged at `requested=current=1073741824` bytes and Windows
   reported 9,148 MB of aggregate physical memory.
@@ -75,10 +101,10 @@
   automatically loads `Dbgv.sys`. Tool staging, capture, controller stop,
   one-block resize/rollback, artifact retrieval, cleanup, and controller
   restoration therefore require one explicit operational approval.
-- M10a is now an umbrella split into M10a1 observability qualification, M10a2
-  correlated capture harness, M10a3 one-block mapping, and M10a4 contract
-  adoption. M10aX is a conditional fallback only if M10a1 proves bounded
-  debug capture is not viable.
+- The initial umbrella split M10a into capture qualification, correlation,
+  one-block observation, and contract adoption. The later redesign completed
+  the protocol/source contract and retained capture/observation as optional
+  diagnostics; M10aX now requires a concrete unmet diagnostic need.
 - The umbrella and children use new TASK-013 through TASK-018 identifiers;
   this removes the accidental reuse of TASK-010, which remains the stable ID
   of the completed Rust host CLI migration.
@@ -397,8 +423,9 @@ Execution source of truth. Update after every session.
   observed `requested=0 KiB` and `current=0 KiB` for `ua-virtiomem0`.
 - ISSUE-005 is resolved as an observed convergence result. Direct driver
   `requested_size`/`plugged_size` telemetry is still not exposed through the
-  checked QGA commands, so the cross-layer field mapping remains a separate
-  validation item.
+  checked QGA commands. Later protocol/source review established host
+  allocation authority without using QGA or driver debug output as a duplicate
+  state feed.
 - The host controller remains uninstalled, and no resize was attempted in
   this verification.
 
@@ -639,7 +666,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-015 | M10a2 correlated capture harness | Copilot | Ready | 2-3 hours | Hermetic versioned evidence records and parser/correlation tests; no privileged capture required |
+| TASK-015 | M10a2 correlated behavior-evidence harness | Copilot | Ready | 2-3 hours | Require host state, Windows health, controller state, identity, units, ordering, and convergence; accept driver trace as optional diagnostic input |
 | TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | Ready | 4-6 hours | Fingerprint backend, slot/VFIO budget, balloon, workload/device, topology, trust, and version evidence; fail closed on drift |
 | TASK-020 | M10c host-side current-allocation join | Copilot | Ready | 3-5 hours | Join fresh raw Windows telemetry with alias-scoped live libvirt `current` and calculate the target on the host |
 | TASK-025 | M9e host telemetry correctness and freshness | Copilot | Ready | 3-5 hours | Correct `dommemstat` balloon semantics, enforce `last-update` freshness, and replace the QGA-only Bash preview with Rust controller logic |
@@ -654,11 +681,11 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Milestone | Owner | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- | --- |
-| TASK-016 | M10a3 one-block state mapping | Copilot + Operator | Planned | TASK-014, TASK-015, explicit mutation approval | One 2 MiB growth/rollback is captured at every layer and the active controller is restored |
-| TASK-017 | M10a4 state-contract decision | Copilot | Planned | TASK-016 | Contract documents define authoritative fields and transition semantics from the captured evidence |
-| TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | TASK-014 failure only | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
+| TASK-014 | M10a1 optional driver diagnostic qualification | Copilot + Operator | Optional | Explicit protected-guest approval | Bounded signed-tool capture accounts for filtering, `Dbgv.sys`, process, artifacts, and cleanup without persistent debug configuration |
+| TASK-016 | M10a3 optional bounded driver observation | Copilot + Operator | Optional | TASK-015, explicit mutation approval | A predeclared operation and recovery target are correlated without assuming shrink is guaranteed rollback; controller state is restored |
+| TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | Concrete unmet diagnostic need | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
 | TASK-021 | M10d demand envelope and bounded delivery | Copilot | Planned | TASK-020 | Versioned identity/freshness/provenance envelope, replay rules, ACLs, partial-record handling, and retention/rotation tests pass |
-| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned | TASK-016, TASK-017, TASK-025 | Add a default-off automatic-shrink control and prove bounded shrink retry/re-notification/recovery plus rejection, timeout, non-convergence, reboot, cancellation, and restart without replay or overlap |
+| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned | TASK-015, TASK-025 | Add a default-off automatic-shrink control and prove bounded shrink retry/re-notification/recovery plus rejection, timeout, non-convergence, reboot, cancellation, and restart without replay or overlap; tracing is optional unless needed for diagnosis |
 
 ### 2026-08-18 live KVM handoff
 
@@ -827,13 +854,14 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-012 | Windows installation and recovery operations | Copilot | 2026-09-04 | LocalService install/start/observe/stop/delete and rollback passed; events 1000–1003, failure event 2000, exit codes, and the first 5-second recovery restart were verified live. |
 | TASK-023 | Whole-roadmap documentation reconciliation | Copilot | 2026-09-05 | Reconciled ownership, current evidence, test counts, milestones, blockers, task states, and stale historical claims across all project documentation. |
 | TASK-024 | Upstream virtio-mem deep audit | Copilot | 2026-09-05 | Pinned and reconciled upstream QEMU/libvirt/QGA/virtio-win constraints; added M9e/TASK-025, expanded M9d/M10b/M11, selected the M10c host-side join, and documented the trusted development-only support boundary. |
+| TASK-013 | M10a allocation-authority contract | Copilot | 2026-09-05 | Virtio 1.2 and pinned implementation sources establish requested/plugged semantics; alias-scoped live libvirt `current` is authoritative and driver tracing is diagnostic. |
+| TASK-017 | M10a4 state-contract adoption | Copilot | 2026-09-05 | Architecture, API, data, testing, roadmap, status, issue, and feature docs adopt host allocation authority and decouple optional driver tracing from accounting/simulation. |
 
 ## Blocked
 
-| ID | Title | Owner | Status | Handoff Notes |
-| --- | --- | --- | --- | --- |
-| TASK-013 | M10a cross-layer state-observation umbrella | Copilot + Operator | Blocked | Live discovery found no supported installed-driver query. M10a1–M10a4 must qualify capture, build the harness, map one operation, and adopt the contract; M10aX is conditional only. |
-| TASK-014 | M10a1 driver observability qualification | Copilot + Operator | Blocked | Requires explicit approval to stage checksum-recorded signed `DbgViewCLI`, run a bounded elevated no-resize kernel capture on `ice101.lan`, prove the capture engine is operational, and account for process, `Dbgv.sys`, artifacts, and cleanup; this gate does not claim driver-state evidence. |
+No current implementation task is blocked solely by the absence of a
+user-mode `viomem.sys` state query. Optional TASK-014/TASK-016 diagnostics wait
+for explicit protected-guest approval when their evidence is needed.
 
 ## Architecture Decisions
 
@@ -896,7 +924,8 @@ host-source compatibility detail; the Windows service uses native telemetry.
 
 ### Phase 3 handoff
 
-- First prove the mapping between driver `plugged_size` and libvirt `current`.
+- Preserve alias-scoped live libvirt `current` as allocation authority and
+  re-audit the pinned protocol/source mapping after stack upgrades.
 - Build and test global pool arbitration in simulation before live multi-VM
   actuation.
 - Require bounded, aligned, convergent reclaim with measured workload history.

@@ -109,39 +109,40 @@ read-only and guarded-live regression cases.
 
 ## Phase 3 — Global arbitration
 
-### 8. Prove cross-layer state mapping
+### 8. Preserve the allocation-authority contract and add behavior evidence
 
-Observe the same controlled operation through Windows driver state and
-libvirt/QEMU state. Do not treat `requested_size`/`plugged_size` as equivalent
-to `requested`/`current` until the mapping is documented and validated.
+**Implemented contract:** Virtio 1.2 and the pinned QEMU/libvirt/virtio-win
+sources establish that device `requested_size`/`plugged_size` correspond to
+requested intent and plugged allocation. The host uses alias-scoped live
+libvirt `requested`/`current`; `current` is authoritative for accounting and
+the controller blocks overlap while the pair differs. Driver debug output is
+not a second state source.
 
-**Blocked:** live inspection of signed driver `100.102.104.29400` found no
-supported user-mode state query. Its existing state message is kernel-debug
-output. Continue only with explicit approval for a bounded debug capture and
-reversible resize, or under a separate signed-driver interface work item.
+Continue with these independent evidence tracks:
 
-Complete the mapping through these gates:
+1. **M10a2 — correlated behavior harness:** define versioned timestamped
+   evidence requiring QEMU/libvirt state, Windows health, controller state,
+   identity, units, and convergence endpoints. Accept driver trace as optional
+   diagnostic input and reject missing or ambiguous required records.
+2. **M10a1 — optional diagnostic qualification:** when justified, checksum the
+   signed capture tool, run bounded elevated capture without resizing, account
+   for debug-message filtering, and prove cleanup without boot logging,
+   persistent filter changes, driver restart, or reboot.
+3. **M10a3 — optional bounded observation:** only with separate approval and a
+   predeclared non-convergence recovery target, preferably after disposable-
+   guest rehearsal. Do not describe a shrink as guaranteed rollback.
 
-1. **M10a1 — observability qualification:** checksum the signed capture tool,
-   run a bounded elevated capture without resizing, and prove complete cleanup.
-2. **M10a2 — correlated capture harness:** independently define versioned
-   timestamped evidence and deterministic rejection of missing or ambiguous
-   records; this hermetic work does not depend on privileged capture.
-3. **M10a3 — one-block mapping:** under separate approval, stop the controller,
-   capture one 2 MiB growth and rollback, then restore its active state.
-4. **M10a4 — contract decision:** document authoritative fields and semantics
-   for steady, growing, shrinking, failed, and converging states.
-
-Use **M10aX** only if M10a1 proves bounded debug capture is unsuitable. That
-conditional milestone produces a separate signed-driver interface proposal;
-it does not authorize driver implementation or installation.
+Use **M10aX** only for a concrete operational diagnostic need that host
+observation and bounded tracing cannot meet. It produces a separate signed-
+driver interface proposal and does not authorize implementation or install.
 
 ### 9. Build hermetic global-pool simulation
 
-Before this phase, complete M9d compatibility-attestation drift protection,
-M9e host-stat correctness/freshness, M10c host-side allocation join, M10d
-report delivery/freshness, M10a4 state mapping, and the M10b failure/recovery
-matrix.
+Before simulation consumes live-shaped inputs, complete M9e host-stat
+correctness/freshness, M10c host-side allocation join, and M10d report
+delivery/freshness. M9d compatibility-attestation drift protection and M10b
+failure/recovery evidence remain gates for live multi-target actuation, not
+for hermetic pool simulation.
 
 - Model host reserve, actual VM allocations, pool-free capacity, stale reports,
    and in-flight operations.

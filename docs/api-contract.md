@@ -242,11 +242,21 @@ implemented.
 The upstream Windows driver uses `requested_size` and `plugged_size`, while
 libvirt exposes `requested` and `current`. The driver also maintains a
 block-state bitmap and performs Windows memory-manager hot-add/hot-remove.
-These observations support the host-side asynchronous model, but the mapping
-between driver `plugged_size` and libvirt `current` is not yet a validated
-cross-layer contract. Until Phase 3 validation completes, the existing live
-libvirt `current` field remains authoritative for this repository's host
-controller.
+The Virtio 1.2 memory-device contract defines the driver fields as read-only
+device configuration: `requested_size` is the device's requested amount and
+`plugged_size` is the amount represented by plugged blocks. The reviewed
+virtio-win worker reads those fields directly and chooses plug or unplug work
+by comparing them. QEMU/libvirt expose the same device intent and completed
+allocation as `requested` and `current`.
+
+This establishes the semantic mapping for the pinned stack without making the
+Windows debug message a second allocation authority. Alias-scoped live
+libvirt `requested` and `current` remain the repository contract; `current`
+is authoritative for host allocation and another resize is forbidden until
+the pair converges. Kernel-debug capture is optional diagnostic and
+installed-driver behavior evidence. It is still required when a test claims
+to explain a Windows notification, plug/unplug attempt, or no-progress shrink,
+but it is not required to calculate host pool accounting.
 
 The pure `parse_virtio_mem_xml` adapter accepts a captured libvirt XML
 snapshot, requires the `virtio-mem` model and alias, converts `B`, `KiB`,

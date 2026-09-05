@@ -830,9 +830,10 @@ Before live multi-VM work, validate the state model with hermetic simulations:
 For explicitly approved live validation, capture the driver version and
 features, virtio-mem block size, QEMU/libvirt `requested` and `current`, and
 the Windows driver's `requested_size` and `plugged_size` when those values are
-observable. Do not assume the two naming pairs are equivalent until the same
-resize is observed across all layers. Do not add a direct driver IOCTL or
-perform an unbounded shrink based on this design document.
+observable. The Virtio and pinned implementation-source contract establishes
+the semantic mapping; driver output is optional diagnostic evidence about the
+installed binary, not a second allocation source. Do not add a direct driver
+IOCTL or perform an unbounded shrink based on this design document.
 
 ### M10a read-only driver-state discovery
 
@@ -856,19 +857,20 @@ On `ice101.lan`, these checks identify signed driver
 surface, or registered tracing provider. The contemporaneous upstream `mm314`
 source has no IOCTL handler and sends its `Memory config` record to kernel
 debug output because `EVENT_TRACING` is disabled. `systeminfo` may be used as
-a secondary aggregate-memory observation, but it cannot satisfy M10a because
-it does not expose or distinguish the selected device's requested and plugged
-fields.
+a secondary aggregate-memory observation, but it is not an allocation source
+and cannot diagnose the selected device's requested and plugged fields.
 
-Do not proceed directly from this discovery to a live resize. The next valid
-procedure must first name and obtain approval for all of the following as one
-bounded operation: the kernel-debug capture mechanism and temporary artifacts,
-the `win11_gpu`/`ua-virtiomem0` aligned target, the forward and rollback
-timeouts, the host and guest samples, and cleanup. If capture tooling requires
+Do not proceed directly from this discovery to a live resize. Any diagnostic
+capture and any resize are distinct approval boundaries unless one explicitly
+approved procedure names both. A resize procedure must name the target,
+timeouts, required host and guest samples, original controller state, a
+non-convergence recovery target, and cleanup. It must not describe a shrink as
+guaranteed rollback. If capture tooling requires
 installation, registry/debug-policy changes, a driver restart, or a reboot,
 those mutations and their rollback must also be named explicitly. Absence of
-a supported capture path leaves M10a blocked; it is not permission to invent
-or probe undocumented IOCTLs.
+a supported capture path limits guest-side diagnosis; it does not invalidate
+alias-scoped live libvirt `current` as host allocation authority and is not
+permission to invent or probe undocumented IOCTLs.
 
 The preferred capture candidate is Microsoft's signed Sysinternals
 `dbgviewcli.exe`. Its kernel mode captures `DbgPrint`, supports duration and
@@ -878,36 +880,41 @@ the temporary `Dbgv.sys` capture driver, so even this path is not read-only
 discovery. A proposed elevated capture must use both `--duration` and
 `--max-lines`, disable unrelated Win32 output, write only to a named temporary
 guest artifact, and confirm that the capture process and temporary driver have
-exited before cleanup. The host controller must also be stopped for the
-separately approved one-block forward/rollback test so it cannot race the test
-harness, then restored to its original active state.
+exited before cleanup. Informational `DbgPrint` records may be filtered before
+they reach the capture buffer, so a no-resize run proves tool lifecycle only,
+not that viomem records are observable. The first qualification must not enable
+boot logging, persist a debug-filter registry change, restart the driver, or
+reboot the guest. If a separately approved resize is performed, the host
+controller must be stopped so it cannot race the harness and then returned to
+its recorded original state.
 
-The cross-layer work is split into explicit validation gates:
+The allocation-contract and diagnostic work is split into explicit validation
+gates:
 
-- **M10a1:** record tool provenance and checksum; run a no-resize capture with
-  duration and line limits; confirm the capture process exits; verify the
-  temporary driver and artifacts are removed or returned to their recorded
-  baseline. This qualifies the capture mechanism but does not prove viomem
-  field mapping.
-- **M10a2:** define a versioned evidence record with both wall-clock and
-  monotonic ordering, source identity, units, VM and device alias, operation
-  correlation ID, and raw-value provenance. Hermetic tests must reject absent
-  layers, mixed operations, unit ambiguity, non-monotonic samples, and missing
-  convergence endpoints.
-- **M10a3:** after separate approval, stop the active controller, capture the
-  driver and host before/during/after one 2 MiB growth, wait for convergence,
-  roll back to the exact original target, wait again, and restore the original
-  controller state. A passing run must contain both driver fields and both
-  libvirt fields for the same operation.
-- **M10a4:** update the architecture, API contract, data model, and test
-  expectations from the captured evidence. State which source is authoritative
-  during steady state, growth, shrink, failure, and convergence, and explicitly
-  bound any conclusion to the validated driver/QEMU/libvirt versions.
-- **M10aX (conditional):** only after M10a1 demonstrates that bounded capture
-  is unusable, write a separate feasibility proposal for a versioned read-only
-  driver interface. The proposal must cover ACLs, malformed requests, timeout,
-  compatibility, build/signing/install, rollback, and disposable-guest tests;
-  it must not add driver work to the normal Rust gate.
+- **M10a/M10a4:** the Virtio 1.2 and pinned QEMU/libvirt/virtio-win source
+  contract makes alias-scoped live libvirt `current` authoritative. Preserve
+  version pins and re-audit this conclusion after stack upgrades.
+- **M10a1 (optional):** record tool provenance and checksum; run a no-resize
+  capture with duration and line limits; confirm the process exits and return
+  the temporary driver/artifacts to baseline. Record debug-filter observations
+  and do not treat an empty capture as proof that the driver emitted nothing.
+- **M10a2:** define a versioned evidence record with wall-clock and monotonic
+  ordering, source identity, units, VM/device alias, operation correlation ID,
+  and raw-value provenance. Required evidence is QEMU/libvirt state, Windows
+  health, and controller state; driver trace is optional. Hermetic tests reject
+  absent required layers, mixed operations, unit ambiguity, non-monotonic
+  samples, and missing convergence endpoints.
+- **M10a3 (optional):** after disposable-guest rehearsal when practical and
+  separate approval, stop the active controller and run one bounded operation
+  with a predeclared recovery target. Attempt exact state restoration but do
+  not classify shrink as guaranteed rollback. Restore the original controller
+  state and record any non-convergence as evidence, not a reason to overlap
+  requests.
+- **M10aX (conditional):** only for a concrete diagnostic need unmet by host
+  observation and bounded tracing, write a separate feasibility proposal for
+  a versioned read-only driver interface. Cover ACLs, malformed requests,
+  timeout, compatibility, build/signing/install, rollback, and disposable-
+  guest tests; do not add driver work to the normal Rust gate.
 
 ## Known Blockers
 
@@ -916,6 +923,5 @@ The cross-layer work is split into explicit validation gates:
 - Further live QEMU Guest Agent, libvirt, tracing, reboot, service, or resize
   validation requires the named RHEL host/Windows guest, explicit scope, and
   the approval procedure above. M7–M9b evidence already passes.
-- M10a1 is blocked on approved bounded kernel-debug capture; M9d/M9e and
-  M10c/M10d remain unprivileged design/test work and should proceed
-  independently.
+- Optional M10a1/M10a3 diagnostics require explicit protected-guest approval;
+  they do not block M9d/M9e, M10c/M10d, or hermetic M11 simulation.

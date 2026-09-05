@@ -20,13 +20,17 @@ implement the selected host-side allocation join, add freshness and identity
 to the report envelope, and bound durable delivery. M9d must complete and bind
 the expanded compatibility attestation, while new M9e corrects and
 freshness-qualifies host telemetry. The existing one-VM host controller
-remains the only resize authority until live state mapping and Phase 3 global
-arbitration have been validated. M8 live QGA/KVM validation is complete on `win11_gpu`, including
+remains the only resize authority until Phase 3 global arbitration has been
+validated. The Virtio specification and pinned QEMU/libvirt/virtio-win
+sources establish `requested`/`current` as the host allocation contract;
+optional driver tracing qualifies installed-binary behavior rather than
+gating accounting. M8 live QGA/KVM validation is complete on `win11_gpu`, including
 isolated agent restart and graceful guest reboot recovery.
 M10a read-only discovery found no supported installed-driver query for
-`requested_size`/`plugged_size`; cross-layer mapping is blocked pending a
-separately approved bounded kernel-debug capture and reversible resize, or a
-separate signed-driver status-interface project.
+`requested_size`/`plugged_size`. That limits guest-side diagnosis but no
+longer blocks M10c/M10d or hermetic M11 simulation. Bounded kernel-debug
+capture remains optional, separately approved evidence for notification,
+branch, and shrink-recovery behavior.
 The QGA memory command may be unavailable on the guest, but that is no longer
 a Windows service startup blocker because the service uses native
 `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry. The host controller
@@ -113,8 +117,8 @@ technology preview.
     `requested=0 KiB` and `current=0 KiB` after the latest Windows driver
     update. The previous rollback convergence blocker is resolved. The QGA
     responses checked here do not expose Windows driver
-    `requested_size`/`plugged_size`; the cross-layer driver mapping remains
-    unverified.
+    `requested_size`/`plugged_size`; that historical observation did not itself
+    establish field semantics. The later pinned protocol/source review does.
 - **Historical Windows service handoff (2026-08-18; superseded by M7):** RHEL-side QGA checks
     confirm the guest is running and responds with hostname `ICE101`, but they
     cannot observe Windows SCM state directly. The native telemetry worker is
@@ -296,14 +300,14 @@ readiness in the remaining host-side work.
 | M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native telemetry, version-1 calculator, bounded pressure state, desired target, advisory safe floor, append-only JSON-lines output, and generic worker are tested; production publication, trustworthy allocation ownership, bounded delivery, and workload evidence remain; no direct host actuation |
 | M10c | Host-side current-allocation join | [ ] | M9e, M10 | A fresh raw Windows telemetry envelope is joined on the host with alias-scoped live libvirt `current`, and the host calculates the target; Windows never guesses allocation, receives an allocation feed, or invokes host tools |
 | M10d | Demand envelope and bounded delivery | [ ] | M10c | A versioned envelope supplies VM/service/session identity, wall-clock and monotonic ordering, sequence, allocation provenance, freshness rules, ACLs, retention/rotation, and malformed/partial-record rejection |
-| M10a | Cross-layer state-observation umbrella | [!] | M8, M9, M9a | M10a1–M10a4 qualify capture, correlate evidence, perform one controlled mapping operation, and adopt the resulting contract; M10aX is used only if capture is not viable |
-| M10a1 | Driver observability qualification | [!] | M8, M9a | A checksum-recorded signed `DbgViewCLI` performs a bounded no-resize kernel capture on `ice101.lan`; `Dbgv.sys`, the capture process, and temporary artifacts are accounted for and cleaned up |
-| M10a2 | Correlated capture harness | [ ] | M8, M9a | A hermetic versioned evidence format combines monotonic/wall-clock timestamps, driver records, QEMU/libvirt snapshots, Windows aggregate memory, and controller state; parser/correlation tests reject missing or ambiguous samples |
-| M10a3 | One-block state mapping | [ ] | M9b, M10a2 | With separate approval, the controller is stopped, one 2 MiB growth and rollback are captured at every layer, convergence is proved, and the original active controller state is restored |
-| M10a4 | State-contract decision | [ ] | M10a3 | Architecture, API, data model, and testing docs identify authoritative requested/active fields during steady state, growth, shrink, failure, and convergence without generalizing beyond evidence |
-| M10aX | Conditional driver status-interface feasibility | [ ] | M10a1 failure only | If bounded debug capture is not viable, a separate proposal defines a versioned read-only interface, access control, malformed-request tests, driver build/signing/install, compatibility, and rollback; it does not enter the normal Rust gate |
-| M10b | Single-VM failure, Windows shrink, and recovery matrix | [ ] | M7, M9b, M9e, M10a4 | Automatic shrink is default-off until deterministic and approved live evidence proves bounded retry/re-notification/recovery plus rejection, timeout, non-convergence, interruption, reboot, cancellation, and restart without replay or overlap |
-| M11 | Phase 3 global pool arbitration | [ ] | M9d, M9e, M10d, M10a4, M10b | Hermetic multi-VM simulation models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states before Phase 2 expands beyond one active controller/device |
+| M10a | Allocation-authority contract | [x] | M8, M9, M9a | Virtio 1.2 plus pinned QEMU/libvirt/virtio-win sources define `requested`/`current` semantics; live alias-scoped libvirt `current` is authoritative and driver debug output is diagnostic, not an accounting dependency |
+| M10a1 | Optional driver diagnostic qualification | [ ] | M8, M9a | If operationally useful, checksum-recorded `DbgViewCLI` performs bounded capture without boot logging, persistent debug-filter changes, driver restart, or reboot; filtering, `Dbgv.sys`, process, and artifacts are accounted for |
+| M10a2 | Correlated behavior-evidence harness | [ ] | M8, M9a | A hermetic versioned evidence format requires monotonic/wall-clock timestamps, QEMU/libvirt state, Windows health, controller state, identity, units, and correlation; driver records are optional diagnostic inputs |
+| M10a3 | Optional bounded driver observation | [ ] | M9b, M10a2 | A separately approved operation uses a predeclared target and non-convergence recovery plan; it does not describe shrink as guaranteed rollback and prefers prior disposable-guest rehearsal |
+| M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
+| M10aX | Conditional driver status-interface feasibility | [ ] | Concrete unmet diagnostic need | Only if host observation plus bounded tracing cannot meet an operational diagnostic requirement, a separate proposal covers interface security, driver build/signing/install, compatibility, tests, and rollback |
+| M10b | Single-VM failure, Windows shrink, and recovery matrix | [ ] | M7, M9b, M9e, M10a2 | Automatic shrink is default-off until deterministic and approved live evidence proves bounded retry/re-notification/recovery plus rejection, timeout, non-convergence, interruption, reboot, cancellation, and restart without replay or overlap; tracing is optional unless needed to explain the result |
+| M11 | Phase 3 global pool simulation | [ ] | M9e, M10d, M10a | Hermetic multi-VM simulation models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states; live multi-target actuation additionally requires M9d and M10b |
 | M11a | Controlled reclaim and convergence | [ ] | M11 | Trend-aware safe floors, bounded aligned reclaim, hysteresis, in-flight protection, convergence waits, and stop-on-pressure behavior pass simulation tests |
 | M12 | Hardening and observability | [ ] | M11a | Recovery, event logging, metrics, bounded timeout behavior, and restart tests pass for guest and global-controller paths |
 | M13 | Operational release readiness | [ ] | M12 | Documentation, health checks, monitoring, compatibility evidence, rollback, and repeatable host automation complete |
@@ -520,8 +524,8 @@ evidence before live actuation expands beyond the validated M9b bootstrap.
 
 ### V3. Single-VM failure and recovery
 
-- [ ] Reuse M10a3's reversible happy-path capture; do not schedule a duplicate
-    live resize merely to satisfy this gate.
+- [ ] Reuse any suitable M10a3 evidence; do not schedule a duplicate live
+    resize merely to satisfy this gate.
 - [ ] Confirm every failure/recovery case preserves the convergence and
     no-overlap rules.
 - [ ] Test QGA interruption, guest reboot, failed update, and service restart.
@@ -533,8 +537,8 @@ evidence before live actuation expands beyond the validated M9b bootstrap.
 
 ## Phase 3 — Global arbitration and controlled reclaim
 
-Phase 3 starts only after the Phase 2 demand-agent gate and the live
-cross-layer state-observation gate pass. The Linux global controller becomes
+Phase 3 simulation starts after the Phase 2 demand contract is trustworthy;
+it does not wait for optional Windows kernel tracing. The Linux global controller becomes
 the sole owner of host reserve accounting, VM pool capacity, and multi-VM
 allocation decisions. The Windows service remains a measurement and
 recommendation agent; it does not issue Linux/libvirt commands or direct
@@ -561,22 +565,24 @@ recommendation agent; it does not issue Linux/libvirt commands or direct
 **Gate:** The global controller rejects stale, replayed, cross-VM, incomplete,
 or provenance-free demand input before evaluating policy.
 
-### G1. Cross-layer state mapping
+### G1. Allocation contract and diagnostic evidence
 
-- [ ] **M10a1:** qualify a checksum-recorded, bounded kernel-debug capture
-    without resizing and prove capture-driver/process/artifact cleanup.
-- [ ] **M10a2:** define and hermetically test a versioned correlated evidence
-    format that fails closed on missing layers, ambiguous units, mixed
-    operations, or incomplete convergence.
-- [ ] **M10a3:** capture one separately approved, reversible 2 MiB operation
-    through Windows `requested_size`/`plugged_size` and QEMU/libvirt
-    `requested`/`current`, with controller restoration.
-- [ ] **M10a4:** document requested versus active allocation semantics and
-    source authority for steady, growth, shrink, failure, and convergence
-    states before using the mapping for pool accounting.
-- [ ] **M10aX, conditional:** if M10a1 fails, specify—but do not implement—a
-    separately built and signed read-only driver status interface with its own
-    security, compatibility, test, install, and rollback gates.
+- [x] **M10a/M10a4:** pin the Virtio and implementation-source mapping and make
+    alias-scoped live libvirt `current` authoritative for host accounting.
+- [ ] **M10a1, optional:** qualify checksum-recorded bounded kernel-debug
+    capture as an installed-driver diagnostic, accounting for debug-message
+    filtering and capture-driver/process/artifact cleanup.
+- [ ] **M10a2:** define and hermetically test a versioned correlated behavior
+    format that fails closed on missing required host/Windows-health layers,
+    ambiguous units, mixed operations, or incomplete convergence; accept
+    driver trace as optional diagnostic evidence.
+- [ ] **M10a3, optional:** after disposable-guest rehearsal when practical,
+    run one separately approved bounded observation with an explicit recovery
+    target and without assuming that a shrink is guaranteed rollback.
+- [ ] **M10aX, conditional:** only for a concrete unmet diagnostic requirement,
+    specify—but do not implement—a separately built and signed read-only driver
+    status interface with its own security, compatibility, test, install, and
+    rollback gates.
 
 ### G2. Global RAM pool model
 
@@ -685,29 +691,31 @@ reclaim passes before any automatic multi-VM live action.
 M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7
               └──────────────→ M8 → M9 → M9a → M9b → M9d ─────────┐
                                             └──────→ M9e ──────────┤
-M8 + M9a → M10a2 ─┐                                                │
-M8 + M9a → M10a1 ─┴→ M10a3 → M10a4 → M10b ────────────────────────┼→ M11 → M11a → M12 → M13
+M8 + M9a → M10a (contract) → M10a4 ────────────────────────────────┤
+M8 + M9a → M10a2 ───────────────→ M10b ────────────────────────────┼→ M11 → M11a → M12 → M13
+M10a1 (optional diagnostics) → M10a3 (optional observation)         │
 M4 + M6 → M10 ─────────────→ M10c → M10d ─────────────────────────┘
-M10a1 failure only → M10aX
+Concrete unmet diagnostic need only → M10aX
 ```
 
 The live KVM path (`M8`) is external to the Windows build path. The Phase 2
 demand-agent work (`M10`) can be developed with deterministic native-API fakes.
 M10a2 is deliberately hermetic and does not wait for privileged M10a1 capture.
-The global-controller path cannot pass until M9d guards compatibility drift,
-M9e qualifies host telemetry, M10d provides trustworthy reports, M10a4 adopts
-the state mapping, and M10b
-records failure/recovery evidence. M10aX is a
-conditional branch, not permission to begin driver work. M9c has removed the duplicate
-Bash host-control implementation before live resize automation is expanded.
+Hermetic global-pool simulation can begin from the completed M10a allocation
+contract once M9e and M10d provide trustworthy inputs. Live multi-target
+actuation cannot pass until M9d guards compatibility drift and M10b records
+failure/recovery evidence. M10a1/M10a3 are optional diagnostics, and M10aX is
+a conditional branch for a concrete unmet diagnostic need, not permission to
+begin driver work. M9c has removed the duplicate Bash host-control
+implementation before live resize automation is expanded.
 
 ## Active blockers and decisions
 
 | ID | Blocker or decision | Impact | Owner/action |
 | --- | --- | --- | --- |
 | B13 | Native Windows telemetry and the versioned demand-report contract lack live workload evidence | Blocks production tuning and global-controller inputs, but not Windows service startup | Collect live workload evidence for `GlobalMemoryStatusEx`/`GetPerformanceInfo` reports without changing host actuation authority |
-| B14 | Driver `plugged_size` versus libvirt `current` has not been validated as one cross-layer state mapping | Blocks global pool accounting and safe reclaim | Capture the same controlled resize through driver, QEMU, and libvirt observation before treating actual allocation as interchangeable |
-| B15 | The signed Windows `viomem.sys` exposes no supported user-mode query for `requested_size`/`plugged_size`; its existing state message is kernel-debug output | Blocks M10a evidence collection without changing protected guest tracing state or the driver | Obtain explicit approval for a bounded kernel-debug capture plus reversible resize, or open a separate signed-driver status-interface project |
+| B14 | The protocol/source mapping is established, but installed-driver notification and branch behavior are not directly observable through a supported user-mode API | Does not block host accounting or simulation; reduces diagnosis when a Windows operation stalls | Use optional bounded tracing only when its diagnostic value justifies protected-guest mutation |
+| B15 | The signed Windows `viomem.sys` state message is kernel-debug output and informational debug prints may be filtered before capture | Optional DbgView evidence may be absent or ambiguous without persistent debug configuration changes | Qualify filtering and cleanup without boot logging, registry mutation, driver restart, or reboot; stop rather than escalate automatically |
 | B16 | The host-side join is selected but not implemented | Blocks trustworthy demand publication; Windows must publish fresh raw telemetry and the host must join alias-scoped live libvirt `current` before calculating a target | Implement and test M10c without a host-allocation feed or guest host-control authority |
 | B17 | Demand report v1 lacks freshness, VM/session identity, sequence, and allocation provenance; JSON-lines output has no retention/rotation contract | Blocks replay-safe Phase 3 ingestion and risks ambiguous, stale, partial, or unbounded records | Complete M10d with a versioned envelope and bounded durable-delivery rules |
 | B18 | Workload compatibility review is a static boolean and does not cover the full audited configuration | Configuration drift or an omitted backend/slot/VFIO/balloon/workload/version constraint can leave host actuation authorized by stale evidence | Complete M9d and fail closed when the reviewed fingerprint changes |
@@ -786,8 +794,9 @@ the existing host controller remains the only resize authority.
 
 ### Phase 3 global-controller milestones
 
-- [ ] Reconcile driver `requested_size`/`plugged_size` with libvirt
-    `requested`/`current` using controlled evidence.
+- [x] Establish allocation authority from Virtio and pinned implementation
+    sources: alias-scoped live libvirt `current` is authoritative, while driver
+    trace is optional diagnostic evidence.
 - [ ] Model total RAM, host reserve, VM capacity, and actual pool-free memory.
 - [ ] Add separate growth and reclaim priorities for each VM.
 - [ ] Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY`

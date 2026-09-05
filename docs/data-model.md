@@ -134,11 +134,18 @@ to the fixed device-headroom floor. Host XML parsing must construct and
 validate this state before a resize sink can issue a request.
 
 The upstream `viomem.sys` driver has corresponding fields named
-`requested_size` and `plugged_size`, plus a block bitmap. Those names must not
-be silently substituted for libvirt `requested` and `current`: their exact
-cross-layer mapping remains a Phase 3 validation task. Until then,
-`virtio_mem_current_bytes` from the live libvirt snapshot is the host
-controller's authoritative active state.
+`requested_size` and `plugged_size`, plus a block bitmap. The Virtio memory
+device specification defines both as read-only device-configuration values,
+and the reviewed driver reads them directly before selecting plug or unplug
+work. For the pinned QEMU/libvirt/driver stack, libvirt `requested` represents
+the requested device allocation and libvirt `current` represents the
+guest-cooperative plugged allocation.
+
+The Rust data model does not ingest the driver's debug print as a second copy
+of state. `virtio_mem_current_bytes` from the alias-scoped live libvirt
+snapshot is the authoritative allocation value. Driver trace records, when
+explicitly and safely captured, are diagnostic evidence about notification,
+branch selection, and failure behavior rather than an accounting input.
 
 ### Persistence
 
