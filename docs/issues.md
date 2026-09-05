@@ -8,6 +8,11 @@
 | ISSUE-003 | Error handling for libvirt communication | Open | Linux | High |
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
+| ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode query for `requested_size`/`plugged_size`; the available state message is kernel-debug output | Blocked pending explicit guest tracing/resize approval or a separate signed-driver interface project | Cross-layer state observation | High |
+| ISSUE-012 | Production Windows telemetry samples are discarded because current-allocation ownership is unresolved | Open; M10c | Demand integration | High |
+| ISSUE-013 | Demand report v1 lacks freshness/identity/provenance and the JSON-lines sink has no retention/rotation contract | Open; M10d | Demand delivery | High |
+| ISSUE-014 | Host workload approval is a static boolean and can outlive the reviewed domain/QEMU configuration | Open; M9d | Host safety | High |
+| ISSUE-015 | Active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b | Host recovery | High |
 
 ## Resolved Issues
 
@@ -84,6 +89,54 @@
 - The Rust CLI emitted the exact 2 MiB dry-run argument vector without
   `--apply`. Before/after XML SHA-256 values matched at
   `29878e19597b6ef69f5b18a3490f4804f4fe11710d35d5052cdfdf00ecd7739d`.
+
+### M10a read-only Windows driver discovery — 2026-09-05
+
+- `ice101.lan` runs signed Red Hat `viomem.sys` version
+  `100.102.104.29400` for `PCI\\VEN_1AF4&DEV_1058`; the device is started and
+  the kernel service is running.
+- `pnputil`, the service and Enum registry trees, Event Log enumeration, and
+  registered provider enumeration expose identity and lifecycle metadata but
+  no `requested_size`, `plugged_size`, block bitmap, or equivalent status.
+- The contemporaneous upstream `mm314` tag has the same 8 December 2025 date
+  as the installed driver. It creates `GUID_DEVINTERFACE_VIOMEM`, but defines
+  no I/O queue, device-control callback, IOCTL, WMI schema, or performance-
+  counter surface.
+- The upstream worker formats both state fields in a `Memory config` debug
+  message. `EVENT_TRACING` is commented out, so the shipped path uses kernel
+  debug print rather than a registered WPP provider; the format string is
+  present in the installed binary. No suitable capture tool is installed.
+- `systeminfo` reports aggregate total physical memory, but that value is not
+  accepted as driver-state evidence because it cannot distinguish requested
+  from plugged state or identify the selected virtio-mem device.
+- A fresh host snapshot remained converged at
+  `requested=current=1073741824` bytes while Windows reported 9,148 MB of
+  aggregate physical memory. This is a useful baseline, not cross-layer field
+  mapping evidence.
+- No resize, reboot, driver/service change, trace session, registry write, or
+  host mutation was performed. M10a remains blocked pending separate approval
+  for the protected guest tracing and reversible-resize operation.
+- Microsoft's signed Sysinternals `dbgviewcli.exe` is the preferred next
+  capture candidate because it can bound and filter kernel `DbgPrint` output.
+  It requires Administrator rights and auto-loads `Dbgv.sys`, so staging it,
+  running it, stopping the host controller, resizing, rolling back, and cleanup
+  must be one separately approved operation.
+
+### Whole-roadmap audit — 2026-09-05
+
+- Production Windows startup constructs `NativeTelemetryWorker`, not
+  `DemandServiceWorker`; validated samples are currently discarded and no
+  demand report is published.
+- `DemandAgent` requires a caller-supplied current allocation, while fresh live
+  libvirt state is host-owned and no supported Windows driver query exists.
+- Demand report version 1 has no timestamp, VM/session identity, sequence, or
+  allocation provenance. Its JSON-lines publisher is append-only and has no
+  retention, rotation, acknowledgement, or atomic handoff contract.
+- The installed host controller uses a static workload-review boolean. Fresh
+  XML/QMP checks do not establish that the reviewed workload/device set is
+  unchanged, so M9d will bind approval to a configuration fingerprint.
+- These gaps block production report ingestion and expansion of automatic
+  actuation, but they do not invalidate the completed M7–M9b evidence.
 
 ## Guidelines
 

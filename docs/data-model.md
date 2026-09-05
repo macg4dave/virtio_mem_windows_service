@@ -27,7 +27,10 @@ is applied:
   `GetPerformanceInfo` commit values
 - `system_cache_bytes`, `kernel_paged_bytes`, `kernel_nonpaged_bytes`:
   additional context from `GetPerformanceInfo`
-- `sample_timestamp`: monotonic or UTC timestamp selected by the runtime
+
+Version 1 does **not** include a sample timestamp, VM identity, service/boot
+session, sequence, or allocation provenance. Those are required additions for
+M10d and must use a new schema version.
 
 The derived demand state contains `physical_pressure`, `commit_pressure`, a
 `demand_state` of `release`, `stable`, `want_more`, `pressure`, or `critical`,
@@ -49,6 +52,17 @@ an explicit input and publishes a complete report through an injected sink.
 This keeps native telemetry and recommendation generation independent from QGA,
 libvirt, and any future report transport. Publication failure is observable and
 does not trigger a resize fallback.
+
+No production owner currently supplies that allocation on Windows. M10c must
+define whether the host calculates demand after joining raw telemetry with live
+libvirt state or provides a validated allocation feed. Aggregate physical
+memory, configured limits, and QGA totals are not allocation substitutes.
+
+The M10d envelope must add VM and service identity, UTC sample time,
+monotonic/session ordering, a boot or service-session identifier, sequence or
+correlation identifier, and allocation-source/provenance metadata. Consumers
+must reject stale, replayed, cross-VM, truncated, and unsupported-version
+records according to documented bounds.
 
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and

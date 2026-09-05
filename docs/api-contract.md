@@ -46,7 +46,7 @@ boundary.
 
 ### Host memory-stat source (`VIRTIO_MEM_STATS_SOURCE`)
 
-The RHEL host controller's connected guest agent (QGA 109.1.0 on `win11_gpu`)
+The RHEL host controller's connected guest agent (QGA 110.0.2 on `win11_gpu`)
 does not implement `guest-get-memory-stats` (see `docs/issues.md` ISSUE-001),
 so the controller cannot rely on that command alone. `HostConfig` selects the
 memory-stat source with `VIRTIO_MEM_STATS_SOURCE`:
@@ -54,9 +54,9 @@ memory-stat source with `VIRTIO_MEM_STATS_SOURCE`:
 - `dommemstat` (default): reads `virsh dommemstat <vm>`, a virtio-balloon
   driver counter that does not require the guest agent. It requires the
   domain to have `actual` and `unused` fields; `available` is used if present,
-  otherwise `unused` is reused. This must be verified against the live guest
-  before enabling automated resizing, since it depends on a functioning
-  virtio-balloon driver/service in the guest.
+  otherwise `unused` is reused. This behavior is live verified on `win11_gpu`;
+  any new VM still requires its own evidence because the fields depend on a
+  functioning virtio-balloon driver/service in that guest.
 - `qga`: uses `guest-get-memory-stats` as before, for guest agents that
   implement it.
 
@@ -100,12 +100,19 @@ The implemented versioned report is:
 }
 ```
 
+Version 1 is a local foundation, not an ingestion-ready envelope. It has no
+sample timestamp, VM/service identity, boot or service-session identifier,
+sequence/correlation identifier, or current-allocation provenance. Consumers
+must not infer freshness, reject replay, or join it to a VM allocation using
+undocumented context. M10d will introduce a new schema version for those
+fields rather than silently changing version 1.
+
 `GlobalMemoryStatusEx` is the implemented source for physical totals,
 available physical memory, and memory load. `GetPerformanceInfo` is the
 implemented source for commit and system-wide memory fields. The native
 collector and report calculator are locally tested, but live workload evidence
-and production service wiring remain open. The existing QGA/dommemstat report
-remains valid during the transition.
+and production service wiring remain open. Host-side `dommemstat` remains the
+verified Phase 2 policy source during the transition.
 
 Demand states are `release`, `stable`, `want_more`, `pressure`, and `critical`.
 The current provisional pressure bands use the larger of physical and commit
@@ -134,12 +141,26 @@ collection or publication failure is returned explicitly. The publisher has no
 resize interface; integration with the main SCM worker and a persistent/event
 report sink remain separate operational work.
 
-`JsonLinesDemandReportPublisher` is the current durable local sink. It appends
+`JsonLinesDemandReportPublisher` is the current local append-only sink. It appends
 one complete JSON object plus a newline to the configured report path and
 returns directory, encoding, write, and flush failures explicitly. The generic
 `DemandServiceWorker` uses this publication boundary when supplied with a
 validated current-allocation provider; the main SCM worker does not guess that
-state from QGA totals or configured limits.
+state from QGA totals or configured limits. Version 1 has no rotation,
+retention, maximum-file, reader acknowledgement, or atomic handoff contract
+and must not be enabled as an unattended production spool until M10d defines
+and tests those behaviors.
+
+### Current-allocation ownership
+
+Fresh live libvirt state is authoritative for Phase 2 allocation. The Windows
+service has no supported driver status API and must not invoke libvirt or infer
+allocation from aggregate physical memory. M10c must select one explicit
+integration model: either the host joins raw Windows telemetry with its
+allocation snapshot and calculates the recommendation, or a validated
+host-to-guest allocation feed supplies provenance and freshness. Until then,
+the production SCM worker validates native telemetry but does not publish
+`DemandReport` values.
 
 ## Memory Change Request
 
@@ -173,7 +194,7 @@ When more than one virtio-mem device is present, `virsh` must be directed with `
 
 ### Virtio-mem compatibility gate
 
-before a resize sink may issue `update-memory-device`, the combined evidence
+Before a host resize sink may issue `update-memory-device`, the combined evidence
 must explicitly confirm both `dynamic-memslots` and
 `unplugged-inaccessible`. Missing or unrecognized attributes are represented as
 `Unknown` and fail closed; they are never treated as enabled by default. XML
@@ -265,6 +286,9 @@ with its diagnostic output, and treat it as an explicit failure. Before the
 update command, the controller must read and validate a fresh XML snapshot and
 fresh QMP compatibility properties for the configured alias, require an
 explicit workload-review confirmation, and require `requested == current`.
+The current confirmation is a static configuration boolean. M9d must bind it
+to a fingerprint of the reviewed live domain/QEMU configuration so drift
+revokes authorization.
 A successful command response does not prove completion: subsequent snapshots
 decide convergence. The controller never replays a resize request after a
 process restart.

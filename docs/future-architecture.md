@@ -2,7 +2,8 @@
 
 > **Status:** Phase 3 design baseline. This document describes the target
 > architecture and research boundaries; it does not claim that the Phase 3
-> global controller or native telemetry path is implemented.
+> global controller is implemented. Native telemetry and a version-1 local
+> report calculator exist, but production publication does not.
 
 ## Purpose
 
@@ -69,6 +70,13 @@ been measured.
 | Host safety | Linux controller and host adapter | Reserve host capacity and fail closed when evidence is stale or incomplete. |
 | Driver mechanics | `viomem.sys` | Select physical ranges, interact with the Windows memory manager, and issue block requests. |
 
+The report transport must carry VM/service identity, UTC and monotonic/session
+ordering, a boot/service-session identifier, sequence/correlation identifier,
+schema version, and source provenance. The controller must reject stale,
+replayed, cross-VM, truncated, oversized, or unsupported-version records. A
+filesystem spool additionally needs explicit ACL, retention/rotation, partial-
+write recovery, and reader-handoff rules.
+
 The Windows service must not invoke Linux commands, mutate libvirt state, or
 open an undocumented driver control path as part of the initial design.
 
@@ -79,7 +87,7 @@ resize path:
 
 - collect native Windows memory telemetry;
 - calculate a versioned demand state and target recommendation;
-- retain QGA/dommemstat compatibility during migration;
+- retain host-side QGA health and `dommemstat` observation during migration;
 - keep the existing one-VM host controller as the allocation and actuation
   authority;
 - preserve byte units, block alignment, host headroom, and
@@ -87,6 +95,12 @@ resize path:
 
 Phase 2 does **not** implement multi-VM arbitration, automatic global reclaim,
 or direct `viomem.sys` IOCTLs.
+
+The unresolved M10c ownership decision is how to combine native telemetry with
+host-authoritative current allocation. Preferred designs either calculate the
+recommendation on the host after joining raw guest telemetry with live libvirt
+state, or provide a validated allocation feed to the guest. The Windows
+service must never guess allocation or acquire host-control authority.
 
 ## Phase 3 global pool model
 
@@ -151,6 +165,10 @@ Growth and reclaim are separate priorities:
 A high growth priority does not automatically mean a VM is never reclaimable.
 The policy must also respect hard minimums, safe floors, stale reports,
 in-flight operations, and host pressure.
+
+Per-VM actuation authorization must also be bound to the reviewed live
+domain/QEMU configuration. A static workload-review boolean is insufficient:
+configuration fingerprint drift must revoke authorization and require review.
 
 The initial global states are:
 

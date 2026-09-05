@@ -1,6 +1,7 @@
 # Windows Service
 
-Rust service that exposes Windows memory metrics via QEMU Guest Agent.
+Rust service that collects native Windows memory telemetry and will publish
+advisory demand reports. It does not own host actuation or the QGA channel.
 
 ## Project Rules
 
@@ -93,7 +94,8 @@ toolchain, crate, host, guest, and validation requirements. The minimum local
 runtime requirements are:
 
 - Rust 1.70+
-- Windows 11 with QEMU Guest Agent running
+- Windows 11; QEMU Guest Agent is required for host-side health operations,
+  not for native service telemetry
 - Windows service APIs available in the target environment
 
 The current runtime foundation includes a configurable QEMU Guest Agent client
@@ -104,7 +106,8 @@ opening the QGA virtio-serial device, which is owned by the QEMU Guest Agent
 service. It also includes a stoppable polling scheduler, portable
 `ServiceHost` lifecycle wrapper, and a native SCM dispatcher that shares the
 same cancellation signal as the worker. `ServiceConfig` supplies validated
-service identity, endpoint, timing, least-privilege defaults, and versioned JSON
+service identity, legacy adapter endpoint, timing, least-privilege defaults, and
+versioned JSON
 loading from `C:\ProgramData\VirtioMemService\config.json`; ACL provisioning
 and live KVM channel validation are not implemented yet. The demand
 agent foundation additionally collects native Windows memory counters through
@@ -115,8 +118,11 @@ boundary; wiring its persistent report sink into the SCM worker is still
 pending. SCM lifecycle and failure events are separately emitted to the
 Windows Application Event Log with stable IDs and bounded messages. The
 generic `DemandServiceWorker` and JSON-lines publisher are
-available, but the SCM entry point intentionally waits for a validated
-current-allocation provider rather than guessing from QGA totals or limits.
+available, but the SCM entry point currently runs `NativeTelemetryWorker` and
+discards each validated sample. Before publication is wired, the architecture
+must decide whether the host joins authoritative libvirt allocation with raw
+guest telemetry or supplies a validated allocation feed. Report freshness,
+identity, retention, and ACL requirements are also still open.
 
 ## Service hosting rules
 
@@ -125,8 +131,9 @@ stoppable runtime. It must report lifecycle transitions in the
 order **start-pending → running → stop-pending → stopped**, distinguish normal
 cancellation from failure, and preserve unexpected worker failures as
 non-zero process exits so SCM recovery can act. Service registration must use a
-stable identity, documented configuration, and the least-privileged account
-that can access the QEMU Guest Agent channel.
+stable identity, documented configuration, and a least-privileged account
+that can call the required native telemetry and Event Log APIs and write only
+to its approved ProgramData paths.
 
 A worker exit without a stop/shutdown request is also treated as an unexpected
 non-zero failure. Only successful completion after cancellation is reported as

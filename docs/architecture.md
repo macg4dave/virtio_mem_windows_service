@@ -6,7 +6,7 @@ This system manages dynamic memory allocation for a Windows 11 guest running und
 
 ### Components
 
-- **Windows Service (Rust)**: Guest-side demand agent for memory telemetry, demand calculation, QEMU Guest Agent compatibility, cancellation, and service lifecycle hosting
+- **Windows Service (Rust)**: Guest-side native memory telemetry, advisory demand calculation/publication, cancellation, and service lifecycle hosting
 - **RHEL host controller (Rust/systemd)**: One explicitly configured VM and virtio-mem alias per unit instance; reads QGA and live libvirt state, then issues validated live resize requests
 - **Host validation / automation (Bash)**: Explicit preflight, diagnostic, and manual operational helpers; these do not run inside the controller
 - **QEMU / libvirt validation path**: Used to verify guest agent responses and live virtio-mem behavior
@@ -14,13 +14,10 @@ This system manages dynamic memory allocation for a Windows 11 guest running und
 ### Data Flow
 
 ```text
-Windows 11 (Guest)
-    ↓ QEMU Guest Agent
-    ↓ Unix socket / libvirt interface
-Host validation and runtime tooling
-    ├── Read memory metrics
-    ├── Validate guest-agent behavior
-    └── Coordinate virtio-mem verification
+Windows demand agent ── future versioned report transport ──► Host policy
+QEMU Guest Agent ── virtio-serial/libvirt ─────────────────► Host health adapter
+Live libvirt/QEMU state ───────────────────────────────────► Host controller
+Host controller ── validated aligned request ──────────────► virtio-mem device
 ```
 
 ### Phase 2 and Phase 3 ownership
@@ -58,7 +55,9 @@ administers Windows processes.
 The controller uses the same byte-based state and resize policy as the Windows
 service. Before a resize, it validates the selected live XML state and target,
 reads `dynamic-memslots` and `unplugged-inaccessible` from the selected live
-QOM device, and requires a separately recorded operator workload review.
+QOM device, and requires a separately recorded operator workload review. The
+current review is a static boolean; M9d must bind it to a fingerprint of the
+reviewed live domain/QEMU configuration and fail closed when it changes.
 After a request, it waits for `requested` and `current` to converge and never
 sends a follow-up request while they differ. Invalid configuration, failed QGA
 calls, malformed XML, failed resize commands, and convergence timeouts are
@@ -108,8 +107,9 @@ override. Persistent settings belong in the service's configuration mechanism
 rather than undocumented command-line arguments. The service registration
 must define a stable service name, display name, description, executable path,
 startup mode, and an explicitly chosen account. Use the least-privileged
-account that can access the QEMU Guest Agent channel; do not default to
-LocalSystem without a documented requirement.
+account that can collect native telemetry, publish to approved ProgramData
+paths, and emit Event Log records; do not default to LocalSystem without a
+documented requirement.
 
 Installation, recovery configuration, start/stop verification, event-log
 inspection, and removal are operational procedures and must be reproducible
@@ -128,8 +128,11 @@ JSON configuration loader, and a generic `DemandServiceWorker` that publishes
 advisory reports through an injected JSON-lines sink. The SCM path emits
 bounded lifecycle and failure records to the Windows Application Event Log
 with stable event IDs; raw XML EventData and recovery behavior are verified
-live. Live XML parsing, a trustworthy Windows current-allocation provider, and
-the production resize sink remain to be implemented. The QGA named-pipe client is
+live. Production still runs `NativeTelemetryWorker` and discards validated
+samples. M10c must decide whether the host joins libvirt allocation with raw
+telemetry or supplies a validated allocation feed; M10d must add report
+freshness, identity, provenance, ACL, and retention semantics. No Windows
+production resize sink is permitted. The QGA named-pipe client is
 retained as an explicit adapter/test boundary, but the SCM worker does not
 open the QGA virtio-serial device; the host controller owns QGA requests.
 Interactive and SCM startup use the same native telemetry worker boundary and
@@ -163,6 +166,15 @@ VirtIO/WDF library dependencies and Win10/Win11 architecture configurations.
 This repository does not build, install, sign, or modify that kernel driver.
 Any driver fork or added status interface requires its own signing, security,
 installation, rollback, and live-validation plan.
+
+Read-only inspection of the signed `100.102.104.29400` driver confirms that
+PnP properties, registry parameters, Event Log channels, and registered trace
+providers do not expose `requested_size` or `plugged_size`. The matching
+upstream source formats both values only for kernel debug output: its WPP build
+switch is disabled and it defines no I/O queue/device-control callback. A
+kernel-debug capture is therefore an operational mutation of the protected
+guest, not a normal service API, and requires its own approval and rollback
+procedure.
 
 ## Safety policy
 

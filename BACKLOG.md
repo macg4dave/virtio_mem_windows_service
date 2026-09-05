@@ -1,5 +1,21 @@
 # BACKLOG
 
+## 2026-09-05 whole-roadmap reconciliation
+
+- Reconciled every project document against the current Rust implementation
+  and live M7–M10a evidence. Current platform gates are recorded separately as
+  22 shared-core, 29 host, and 64 Windows tests.
+- Closed stale board claims about missing configuration selection, unit
+  conversion, bounded shutdown, SCM observation, QGA-backed Windows production
+  polling, and guest resize wiring.
+- Added M9d/TASK-019 for compatibility-attestation drift, M10c/TASK-020 for
+  current-allocation ownership, M10d/TASK-021 for report freshness and bounded
+  delivery, and M10b/TASK-022 for the single-VM failure/recovery matrix.
+- M10a2/TASK-015 is now Ready and hermetic; its evidence parser does not depend
+  on privileged M10a1 capture. M10a3 depends on both.
+- Dated handoffs remain historical evidence and are subordinate to the current
+  snapshot in `PROJECT_STATUS.md`.
+
 ## 2026-09-05 M10a cross-layer state observation started
 
 - Claimed M10a after M9b completed with `win11_gpu` converged at a retained
@@ -12,6 +28,35 @@
   driver forks/builds/signing/installation, kernel debugging changes, and any
   further live resize remain out of scope without their own design and
   explicit approval.
+- Read-only discovery on `ice101.lan` found the signed, running Red Hat driver
+  `100.102.104.29400` and its `PCI\\VEN_1AF4&DEV_1058` device. PnP properties,
+  service/driver metadata, registry device parameters, Event Log channels, and
+  registered trace providers expose no `requested_size` or `plugged_size`.
+- The contemporaneous upstream `mm314` source has no IOCTL, WMI, or performance-
+  counter query path. It does contain a configuration-change debug message
+  with both fields, but `EVENT_TRACING` is disabled and the shipped binary
+  routes the message to kernel debug output. The string is present in the live
+  binary; no compatible debugger/capture tool is installed on the guest.
+- M10a is blocked at the protected-guest boundary. Completing it now requires
+  a separately approved, bounded kernel-debug capture during one reversible
+  resize, or a separately designed, built, signed, installed, and rolled-back
+  read-only driver status interface. Aggregate Windows physical memory is not
+  accepted as a substitute for the two driver fields.
+- The same discovery pass recorded a non-mutating baseline: live libvirt
+  remained converged at `requested=current=1073741824` bytes and Windows
+  reported 9,148 MB of aggregate physical memory.
+- Microsoft's signed Sysinternals `dbgviewcli.exe` is the preferred bounded
+  capture candidate, but kernel capture requires Administrator rights and
+  automatically loads `Dbgv.sys`. Tool staging, capture, controller stop,
+  one-block resize/rollback, artifact retrieval, cleanup, and controller
+  restoration therefore require one explicit operational approval.
+- M10a is now an umbrella split into M10a1 observability qualification, M10a2
+  correlated capture harness, M10a3 one-block mapping, and M10a4 contract
+  adoption. M10aX is a conditional fallback only if M10a1 proves bounded
+  debug capture is not viable.
+- The umbrella and children use new TASK-013 through TASK-018 identifiers;
+  this removes the accidental reuse of TASK-010, which remains the stable ID
+  of the completed Rust host CLI migration.
 
 ## 2026-09-05 M9b live-controller start
 
@@ -193,8 +238,8 @@
   worker construction, and service-host execution, plus explicit SCM stage
   labels for worker construction, initialization, and host execution.
 - Confirmed deterministic fake state-provider and resize-sink coverage remains
-  available for the shared polling harness; production current-allocation and
-  resize wiring remain intentionally deferred.
+  available for the legacy shared polling harness; production demand
+  publication awaits TASK-020/TASK-021 and no guest resize wiring is planned.
 
 ## 2026-08-18 F5 guest transport boundary hardening
 
@@ -569,18 +614,25 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-004 | Windows memory polling policy | Copilot | In Progress | 2-3 hours | Parser, policy, adapter-based loop, and stoppable interval scheduler implemented; Windows service hosting remains |
-| TASK-005 | Safe QEMU Guest Agent response handling | Copilot | In Progress | 2-3 hours | Parser, typed poll errors, configurable named-pipe client, version-2 operation deadline, and native overlapped cancellation implemented; captured-traffic and live transport validation remain. |
-| TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | Ready | 1-2 hours | No code changes; use official virtio-mem guidance to tighten service and validation docs |
-| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | 2-3 hours | M4/M6 local service foundation; live workload evidence and runtime publication remain |
+| TASK-015 | M10a2 correlated capture harness | Copilot | Ready | 2-3 hours | Hermetic versioned evidence records and parser/correlation tests; no privileged capture required |
+| TASK-019 | M9d compatibility-attestation drift guard | Copilot | Ready | 2-3 hours | Bind workload approval to a live configuration fingerprint and fail closed on drift |
+| TASK-020 | M10c current-allocation ownership | Copilot | Ready | 2-3 hours | Decide and test how host-authoritative allocation is joined with guest telemetry without guest actuation |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-001 | Rust service scaffolding | Copilot | In Progress | Parser, named-pipe QGA client, wakeable scheduler, portable service host, validated service configuration, SCM dispatcher, install/start/stop/remove commands, canonical byte-based VirtioMemState validation, captured libvirt XML parsing, injectable XML state-provider boundary, and a deterministic local service runtime harness are covered; native SCM registration is live-verified, while QGA transport and complete VM evidence remain. |
-| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, canonical-byte validation, version 1 advisory report, provisional five-state demand classification, bounded aligned target recommendations, safe-floor recommendations, durable JSON-lines output, a generic stoppable worker, and SCM Event Log integration are implemented. Main SCM runtime construction, trustworthy allocation provider, ProgramData ACL setup, live workload tuning/evidence, and host integration remain. |
-| TASK-010 | Cross-layer virtio-mem state observation | Copilot | In Progress | M10a claimed after M9b; identify a supported read-only Windows driver-state surface, then correlate one separately approved controlled operation with QEMU/libvirt `requested`/`current` without assuming field equivalence. |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry and the version-1 advisory calculator/publisher are implemented. Production runs `NativeTelemetryWorker` and discards samples; TASK-020 must decide allocation ownership before publication, and TASK-021 must add freshness/identity/retention semantics. ProgramData ACLs and live workload tuning remain. |
+
+## Planned
+
+| ID | Milestone | Owner | Status | Depends on | Exit evidence |
+| --- | --- | --- | --- | --- | --- |
+| TASK-016 | M10a3 one-block state mapping | Copilot + Operator | Planned | TASK-014, TASK-015, explicit mutation approval | One 2 MiB growth/rollback is captured at every layer and the active controller is restored |
+| TASK-017 | M10a4 state-contract decision | Copilot | Planned | TASK-016 | Contract documents define authoritative fields and transition semantics from the captured evidence |
+| TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | TASK-014 failure only | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
+| TASK-021 | M10d demand envelope and bounded delivery | Copilot | Planned | TASK-020 | Versioned identity/freshness/provenance envelope, replay rules, ACLs, partial-record handling, and retention/rotation tests pass |
+| TASK-022 | M10b single-VM failure/recovery matrix | Copilot + Operator | Planned | TASK-016, TASK-017 | Deterministic and live rejection, timeout, non-convergence, reboot, cancellation, and restart evidence proves no replay or overlap |
 
 ### 2026-08-18 live KVM handoff
 
@@ -630,7 +682,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 - Event-log visibility, recovery actions, and QGA access under `LocalService`
   remain open.
 
-### 2026-08-18 M6/F8 runtime wiring
+### 2026-08-18 M6/F8 QGA runtime wiring — superseded by native telemetry
 
 - Interactive and SCM workers now construct `NamedPipeGuestAgent` from the
   validated configuration, apply the configured QGA operation timeout, and
@@ -638,8 +690,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
 - QGA transport/parser failures now fail the worker visibly; no resize sink is
   connected and no virtio-mem `current` allocation is inferred from QGA stats.
 - Deterministic worker tests cover successful initial acquisition and explicit
-  transport failure. A trustworthy current-allocation provider and production
-  resize sink remain required before actuation.
+  transport failure. This was later replaced in production by native telemetry;
+  host actuation remains separate and no guest resize sink is planned.
 
 ### 2026-08-18 Windows service hardening
 
@@ -736,19 +788,25 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-001 | Rust service scaffolding | Copilot | 2026-09-04 | Service lifecycle, configuration, SCM adapter, native telemetry worker, legacy QGA adapter boundary, cancellation, error handling, and live SCM validation are complete; demand publication continues under TASK-009. |
 | TASK-002 | QEMU Guest Agent validation | Copilot + Operator | 2026-09-04 | Repeated live QGA and `dommemstat` probes passed before and after an isolated `qemu-ga` restart and graceful `win11_gpu` reboot; QGA memory stats remain unsupported and the verified fallback remains authoritative. |
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
+| TASK-004 | Windows memory polling policy | Copilot | 2026-08-18 | Parser, policy, adapter loop, wakeable polling, and service-hosting tests pass; production telemetry publication is tracked by TASK-009/TASK-020. |
+| TASK-005 | Safe QEMU Guest Agent response handling | Copilot | 2026-08-18 | Framing, response correlation, malformed input, bounded overlapped I/O, operation timeout, and cancellation are tested as an adapter boundary; Windows production telemetry does not open QGA. |
 | TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |
 | TASK-007 | Documentation review of libvirt/QEMU virtio-mem constraints | Copilot | 2026-08-18 | Added host-side virtio-mem semantics, compatibility limits, and live validation guidance based on official libvirt and QEMU documentation. |
 | TASK-008 | RHEL virtio-mem host controller | Copilot + Operator | 2026-09-05 | M9/M9a/M9b passed on `win11_gpu`: installed current Rust controller, fresh XML/QMP and workload gates, zero-to-1-GiB bootstrap, convergence, retained minimum, active systemd instance, and 51 passing core/host tests. |
 | TASK-011 | RHEL-controlled cross-platform developer gate | Operator + Copilot | 2026-09-04 | Two fingerprint-pinned aggregate runs passed: 38 RHEL core/host tests, 59 native Windows tests, release builds, formatting, warnings-as-errors Clippy, and matching verified artifact hashes. |
 | TASK-010 | Rust host CLI replaces Bash resize helper | Copilot | 2026-09-04 | Rust owns alias-scoped snapshot/validation, exact dry-run arguments, explicitly applied one-shot resize, and shared safety gates; 44 core/host tests pass and the duplicate Bash helper is removed. |
 | TASK-012 | Windows installation and recovery operations | Copilot | 2026-09-04 | LocalService install/start/observe/stop/delete and rollback passed; events 1000–1003, failure event 2000, exit codes, and the first 5-second recovery restart were verified live. |
+| TASK-023 | Whole-roadmap documentation reconciliation | Copilot | 2026-09-05 | Reconciled ownership, current evidence, test counts, milestones, blockers, task states, and stale historical claims across all project documentation. |
 
 ## Blocked
 
-No backlog task is currently classified as blocked. Remaining live resize and
-cross-layer mapping work retains explicit approval and compatibility gates.
+| ID | Title | Owner | Status | Handoff Notes |
+| --- | --- | --- | --- | --- |
+| TASK-013 | M10a cross-layer state-observation umbrella | Copilot + Operator | Blocked | Live discovery found no supported installed-driver query. M10a1–M10a4 must qualify capture, build the harness, map one operation, and adopt the contract; M10aX is conditional only. |
+| TASK-014 | M10a1 driver observability qualification | Copilot + Operator | Blocked | Requires explicit approval to stage checksum-recorded signed `DbgViewCLI`, run a bounded elevated no-resize kernel capture on `ice101.lan`, prove the capture engine is operational, and account for process, `Dbgv.sys`, artifacts, and cleanup; this gate does not claim driver-state evidence. |
 
 ## Architecture Decisions
 

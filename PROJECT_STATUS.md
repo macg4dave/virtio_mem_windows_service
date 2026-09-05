@@ -1,9 +1,10 @@
 # Project Status & Next Steps
 
-**Updated:** 2026-09-04
+**Updated:** 2026-09-05
 **Phase:** Phase 2 — Core Functionality
-**Overall status:** Local foundations are implemented and validated; concrete
-Windows runtime wiring and live KVM evidence remain open.
+**Overall status:** Windows and host service lifecycles plus single-VM host
+actuation are live validated. Trustworthy demand publication, cross-layer
+state mapping, configuration-drift protection, and recovery hardening remain.
 
 ## Completed locally
 
@@ -28,9 +29,10 @@ Windows runtime wiring and live KVM evidence remain open.
 
 ## Current evidence
 
-The 2026-09-04 M9c native RHEL gate passed:
+The latest native RHEL gate passed:
 
-- 44 core/host tests (19 core and 25 host), with no failures.
+- 22 shared-core and 29 host tests, with no failures.
+- `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
 - `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
@@ -57,12 +59,20 @@ Windows service artifact was built on the Win11 guest and fetched to
 
 ## Open implementation work
 
-- Wire `windows/src/main.rs` to the configured QGA client and demand worker;
-  trustworthy current-allocation provider and resize sink remain open.
+- Decide current-allocation ownership in M10c, then wire native telemetry to a
+  demand publisher without adding guest actuation. Production currently runs
+  `NativeTelemetryWorker` and discards each validated sample.
+- Add the M10d report envelope and delivery contract: VM/service/session
+  identity, timestamps and sequence, allocation provenance, freshness/replay
+  rules, partial-record handling, ACLs, and retention/rotation.
+- Bind the current static workload-review authorization to a live
+  domain/QEMU configuration fingerprint in M9d.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
-- Complete M10a/M10b cross-layer driver mapping, interruption/reboot recovery,
-  and a separately approved reversible end-to-end resize.
+- Complete M10a1 capture qualification, M10a2 evidence harness, M10a3
+  one-block mapping, M10a4 contract adoption, and the M10b failure/recovery
+  matrix. Use M10aX
+  only if bounded kernel-debug capture is not viable.
 
 ## External blockers
 
@@ -72,11 +82,15 @@ Windows service artifact was built on the Win11 guest and fetched to
   `requested == current` convergence at the time of each request.
 - Driver `plugged_size` versus libvirt `current` remains an unverified
   cross-layer mapping.
+- Live read-only inspection of signed `viomem.sys` `100.102.104.29400` found
+  no supported user-mode state query. The upstream state record is available
+  only through kernel debug output, so M10a requires separate approval for a
+  bounded protected-guest capture and reversible resize (or a separate signed-
+  driver interface project).
 
-The previous live convergence incident is resolved as of 2026-08-18: a fresh
-post-driver-update XML check reports `requested=0 KiB` and `current=0 KiB` for
-`ua-virtiomem0`. This clears the stale rollback blocker, but does not replace
-the required controlled resize evidence or prove direct driver-field mapping.
+The previous live convergence incident was resolved on 2026-08-18 at zero.
+That evidence is historical: M9b subsequently bootstrapped and converged the
+same device at 1 GiB. Neither state proves direct driver-field mapping.
 
 ## References
 

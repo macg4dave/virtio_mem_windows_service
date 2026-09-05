@@ -11,29 +11,31 @@
 
 The project is in **Phase 2: Core Functionality**. The parser, resize policy,
 QEMU Guest Agent client boundary, wakeable polling loop, portable service host,
-validated configuration model, startup validation path, and local Windows
-SCM install/stop registration path are implemented and locally tested. The
-workspace also contains a host-side virtio-mem controller scaffold with
-XML/state validation and a bounded runtime loop. The next implementation
-priority is the Phase 2 Windows demand-agent foundation: native telemetry,
-canonical-byte demand reports, and bounded target recommendations that do not
-take over host actuation. The existing one-VM host controller remains the only
-resize authority until live state mapping and Phase 3 global arbitration have
-been validated. M8 live QGA/KVM validation is complete on `win11_gpu`, including
+basic configuration model, startup validation path, and live Windows SCM
+lifecycle/recovery path are implemented and tested. The
+workspace contains an installed, active single-VM host controller with
+XML/state validation and a bounded runtime loop. The next unprivileged
+implementation priority is the Phase 2 demand-report integration contract:
+decide current-allocation ownership, add freshness and identity to the report
+envelope, and bound durable delivery. The existing one-VM host controller
+remains the only resize authority until live state mapping and Phase 3 global
+arbitration have been validated. M8 live QGA/KVM validation is complete on `win11_gpu`, including
 isolated agent restart and graceful guest reboot recovery.
+M10a read-only discovery found no supported installed-driver query for
+`requested_size`/`plugged_size`; cross-layer mapping is blocked pending a
+separately approved bounded kernel-debug capture and reversible resize, or a
+separate signed-driver status-interface project.
 The QGA memory command may be unavailable on the guest, but that is no longer
 a Windows service startup blocker because the service uses native
 `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry. The host controller
 uses `dommemstat` by default when the guest QGA does not provide
 `guest-get-memory-stats`.
 
-## Recent verified wins
+## Verified evidence
 
-- **Local quality baseline:** on 2026-08-18 the workspace passed
-    `cargo test --workspace --all-features`, `cargo clippy --workspace
-    --all-targets --all-features -- -D warnings`, and `cargo build --workspace
-    --all-features`; the workspace currently reports 77 tests passing and 0
-    failures.
+- **Current platform gates:** the latest RHEL gate passes 22 shared-core and
+    29 host tests; the latest native-Windows gate passes 64 tests. Keep these
+    as separate supported-platform results rather than one workspace total.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Strong boundary separation:** guest Rust code does not invoke Linux commands;
@@ -42,7 +44,7 @@ uses `dommemstat` by default when the guest QGA does not provide
     worker failures return typed errors instead of silent fallback.
 - **Cancellation correctness:** stop wakes the polling wait rather than
     delaying shutdown for the full interval.
-- **Host/controller scaffolding:** the RHEL host adapter validates live XML,
+- **Active host controller:** the RHEL host adapter validates live XML,
     selected alias data, QGA responses, and resize requests before sending a
     change, and the runtime loop blocks overlapping updates until convergence.
 - **Documentation traceability:** architecture, API, testing, backlog, and
@@ -51,17 +53,16 @@ uses `dommemstat` by default when the guest QGA does not provide
     virtio-mem resize is an asynchronous `requested` change, not an immediate
     guest memory state switch; the controller must wait for convergence before
     issuing a follow-up request.
-- **Host stats-source fallback and hard safety invariants (2026-08-18):** the
+- **Historical host fallback implementation (2026-08-18; superseded by M9b live evidence):** the
     host controller can now source memory stats from `virsh dommemstat`
     instead of the unimplemented `guest-get-memory-stats`, and a shared
     `MIN_HEADROOM_BYTES` invariant plus a host `/proc/meminfo` headroom gate
-    are enforced in code rather than only by configuration. Live systemd
-    installation and a resize test through the installed service remain.
+    are enforced in code rather than only by configuration.
 - **RHEL read-only fallback evidence (2026-08-18):** `virsh dommemstat
     win11_gpu` returned `actual`, `unused`, and `available` successfully, so
     the default host stats source is observable on this guest. Live XML remains
     the authoritative source for the requested/current convergence gate.
-- **RHEL service observation (2026-08-18):** the read-only check found no
+- **Historical RHEL service observation (2026-08-18; superseded by M9b):** the read-only check found no
     installed `virtio-mem-host@win11_gpu.service` and no journal entries.
     Service installation and lifecycle validation remain separate approved
     mutation work.
@@ -93,13 +94,13 @@ uses `dommemstat` by default when the guest QGA does not provide
     devices were identified as GPU/audio/USB rather than NVMe, and the operator
     confirmed no RDMA or unsupported vhost-user workload dependency. The exact
     dry-run vector passed without `--apply` and live XML remained unchanged.
-- **Fresh convergence recheck (2026-08-18):** `win11_gpu` still reports
+- **Historical convergence recheck (2026-08-18; superseded by the 1 GiB M9b state):** `win11_gpu` reported
     `requested=0 KiB` and `current=0 KiB` after the latest Windows driver
     update. The previous rollback convergence blocker is resolved. The QGA
     responses checked here do not expose Windows driver
     `requested_size`/`plugged_size`; the cross-layer driver mapping remains
     unverified.
-- **Windows service running handoff (2026-08-18):** RHEL-side QGA checks
+- **Historical Windows service handoff (2026-08-18; superseded by M7):** RHEL-side QGA checks
     confirm the guest is running and responds with hostname `ICE101`, but they
     cannot observe Windows SCM state directly. The native telemetry worker is
     therefore considered a Windows-side runtime claim until SCM/log evidence
@@ -158,8 +159,9 @@ live integration evidence.
 
 - [x] **Stage A — Native RHEL gate:** `scripts/build-rust.sh` uses the workspace
   lockfile and validates the shared core and host controller without trying to
-  compile Windows SCM APIs for Linux. Current evidence is a release build, 38
-  passing core/host tests, rustfmt, warnings-as-errors Clippy, and Bash syntax.
+  compile Windows SCM APIs for Linux. Current evidence is a release build, 22
+  shared-core tests, 29 host tests, rustfmt, warnings-as-errors Clippy, and
+  Bash syntax.
 - [x] **Stage B — RHEL orchestration:** `scripts/windows-remote-build.sh`,
   `.vscode/tasks.json`, and the Makefile provide explicit endpoint checking,
   one-sync native validation, verified artifact retrieval, and both editor and
@@ -180,10 +182,10 @@ live integration evidence.
   both logs and artifact hashes, and produced the same verified executable
   checksum. Earlier toolchain, doctest, and checksum-parser failures propagated
   non-zero until corrected.
-- [ ] **Stage F — Optional live validation:** execute Windows SCM lifecycle and
-  RHEL systemd/libvirt/QGA tests under their existing separate approval and
-  rollback procedures. These tests are release evidence, not part of the
-  default non-mutating developer gate.
+- [~] **Stage F — Live validation:** M7 SCM lifecycle/recovery, M8 QGA/reboot,
+  and M9/M9a/M9b host inspection, compatibility, installation, bootstrap, and
+  convergence evidence pass. Cross-layer capture, report integration, and the
+  failure/recovery matrix remain under separate approval procedures.
 
 ### Blockers and exit criteria
 
@@ -202,8 +204,8 @@ this milestone and does not block ordinary developer builds.
 
 ## Verified wins to preserve
 
-- **Local quality baseline:** the native Windows MSVC build, release build,
-    77 unit tests, and Clippy warnings-as-errors gate pass locally.
+- **Local quality baseline:** the current platform gates pass 22 core, 29 host,
+    and 64 Windows tests plus their release build and Clippy checks.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Clear boundaries:** guest Rust code does not invoke Linux commands; host
@@ -252,21 +254,29 @@ readiness in the remaining host-side work.
 | M0 | Repository and architecture baseline | [x] | — | Architecture, contracts, standards, and testing docs reviewed |
 | M0a | RHEL-controlled cross-platform developer gate | [x] | M0 | RHEL core/host gate and two fingerprint-pinned aggregate native runs pass; both produce the same checksum-verified Windows executable |
 | M1 | Pure memory policy and QGA parsing | [x] | M0 | Parser and controller tests cover malformed, boundary, alignment, and convergence cases |
-| M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, and transport/error tests pass locally; operation deadlines remain |
-| M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, and bounded shutdown tests pass locally; real SCM observation remains |
-| M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, demand-report path, timing, account, missing-file defaults, and validation model exist locally; ACL provisioning remains |
+| M2 | Guest runtime polling foundation | [x] | M1 | Poller, named-pipe client boundary, wakeable scheduler, bounded operation deadlines, and transport/error tests pass |
+| M3 | Service lifecycle foundation | [x] | M2 | Startup readiness, cancellation, failure, state, bounded shutdown, and live SCM observation pass |
+| M4 | Runtime configuration foundation | [x] | M2 | Versioned JSON schema, persistent loading, identity, endpoint, report path, timing, account, missing-file defaults, and basic validation exist; stronger production bounds, ACLs, and atomic update remain H3 work |
 | M5 | Native Windows SCM adapter | [x] | M3, M4 | Elevated Program Files lifecycle passed under LocalService with stable live Event Log records, bounded callbacks, clean-stop exit zero, and failure exit one |
-| M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths now collect native Windows telemetry without opening the QGA device; trustworthy current-allocation and resize wiring remain |
+| M6 | Concrete guest runtime wiring | [~] | M4, M5 | Interactive and SCM paths collect native Windows telemetry without opening QGA; publication awaits the current-allocation ownership and report-envelope contracts, with no guest resize sink permitted |
 | M7 | Installation and recovery operations | [x] | M5, M6 | Live install/start/observe/stop/delete passed; 5-second recovery restart and 5/30/60 metadata were verified, rollback restored the original running service |
 | M8 | Live QGA and KVM validation | [x] | M2 | Repeated QGA and `dommemstat` probes, connected-channel XML, isolated QGA restart recovery, graceful guest reboot recovery, and unchanged convergence all passed on `win11_gpu` |
 | M9 | Host virtio-mem XML adapter | [x] | M1, M8 | Live Rust CLI snapshot/validation, exact alias selection, canonical zero-state parsing, wrong-alias rejection, fail-closed dry run, and before/after non-mutation evidence pass on `win11_gpu` |
 | M9a | Virtio-mem safety and compatibility gate | [x] | M8, M9 | Fresh live QMP properties, THP/block match, explicit operator review, VFIO device classification, locked/RDMA/vhost-user exclusion, exact dry run, and XML non-mutation passed on `win11_gpu` |
 | M9b | RHEL systemd host controller | [x] | M1, M8, M9, M9a | Installed one-VM systemd controller completed a guarded zero-to-1-GiB bootstrap on `win11_gpu`, converged, retained its minimum, and remains active without overlapping requests |
 | M9c | Rust host CLI replaces Bash resize helper | [x] | M9, M9a | Rust owns snapshot, validation, exact dry-run arguments, and explicitly applied resize commands; hermetic regression tests pass and the duplicate Bash helper is removed |
-| M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native Windows telemetry, versioned demand report, bounded pressure state, desired target, advisory safe floor, durable JSON-lines output, and generic stoppable worker are locally tested; main SCM construction, trustworthy allocation provider, and live workload evidence remain; no direct host actuation |
-| M10a | Cross-layer state observation | [ ] | M8, M9, M9a | Controlled evidence maps driver `requested_size`/`plugged_size` to QEMU/libvirt `requested`/`current` without treating the fields as interchangeable by assumption |
-| M10b | End-to-end single-VM resize flow | [ ] | M7, M8, M9, M9a, M9b | One reversible aligned resize converges without overlapping requests and records the observed state transition |
-| M11 | Phase 3 global pool arbitration | [ ] | M10, M10a, M10b | Hermetic multi-VM simulation models host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states |
+| M9d | Compatibility attestation drift guard | [ ] | M9a, M9b | Workload approval is bound to a live domain/QEMU configuration fingerprint and actuation fails closed when the reviewed configuration changes |
+| M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native telemetry, version-1 calculator, bounded pressure state, desired target, advisory safe floor, append-only JSON-lines output, and generic worker are tested; production publication, trustworthy allocation ownership, bounded delivery, and workload evidence remain; no direct host actuation |
+| M10c | Current-allocation ownership | [ ] | M9b, M10 | A documented and tested interface either joins authoritative host allocation with raw guest telemetry or supplies a validated allocation feed; Windows never guesses or invokes host tools |
+| M10d | Demand envelope and bounded delivery | [ ] | M10c | A versioned envelope supplies VM/service/session identity, wall-clock and monotonic ordering, sequence, allocation provenance, freshness rules, ACLs, retention/rotation, and malformed/partial-record rejection |
+| M10a | Cross-layer state-observation umbrella | [!] | M8, M9, M9a | M10a1–M10a4 qualify capture, correlate evidence, perform one controlled mapping operation, and adopt the resulting contract; M10aX is used only if capture is not viable |
+| M10a1 | Driver observability qualification | [!] | M8, M9a | A checksum-recorded signed `DbgViewCLI` performs a bounded no-resize kernel capture on `ice101.lan`; `Dbgv.sys`, the capture process, and temporary artifacts are accounted for and cleaned up |
+| M10a2 | Correlated capture harness | [ ] | M8, M9a | A hermetic versioned evidence format combines monotonic/wall-clock timestamps, driver records, QEMU/libvirt snapshots, Windows aggregate memory, and controller state; parser/correlation tests reject missing or ambiguous samples |
+| M10a3 | One-block state mapping | [ ] | M9b, M10a2 | With separate approval, the controller is stopped, one 2 MiB growth and rollback are captured at every layer, convergence is proved, and the original active controller state is restored |
+| M10a4 | State-contract decision | [ ] | M10a3 | Architecture, API, data model, and testing docs identify authoritative requested/active fields during steady state, growth, shrink, failure, and convergence without generalizing beyond evidence |
+| M10aX | Conditional driver status-interface feasibility | [ ] | M10a1 failure only | If bounded debug capture is not viable, a separate proposal defines a versioned read-only interface, access control, malformed-request tests, driver build/signing/install, compatibility, and rollback; it does not enter the normal Rust gate |
+| M10b | Single-VM failure and recovery matrix | [ ] | M7, M9b, M10a4 | Deterministic and approved live evidence covers rejection, timeout, non-convergence, QGA interruption, guest reboot, cancellation, and service/controller restart without replay or overlap |
+| M11 | Phase 3 global pool arbitration | [ ] | M9d, M10d, M10a4, M10b | Hermetic multi-VM simulation models host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states |
 | M11a | Controlled reclaim and convergence | [ ] | M11 | Trend-aware safe floors, bounded aligned reclaim, hysteresis, in-flight protection, convergence waits, and stop-on-pressure behavior pass simulation tests |
 | M12 | Hardening and observability | [ ] | M11a | Recovery, event logging, metrics, bounded timeout behavior, and restart tests pass for guest and global-controller paths |
 | M13 | Operational release readiness | [ ] | M12 | Documentation, health checks, monitoring, compatibility evidence, rollback, and repeatable host automation complete |
@@ -329,12 +339,12 @@ readiness in the remaining host-side work.
 
 **Gate:** Three consecutive read-only QGA probes succeed on the real VM.
 
-### F6. Service lifecycle and configuration — partially complete
+### F6. Service lifecycle and basic configuration — complete
 
 - [x] `ServiceHost` models startup readiness, running, stopping, stopped, and failed states.
 - [x] Startup failures are distinct from runtime worker failures.
 - [x] Stop and shutdown share one wakeable cancellation path.
-- [x] Service identity, QGA endpoint, poll interval, shutdown timeout, and least-privilege account defaults are validated.
+- [x] Service identity, legacy adapter endpoint, poll interval, shutdown timeout, and least-privilege account defaults receive basic validation.
 - [x] Load persistent configuration rather than relying only on in-process defaults.
 - [x] Add a versioned configuration schema and migration/rejection rules.
 - [x] Enforce the configured shutdown timeout during worker termination and
@@ -357,12 +367,12 @@ readiness in the remaining host-side work.
 - [x] Enforce `requested % block == 0`, `requested <= size`, device-size
     alignment, and `block >= 1 MiB` checks before issuing a resize request.
 - [x] Add boundary tests for maximum values and unit conversion round trips.
-- [~] Add compatibility checks for `dynamic-memslots`/`unplugged-inaccessible`
+- [x] Add compatibility checks for `dynamic-memslots`/`unplugged-inaccessible`
     and known incompatible device classes before enabling live automation;
-    XML flags now parse as confirmed/rejected/unknown and unknown state blocks
-    the resize sink, while workload/device review remains operator evidence.
+    live M9a evidence passed. M9d separately tracks expiry of that evidence
+    when domain or QEMU configuration changes.
 
-**Gate:** A target size can be traced from QGA observation to host request with
+**Gate:** A target size can be traced from its memory observation to host request with
 no ambiguous or implicit unit conversion.
 
 ### F7. Native Windows service integration — complete
@@ -389,13 +399,14 @@ no ambiguous or implicit unit conversion.
 - [~] Implement guest-side demand/state acquisition; native telemetry is
     collected and validated at worker initialization, but it does not establish
     virtio-mem `current` allocation.
-- [ ] Implement a safe resize-request sink without Linux command execution;
-    defer until a trustworthy current-allocation provider exists.
+- [ ] Wire advisory demand publication after M10c decides how authoritative
+    host allocation is joined with guest telemetry. Do not add a guest resize
+    sink.
 - [x] Add structured error context at the service boundary for configuration,
     worker construction/initialization, and service-host execution failures.
-- [x] Add a deterministic fake state provider and resize sink for integration
-    tests; local fakes now provide validated byte snapshots, while the live XML
-    state provider and production resize sink remain.
+- [x] Add deterministic fake state-provider and resize-sink boundaries for
+    legacy integration tests. They are test seams, not intended Windows
+    production actuation.
 
 **Gate:** The executable can start its worker, stop cleanly, and fail visibly when an adapter fails.
 
@@ -410,7 +421,7 @@ no ambiguous or implicit unit conversion.
 - [x] Keep the harness independent of Linux tools and production VM state.
 
 **Gate:** Every failure mode in the service boundary has deterministic local
-evidence before live testing.
+evidence before live actuation expands beyond the validated M9b bootstrap.
 
 ### F9. Installation and recovery
 
@@ -472,10 +483,12 @@ evidence before live testing.
     than NVMe, `mem-lock=off`, and no RDMA or unsupported vhost-user dependency
     is present or intended.
 
-### V3. End-to-end resize
+### V3. Single-VM failure and recovery
 
-- [ ] Perform one manual reversible live resize.
-- [ ] Confirm convergence before a second request.
+- [ ] Reuse M10a3's reversible happy-path capture; do not schedule a duplicate
+    live resize merely to satisfy this gate.
+- [ ] Confirm every failure/recovery case preserves the convergence and
+    no-overlap rules.
 - [ ] Test QGA interruption, guest reboot, failed update, and service restart.
 - [ ] Preserve evidence and update API/issue documentation with observed behavior.
 - [ ] Verify host and guest logs can correlate one policy decision to one host
@@ -492,14 +505,39 @@ allocation decisions. The Windows service remains a measurement and
 recommendation agent; it does not issue Linux/libvirt commands or direct
 `viomem.sys` requests.
 
+### G0. Demand integration prerequisites
+
+- [ ] **M9d:** bind workload compatibility authorization to a fingerprint of
+    the reviewed live domain/QEMU configuration and revoke it on drift.
+- [ ] **M10c:** choose and test how host-authoritative current allocation is
+    joined with native guest telemetry. Windows must not infer it or invoke
+    host tools.
+- [ ] **M10d:** version the report envelope with VM/service/session identity,
+    wall-clock and monotonic ordering, sequence/correlation, allocation
+    provenance, and freshness/replay rules.
+- [ ] Bound any filesystem delivery with least-privilege ACLs, maximum record
+    and file sizes, retention/rotation, partial-write recovery, and explicit
+    reader handoff.
+
+**Gate:** The global controller rejects stale, replayed, cross-VM, incomplete,
+or provenance-free demand input before evaluating policy.
+
 ### G1. Cross-layer state mapping
 
-- [ ] Capture controlled, reversible observations of Windows
-    `requested_size`/`plugged_size` and QEMU/libvirt `requested`/`current`.
-- [ ] Document which values represent requested state versus actual active
-    allocation and which values may remain stale during convergence.
-- [ ] Do not use driver and libvirt field names interchangeably until the
-    mapping is proven across the same resize operation.
+- [ ] **M10a1:** qualify a checksum-recorded, bounded kernel-debug capture
+    without resizing and prove capture-driver/process/artifact cleanup.
+- [ ] **M10a2:** define and hermetically test a versioned correlated evidence
+    format that fails closed on missing layers, ambiguous units, mixed
+    operations, or incomplete convergence.
+- [ ] **M10a3:** capture one separately approved, reversible 2 MiB operation
+    through Windows `requested_size`/`plugged_size` and QEMU/libvirt
+    `requested`/`current`, with controller restoration.
+- [ ] **M10a4:** document requested versus active allocation semantics and
+    source authority for steady, growth, shrink, failure, and convergence
+    states before using the mapping for pool accounting.
+- [ ] **M10aX, conditional:** if M10a1 fails, specify—but do not implement—a
+    separately built and signed read-only driver status interface with its own
+    security, compatibility, test, install, and rollback gates.
 
 ### G2. Global RAM pool model
 
@@ -536,37 +574,40 @@ reclaim passes before any automatic multi-VM live action.
 
 ### H1. Error handling and recovery
 
-- [ ] Classify expected cancellation, transient transport failure, invalid data, and fatal worker failure.
-- [ ] Add bounded in-flight shutdown handling.
-- [ ] Verify non-zero failure exit behavior for SCM recovery.
+- [~] Classify expected cancellation, transient transport failure, invalid data, and fatal worker failure; cancellation and fatal SCM failures are distinct, while transient retry classes remain open.
+- [x] Add bounded in-flight shutdown handling.
+- [x] Verify non-zero failure exit behavior for SCM recovery.
 - [ ] Add regression tests for restart and recovery decisions.
 - [ ] Define transient-error backoff and a maximum retry budget; never retry a
     resize blindly.
-- [ ] Verify intentional stop, shutdown, startup failure, and worker crash have
-    distinct exit/recovery behavior.
+- [x] Verify intentional stop, startup failure, and unexpected worker exit have
+    distinct exit/recovery behavior; system-shutdown live evidence remains part
+    of the wider recovery matrix.
 
 ### H2. Logging and observability
 
-- [ ] Emit structured lifecycle, QGA, policy, resize, and shutdown events.
-- [ ] Integrate Windows Event Log or an equivalent documented sink.
-- [ ] Avoid logging secrets or raw sensitive configuration.
+- [~] Emit structured lifecycle, telemetry, policy, resize, and shutdown events; Windows lifecycle/failure events exist, while demand and host correlation remains open.
+- [x] Integrate Windows Event Log for SCM lifecycle and failure events.
+- [x] Avoid logging secrets or raw sensitive configuration in the implemented Windows event sink.
 - [ ] Add useful correlation/context fields for failed requests.
 - [ ] Define log volume limits and redaction rules for paths, account names, and
     configuration values.
 
 ### H3. Configuration persistence
 
-- [ ] Select and document the Windows configuration location and permissions.
-- [ ] Load persisted values with validation and safe defaults.
+- [~] Use the documented ProgramData configuration location; least-privilege ACL provisioning remains open.
+- [x] Load persisted values with validation and safe defaults.
 - [ ] Reject unsafe account, endpoint, interval, and limit values.
-- [ ] Test missing, malformed, and partially specified configuration.
+- [x] Test missing, malformed, and partially specified configuration.
 - [ ] Test file/registry ACLs and atomic update/rollback behavior.
 
 ### H4. Performance and safety tuning
 
-- [ ] Measure QGA response latency and polling overhead.
+- [~] Measure QGA response latency and polling overhead; live host-side QGA
+    latency is recorded, while native telemetry overhead remains open.
 - [ ] Tune hysteresis using observed memory pressure behavior.
-- [ ] Confirm no overlapping polls or resize requests.
+- [~] Confirm no overlapping polls or resize requests; M9b observed no
+    overlapping resize, while the wider failure/restart matrix remains M10b.
 - [ ] Verify bounded shutdown under slow QGA responses.
 - [ ] Set explicit latency and shutdown acceptance thresholds from measured KVM
     results rather than assumptions.
@@ -577,9 +618,9 @@ reclaim passes before any automatic multi-VM live action.
 
 ### O1. Host automation
 
-- [ ] Make host scripts validate explicit VM names and prerequisites.
-- [ ] Add safe inspection/reporting for live XML and convergence.
-- [ ] Keep resize actions opt-in and explicitly scoped.
+- [x] Make host scripts and the Rust CLI validate explicit VM names and prerequisites.
+- [x] Add safe inspection/reporting for live XML and convergence.
+- [x] Keep resize actions opt-in and explicitly scoped.
 
 ### O2. Health and monitoring
 
@@ -589,10 +630,11 @@ reclaim passes before any automatic multi-VM live action.
 
 ### O3. Release readiness
 
-- [ ] Produce a repeatable Windows build/publish procedure.
-- [ ] Produce install, upgrade, rollback, and removal procedures.
-- [ ] Complete documentation freshness checks.
-- [ ] Record known platform/version compatibility.
+- [x] Produce a repeatable Windows build/publish procedure.
+- [~] Produce install, upgrade, rollback, and removal procedures; install,
+    removal, and one rollback are evidenced, while upgrade packaging remains.
+- [x] Complete the current documentation freshness check; repeat on every change.
+- [x] Record known platform/version compatibility for the validated VM stack.
 - [ ] Produce a versioned release artifact with checksum and dependency/license
     inventory.
 - [ ] Define rollback criteria and a safe disable path before enabling automatic
@@ -602,27 +644,38 @@ reclaim passes before any automatic multi-VM live action.
 
 ```text
 M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7
-              └──────────────→ M8 → M9 → M9a → M9b ─┐
-                                                   ├→ M10 → M10a → M10b → M11 → M11a → M12 → M13
-              M4 → M6 ────────────────────────────┘
+              └──────────────→ M8 → M9 → M9a → M9b → M9d ────────┐
+M8 + M9a → M10a2 ─┐                                               │
+M8 + M9a → M10a1 ─┴→ M10a3 → M10a4 → M10b ───────────────────────┼→ M11 → M11a → M12 → M13
+M4 + M6 → M10 → M10c → M10d ─────────────────────────────────────┘
+M10a1 failure only → M10aX
 ```
 
 The live KVM path (`M8`) is external to the Windows build path. The Phase 2
-demand-agent work (`M10`) can be developed with deterministic native-API fakes,
-but the global-controller path cannot pass its gates until state mapping and
-single-VM convergence evidence are available. M9c has removed the duplicate
+demand-agent work (`M10`) can be developed with deterministic native-API fakes.
+M10a2 is deliberately hermetic and does not wait for privileged M10a1 capture.
+The global-controller path cannot pass until M9d guards compatibility drift,
+M10d provides trustworthy reports, M10a4 adopts the state mapping, and M10b
+records failure/recovery evidence. M10aX is a
+conditional branch, not permission to begin driver work. M9c has removed the duplicate
 Bash host-control implementation before live resize automation is expanded.
 
 ## Active blockers and decisions
 
 | ID | Blocker or decision | Impact | Owner/action |
 | --- | --- | --- | --- |
-| B4 | Persistent configuration location and format are not selected | Blocks production startup configuration | Choose a Windows-safe, least-privilege configuration mechanism in H3 |
-| B5 | Concrete guest state and resize sinks are not wired | Blocks real automatic resize behavior | Implement M6 without invoking Linux commands from the guest |
-| B7 | QGA, controller, libvirt, and `virsh` memory-unit semantics are not reconciled in one tested contract | Blocks safe resize enablement | Resolve in F6a before M9/M10 |
-| B9 | Shutdown timeout is configured but not yet enforced by the worker host | Stop-pending behavior cannot be proven | Add bounded join/worker termination policy in M3/M5 |
 | B13 | Native Windows telemetry and the versioned demand-report contract lack live workload evidence | Blocks production tuning and global-controller inputs, but not Windows service startup | Collect live workload evidence for `GlobalMemoryStatusEx`/`GetPerformanceInfo` reports without changing host actuation authority |
 | B14 | Driver `plugged_size` versus libvirt `current` has not been validated as one cross-layer state mapping | Blocks global pool accounting and safe reclaim | Capture the same controlled resize through driver, QEMU, and libvirt observation before treating actual allocation as interchangeable |
+| B15 | The signed Windows `viomem.sys` exposes no supported user-mode query for `requested_size`/`plugged_size`; its existing state message is kernel-debug output | Blocks M10a evidence collection without changing protected guest tracing state or the driver | Obtain explicit approval for a bounded kernel-debug capture plus reversible resize, or open a separate signed-driver status-interface project |
+| B16 | No owner or transport is selected for joining host-authoritative current allocation with native guest telemetry | Blocks trustworthy demand publication; the Windows calculator currently requires `current_bytes` | Decide and test M10c without adding guest host-control authority |
+| B17 | Demand report v1 lacks freshness, VM/session identity, sequence, and allocation provenance; JSON-lines output has no retention/rotation contract | Blocks replay-safe Phase 3 ingestion and risks ambiguous, stale, partial, or unbounded records | Complete M10d with a versioned envelope and bounded durable-delivery rules |
+| B18 | Workload compatibility review is a static boolean not bound to the current VM/QEMU configuration | Configuration drift can leave automatic host actuation authorized by stale evidence | Complete M9d and fail closed when the reviewed fingerprint changes |
+| B19 | Runtime failure injection does not yet cover the full active-controller recovery matrix | Rejection, non-convergence, reboot, restart, and post-request cancellation behavior lack sufficient deterministic evidence | Complete M10b before expanding automatic actuation |
+
+Resolved blockers B4 (configuration location/format), B7 (unit boundaries),
+and B9 (bounded shutdown enforcement) are retained in Git history rather than
+the active table. Former B5 was replaced by B16 because a guest resize sink
+would violate the architecture.
 
 ## Definition of done for the project
 
@@ -631,13 +684,15 @@ The project is complete only when:
 1. The Rust executable is installed and controlled by Windows SCM.
 2. Start, stop, shutdown, failure, and recovery states are observable.
 3. Configuration is persistent, validated, and least privilege by default.
-4. QGA metrics are collected reliably on the Windows KVM guest.
+4. Native Windows demand metrics are collected reliably, while host-side QGA
+   health and `dommemstat` fallback behavior are independently validated.
 5. Resize requests are aligned, convergent, bounded, and reversible.
 6. Host and guest tests cover the install/start/stop/remove and live resize flows.
 7. All QGA operations and shutdown paths have bounded deadlines.
 8. Unit conversions and adapter contracts are tested end to end.
 9. Native demand reports are versioned, canonical-byte based, bounded, and
-    advisory; they cannot directly actuate host memory.
+    advisory; freshness, identity, provenance, retention, and replay behavior
+    are enforced, and reports cannot directly actuate host memory.
 10. Global pool accounting uses host reserve and observed actual VM allocation,
     and arbitration covers growth, reclaim, stale data, in-flight operations,
     and explicit pressure states.
@@ -648,6 +703,8 @@ The project is complete only when:
 
 - QEMU Guest Agent availability and Windows virtio-serial permissions.
 - Memory allocation hysteresis tuning under real workload pressure.
+- Stale workload compatibility authorization after domain/QEMU configuration drift.
+- Unbounded or replayed demand records until M10d is complete.
 - Slow or interrupted QGA responses during bounded shutdown.
 - SCM callback timing and recovery semantics.
 - Cross-platform integration between the Windows guest and Linux KVM host.

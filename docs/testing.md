@@ -410,24 +410,26 @@ Get-Service VirtioMemService | Select-Object -Property Status, StartType
 The executable first attempts the SCM dispatcher when invoked as `run` (the
 default command with no arguments). If it is not launched by SCM, it falls
 back to the interactive worker host, which is useful for local lifecycle
-testing. The current worker is a stoppable QGA acquisition harness: it reads
-and validates configured QGA memory statistics during initialization and each
-poll. It does not infer virtio-mem `current` allocation or invoke a resize
-sink, so successful QGA acquisition must not be treated as resize readiness.
+testing. The production worker is `NativeTelemetryWorker`: it reads and
+validates `GlobalMemoryStatusEx`/`GetPerformanceInfo` during initialization and
+each poll, then currently discards the sample. The QGA client remains a tested
+adapter boundary but is not constructed by interactive or SCM startup. No
+demand report or resize is produced by this path.
 
 For SCM validation under the configured `LocalService` account, deploy the
 binary to `C:\Program Files\VirtioMemService` and grant that account
 read/execute access. Use `sc.exe` explicitly from an elevated VS Code terminal;
 PowerShell's `sc` alias is `Set-Content`. This deployment reached `RUNNING`,
-stopped cleanly, and removed successfully during local validation. Event-log,
-recovery, and QGA access evidence remain separate checks.
+stopped cleanly, and removed successfully during live M7 validation. Event IDs
+1000–1003, invalid-configuration event 2000, exit codes, and the first 5-second
+recovery restart are verified.
 
 Service installation also registers the configured description and bounded
 failure actions: restart after 5 seconds, 30 seconds, and 60 seconds, with a
 24-hour reset period. Recovery actions are enabled for non-crash failures so
 unexpected non-zero worker exits can be recovered; intentional stop remains a
-successful zero-exit lifecycle. Live recovery and Event Log evidence still
-require an installed-service observation.
+successful zero-exit lifecycle. The wider restart/reboot/interruption matrix
+remains M10b work.
 
 The SCM path writes lifecycle and failure records to the Windows Application
 Event Log with source `VirtioMemService`. Query the latest records from an
@@ -538,7 +540,7 @@ reported `running`, and the connected channel was
 `org.qemu.guest_agent.0`.
 
 Successful QGA reads were `guest-info`, `guest-ping`, `guest-get-osinfo`, and
-`guest-get-host-name`. The guest reported QGA version `109.1.0`, Windows 11
+`guest-get-host-name`. The guest reported QGA version `110.0.2`, Windows 11
 x64, and hostname `ICE101`.
 
 QGA `guest-get-memory-stats` returns `command ... has not been found`, and
@@ -695,7 +697,8 @@ Before committing:
 
 ## Phase 2 demand-agent validation
 
-Native Windows telemetry is additive to the current QGA/dommemstat path. The
+Native Windows telemetry is the Windows demand source; host-side QGA health and
+`dommemstat` are separate host observation paths. The
 implemented `windows/src/demand.rs` collector and calculator are tested without
 a live VM first:
 
@@ -714,19 +717,39 @@ a live VM first:
   explicit.
 
 The JSON-lines publisher test reads the emitted file back and parses each line
-as a complete version-1 `DemandReport`. The default path is under
-`C:\ProgramData\VirtioMemService`; installation must provision the directory
-and least-privilege ACLs before enabling durable service output. The main SCM
-worker remains unconnected until a real current-allocation provider is
-validated; tests must not substitute a configured minimum or QGA total for
-that state.
+as a complete version-1 `DemandReport`. Version 1 has no freshness/identity
+envelope and the sink has no retention, rotation, acknowledgement, or atomic
+handoff contract, so this proves local append/flush behavior only. The default
+path is under `C:\ProgramData\VirtioMemService`; installation must provision
+the directory and least-privilege ACLs before enabling unattended service
+output. The main SCM
+worker remains unconnected to publication until M10c selects the
+current-allocation ownership model; tests must not substitute a configured
+minimum, aggregate physical memory, or QGA total for that state.
 
 The native collector calls `GlobalMemoryStatusEx` for physical memory and
 `GetPerformanceInfo` for page-based commit/system counters. Page counters are
 converted using checked multiplication by the reported page size. Windows API
 failures and invalid snapshots return explicit errors. The report is version 1
-and serializes canonical-byte values; it is advisory only and does not call a
-resize sink.
+and serializes canonical-byte values; it is advisory only and has no resize
+interface.
+
+### M9d/M10c/M10d hermetic gates
+
+Before expanding live actuation or enabling unattended demand publication:
+
+- M9d tests must hash the reviewed domain/QEMU configuration, accept an exact
+  match, and fail closed on changed aliases, incompatible device classes,
+  relevant QMP properties, memory backing, or workload declarations.
+- M10c tests must prove the selected allocation join uses a fresh,
+  alias-scoped host allocation with explicit provenance. Missing, stale,
+  cross-VM, or conflicting allocation state must prevent publication.
+- M10d tests must reject unsupported versions, stale timestamps, replayed or
+  non-monotonic sequences, wrong VM/session identity, missing provenance,
+  truncated lines, oversized records, and partial writes. Retention/rotation
+  and reader handoff must have deterministic size and recovery bounds.
+- Restart tests must prove a new session cannot reuse ordering state in a way
+  that makes an old record appear fresh.
 
 The demand report must be read-only with respect to virtio-mem. A passing local
 collector test does not prove that QEMU/libvirt or `viomem.sys` converges.
@@ -769,9 +792,87 @@ observable. Do not assume the two naming pairs are equivalent until the same
 resize is observed across all layers. Do not add a direct driver IOCTL or
 perform an unbounded shrink based on this design document.
 
+### M10a read-only driver-state discovery
+
+From the RHEL control plane, the following commands inspect only the explicit
+Windows SSH endpoint. They do not start tracing or change the driver, service,
+registry, VM, or memory allocation:
+
+```bash
+ssh -o BatchMode=yes -o ConnectTimeout=10 virtio-mem-windows \
+  "sc.exe query viomem & driverquery /v /fo csv | findstr /i viomem"
+
+ssh -o BatchMode=yes -o ConnectTimeout=10 virtio-mem-windows \
+  'pnputil /enum-devices /instanceid "PCI\\VEN_1AF4&DEV_1058&SUBSYS_11001AF4&REV_01\\4&28aa03cd&0&0012" /properties /drivers'
+
+ssh -o BatchMode=yes -o ConnectTimeout=10 virtio-mem-windows \
+  'reg query "HKLM\\SYSTEM\\CurrentControlSet\\Services\\viomem" /s & logman query providers | findstr /i /c:viomem /c:virtio'
+```
+
+On `ice101.lan`, these checks identify signed driver
+`100.102.104.29400` and a started device, but no state values, WMI/performance
+surface, or registered tracing provider. The contemporaneous upstream `mm314`
+source has no IOCTL handler and sends its `Memory config` record to kernel
+debug output because `EVENT_TRACING` is disabled. `systeminfo` may be used as
+a secondary aggregate-memory observation, but it cannot satisfy M10a because
+it does not expose or distinguish the selected device's requested and plugged
+fields.
+
+Do not proceed directly from this discovery to a live resize. The next valid
+procedure must first name and obtain approval for all of the following as one
+bounded operation: the kernel-debug capture mechanism and temporary artifacts,
+the `win11_gpu`/`ua-virtiomem0` aligned target, the forward and rollback
+timeouts, the host and guest samples, and cleanup. If capture tooling requires
+installation, registry/debug-policy changes, a driver restart, or a reboot,
+those mutations and their rollback must also be named explicitly. Absence of
+a supported capture path leaves M10a blocked; it is not permission to invent
+or probe undocumented IOCTLs.
+
+The preferred capture candidate is Microsoft's signed Sysinternals
+`dbgviewcli.exe`. Its kernel mode captures `DbgPrint`, supports duration and
+line-count bounds, and can filter for `*Memory config:*`. Kernel capture
+requires Windows Administrator rights and automatically extracts and loads
+the temporary `Dbgv.sys` capture driver, so even this path is not read-only
+discovery. A proposed elevated capture must use both `--duration` and
+`--max-lines`, disable unrelated Win32 output, write only to a named temporary
+guest artifact, and confirm that the capture process and temporary driver have
+exited before cleanup. The host controller must also be stopped for the
+separately approved one-block forward/rollback test so it cannot race the test
+harness, then restored to its original active state.
+
+The cross-layer work is split into explicit validation gates:
+
+- **M10a1:** record tool provenance and checksum; run a no-resize capture with
+  duration and line limits; confirm the capture process exits; verify the
+  temporary driver and artifacts are removed or returned to their recorded
+  baseline. This qualifies the capture mechanism but does not prove viomem
+  field mapping.
+- **M10a2:** define a versioned evidence record with both wall-clock and
+  monotonic ordering, source identity, units, VM and device alias, operation
+  correlation ID, and raw-value provenance. Hermetic tests must reject absent
+  layers, mixed operations, unit ambiguity, non-monotonic samples, and missing
+  convergence endpoints.
+- **M10a3:** after separate approval, stop the active controller, capture the
+  driver and host before/during/after one 2 MiB growth, wait for convergence,
+  roll back to the exact original target, wait again, and restore the original
+  controller state. A passing run must contain both driver fields and both
+  libvirt fields for the same operation.
+- **M10a4:** update the architecture, API contract, data model, and test
+  expectations from the captured evidence. State which source is authoritative
+  during steady state, growth, shrink, failure, and convergence, and explicitly
+  bound any conclusion to the validated driver/QEMU/libvirt versions.
+- **M10aX (conditional):** only after M10a1 demonstrates that bounded capture
+  is unusable, write a separate feasibility proposal for a versioned read-only
+  driver interface. The proposal must cover ACLs, malformed requests, timeout,
+  compatibility, build/signing/install, rollback, and disposable-guest tests;
+  it must not add driver work to the normal Rust gate.
+
 ## Known Blockers
 
 - The Windows-native Rust 1.97.1 MSVC toolchain now passes the full local
   format, release build, test, and Clippy pipeline.
-- Live QEMU Guest Agent and libvirt validation requires the RHEL host and
-  Windows guest described in `docs/qemu-ga-setup.md`.
+- Further live QEMU Guest Agent, libvirt, tracing, reboot, service, or resize
+  validation requires the named RHEL host/Windows guest, explicit scope, and
+  the approval procedure above. M7–M9b evidence already passes.
+- M10a1 is blocked on approved bounded kernel-debug capture; M10c/M10d and
+  M9d remain unprivileged design/test work and should proceed independently.

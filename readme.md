@@ -4,8 +4,8 @@
 > coordinating bounded virtio-mem changes through a Linux host controller.
 
 **Current phase:** Phase 2 — Core Functionality
-**Project status:** Local foundations validated; live KVM integration remains
-open.
+**Project status:** Single-VM host actuation and service lifecycles are live
+validated; trustworthy Windows demand publication and recovery hardening remain.
 
 ---
 
@@ -39,27 +39,34 @@ The following capabilities are implemented and locally tested:
 - Windows SCM dispatcher and local service registration commands;
 - native `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry;
 - versioned advisory demand reports with aligned targets and safe floors;
-- durable JSON-lines report output and a stoppable demand worker;
+- append-only JSON-lines report output and a stoppable demand worker;
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The local workspace currently passes 70 tests, release build, formatting,
-Clippy warnings-as-errors, and Bash syntax validation.
+The latest platform-specific gates pass 22 shared-core tests, 29 RHEL-host
+tests, and 64 native-Windows tests. These are separate supported-platform
+results, not one cross-platform workspace run. Release builds, formatting,
+Clippy warnings-as-errors, and Bash syntax validation also pass in their
+documented gates.
 
 ### Important limitations
 
-- The current Windows entry point is not yet wired to production QGA,
-  current-allocation, or resize adapters.
-- QGA connect/write/flush/read deadlines are not implemented yet.
-- The configured shutdown timeout is stored and validated but not yet enforced
-  during worker termination.
+- The Windows entry point collects native telemetry but does not yet publish
+  demand reports. Current-allocation ownership must be decided before the
+  existing calculator can be wired without guessing.
+- Demand report version 1 has no freshness, VM/session identity, sequence, or
+  allocation-provenance envelope, and its JSON-lines sink has no retention or
+  rotation policy.
 - Windows SCM lifecycle and the first bounded recovery restart are
   live-verified under `LocalService`; ProgramData ACL, formatted Event Log
   message-resource packaging, and workload validation remain open.
 - The connected guest's QGA does not provide `guest-get-memory-stats`; the
-  `dommemstat` fallback still requires live verification.
+  `dommemstat` fallback is live verified and is the host default.
 - Live resize remains subject to fresh XML validation and the
   `requested == current` convergence gate before every request.
+- The installed single-VM controller is active. Its workload compatibility
+  approval is currently a static boolean and must be bound to a live
+  configuration fingerprint before configuration drift can be trusted.
 
 See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 
@@ -70,13 +77,12 @@ See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 │                                                                   │
 │  Native memory telemetry ──► Advisory demand report               │
 │  Windows service             (Rust, canonical bytes)               │
-│              │                                                    │
-│              └──── QEMU Guest Agent / virtio-serial ──────────────┼──┐
-└───────────────────────────────────────────────────────────────────┘  │
-                                                                        ▼
+└───────────────────────────────────────────────────────────────────┘
+                             │ future versioned report transport
+                             ▼
 ┌──────────────────────────── RHEL host ────────────────────────────────┐
 │  Rust host controller                                                 │
-│    ├─ observes QGA or dommemstat                                      │
+│    ├─ observes host-side QGA health or dommemstat                     │
 │    ├─ validates live virtio-mem XML                                   │
 │    ├─ checks host headroom                                             │
 │    └─ issues one aligned request and waits for convergence             │
@@ -188,7 +194,7 @@ windows/                  Windows service, telemetry, SCM, and QGA boundary
 host/                     RHEL host controller and bounded libvirt adapters
 scripts/                 Bash validation and guarded operational helpers
 docs/                    Architecture, contracts, testing, and roadmap
-systemd/                 Example host service configuration
+host/systemd/            Example host service configuration
 ```
 
 ## Project principles

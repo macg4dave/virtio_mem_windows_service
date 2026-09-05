@@ -38,9 +38,10 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - Treat an unexpected worker failure as a failed service, preserve its error context in Windows event logging, and return a non-zero process result so configured SCM recovery can restart it. Never leave a silent zombie process.
 - Define and validate a stable service identity, executable path, startup mode, recovery policy, and least-privilege service account during installation.
 - Prefer configuration files or other documented persistent configuration for multiple settings; avoid undocumented or security-sensitive startup arguments.
-- Keep service identity, QGA pipe path, polling interval, shutdown timeout, and
-  service account in validated configuration; use `LocalService` by default
-  and require an explicit documented reason to elevate.
+- Keep service identity, legacy adapter endpoint, report path, polling
+  interval, shutdown timeout, and service account in validated configuration;
+  use `LocalService` by default and require an explicit documented reason to
+  elevate. Production demand collection uses native Windows APIs, not QGA.
 - Cancellation waits must be wakeable; do not use an uninterruptible sleep for
   the polling interval.
 
@@ -52,6 +53,8 @@ No additional languages are permitted in source code, scripts, build tooling, or
   use a shell, string interpolation, or an unbounded external command.
 - Refresh and validate the selected live XML immediately before a resize. Do
   not issue a request while `requested != current` or replay one after restart.
+- Bind workload compatibility authorization to the reviewed live domain/QEMU
+  configuration; fail closed when its fingerprint changes.
 - Use `SIGTERM` and `SIGINT` for one wakeable cancellation path. Operational
   failures must produce contextual journal output and a non-zero process exit.
 - Configure an explicit non-login service account and verify its least-privilege
@@ -77,4 +80,5 @@ Respect the [architecture.md](architecture.md) service boundaries:
 
 - Windows service does not invoke Linux commands
 - Host automation remains separate from guest runtime logic
-- All communication stays on the QEMU Guest Agent interface and validated host tooling
+- Windows demand delivery uses an explicitly versioned, freshness-checked
+  report contract; QGA and libvirt remain host-owned interfaces

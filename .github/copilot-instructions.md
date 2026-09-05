@@ -37,15 +37,21 @@ Read the architecture and design docs first:
 **Windows service** owns:
 
 - Running as a service in Windows
-- Exposing memory metrics via QEMU Guest Agent
-- Receiving and processing memory change requests
-- Local performance monitoring
+- Collecting native Windows memory telemetry
+- Publishing versioned advisory demand reports
+- Local lifecycle, configuration, and observability
 
 **Windows service** must not:
 
 - Directly invoke Linux commands
 - Access host storage or devices
 - Change host-level settings
+- Issue or receive host resize commands
+
+**RHEL host controller** owns QEMU Guest Agent requests, live libvirt/QEMU
+state, compatibility checks, host headroom, and virtio-mem actuation. The
+Windows service must not open the QGA virtio-serial device because the
+installed QEMU Guest Agent process owns that channel.
 
 **Bash automation** owns:
 

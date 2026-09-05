@@ -265,8 +265,9 @@ These constraints are not optional recommendations for a future improvement; the
 - Windows Rust 1.97.1 MSVC toolchain is installed and the full format, release
   build, test, and Clippy pipeline passes locally.
 - Windows OpenSSH Server is enabled on the private KVM interface with
-  key-based build access; RHEL-originated authentication remains to be recorded
-  by the cross-platform milestone gate.
+  key-based build access; two fingerprint-pinned RHEL-originated aggregate
+  build gates completed successfully. Migration to a dedicated least-privilege
+  build identity remains operational hardening.
 - WSL has the native compiler/linker development packages installed. The
   Windows-native toolchain is preferred for validating this Windows service.
 - QGA and live virtio-mem checks still require the RHEL/libvirt host and

@@ -1,6 +1,8 @@
 # QEMU Guest Agent Setup & Validation
 
-This document provides step-by-step instructions for setting up and validating QEMU Guest Agent communication between the RHEL host and Windows 11 guest.
+This document provides setup and host-side validation guidance for QEMU Guest
+Agent communication. QGA is a host health/operations channel; the Windows
+demand service uses native telemetry and does not open the QGA device.
 
 ## Prerequisites
 
@@ -34,7 +36,10 @@ rpm -q virtio-win
 ls -lh /usr/share/virtio-win/
 ```
 
-If it is not installed:
+Installing packages, editing domain XML, or rebooting the guest mutates
+protected resources. Run the following only after explicit approval names the
+target and rollback. If `virtio-win` is not installed, the administrator may
+use:
 
 ```bash
 sudo dnf install virtio-win
@@ -85,8 +90,7 @@ On the RHEL host, verify the guest agent is available:
 # Test basic guest-info command
 virsh qemu-agent-command win11_gpu '{"execute":"guest-info"}'
 
-# Expected output (JSON with capabilities):
-# {"return":{"version":"x.x.x","capabilities":["guest-get-memory-stats",...]}}
+# Expected output: JSON with the installed version and capability list.
 ```
 
 If you get an error like `"command not found"` or `"timed out"`, verify:
@@ -121,7 +125,9 @@ virsh qemu-agent-command win11_gpu '{"execute":"guest-get-memory-stats"}'
 
 ## Step 5: Test Command Execution (Optional)
 
-To verify command execution capability (used for future diagnostics):
+This executes a process inside the protected guest and is not part of the
+normal read-only validation path. Use it only after explicit approval names
+the guest command and expected effect. To verify command execution capability:
 
 ```bash
 virsh qemu-agent-command win11_gpu \
@@ -174,7 +180,8 @@ resize memory, restart the VM, or execute commands inside the guest.
 
 **Cause**: Guest Agent not responding, service not running, or channel not configured.
 
-**Solution**:
+**Solution** (inspection is read-only; restart/reboot requires separate
+approval):
 
 1. Restart QEMU Guest Agent: `Restart-Service QEMU-GA` (Windows)
 2. Verify channel in XML: `virsh dumpxml win11_gpu | grep -A 3 channel`
@@ -187,9 +194,10 @@ resize memory, restart the VM, or execute commands inside the guest.
 
 **Solution**:
 
-1. Verify agent version supports the command
-2. Try `guest-get-fsinfo` as a fallback test command
-3. Check QEMU version is 2.12+ (when guest-get-memory-stats was added)
+1. Verify whether the advertised capability list contains the command.
+2. Use the repository helper and its validated `dommemstat` fallback when the
+   command is absent.
+3. Do not treat an absent Windows QGA command as a Windows service failure.
 
 ### Issue: JSON parsing errors
 
@@ -219,10 +227,11 @@ checkout does not preserve executable bits, run `chmod +x scripts/*.sh`.
 
 ## Success Criteria
 
-You've successfully set up QEMU Guest Agent when:
+QGA setup is successful for the current project when:
 
 - [ ] `virsh qemu-agent-command` returns JSON responses (not errors)
-- [ ] `guest-get-memory-stats` returns memory values consistently
+- [ ] `guest-get-memory-stats` returns valid memory values, or the repository
+      helper obtains valid `actual`/`unused` values from `dommemstat`
 - [ ] Multiple consecutive commands succeed without timeout
 - [ ] Responses are documented and reviewed
 
@@ -233,4 +242,12 @@ Once validated:
 1. Update [docs/api-contract.md](api-contract.md) with observed response formats
 2. Add expected latency measurements
 3. Document any version-specific workarounds
-4. Proceed with the Rust service runtime work in TASK-001.
+4. Continue with the current Ready Queue in `BACKLOG.md`; TASK-001 is complete.
+
+## Current validated guest
+
+As of 2026-09-04, `win11_gpu` reports QGA `110.0.2`. Repeated `guest-info`
+calls, isolated QGA restart recovery, and graceful guest reboot recovery pass.
+This build does not implement `guest-get-memory-stats`; repeated numeric
+`dommemstat` samples are the verified host fallback. These facts do not imply
+that the Windows demand service uses the QGA channel.

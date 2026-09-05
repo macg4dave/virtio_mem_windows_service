@@ -15,7 +15,7 @@ ordered implementation plan without duplicating task status tables.
    flush API is intentionally avoided because it cannot be cancelled.
 - **Implemented:** enforce the configured shutdown timeout during worker
    termination and return a typed timeout failure when cancellation does not
-   converge; real SCM observation remains.
+   converge; live SCM lifecycle and first recovery restart also pass.
 - Preserve explicit transport, parser, cancellation, and startup failures.
 - Keep the Windows service free of Linux, libvirt, and host-side commands.
 
@@ -24,11 +24,16 @@ workspace quality gate.
 
 ### 2. Complete concrete Windows runtime wiring
 
-- **Implemented:** connect `ServiceConfig` to `NamedPipeGuestAgent` and acquire
-   validated QGA memory stats during worker initialization and each poll.
-- Provide a trustworthy current-allocation provider; do not infer it from
-   configured limits or unrelated QGA totals.
-- Construct the advisory `DemandServiceWorker` from the service entry point.
+- **Superseded production path:** `NamedPipeGuestAgent` remains a tested legacy
+   adapter boundary, but interactive and SCM workers use native Windows
+   telemetry and do not open the QGA-owned device.
+- Complete M10c to decide whether the host joins authoritative libvirt
+   allocation with raw guest telemetry or supplies a validated allocation
+   feed. Do not infer allocation from limits, QGA totals, or aggregate physical
+   memory, and do not add a guest resize sink.
+- Complete M10d before constructing the production publisher: add report
+   identity, freshness, ordering, provenance, bounded retention, ACL, and
+   partial-record behavior.
 - Keep demand reports advisory and separate from host resize authority.
 
 **Evidence:** local `run` mode exercises the configured worker and fails
@@ -41,8 +46,8 @@ visibly when an adapter fails.
 - Configure bounded recovery only for unexpected failures.
 - Verify service status transitions and event-log visibility.
 
-**Dependency:** real Windows service-manager permissions and guest QGA channel
-verification.
+**Status:** SCM lifecycle and recovery validation pass. ProgramData ACLs and
+formatted Event Log message-resource packaging remain.
 
 ## Host-side validation path
 
@@ -90,7 +95,32 @@ Observe the same controlled operation through Windows driver state and
 libvirt/QEMU state. Do not treat `requested_size`/`plugged_size` as equivalent
 to `requested`/`current` until the mapping is documented and validated.
 
+**Blocked:** live inspection of signed driver `100.102.104.29400` found no
+supported user-mode state query. Its existing state message is kernel-debug
+output. Continue only with explicit approval for a bounded debug capture and
+reversible resize, or under a separate signed-driver interface work item.
+
+Complete the mapping through these gates:
+
+1. **M10a1 — observability qualification:** checksum the signed capture tool,
+   run a bounded elevated capture without resizing, and prove complete cleanup.
+2. **M10a2 — correlated capture harness:** independently define versioned
+   timestamped evidence and deterministic rejection of missing or ambiguous
+   records; this hermetic work does not depend on privileged capture.
+3. **M10a3 — one-block mapping:** under separate approval, stop the controller,
+   capture one 2 MiB growth and rollback, then restore its active state.
+4. **M10a4 — contract decision:** document authoritative fields and semantics
+   for steady, growing, shrinking, failed, and converging states.
+
+Use **M10aX** only if M10a1 proves bounded debug capture is unsuitable. That
+conditional milestone produces a separate signed-driver interface proposal;
+it does not authorize driver implementation or installation.
+
 ### 7. Build hermetic global-pool simulation
+
+Before this phase, complete M9d compatibility-attestation drift protection,
+M10c current-allocation ownership, M10d report delivery/freshness, M10a4 state
+mapping, and the M10b failure/recovery matrix.
 
 - Model host reserve, actual VM allocations, pool-free capacity, stale reports,
    and in-flight operations.
