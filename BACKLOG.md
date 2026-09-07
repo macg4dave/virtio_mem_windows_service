@@ -1,5 +1,65 @@
 # BACKLOG
 
+## 2026-09-07 M10b bounded retry/recovery policy selected
+
+- Selected a default-off host state machine for Windows shrink qualification:
+  five-second observation, exact-target re-notification after 30/60/120 seconds
+  without block progress, at most three re-notifications, and one immutable
+  300-second operation deadline.
+- Progress updates its timestamp but never replenishes the retry budget or
+  extends the deadline. External target changes, stale/invalid state,
+  cancellation, restart, guest transition, and ambiguous command outcomes
+  latch actuation off instead of replaying work.
+- A stalled shrink remains observable without failing the worker or triggering
+  a systemd restart loop. The preferred non-disruptive recovery to qualify is
+  one abandon-to-current request after two stable samples and an immediate
+  pre-apply read; it keeps partial reclaim and has one 30-second window with no
+  retry.
+- TASK-022 now requires fake-clock coverage before separate approved live
+  same-target and abandon-to-current probes. Failed qualification leaves
+  automatic shrink disabled; graceful domain recreation remains the final
+  operator-approved fallback.
+
+## 2026-09-07 M10b larger-shrink probe
+
+- An approved controller-isolated probe grew the live device from 1 GiB to
+  3 GiB. Growth converged in about two seconds and remained converged during a
+  30-second hold.
+- A subsequent 1 GiB shrink request targeted 2 GiB. Windows immediately made
+  partial progress from 3 GiB to `2682257408` bytes: 257 of the requested 512
+  blocks (514 MiB) were unplugged, leaving 255 blocks (510 MiB) above target.
+- `requested=2147483648` and `current=2682257408` then remained unchanged for
+  the rest of the 300-second window. This rules out the earlier 2 MiB request
+  being rejected merely for being too small and supports a single-pass
+  removability/no-retry explanation.
+- No overlapping request was issued. Graceful domain recreation from the
+  persistent 1 GiB definition restored `requested=current=1073741824`, fresh
+  balloon statistics, running `viomem`, and the active controller with
+  `NRestarts=0`.
+
+## 2026-09-07 M10a3 bounded one-block observation
+
+- Recovered the post-RHEL-reboot state before testing: stopped the controller's
+  15-second failure loop, persisted virtio-balloon statistics at a five-second
+  period, and persisted/restored the known 1 GiB virtio-mem baseline.
+- The approved isolated operation grew `win11_gpu/ua-virtiomem0` by one 2 MiB
+  block. Libvirt converged from `requested=current=1073741824` to
+  `requested=current=1075838976` bytes.
+- The predeclared recovery request set `requested=1073741824`, but `current`
+  remained `1075838976` for all 60 five-second samples. The bounded 300-second
+  window expired without another request. This directly demonstrates a
+  Windows no-progress shrink and confirms that shrink is not rollback.
+- Windows `viomem` remained running and `dommemstat` remained fresh. The
+  checksum/signature-verified kernel capture emitted no matching filtered
+  `Memory config` record, so installed-driver `requested_size`/`plugged_size`
+  remain unavailable. Host `requested`/`current` remain allocation authority.
+- DbgView's process, temporary service, registry keys, and staging directory
+  were removed. A separately approved graceful QGA shutdown/start recreated
+  the device from persistent XML and restored
+  `requested=current=1073741824`. Fresh `dommemstat`, running `viomem`, and an
+  active controller with `NRestarts=0` were independently verified. Persistent
+  XML retains the 1 GiB request and balloon statistics period 5.
+
 ## 2026-09-05 M10a1 qualification and M10a2 evidence harness
 
 - Downloaded DbgView 5.02 from Microsoft's Sysinternals endpoint and recorded
@@ -17,9 +77,8 @@
   SCM key, let DbgViewCLI use its normal unload path, and removed the locked
   image and executable. `Dbgv` and both DbgView processes are absent;
   `viomem` remains running; live libvirt and the active controller remain
-  converged at 1 GiB. One empty `HKCU\Software\Sysinternals` container key
-  remains pending exact cleanup, so M10a1 is recorded as partial rather than
-  complete.
+  converged at 1 GiB. The later M10a3 recovery removed the remaining empty
+  `HKCU\Software\Sysinternals` container key, completing cleanup.
 - Completed TASK-015/M10a2 with a versioned shared-core JSON evidence contract.
   It requires repeated operation/VM/device identity, explicit byte units,
   source identity, strict sequence/monotonic ordering, nondecreasing wall time,
@@ -711,11 +770,9 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Milestone | Owner | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- | --- |
-| TASK-014 | M10a1 optional driver diagnostic qualification | Copilot + Operator | In Progress | Empty Sysinternals parent-key cleanup | Signed bounded no-resize capture and driver/process cleanup passed without persistent debug configuration; remove the empty parent key to restore the exact registry baseline |
-| TASK-016 | M10a3 optional bounded driver observation | Copilot + Operator | Optional | TASK-015, explicit mutation approval | A predeclared operation and recovery target are correlated without assuming shrink is guaranteed rollback; controller state is restored |
 | TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | Concrete unmet diagnostic need | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
 | TASK-021 | M10d demand envelope and bounded delivery | Copilot | Planned | TASK-020 | Versioned identity/freshness/provenance envelope, replay rules, ACLs, partial-record handling, and retention/rotation tests pass |
-| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned | TASK-015, TASK-025 | Add a default-off automatic-shrink control and prove bounded shrink retry/re-notification/recovery plus rejection, timeout, non-convergence, reboot, cancellation, and restart without replay or overlap; tracing is optional unless needed for diagnosis |
+| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned; policy selected | TASK-015, TASK-025 | Add separate default-off shrink/re-notification controls; hermetically prove the 30/60/120-second, three-re-notification, immutable 300-second state machine and latched stall; then qualify exact-target wakeup and one-shot abandon-to-current live, plus rejection, interruption, cancellation, and restart without replay or overlap |
 
 ### 2026-08-18 live KVM handoff
 
@@ -887,6 +944,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-013 | M10a allocation-authority contract | Copilot | 2026-09-05 | Virtio 1.2 and pinned implementation sources establish requested/plugged semantics; alias-scoped live libvirt `current` is authoritative and driver tracing is diagnostic. |
 | TASK-017 | M10a4 state-contract adoption | Copilot | 2026-09-05 | Architecture, API, data, testing, roadmap, status, issue, and feature docs adopt host allocation authority and decouple optional driver tracing from accounting/simulation. |
 | TASK-015 | M10a2 correlated behavior-evidence harness | Copilot | 2026-09-05 | Added bounded version-1 shared-core JSON validation for repeated identity, explicit bytes, ordered timestamps, required host/Windows/controller layers, stable geometry, converged endpoints, and optional aligned driver diagnostics; seven focused tests pass. |
+| TASK-014 | M10a1 optional driver diagnostic qualification | Copilot + Operator | 2026-09-07 | Signed bounded no-resize capture and exact driver/process/service/file/registry cleanup passed without persistent debug configuration; no matching informational record appeared. |
+| TASK-016 | M10a3 optional bounded driver observation | Copilot + Operator | 2026-09-07 | One-block grow converged; recovery shrink stayed divergent for 60 samples/300 seconds without overlap; a graceful domain recreation then restored 1 GiB convergence, healthy telemetry, and the controller with zero restarts. |
 
 ## Blocked
 

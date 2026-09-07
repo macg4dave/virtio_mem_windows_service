@@ -301,16 +301,80 @@ readiness in the remaining host-side work.
 | M10c | Host-side current-allocation join | [ ] | M9e, M10 | A fresh raw Windows telemetry envelope is joined on the host with alias-scoped live libvirt `current`, and the host calculates the target; Windows never guesses allocation, receives an allocation feed, or invokes host tools |
 | M10d | Demand envelope and bounded delivery | [ ] | M10c | A versioned envelope supplies VM/service/session identity, wall-clock and monotonic ordering, sequence, allocation provenance, freshness rules, ACLs, retention/rotation, and malformed/partial-record rejection |
 | M10a | Allocation-authority contract | [x] | M8, M9, M9a | Virtio 1.2 plus pinned QEMU/libvirt/virtio-win sources define `requested`/`current` semantics; live alias-scoped libvirt `current` is authoritative and driver debug output is diagnostic, not an accounting dependency |
-| M10a1 | Optional driver diagnostic qualification | [~] | M8, M9a | Signed DbgViewCLI completed a bounded no-resize kernel capture without boot/debug-filter/viomem/reboot changes; no matching informational record appeared and one empty Sysinternals parent key awaits exact cleanup |
+| M10a1 | Optional driver diagnostic qualification | [x] | M8, M9a | Signed DbgViewCLI completed a bounded no-resize kernel capture without boot/debug-filter/viomem changes; no matching informational record appeared and exact later cleanup removed all temporary process/service/file/registry state |
 | M10a2 | Correlated behavior-evidence harness | [x] | M8, M9a | Versioned shared-core JSON validation requires ordered clocks, repeated operation/VM/device identity, explicit bytes, stable/converged libvirt endpoints, Windows health, and controller state; driver records are optional diagnostics |
-| M10a3 | Optional bounded driver observation | [ ] | M9b, M10a2 | A separately approved operation uses a predeclared target and non-convergence recovery plan; it does not describe shrink as guaranteed rollback and prefers prior disposable-guest rehearsal |
+| M10a3 | Optional bounded driver observation | [x] | M9b, M10a2 | One 2 MiB grow converged, but the predeclared 1 GiB recovery target remained 2 MiB above current for 60 samples/300 seconds; no matching driver record appeared, no overlapping request was issued, and graceful domain recreation restored convergence/controller state |
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
 | M10aX | Conditional driver status-interface feasibility | [ ] | Concrete unmet diagnostic need | Only if host observation plus bounded tracing cannot meet an operational diagnostic requirement, a separate proposal covers interface security, driver build/signing/install, compatibility, tests, and rollback |
-| M10b | Single-VM failure, Windows shrink, and recovery matrix | [ ] | M7, M9b, M9e, M10a2 | Automatic shrink is default-off until deterministic and approved live evidence proves bounded retry/re-notification/recovery plus rejection, timeout, non-convergence, interruption, reboot, cancellation, and restart without replay or overlap; tracing is optional unless needed to explain the result |
+| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | Live probes prove no-progress and partial-progress-without-retry plus graceful domain-recreation recovery; the selected default-off 30/60/120-second, three-notification, 300-second policy and abandon-to-current path now require hermetic and live qualification with the remaining failure matrix |
 | M11 | Phase 3 global pool simulation | [ ] | M9e, M10d, M10a | Hermetic multi-VM simulation models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states; live multi-target actuation additionally requires M9d and M10b |
 | M11a | Controlled reclaim and convergence | [ ] | M11 | Trend-aware safe floors, bounded aligned reclaim, hysteresis, in-flight protection, convergence waits, and stop-on-pressure behavior pass simulation tests |
 | M12 | Hardening and observability | [ ] | M11a | Recovery, event logging, metrics, bounded timeout behavior, and restart tests pass for guest and global-controller paths |
 | M13 | Operational release readiness | [ ] | M12 | Documentation, health checks, monitoring, compatibility evidence, rollback, and repeatable host automation complete |
+
+### M10b selected bounded Windows-shrink policy
+
+M10b will qualify one explicit host-side state machine. These values are the
+initial qualification profile, not workload-tuned production defaults:
+
+1. Automatic Windows shrink and same-target re-notification are separate
+   controls and both default to disabled. A shrink can start only from fresh,
+   compatible, converged state with no other in-flight operation. Its immutable
+   target is block aligned, does not cross the current safe floor, and is
+   bounded by the configured reclaim quantum.
+2. After the initial request, sample the alias-scoped live `requested` and
+   `current` fields every five seconds. A reduction of `current` by at least one
+   device block is progress. Progress moves the no-progress timestamp but never
+   replenishes the retry budget or extends the hard deadline.
+3. If `requested` still equals the immutable target and `current` remains above
+   it, re-notify that exact target after no-progress delays of 30, 60, and 120
+   seconds. Allow at most three re-notifications and one operation deadline of
+   300 seconds from the initial request. Skip a retry whose observation window
+   would exceed the hard deadline. Never derive a new shrink target while the
+   operation is pending.
+4. Re-notification is a dedicated recovery operation, not an ordinary resize:
+   it is permitted only for `requested == target < current`, after a fresh
+   alias, compatibility, health, alignment, and operation-ownership check.
+   Any external change to `requested`, invalid/non-monotonic state, stale input,
+   cancellation, guest transition, or command ambiguity stops notification and
+   latches the operation for recovery.
+5. Convergence (`requested == current == target`) completes the operation. A
+   300-second deadline or exhausted safe path produces a latched
+   `ShrinkStalled` state; it is not a fatal worker error, must not cause a
+   systemd restart loop, and suppresses further automatic actuation for that
+   VM/device while observation and health reporting continue.
+6. The preferred non-disruptive recovery is an explicitly qualified
+   **abandon-to-current** operation: after two unchanged fresh samples, re-read
+   immediately before applying and raise `requested` to that aligned observed
+   `current`. This retains any blocks already reclaimed. It receives one
+   30-second convergence window and no retry. Until M10b proves this path live,
+   it remains operator-approved only. Failure leaves actuation latched off;
+   graceful domain recreation from a known persistent definition is the final
+   operator-approved fallback, never an automatic forced destroy.
+7. Cancellation and process restart never replay a resize or re-notification.
+   A restarted controller that observes divergence without an active operation
+   it can prove it owns enters recovery-required observation. An uncertain
+   command result is reconciled by a fresh read: observe if the target is
+   visible, retry transport only if non-application is proven, otherwise latch.
+8. Emit one structured event for request, block progress, each re-notification,
+   convergence, ownership conflict, stall, cancellation, and recovery outcome.
+   Per-poll unchanged-state messages are rate limited. Record operation ID, VM,
+   alias, immutable target, requested/current bytes, block counts, retry index,
+   progress time, deadline, and reason without logging guest data.
+
+The timings are evidence-led: the 1 GiB probe made all observed progress in
+the first sample and then stayed unchanged, while both live stalls were still
+divergent at 300 seconds. A 30-second first wait gives the initial driver pass
+ample room; increasing intervals avoid notification pressure; and the hard
+deadline preserves the already exercised recovery bound. More frequent or
+longer retry is not justified by the present evidence.
+
+Hermetic tests must exercise the full state table with a fake clock before the
+two live qualifications: same-target re-notification must cause additional
+progress or convergence, and abandon-to-current must safely converge after
+both zero-progress and partial-progress stalls. If either live qualification
+fails, automatic Windows shrink stays disabled and M10b documents the
+operator-only recovery path instead of increasing the retry budget.
 
 ## Phase 1 — Foundation
 
@@ -455,7 +519,11 @@ no ambiguous or implicit unit conversion.
 - [~] Verify no resize is issued after cancellation or while a request is
     pending.
 - [ ] Keep automatic Windows shrink disabled by default and prove bounded
-    retry, same-target re-notification, or controlled recovery under M10b.
+    retry and controlled recovery under the selected M10b state machine.
+- [ ] Prove the 30/60/120-second same-target schedule, three-notification
+    budget, immutable 300-second deadline, progress handling, and latched stall.
+- [ ] Prove cancellation/restart never replay work and a stall does not turn
+    into a service-manager restart loop.
 - [x] Keep the harness independent of Linux tools and production VM state.
 
 **Gate:** Every failure mode in the service boundary has deterministic local
@@ -529,6 +597,9 @@ evidence before live actuation expands beyond the validated M9b bootstrap.
 - [ ] Confirm every failure/recovery case preserves the convergence and
     no-overlap rules.
 - [ ] Test QGA interruption, guest reboot, failed update, and service restart.
+- [ ] Qualify exact-target re-notification and the one-shot
+    abandon-to-current recovery against both no-progress and partial-progress
+    Windows shrink states.
 - [ ] Preserve evidence and update API/issue documentation with observed behavior.
 - [ ] Verify host and guest logs can correlate one policy decision to one host
     request and one convergence result.
@@ -569,14 +640,14 @@ or provenance-free demand input before evaluating policy.
 
 - [x] **M10a/M10a4:** pin the Virtio and implementation-source mapping and make
     alias-scoped live libvirt `current` authoritative for host accounting.
-- [~] **M10a1, optional:** qualify checksum-recorded bounded kernel-debug
+- [x] **M10a1, optional:** qualify checksum-recorded bounded kernel-debug
     capture as an installed-driver diagnostic, accounting for debug-message
     filtering and capture-driver/process/artifact cleanup.
 - [x] **M10a2:** define and hermetically test a versioned correlated behavior
     format that fails closed on missing required host/Windows-health layers,
     ambiguous units, mixed operations, or incomplete convergence; accept
     driver trace as optional diagnostic evidence.
-- [ ] **M10a3, optional:** after disposable-guest rehearsal when practical,
+- [x] **M10a3, optional:** after disposable-guest rehearsal when practical,
     run one separately approved bounded observation with an explicit recovery
     target and without assuming that a shrink is guaranteed rollback.
 - [ ] **M10aX, conditional:** only for a concrete unmet diagnostic requirement,
@@ -608,6 +679,9 @@ or provenance-free demand input before evaluating policy.
 - [ ] Add rolling demand history and conservative, validated safe floors.
 - [ ] Reclaim one aligned step at a time, wait for convergence, and stop on
     pressure or incomplete evidence.
+- [ ] Reuse the M10b immutable-target, retry-budget, hard-deadline, latched
+    stall, and abandon-to-current rules; do not invent a separate global-pool
+    retry mechanism.
 - [ ] Keep direct `viomem.sys` IOCTLs deferred unless a separate supported
     interface, security, signing, timeout, and rollback investigation passes.
 
@@ -623,8 +697,10 @@ reclaim passes before any automatic multi-VM live action.
 - [x] Add bounded in-flight shutdown handling.
 - [x] Verify non-zero failure exit behavior for SCM recovery.
 - [ ] Add regression tests for restart and recovery decisions.
-- [ ] Define transient-error backoff and a maximum retry budget; never retry a
-    resize blindly.
+- [~] Use the selected M10b 30/60/120-second same-target schedule, maximum of
+    three re-notifications, and immutable 300-second deadline for Windows
+    shrink qualification; transport failures remain separately classified and
+    no resize may be retried blindly.
 - [x] Verify intentional stop, startup failure, and unexpected worker exit have
     distinct exit/recovery behavior; system-shutdown live evidence remains part
     of the wider recovery matrix.
@@ -719,7 +795,7 @@ implementation before live resize automation is expanded.
 | B16 | The host-side join is selected but not implemented | Blocks trustworthy demand publication; Windows must publish fresh raw telemetry and the host must join alias-scoped live libvirt `current` before calculating a target | Implement and test M10c without a host-allocation feed or guest host-control authority |
 | B17 | Demand report v1 lacks freshness, VM/session identity, sequence, and allocation provenance; JSON-lines output has no retention/rotation contract | Blocks replay-safe Phase 3 ingestion and risks ambiguous, stale, partial, or unbounded records | Complete M10d with a versioned envelope and bounded durable-delivery rules |
 | B18 | Workload compatibility review is a static boolean and does not cover the full audited configuration | Configuration drift or an omitted backend/slot/VFIO/balloon/workload/version constraint can leave host actuation authorized by stale evidence | Complete M9d and fail closed when the reviewed fingerprint changes |
-| B19 | Runtime failure injection does not cover Windows no-progress shrink or the full active-controller recovery matrix | Shrink can remain divergent without a proven retry wakeup; rejection, reboot, restart, and cancellation also lack sufficient evidence | Add a default-off automatic-shrink control and complete M10b before automated reclaim |
+| B19 | Runtime failure injection does not yet cover the selected bounded Windows-shrink state machine or the full active-controller recovery matrix | Shrink can remain divergent without a proven same-target wakeup; rejection, reboot, restart, cancellation, and non-disruptive abandon-to-current also lack sufficient evidence | Implement the default-off controls; prove the 30/60/120-second, three-re-notification, 300-second policy and one-shot recovery under M10b before automated reclaim |
 | B20 | `dommemstat actual` is incorrectly treated as a total-like bound and `last-update` is ignored | Valid Windows counters can be discarded and stale telemetry can drive policy | Complete M9e; keep live libvirt `current` authoritative for allocation |
 | B21 | Phase 2 instances have no atomic global host reservation | Multiple active controllers/devices can race the same host headroom | Support one active development controller/device until M11 arbitration |
 

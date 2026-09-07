@@ -233,9 +233,30 @@ is mandatory for untrusted or production guests.
 
 The installed Windows driver has not been shown to retry an incomplete shrink
 without another event. Automatic shrink must remain disabled by default until
-M10b proves autonomous retry, bounded idempotent same-target re-notification,
-or a controlled failed-shrink recovery path. This control is planned, not yet
-implemented.
+M10b proves the selected bounded same-target re-notification and controlled
+failed-shrink recovery path. The qualification profile observes every five
+seconds, permits at most three exact-target re-notifications after 30, 60, and
+120 seconds without block progress, and retains one immutable 300-second
+operation deadline. Automatic shrink and re-notification are separate
+default-off controls; neither is implemented yet.
+
+The re-notification path is deliberately narrower than the ordinary resize
+contract. It may run only when a controller-owned shrink has
+`requested == immutable_target < current`; it must repeat the identical target
+and revalidate fresh alias, compatibility, health, units, and ownership first.
+Observed progress never resets the retry count or operation deadline. A stall
+is a latched observable controller state, not a fatal error that invites a
+service-manager restart. Cancellation, restart, external requested-size
+change, invalid state, stale evidence, or ambiguous command outcome prohibits
+replay and enters recovery-required observation.
+
+M10b must separately qualify one non-disruptive recovery command. After two
+stable fresh samples and an immediate pre-apply read, abandon-to-current raises
+`requested` to the aligned observed `current`, preserving partial reclaim. It
+has one 30-second convergence window and no retry. It remains operator-approved
+only until live zero-progress and partial-progress cases pass; graceful domain
+recreation from a known persistent definition remains the final
+operator-approved fallback.
 
 ### Driver and state terminology
 
@@ -356,7 +377,9 @@ to a fingerprint of the reviewed live domain/QEMU configuration so drift
 revokes authorization.
 A successful command response does not prove completion: subsequent snapshots
 decide convergence. The controller never replays a resize request after a
-process restart.
+process restart. The future M10b same-target re-notification operation is the
+only planned exception to the ordinary `requested == current` precondition and
+must not reuse the general resize entry point.
 
 The same Rust adapters back explicit CLI operations:
 

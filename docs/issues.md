@@ -15,6 +15,24 @@
 | ISSUE-014 | Host workload approval is a static boolean and omits audited backend, memory-slot/VFIO budget, balloon, incompatible-workload, topology, trust, and version evidence | Open; M9d | Host safety | High |
 | ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b, automatic shrink must become default-off until qualified | Host recovery | High |
 
+M10a3 live evidence on 2026-09-07 narrowed ISSUE-015: one 2 MiB growth
+converged, but the recovery shrink remained at `requested=1073741824`,
+`current=1075838976` for 60 ordered samples over 300 seconds. No second request
+was sent. This proves the no-progress case is real on the installed Windows
+driver and strengthens the M10b default-off and bounded-recovery requirement.
+A follow-up 3 GiB-to-2 GiB probe removed 257 blocks (514 MiB) immediately but
+left 255 blocks (510 MiB) above target for the rest of the same bound. The
+larger request therefore rules out a simple minimum-control-size explanation
+and provides concrete partial-progress-without-retry evidence.
+
+The selected M10b qualification policy now bounds this risk explicitly: exact
+same-target notifications after 30/60/120 seconds without block progress, no
+more than three notifications, and an immutable 300-second deadline. A stall
+is latched without exiting the worker. Separate live evidence must prove that
+re-notification wakes the driver and that a one-shot abandon-to-current request
+converges safely after two stable samples. Until both pass, automatic shrink
+and re-notification remain independently disabled by default.
+
 ## Resolved Issues
 
 | ID | Description | Status | Fix Reference | Date Resolved |

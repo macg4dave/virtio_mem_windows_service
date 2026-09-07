@@ -1,6 +1,6 @@
 # Project Status & Next Steps
 
-**Updated:** 2026-09-05
+**Updated:** 2026-09-07
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
 actuation are live validated. Trustworthy demand publication, host-stat
@@ -57,8 +57,16 @@ running service state.
 The RHEL host-controller artifact was rebuilt and installed on 2026-09-05 at
 `/usr/local/libexec/virtio-mem-host`; 22 core and 29 host tests passed. The
 enabled `virtio-mem-host@win11_gpu.service` completed a guarded zero-to-1-GiB
-bootstrap, converged, retained its minimum, and remains active. The verified
-Windows service artifact was built on the Win11 guest and fetched to
+bootstrap, converged, and retained its minimum. A bounded 2026-09-07 M10a3
+operation then proved one-block growth but a no-progress Windows shrink:
+`requested` returned to 1 GiB while `current` remained 1 GiB + 2 MiB for 300
+seconds. The controller was intentionally stopped pending domain-restart
+recovery. That recovery completed through graceful QGA shutdown/start;
+the device is again converged at 1 GiB and the controller is active with zero
+restarts. A follow-up 3 GiB-to-2 GiB probe unplugged 257 blocks (514 MiB),
+then left 255 blocks (510 MiB) above target for 300 seconds. Its recovery also
+restored the same healthy 1 GiB baseline. The verified Windows service artifact
+was built on the Win11 guest and fetched to
 `.vscode-artifacts/windows/virtio-mem-service.exe`.
 
 ## Open implementation work
@@ -84,6 +92,11 @@ Windows service artifact was built on the Win11 guest and fetched to
   qualification and a default-off automatic-shrink control. M10a1/M10a3
   kernel tracing is optional diagnostic work; use M10aX only for a concrete
   diagnostic requirement unmet by host observation and bounded tracing.
+  The M10b policy is selected: five-second observation, exact-target
+  notifications after 30/60/120 seconds without progress, at most three
+  notifications, an immutable 300-second deadline, a non-fatal latched stall,
+  and separately qualified one-shot abandon-to-current recovery. Both shrink
+  and re-notification remain default-off until hermetic and live gates pass.
 
 ## External blockers
 
@@ -95,8 +108,10 @@ Windows service artifact was built on the Win11 guest and fetched to
   this telemetry is considered production-qualified.
 - Live resize remains gated by fresh XML validation and
   `requested == current` convergence at the time of each request.
-- Automatic Windows shrink is unqualified, and Phase 2 supports only one
-  active controller/device on this development host until M10b and M11.
+- Automatic Windows shrink is directly observed both to make no progress for a
+  one-block request and to make partial progress without retry for a 1 GiB
+  request. It is unqualified, and Phase 2 supports only one active
+  controller/device on this development host until M10b and M11.
 - A hard QEMU/libvirt cgroup memory limit is recommended defense-in-depth for
   trusted `win11_gpu`; it is mandatory for future untrusted or production
   deployments.
@@ -105,12 +120,18 @@ Windows service artifact was built on the Win11 guest and fetched to
   only through filterable kernel debug output. A signed, checksum-verified,
   bounded no-resize DbgViewCLI lifecycle capture loaded and unloaded its
   temporary driver without reboot, driver restart, boot logging, or debug-
-  filter change, but observed no matching informational record. This limits
-  installed-driver diagnosis but does not block host allocation accounting.
+  filter change, but observed no matching informational record. A later
+  checksum-verified capture around the one-block operation also produced no
+  matching record. This limits installed-driver diagnosis but does not block
+  host allocation accounting.
 - M10a2's shared-core evidence contract is implemented and hermetically tested:
   required host, Windows-health, controller, identity, explicit-unit, ordering,
   and converged-endpoint evidence fails closed when incomplete or mixed;
   driver trace remains optional.
+- Persistent `win11_gpu` XML now retains a 1 GiB request and a five-second
+  virtio-balloon statistics period. A graceful domain shutdown/start restored
+  live `requested=current=1 GiB`; `viomem`, fresh telemetry, and the active
+  controller were verified afterward with `NRestarts=0`.
 
 The previous live convergence incident was resolved on 2026-08-18 at zero.
 That evidence is historical: M9b subsequently bootstrapped and converged the

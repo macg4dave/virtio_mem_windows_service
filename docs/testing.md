@@ -264,9 +264,22 @@ observed.
 
 For Windows shrink tests, convergence timeout is not proof that the installed
 driver will retry. Source review found no obvious periodic retry timer. Do not
-enable unattended shrink until M10b proves autonomous retry, safe bounded
-same-target re-notification, or a controlled failed-shrink recovery path and
-the controller has a default-off automatic-shrink control.
+enable unattended shrink until M10b proves the selected bounded policy and the
+controller has separate default-off automatic-shrink and re-notification
+controls. The qualification profile samples every five seconds, re-notifies
+only the immutable target after 30, 60, and 120 seconds without block progress,
+allows at most three re-notifications, and never extends the initial 300-second
+deadline. Progress may move the no-progress clock but may not replenish either
+bound.
+
+Before any repeat live resize, hermetic fake-clock tests must cover convergence,
+zero progress, partial progress, exhaustion, stale/invalid/non-monotonic state,
+external requested-size change, command ambiguity, cancellation, guest
+transition, and restart. They must prove there is one in-flight operation, no
+derived target, no replay, and no service-manager restart loop for a latched
+stall. A separate dedicated adapter must enforce
+`requested == immutable_target < current` for re-notification; the ordinary
+resize adapter must retain its converged-state precondition.
 
 Run the native RHEL gate before installing the controller:
 
@@ -942,6 +955,56 @@ sequence or monotonic time, backwards wall-clock time, missing Windows or
 controller layers, absent or divergent convergence endpoints, changed host
 geometry, and invalid driver diagnostic values. These are hermetic parser
 tests; they do not authorize or perform a live resize.
+
+### M10a3 live one-block result — 2026-09-07
+
+The approved `win11_gpu/ua-virtiomem0` operation started converged at 1 GiB,
+grew by exactly one 2 MiB block, and observed convergence at both host fields.
+The predeclared recovery request returned `requested` to 1 GiB, while `current`
+remained 1 GiB + 2 MiB for 60 samples at five-second intervals. The 300-second
+bound expired and no overlapping request was issued. `viomem` and fresh
+`dommemstat` telemetry remained healthy. The filtered kernel capture contained
+no matching `Memory config` record, so this result establishes host-visible
+shrink non-convergence but does not claim driver-internal field correlation.
+A separate graceful QGA domain shutdown/start then recreated the device from
+the persistent 1 GiB definition. Final checks showed
+`requested=current=1073741824`, fresh balloon counters, running `viomem`, no
+DbgView residue, and an active controller with `NRestarts=0`.
+
+### M10b larger-shrink probe — 2026-09-07
+
+To test whether the one-block result was caused by too-small control input, an
+approved isolated probe grew from 1 GiB to 3 GiB, held for 30 seconds, and then
+requested 2 GiB. Growth converged in about two seconds. Shrink immediately
+unplugged 257 of 512 requested blocks (514 MiB), reaching `2682257408` bytes,
+then made no further progress: 255 blocks (510 MiB) remained above the 2 GiB
+target for the rest of 300 seconds. This is partial-progress-without-retry
+evidence, not a minimum-size rejection. No overlapping request was issued.
+Graceful domain recreation restored the persistent 1 GiB baseline; final
+checks showed fresh balloon telemetry, running `viomem`, and an active
+controller with `NRestarts=0`.
+
+### M10b bounded retry/recovery qualification
+
+The next live shrink work is two separately approved, controller-isolated
+operations after the hermetic state-machine suite passes:
+
+1. Reproduce a bounded no-progress or partial-progress shrink and send only the
+   identical target on the 30/60/120-second schedule. Success requires a later
+   block decrease or full convergence attributable to a re-notification,
+   never more than three re-notifications, and termination by 300 seconds.
+2. From a stable incomplete shrink, capture two unchanged fresh samples,
+   immediately re-read the alias, and issue one abandon-to-current request to
+   the latest aligned `current`. Success requires convergence within 30 seconds
+   without replug beyond that pre-apply value, a second recovery command, guest
+   restart, or controller restart.
+
+If the first operation shows that an identical libvirt/QEMU property update is
+coalesced or does not wake the driver, do not increase the retry count or
+frequency. If abandon-to-current fails or races into unexpected growth, latch
+actuation off and use the already proven operator-approved graceful domain
+recreation fallback. Preserve ordered XML samples, exact command arguments and
+statuses, controller events, Windows/service health, and recovery outcome.
 
 Validate an assembled document with the read-only CLI path:
 

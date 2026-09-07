@@ -85,8 +85,27 @@ Every target is clamped to the configured minimum and maximum and both limits
 must be aligned to `block_size_bytes`.
 
 Automatic shrink is not yet a supported Windows production path. M10b must add
-a default-off shrink control and prove how an incomplete driver unplug is
-retried or recovered before the host may enable automatic reclaim.
+a default-off shrink control and prove the roadmap's bounded same-target
+re-notification and abandon-to-current recovery policy before the host may
+enable automatic reclaim.
+
+The planned host-only `ShrinkOperation` state contains an operation ID, VM and
+device alias, block size, initial `requested`/`current`, immutable target,
+latest current, blocks reclaimed and remaining, creation/progress times,
+immutable deadline, retry index, and terminal reason. Its states are
+`Observing`, `ShrinkStalled`, `RecoveryRequired`, `Recovering`, `Converged`, and
+`Abandoned`. Progress is a block-aligned decrease of live `current`; it updates
+the progress time but never the retry count or deadline. The live XML remains
+authoritative—this record grants no right to replay after cancellation or
+process restart. A restarted process treats unexplained divergence as
+recovery-required observation.
+
+The qualification profile uses five-second observation, no-progress delays of
+30, 60, and 120 seconds, at most three exact-target re-notifications, and a
+300-second deadline. Abandon-to-current is a distinct one-shot recovery with a
+30-second deadline and no retry. Configuration will keep automatic shrink and
+re-notification as independent default-off booleans and validate every timing,
+retry, reclaim-quantum, and safe-floor bound before worker startup.
 
 ### Host memory-stat snapshot
 
