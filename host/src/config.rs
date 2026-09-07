@@ -46,6 +46,8 @@ pub struct HostConfig {
     pub convergence_timeout: Duration,
     pub virsh_binary: String,
     pub stats_source: StatsSource,
+    pub stats_max_age: Duration,
+    pub stats_future_tolerance: Duration,
     pub host_min_headroom_bytes: u64,
     pub compatibility_attestation_path: String,
 }
@@ -76,6 +78,10 @@ impl HostConfig {
             virsh_binary: env::var("VIRTIO_MEM_VIRSH_BINARY")
                 .unwrap_or_else(|_| "virsh".to_owned()),
             stats_source,
+            stats_max_age: Duration::from_secs(positive("VIRTIO_MEM_STATS_MAX_AGE_SECONDS")?),
+            stats_future_tolerance: Duration::from_secs(positive(
+                "VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS",
+            )?),
             host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
             compatibility_attestation_path: required("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH")?,
         };
@@ -104,6 +110,8 @@ impl HostConfig {
         if self.poll_interval.is_zero()
             || self.command_timeout.is_zero()
             || self.convergence_timeout.is_zero()
+            || self.stats_max_age.is_zero()
+            || self.stats_future_tolerance.is_zero()
         {
             return Err(HostConfigError::InvalidDuration);
         }
@@ -149,6 +157,8 @@ mod tests {
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
+            stats_max_age: Duration::from_secs(60),
+            stats_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "/etc/virtio-mem-host/guest.attestation.json"
                 .to_owned(),
@@ -170,6 +180,8 @@ mod tests {
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
+            stats_max_age: Duration::from_secs(60),
+            stats_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "valid".to_owned(),
         };

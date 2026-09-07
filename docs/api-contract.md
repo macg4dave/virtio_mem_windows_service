@@ -58,13 +58,14 @@ does not implement the custom command. `HostConfig` selects the memory-stat
 source with `VIRTIO_MEM_STATS_SOURCE`:
 
 - `dommemstat` (default): reads `virsh dommemstat <vm>`, a virtio-balloon
-  driver counter that does not require QGA. The current implementation
-  requires `actual` and `unused`, accepts `available` only when it is no
-  greater than `actual`, and does not parse `last-update`. The upstream audit
-  found those bounds are semantically wrong: `actual` is balloon state, not
-  whole-guest or virtio-mem allocation. M9e will correct the mapping and add
-  freshness validation. The fields have been observed on `win11_gpu`, but the
-  source is not production-qualified yet.
+  driver counter that does not require QGA. It requires `actual`, `unused`,
+  `available`, and `last-update`. `actual` is retained only as balloon
+  provenance; `unused` maps to free bytes and `available` supplies the
+  available/total-like legacy bound. Both counters may exceed `actual`, but
+  `unused > available` is inconsistent. The source rejects malformed,
+  duplicate, overflowing, missing, stale, future, and non-advancing evidence
+  using `VIRTIO_MEM_STATS_MAX_AGE_SECONDS` and
+  `VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS`.
 - `qga`: uses the experimental `guest-get-memory-stats` extension. It must not
   be selected merely because an upstream QGA version is new enough; the exact
   advertised downstream capability has to be validated first.
@@ -385,6 +386,9 @@ must not reuse the general resize entry point.
 
 The same Rust adapters back explicit CLI operations:
 
+- `decision` loads the service environment and uses the configured source,
+  freshness checks, alias-scoped XML, and exact runtime evaluator to print one
+  read-only policy decision without constructing a resize sink;
 - `evidence FILE` reads and validates one M10a2 JSON document without issuing
   any live host or guest command;
 - `attest VM ALIAS REVIEW_FILE` performs bounded read-only live collection,

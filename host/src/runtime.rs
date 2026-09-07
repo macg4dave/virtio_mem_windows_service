@@ -10,6 +10,27 @@ use virtio_mem_core::{
 use crate::config::HostConfig;
 use crate::host_memory::{validate_grow_headroom, HostMemorySource};
 
+pub fn evaluate_memory_decision(
+    stats: &MemoryStats,
+    state: VirtioMemState,
+    config: &HostConfig,
+) -> Result<ResizeDecision, String> {
+    let controller = MemoryControllerConfig {
+        min_memory_bytes: config.min_memory_bytes,
+        max_memory_bytes: config.max_memory_bytes,
+        lower_threshold_bytes: config.lower_threshold_bytes,
+        upper_threshold_bytes: config.upper_threshold_bytes,
+        block_size_bytes: state.block_size_bytes,
+    };
+    plan_resize(
+        stats,
+        state.requested_bytes,
+        state.current_bytes,
+        controller,
+    )
+    .map_err(|error| error.to_string())
+}
+
 pub trait GuestStatsSource {
     fn get_memory_stats(&self) -> Result<MemoryStats, String>;
 }
@@ -99,20 +120,8 @@ where
                 .guest_agent
                 .get_memory_stats()
                 .map_err(HostRuntimeError::GuestStats)?;
-            let controller = MemoryControllerConfig {
-                min_memory_bytes: self.config.min_memory_bytes,
-                max_memory_bytes: self.config.max_memory_bytes,
-                lower_threshold_bytes: self.config.lower_threshold_bytes,
-                upper_threshold_bytes: self.config.upper_threshold_bytes,
-                block_size_bytes: state.block_size_bytes,
-            };
-            let decision = plan_resize(
-                &stats,
-                state.requested_bytes,
-                state.current_bytes,
-                controller,
-            )
-            .map_err(|error| HostRuntimeError::Controller(error.to_string()))?;
+            let decision = evaluate_memory_decision(&stats, state, &self.config)
+                .map_err(HostRuntimeError::Controller)?;
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if requested_bytes > state.current_bytes {
                     let host_available = self

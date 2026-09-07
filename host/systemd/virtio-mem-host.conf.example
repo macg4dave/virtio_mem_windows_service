@@ -20,6 +20,10 @@ VIRTIO_MEM_CONVERGENCE_TIMEOUT_SECONDS=300
 # guest-get-memory-stats support. Set to "qga" only if the connected guest
 # agent implements guest-get-memory-stats.
 VIRTIO_MEM_STATS_SOURCE=dommemstat
+# `last-update` must be no older than this bound and must advance between
+# controller samples. Small positive future skew is tolerated explicitly.
+VIRTIO_MEM_STATS_MAX_AGE_SECONDS=60
+VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS=5
 
 # Required: a grow request is blocked unless the RHEL host's /proc/meminfo
 # MemAvailable covers the requested delta plus this reserve.

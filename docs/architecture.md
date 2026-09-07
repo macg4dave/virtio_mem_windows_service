@@ -216,8 +216,9 @@ accounting or hermetic global-pool simulation.
     poll cycle instead of failing the service.
 - When the connected QEMU Guest Agent does not implement the nonstandard
     `guest-get-memory-stats` extension, the host controller uses
-    `virsh dommemstat`; M9e must correct its balloon semantics and enforce
-    `last-update` freshness before it is production-qualified.
+    `virsh dommemstat`. Balloon `actual` remains provenance rather than an
+    allocation/total bound; required `last-update` must be recent, within the
+    future-skew allowance, and advance between controller samples.
 - QEMU does not completely prevent guest access to unplugged memory. A hard
     QEMU/libvirt cgroup memory limit is recommended defense-in-depth for fully
     trusted development guest `win11_gpu` and mandatory for untrusted or

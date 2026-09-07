@@ -185,8 +185,8 @@ not been found". The command is also absent from the reviewed upstream QGA
 schemas for QEMU 9.1, 10.1, and master, so an upstream QGA upgrade is not a
 remedy. Select `VIRTIO_MEM_STATS_SOURCE=qga` only for an exact custom/downstream
 agent known to implement the extension. The default `dommemstat` source has
-live-observed `actual`/`unused`/`available` fields, but M9e must correct its
-balloon semantics and add `last-update` freshness before production use. See
+live-observed `actual`/`unused`/`available`/`last-update` fields and now
+preserves balloon semantics while enforcing configured freshness. See
 [`upstream-virtio-mem-audit.md`](upstream-virtio-mem-audit.md).
 
 ## Live virtio-mem requirements
@@ -241,12 +241,12 @@ The Rust Windows crate also uses `quick-xml` for pure parsing of captured
 libvirt snapshots. This parser does not invoke `virsh`, libvirt, or Linux
 commands; live discovery remains outside the guest service boundary.
 
-The Rust host CLI requires `virsh` for explicitly scoped live XML reads and
-approved updates. Its XML selection, unit conversion, compatibility checks,
-and resize policy are implemented in Rust and do not require `xmllint`.
-Separate legacy diagnostic harnesses such as `preview-memory-decision.sh` and
-`live-resize-test.sh` still require the tools they check at startup; they are
-not the authoritative host actuation interface.
+The Rust host CLI requires `virsh` for explicitly scoped live XML/stat reads
+and approved updates. Its XML selection, telemetry freshness, unit conversion,
+compatibility checks, decision preview, and resize policy are implemented in
+Rust and do not require `xmllint`. The separate legacy
+`live-resize-test.sh` harness still requires the tools it checks at startup;
+it is not the authoritative host actuation interface.
 
 ## RHEL host-controller deployment
 

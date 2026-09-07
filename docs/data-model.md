@@ -109,17 +109,16 @@ retry, reclaim-quantum, and safe-floor bound before worker startup.
 
 ### Host memory-stat snapshot
 
-The current `dommemstat` adapter maps libvirt balloon counters into the legacy
-`MemoryStats` shape. Libvirt `actual` is the current balloon value; it does not
-include virtio-mem memory and must not bound `unused` or `available`. An
-`available > actual` sample is therefore not inherently inconsistent.
-
-M9e introduces an explicit source snapshot with observation time and
-`last-update` provenance. Policy must reject missing, stale, future, and
-non-advancing samples according to configured bounds. The alias-scoped live
-libvirt `current` field remains the only authoritative virtio-mem allocation
-input. The QGA-shaped stats adapter is experimental and valid only for a
-separately identified custom/downstream guest agent.
+The `dommemstat` adapter maps libvirt balloon counters into the legacy
+`MemoryStats` shape without treating balloon `actual` as total memory.
+`DomMemStatSnapshot` retains `balloon_actual_bytes` as provenance, maps
+`unused` to `free_bytes`, and maps required `available` to `available_bytes`
+and the total-like legacy bound. It also records observation time and
+`last-update`. Missing, stale, future, non-advancing, malformed, duplicate, or
+overflowing samples fail according to configured positive age/skew bounds.
+The alias-scoped live libvirt `current` field remains the only authoritative
+virtio-mem allocation input. The QGA-shaped stats adapter is experimental and
+valid only for a separately identified custom/downstream guest agent.
 
 ### Live XML semantics
 

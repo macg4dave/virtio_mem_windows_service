@@ -63,6 +63,9 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - Preserve source semantics: `dommemstat actual` is a balloon value, not a
   whole-guest total or virtio-mem allocation. Require explicit bounded
   freshness and reject stale, future, or non-advancing policy evidence.
+- Keep the read-only Rust `decision` command on the exact configured telemetry,
+  live-XML, and policy-evaluator path used by a controller cycle; do not add a
+  second Bash policy implementation.
 - Treat `guest-get-memory-stats` as a custom/downstream QGA extension, never as
   an upstream version guarantee. Keep upstream QGA use to advertised commands.
 - Require a hard QEMU/libvirt memory limit for production or untrusted guests.

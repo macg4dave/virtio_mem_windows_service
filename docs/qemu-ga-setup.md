@@ -178,8 +178,9 @@ bash scripts/validate-guest-agent.sh win11_gpu 3
 The helper validates `guest-info` once, probes the custom memory extension,
 and then validates the configured memory-stat source for the requested number
 of attempts. When the extension is unavailable, it falls back to
-`virsh dommemstat` and requires numeric `actual` and `unused` fields. Current
-code does not validate `last-update`; M9e tracks that production prerequisite.
+`virsh dommemstat` and requires numeric `actual`, `unused`, and `available`
+fields. The Rust host source additionally enforces recent, non-future, advancing
+`last-update` before using a sample for policy.
 It defaults to
 `qemu:///system`; set `VIRSH_CONNECT` to use another libvirt URI. It does not
 resize memory, restart the VM, or execute commands inside the guest.
@@ -246,8 +247,8 @@ QGA setup is successful for the current project when:
 - [ ] Advertised upstream QGA commands such as `guest-info` return valid JSON
 - [ ] The optional custom memory extension is explicitly identified, or its
       expected absence is recorded and `dommemstat` is observable
-- [ ] Before production use, M9e validates `dommemstat last-update` freshness
-      and corrects balloon `actual` semantics
+- [x] M9e validates `dommemstat last-update` freshness and preserves balloon
+      `actual` semantics without using it as allocation or total memory
 - [ ] Multiple consecutive commands succeed without timeout
 - [ ] Responses are documented and reviewed
 

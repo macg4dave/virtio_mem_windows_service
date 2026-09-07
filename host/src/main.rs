@@ -47,9 +47,12 @@ fn main() -> ExitCode {
     }
     let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
     let guest_agent: Box<dyn GuestStatsSource> = match config.stats_source {
-        StatsSource::DomMemStat => {
-            Box::new(DomMemStatSource::new(virsh.clone(), config.vm_name.clone()))
-        }
+        StatsSource::DomMemStat => Box::new(DomMemStatSource::new(
+            virsh.clone(),
+            config.vm_name.clone(),
+            config.stats_max_age,
+            config.stats_future_tolerance,
+        )),
         StatsSource::Qga => Box::new(VirshGuestAgent::new(virsh.clone(), config.vm_name.clone())),
     };
     let runtime = HostRuntime::new(

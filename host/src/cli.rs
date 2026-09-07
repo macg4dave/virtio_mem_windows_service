@@ -1,22 +1,28 @@
 use std::io::Write;
 use std::time::Duration;
 
-use virtio_mem_core::{parse_behavior_evidence, parse_virtio_mem_xml_for_alias};
+use virtio_mem_core::{parse_behavior_evidence, parse_virtio_mem_xml_for_alias, ResizeDecision};
 
 use crate::attestation::{
     read_review, AttestedCompatibilitySource, CompatibilityAttestation,
     VirshCompatibilityEvidenceSource,
 };
 use crate::compatibility_source::CompatibilitySource;
+use crate::config::{HostConfig, StatsSource};
+use crate::dommemstat::DomMemStatSource;
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
+use crate::qga::VirshGuestAgent;
 use crate::resize_sink::VirshResizeSink;
+use crate::runtime::{evaluate_memory_decision, GuestStatsSource, MemoryStateSource};
 use crate::virsh::{Virsh, VirshCommand};
+use crate::xml_source::VirshXmlSource;
 
 const DEFAULT_CONNECTION: &str = "qemu:///system";
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    Decision,
     Evidence {
         path: String,
     },
@@ -53,7 +59,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     };
     if !matches!(
         mode,
-        "evidence" | "attest" | "snapshot" | "validate" | "resize"
+        "decision" | "evidence" | "attest" | "snapshot" | "validate" | "resize"
     ) {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
     }
@@ -64,6 +70,12 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
         return Ok(Some(CliCommand::Evidence {
             path: args[1].clone(),
         }));
+    }
+    if mode == "decision" {
+        if args.len() != 1 {
+            return Err(usage().to_owned());
+        }
+        return Ok(Some(CliCommand::Decision));
     }
     let (minimum, maximum) = match mode {
         "resize" => (8, 11),
@@ -193,7 +205,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
+    "Usage: virtio-mem-host decision\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -207,6 +219,7 @@ fn run_with<H: HostMemorySource, W: Write>(
     output: &mut W,
 ) -> Result<(), String> {
     match command {
+        CliCommand::Decision => run_configured_decision(output),
         CliCommand::Evidence { path } => {
             let json = std::fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read evidence file {path}: {error}"))?;
@@ -272,6 +285,62 @@ fn run_with<H: HostMemorySource, W: Write>(
             )
         }
     }
+}
+
+fn run_configured_decision<W: Write>(output: &mut W) -> Result<(), String> {
+    let config = HostConfig::from_env().map_err(|error| error.to_string())?;
+    let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
+    let state_source =
+        VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone());
+    match config.stats_source {
+        StatsSource::DomMemStat => run_decision_with(
+            DomMemStatSource::new(
+                virsh,
+                config.vm_name.clone(),
+                config.stats_max_age,
+                config.stats_future_tolerance,
+            ),
+            state_source,
+            &config,
+            "dommemstat",
+            output,
+        ),
+        StatsSource::Qga => run_decision_with(
+            VirshGuestAgent::new(virsh, config.vm_name.clone()),
+            state_source,
+            &config,
+            "qga",
+            output,
+        ),
+    }
+}
+
+fn run_decision_with<G: GuestStatsSource, S: MemoryStateSource, W: Write>(
+    stats_source: G,
+    state_source: S,
+    config: &HostConfig,
+    source_name: &str,
+    output: &mut W,
+) -> Result<(), String> {
+    let state = state_source.memory_state()?;
+    state.validate().map_err(|error| error.to_string())?;
+    let stats = stats_source.get_memory_stats()?;
+    let decision = evaluate_memory_decision(&stats, state, config)?;
+    writeln!(output, "source={source_name}").map_err(|error| error.to_string())?;
+    writeln!(output, "free_bytes={}", stats.free_bytes).map_err(|error| error.to_string())?;
+    writeln!(output, "available_bytes={}", stats.available_bytes)
+        .map_err(|error| error.to_string())?;
+    writeln!(output, "requested_bytes={}", state.requested_bytes)
+        .map_err(|error| error.to_string())?;
+    writeln!(output, "current_bytes={}", state.current_bytes).map_err(|error| error.to_string())?;
+    match decision {
+        ResizeDecision::NoChange => writeln!(output, "decision=no_change"),
+        ResizeDecision::WaitForConvergence => writeln!(output, "decision=wait_for_convergence"),
+        ResizeDecision::Request { requested_bytes } => {
+            writeln!(output, "decision=request target_bytes={requested_bytes}")
+        }
+    }
+    .map_err(|error| error.to_string())
 }
 
 fn run_evidence_with<W: Write>(json: &str, output: &mut W) -> Result<(), String> {
@@ -384,7 +453,7 @@ mod tests {
     use super::*;
     use crate::compatibility_source::FixedCompatibilitySource;
     use crate::virsh::VirshError;
-    use virtio_mem_core::VirtioMemCompatibility;
+    use virtio_mem_core::{MemoryStats, VirtioMemCompatibility, VirtioMemState};
 
     const GIB: u64 = 1 << 30;
     const CONVERGED_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></devices></domain>";
@@ -429,6 +498,10 @@ mod tests {
 
     #[test]
     fn parses_snapshot_and_resize_modes() {
+        assert_eq!(
+            parse_args(&args(&["decision"])).expect("decision"),
+            Some(CliCommand::Decision)
+        );
         assert_eq!(
             parse_args(&args(&["evidence", "capture.json"])).expect("evidence"),
             Some(CliCommand::Evidence {
@@ -505,6 +578,69 @@ mod tests {
 
         let mixed = json.replacen("\"operation_id\":\"op-1\"", "\"operation_id\":\"other\"", 1);
         assert!(run_evidence_with(&mixed, &mut Vec::new()).is_err());
+    }
+
+    struct FixedStats(MemoryStats);
+
+    impl GuestStatsSource for FixedStats {
+        fn get_memory_stats(&self) -> Result<MemoryStats, String> {
+            Ok(MemoryStats {
+                free_bytes: self.0.free_bytes,
+                available_bytes: self.0.available_bytes,
+                total_bytes: self.0.total_bytes,
+            })
+        }
+    }
+
+    struct FixedState(VirtioMemState);
+
+    impl MemoryStateSource for FixedState {
+        fn memory_state(&self) -> Result<VirtioMemState, String> {
+            Ok(self.0)
+        }
+    }
+
+    #[test]
+    fn decision_preview_uses_the_runtime_evaluator_without_actuation() {
+        let config = HostConfig {
+            vm_name: "guest".to_owned(),
+            alias: "memory0".to_owned(),
+            min_memory_bytes: 4 * GIB,
+            max_memory_bytes: 8 * GIB,
+            lower_threshold_bytes: GIB,
+            upper_threshold_bytes: 3 * GIB,
+            poll_interval: Duration::from_secs(30),
+            command_timeout: Duration::from_secs(10),
+            convergence_timeout: Duration::from_secs(300),
+            virsh_binary: "virsh".to_owned(),
+            stats_source: StatsSource::DomMemStat,
+            stats_max_age: Duration::from_secs(60),
+            stats_future_tolerance: Duration::from_secs(5),
+            host_min_headroom_bytes: 4 * GIB,
+            compatibility_attestation_path: "reviewed.json".to_owned(),
+        };
+        let mut output = Vec::new();
+        run_decision_with(
+            FixedStats(MemoryStats {
+                free_bytes: GIB / 2,
+                available_bytes: 6 * GIB,
+                total_bytes: 6 * GIB,
+            }),
+            FixedState(VirtioMemState {
+                size_bytes: 10 * GIB,
+                block_size_bytes: 2 * 1024 * 1024,
+                requested_bytes: 4 * GIB,
+                current_bytes: 4 * GIB,
+            }),
+            &config,
+            "dommemstat",
+            &mut output,
+        )
+        .expect("valid preview");
+        assert_eq!(
+            String::from_utf8(output).expect("UTF-8 output"),
+            "source=dommemstat\nfree_bytes=536870912\navailable_bytes=6442450944\nrequested_bytes=4294967296\ncurrent_bytes=4294967296\ndecision=request target_bytes=4297064448\n"
+        );
     }
 
     #[test]

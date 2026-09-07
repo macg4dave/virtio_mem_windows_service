@@ -158,23 +158,13 @@ error and no resize is attempted for that cycle.
 
 #### Read-only memory decision preview
 
-Use `scripts/preview-memory-decision.sh` to see whether the configured policy
-would grow, shrink, wait, or leave the guest unchanged. The script reads the
-explicit VM's state, virtio-mem XML, and QGA memory statistics, then mirrors the
-shared policy thresholds and block alignment checks. It never invokes
-`update-memory-device` and is safe to use before enabling the systemd unit.
-
-This helper is now a legacy diagnostic, not a faithful preview of the deployed
-default: it calls the non-upstream `guest-get-memory-stats` extension and does
-not reuse the controller's `dommemstat` source/freshness logic. M9e/TASK-025
-must replace it with a Rust decision command before decision-preview output is
-used as policy evidence.
-
-The policy values must be supplied as environment variables matching the host
-controller configuration. The script returns status `0` for `NO CHANGE`, `10`
-when a resize **would** be requested, and `20` when the decision is blocked or
-validation fails. A status of `10` is only a preview result; no memory change
-has occurred.
+Use the Rust `decision` command to see whether the configured policy would
+grow, shrink, wait, or leave the guest unchanged. It loads the same `HostConfig`,
+selected `dommemstat`/custom-QGA source, live XML source, freshness checks, and
+shared evaluator as one controller cycle. It prints source, counters,
+authoritative requested/current allocation, and decision. It has no resize
+sink and never invokes `update-memory-device`; exit zero means the decision was
+evaluated successfully, not that a resize occurred.
 
 Example with an already-approved, non-secret instance configuration loaded in
 the current shell:
@@ -183,12 +173,14 @@ the current shell:
 set -a
 source /etc/virtio-mem-host/INSTANCE.conf
 set +a
-bash scripts/preview-memory-decision.sh "$VIRTIO_MEM_VM_NAME" "$VIRTIO_MEM_ALIAS"
+target/release/virtio-mem-host decision
 ```
 
-The current `win11_gpu` guest is expected to return `BLOCKED` because upstream
-QGA does not provide `guest-get-memory-stats`. This validates only that the
-legacy helper refuses to guess; upgrading upstream QGA will not unblock it.
+With `VIRTIO_MEM_STATS_SOURCE=dommemstat`, success requires `actual`, `unused`,
+`available`, and `last-update`; the timestamp must be within the configured age
+and future-skew bounds. Repeating the command starts a new one-cycle process,
+so strict cross-sample advancement is exercised by the long-running controller
+and deterministic source tests rather than across separate CLI invocations.
 
 #### Reversible live-resize test
 
@@ -316,13 +308,15 @@ rather than guess. Set `VIRTIO_MEM_STATS_SOURCE=qga` only for an exact
 custom/downstream agent validated to implement the extension; upstream QGA
 version alone is never evidence.
 
-Some Windows balloon reports may expose `available` above `actual`. The host
-parser currently treats that optional counter as out of range and falls back
-to `unused`. The upstream audit found this is incorrect: `actual` is balloon
-state, not a whole-guest upper bound, so `available > actual` is not inherently
-impossible. The parser also ignores `last-update`. M9e must add regression
-tests for missing, stale, future, and non-advancing timestamps and for
-`unused`/`available > actual` before the source is production-qualified.
+Windows balloon reports may expose `unused` and `available` above `actual`.
+The M9e parser retains `actual` only as balloon provenance, maps `unused` to
+free bytes, and maps required `available` to both available and the total-like
+legacy bound. It rejects only `unused > available`, overflow, malformed or
+duplicate fields, and missing/stale/future/non-advancing `last-update`.
+`VIRTIO_MEM_STATS_MAX_AGE_SECONDS` and
+`VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS` are required positive bounds; the
+example uses 60 and 5 seconds. The configured balloon stats period must be
+shorter than the controller poll interval so each long-running sample advances.
 
 `VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES` is a required configuration value: the
 controller will not send a grow request unless the RHEL host's
@@ -804,7 +798,7 @@ Before expanding live actuation or enabling unattended demand publication:
   QMP properties, memory backend/page/NUMA attributes, slot and VFIO mapping
   budgets, balloon-resize state, topology, trust classification, deployed
   versions, or workload declarations.
-- M9e tests must accept `unused` and `available` above balloon `actual`, retain
+- M9e tests accept `unused` and `available` above balloon `actual`, retain
   `available` when otherwise valid, and reject missing, stale, future, or
   non-advancing `last-update`. The Rust decision CLI must use the controller's
   configured source and produce the same decision as one runtime cycle.

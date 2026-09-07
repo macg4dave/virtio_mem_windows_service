@@ -68,8 +68,9 @@ documented gates.
   message-resource packaging, and workload validation remain open.
 - `guest-get-memory-stats` is not an upstream QGA command. The connected QGA
   does not provide it; the adapter is retained only for a separately validated
-  custom/downstream agent. `dommemstat` is the host default, but its semantics
-  and freshness require M9e hardening before production use.
+  custom/downstream agent. The host default `dommemstat` source now preserves
+  balloon semantics and rejects missing, stale, future, or non-advancing
+  `last-update` evidence.
 - Live resize remains subject to fresh XML validation and the
   `requested == current` convergence gate before every request.
 - The signed Windows driver has no supported user-mode diagnostic state query.
@@ -183,14 +184,15 @@ bash scripts/validate-guest-agent.sh VM_NAME 3
 Read the [QEMU Guest Agent setup guide](docs/qemu-ga-setup.md) first. The
 current guest may report that `guest-get-memory-stats` is unavailable; the host
 controller uses `dommemstat` rather than guessing. That source is live-observed
-but not production freshness-qualified until M9e completes.
+and freshness-qualified; live libvirt `current` remains allocation authority.
 
 ### 5. Preview before changing memory
 
-Use the read-only decision preview with the approved host configuration:
+Use the read-only Rust decision preview with the approved host configuration
+loaded into the environment:
 
 ```bash
-bash scripts/preview-memory-decision.sh VM_NAME VIRTIO_MEM_ALIAS
+target/release/virtio-mem-host decision
 ```
 
 For a live resize, follow the approval and rollback procedure in

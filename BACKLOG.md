@@ -774,13 +774,13 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-025 | M9e host telemetry correctness and freshness | Copilot | Ready | 3-5 hours | Correct `dommemstat` balloon semantics, enforce `last-update` freshness, and replace the QGA-only Bash preview with Rust controller logic |
 | TASK-020 | M10c host-side current-allocation join | Copilot | Ready | 3-5 hours | Join fresh raw Windows telemetry with alias-scoped live libvirt `current` and calculate the target on the host after TASK-025 |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
+| TASK-025 | M9e host telemetry correctness and freshness | Copilot | In Progress | Correcting balloon-counter mapping, adding injected-clock `last-update` freshness/advancement checks, and replacing the QGA-only Bash preview with the Rust controller decision path. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry and the version-1 advisory calculator/publisher are implemented. Production runs `NativeTelemetryWorker` and discards samples; TASK-020 implements the selected host-side allocation join, and TASK-021 adds freshness/identity/retention semantics. ProgramData ACLs and live workload tuning remain. |
 
 ## Planned
