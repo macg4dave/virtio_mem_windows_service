@@ -214,15 +214,14 @@ Before a host resize sink may issue `update-memory-device`, the combined evidenc
 must explicitly confirm both `dynamic-memslots` and
 `unplugged-inaccessible`. Missing or unrecognized attributes are represented as
 `Unknown` and fail closed; they are never treated as enabled by default. XML
-evidence may be merged with an independent QEMU/configuration evidence source,
-but conflicting evidence is rejected. The combined gate also requires
-separate operator evidence for the complete reviewed configuration. M9d must
-bind vDPA, RDMA migration, VFIO-NVMe, `mlock`, encrypted/secure virtualization,
-active virtio-balloon resize, vhost-user backend/version and memory-slot
-budget, VFIO DMA mapping budget, backend page/sparse/reserve/preallocation/
-sharing/core-dump properties, NUMA placement, topology, and deployed QEMU,
-libvirt, machine, and driver versions into a fingerprint. These facts cannot
-be inferred reliably from the virtio-mem memory element alone.
+evidence may be merged with independent QMP evidence, and conflicts are
+rejected. The version-1 M9d attestation binds positive operator declarations
+for vDPA, RDMA, VFIO-NVMe, `mlock`, secure virtualization, active balloon
+resize, unsupported vhost-user, trust, slot/VFIO budgets, and driver version to
+fresh live configuration evidence. Allocation-neutral hashes of full domain
+XML and native QEMU argv cover backend page/sparse/reserve/preallocation/
+sharing/core-dump properties, NUMA placement, devices, machine, and topology;
+QMP and libvirt evidence bind deployed stack versions and required properties.
 
 This is a key operational difference from a DIMM or balloon model: virtio-mem is not a simple single-step memory resize, and guest cooperation is required to unplug or plug memory blocks safely.
 
@@ -363,18 +362,21 @@ use a command shell. Its host calls are:
   custom/downstream capability
 - `virsh dumpxml <vm>` (the default for a running domain; `--inactive` is not
   used for live resize validation)
-- `virsh qemu-monitor-command <vm> <qom-get-request>` for the selected
-  device's `dynamic-memslots` and `unplugged-inaccessible` properties
+- `virsh qemu-monitor-command <vm> <request>` for the selected device's
+  `dynamic-memslots` and `unplugged-inaccessible` properties and QEMU version
+- `virsh domxml-to-native qemu-argv --domain <vm>` and `virsh version` for the
+  reviewed configuration/version fingerprint
 - `virsh update-memory-device <vm> --alias <alias> --requested-size <kib> --live`
 
 The implementation must bound each command, capture a non-zero exit status
 with its diagnostic output, and treat it as an explicit failure. Before the
-update command, the controller must read and validate a fresh XML snapshot and
-fresh QMP compatibility properties for the configured alias, require an
-explicit workload-review confirmation, and require `requested == current`.
-The current confirmation is a static configuration boolean. M9d must bind it
-to a fingerprint of the reviewed live domain/QEMU configuration so drift
-revokes authorization.
+update command, the controller reads and validates fresh XML state, verifies
+the configured version-1 attestation fingerprint, and recollects live XML,
+native QEMU argv, libvirt/QEMU versions, and alias-selected QMP properties.
+It requires an exact match plus `requested == current`. Missing evidence, a
+false or empty review field, fingerprint tampering, or configuration/version
+drift revokes authorization before `update-memory-device` can run. Review and
+attestation files are UTF-8 JSON bounded to 64 KiB with unknown fields denied.
 A successful command response does not prove completion: subsequent snapshots
 decide convergence. The controller never replays a resize request after a
 process restart. The future M10b same-target re-notification operation is the
@@ -385,13 +387,16 @@ The same Rust adapters back explicit CLI operations:
 
 - `evidence FILE` reads and validates one M10a2 JSON document without issuing
   any live host or guest command;
+- `attest VM ALIAS REVIEW_FILE` performs bounded read-only live collection,
+  validates the review JSON, and prints a complete version-1 attestation to
+  standard output. It never installs the file or actuates memory;
 - `snapshot VM ALIAS` validates that the alias selects exactly one virtio-mem
   device before returning the live domain XML.
 - `validate VM ALIAS` reports canonical-byte state and compatibility evidence
   without mutation.
 - `resize VM ALIAS TARGET_BYTES` is a dry run unless `--apply` is supplied.
-  It requires explicit workload-review evidence and a positive host-headroom
-  reserve, then reports the exact `virsh` argument vector.
+  It requires `--attestation FILE` and a positive host-headroom reserve, then
+  reports the exact `virsh` argument vector.
 
 Dry-run and apply share the XML, compatibility, convergence, unit, device-
 headroom, and host-headroom checks. Apply executes only the already prepared

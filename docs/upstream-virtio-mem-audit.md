@@ -84,7 +84,7 @@ opens the QGA channel.
 ### 3. The compatibility attestation is broader than two device properties
 
 `dynamic-memslots=on` and `unplugged-inaccessible=on` are necessary inputs,
-but they are not a complete compatibility proof. M9d/TASK-019 must bind all
+but they are not a complete compatibility proof. M9d/TASK-019 now binds all
 reviewed evidence to a versioned domain/QEMU fingerprint, including:
 
 - vDPA, RDMA migration, VFIO-NVMe, `mlock`, encrypted/secure virtualization,
@@ -97,9 +97,10 @@ reviewed evidence to a versioned domain/QEMU fingerprint, including:
   preallocation, sharing, core-dump, and NUMA placement; and
 - deployed QEMU, libvirt, machine type, and guest-driver versions.
 
-The 2026-09-05 `win11_gpu` review remains valid evidence for that exact trusted
-development configuration, but the compatibility feature is now classified as
-in progress until the full attestation and drift guard exist.
+The 2026-09-05 `win11_gpu` review remains historical evidence for that exact
+trusted development configuration. M9d subsequently completed the full
+attestation and drift guard; deploying a new build requires generating and
+protecting an attestation for the then-current live configuration.
 
 ### 4. Trust and host containment are explicit deployment inputs
 

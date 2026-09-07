@@ -20,6 +20,7 @@ host validation environment.
 | Rust development | `rustc`, `cargo`, `rustfmt`, `clippy` | Rust 1.70+; edition 2021 | Build, test, format, and lint the service |
 | Rust target | Windows x64 target/toolchain | Windows 11 target | Build the guest service |
 | Rust serialization | `serde` with `derive`, `serde_json` | Locked in the workspace `Cargo.lock` | Parse QGA JSON and live QMP compatibility responses |
+| Rust hashing | `sha2` | Locked in the workspace `Cargo.lock` | SHA-256 compatibility-attestation fingerprints |
 | Rust errors | `thiserror`, `anyhow` | Locked in `windows/Cargo.lock` | Typed and contextual errors |
 | Rust telemetry | `tracing`, `tracing-subscriber` | Locked in `windows/Cargo.lock` | Service logging foundation |
 | Windows API | `winapi` features: `processthreadsapi`, `winbase`, `sysinfoapi`, `winnt` | Locked in `windows/Cargo.lock` | Windows process, service, and memory APIs |
@@ -86,6 +87,9 @@ versions and must be retained for reproducible builds.
 
 - `serde` with the `derive` feature: deserializes QGA memory-stat responses.
 - `serde_json`: parses QGA JSON and host-side live QMP compatibility responses.
+- `sha2`: provides the platform-neutral RustCrypto SHA-256 implementation used
+  for compatibility-attestation fingerprints without a system library. The
+  crate is dual-licensed MIT OR Apache-2.0 and locked at `0.10.9`.
 - `thiserror`: defines typed parser and controller-policy errors.
 - `anyhow`: available for application-level contextual errors.
 - `tracing`: provides structured event and metric logging.
@@ -217,7 +221,7 @@ The official virtio-mem guidance adds several operational constraints that affec
   recommended defense-in-depth for fully trusted development guest
   `win11_gpu` and mandatory for untrusted or production guests.
 - `dynamic-memslots=on` is recommended where supported because it reduces metadata and can make unplugged memory inaccessible, but it must be used with `unplugged-inaccessible=on`.
-- M9d must fingerprint vDPA, RDMA migration, VFIO-NVMe, `mlock`,
+- M9d fingerprints review declarations for vDPA, RDMA migration, VFIO-NVMe, `mlock`,
   encrypted/secure virtualization, active balloon resize, vhost-user
   backend/version and memory-slot limits, VFIO DMA mappings, topology, and
   deployed versions. DPDK/SPDK vhost-user combinations remain unsupported.
@@ -226,8 +230,9 @@ The official virtio-mem guidance adds several operational constraints that affec
   libvhost-user/QEMU or rust-vmm/vhost combinations.
 - The memory backend should generally use sparse storage semantics:
   `reserve=off` and backend `prealloc=off`, with device `prealloc=on` when
-  appropriate. M9d also records backend type, page/block size, sharing,
-  core-dump, sparse-filesystem, and NUMA placement.
+  appropriate. M9d binds backend type, page/block size, sharing, core-dump,
+  sparse-filesystem, and NUMA placement through allocation-neutral live XML
+  and native-QEMU-argument hashes.
 - Virtio-balloon statistics/free-page reporting may coexist, but independent
   balloon inflation/deflation or set-memory resizing must not compete with
   virtio-mem actuation.

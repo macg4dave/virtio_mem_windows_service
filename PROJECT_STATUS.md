@@ -4,7 +4,8 @@
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
 actuation are live validated. Trustworthy demand publication, host-stat
-freshness, complete compatibility attestation, and recovery hardening remain.
+freshness and recovery hardening remain; the complete compatibility
+attestation is implemented and awaits a separately approved live installation.
 The allocation-authority contract is established from Virtio and pinned
 implementation sources; optional driver tracing remains diagnostic.
 `win11_gpu` is a fully trusted development/test KVM
@@ -24,6 +25,9 @@ guest; upstream Windows virtio-mem support remains technology preview.
 - Authoritative Rust host CLI for alias-scoped snapshot/validation, exact
   dry-run argument reporting, and explicitly applied one-shot resize; the
   duplicate Bash resize implementation is removed.
+- Version-1 SHA-256 compatibility attestation and read-only generation command;
+  every resize checks integrity and fresh allocation-neutral live
+  domain/QEMU/QMP/version evidence before actuation.
 - Native Windows Application Event Log lifecycle/failure emission with stable
   IDs, bounded messages, and non-zero recovery semantics for worker failures
   or stopless exits.
@@ -35,7 +39,7 @@ guest; upstream Windows virtio-mem support remains technology preview.
 
 The latest native RHEL gate passed:
 
-- 29 shared-core and 30 host tests, with no failures.
+- 29 shared-core and 35 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -78,10 +82,10 @@ was built on the Win11 guest and fetched to
 - Add the M10d report envelope and delivery contract: VM/service/session
   identity, timestamps and sequence, allocation provenance, freshness/replay
   rules, partial-record handling, ACLs, and retention/rotation.
-- Bind the current static workload-review authorization to a live
-  domain/QEMU configuration fingerprint in M9d, expanding the attestation to
-  all audited backend, memory-slot, VFIO, vDPA/RDMA/vhost-user, balloon,
-  secure-virtualization, topology, and version constraints.
+- Install a freshly reviewed M9d attestation with read-only service-account
+  access before deploying this build. The implemented version-1 SHA-256 guard
+  binds backend, memory-slot, VFIO, incompatible-workload, balloon, topology,
+  trust, driver, QEMU, and libvirt evidence and rejects drift before resize.
 - Complete M9e host-telemetry correctness and freshness: fix `dommemstat`
   balloon semantics, validate `last-update`, and replace the QGA-only Bash
   decision preview with the controller's Rust source path.

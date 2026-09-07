@@ -138,10 +138,20 @@ QOM device through bounded QMP requests, merges that evidence with any XML
 values, and requires an explicit operator workload review. Missing, disabled,
 malformed, or conflicting evidence prevents resize preparation.
 
-M9d extends that evidence with a fingerprint over the live domain/QEMU
-configuration, memory backend and NUMA placement, memory-slot and VFIO mapping
-budgets, incompatible device/workload classes, active balloon-resize state,
-topology, and deployed versions.
+The M9d compatibility-attestation document has `version = 1`, `evidence`,
+`review`, and `fingerprint_sha256`. Evidence identifies the VM and alias and
+stores SHA-256 values for allocation-neutral live domain XML, allocation-neutral
+native QEMU arguments, and libvirt version output, plus the parsed QMP QEMU
+version and both required QOM booleans. Review stores positive confirmations
+for the supported trusted-development workload exclusions, positive memory-slot
+and VFIO mapping budgets, and a non-empty Windows driver version. The document
+fingerprint is SHA-256 over canonical JSON containing `version`, `evidence`,
+and `review`; it is verified before live evidence is compared. Allocation
+progress alone does not change the fingerprint, but backend/page/NUMA, device,
+slot/VFIO, balloon, topology, identity, property, trust, workload, driver, QEMU,
+or libvirt changes revoke authorization.
+Review and complete-attestation documents are UTF-8 JSON limited to 65,536
+bytes and reject unknown fields.
 
 This model is aligned with libvirt behavior: a resize request is serviced asynchronously, and the guest's ability to free memory or hotunplug blocks can delay or prevent full convergence.
 

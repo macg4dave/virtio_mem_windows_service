@@ -3,8 +3,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
-use virtio_mem_core::CompatibilityEvidence;
-use virtio_mem_host::compatibility_source::VirshQmpCompatibilitySource;
+use virtio_mem_host::attestation::AttestedCompatibilitySource;
 use virtio_mem_host::config::{HostConfig, StatsSource};
 use virtio_mem_host::dommemstat::DomMemStatSource;
 use virtio_mem_host::host_memory::ProcMeminfoSource;
@@ -57,15 +56,11 @@ fn main() -> ExitCode {
         guest_agent,
         VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),
         VirshResizeSink::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
-            .with_compatibility_source(VirshQmpCompatibilitySource::new(
+            .with_compatibility_source(AttestedCompatibilitySource::new(
                 virsh,
                 config.vm_name.clone(),
                 config.alias.clone(),
-                if config.workload_reviewed {
-                    CompatibilityEvidence::Confirmed
-                } else {
-                    CompatibilityEvidence::Unknown
-                },
+                config.compatibility_attestation_path.clone(),
             )),
         ProcMeminfoSource::new(),
         config,

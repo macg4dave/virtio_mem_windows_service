@@ -331,16 +331,16 @@ An insufficient-headroom check is not treated as a fatal error; the
 controller logs and waits for the next poll interval rather than crashing the
 systemd unit.
 
-`VIRTIO_MEM_WORKLOAD_REVIEWED` is also required. Set it to `true` only after
+`VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH` is also required. It names a
+root/operator-owned, service-readable version-1 attestation created only after
 the explicitly scoped VM has been reviewed for vDPA, VFIO-NVMe, RDMA migration,
 `mlock`, encrypted/secure virtualization, active balloon resize, vhost-user
 backend/version and slot capacity, VFIO mapping budget, backend sparse/reserve/
-preallocation/share/core-dump/page-size/NUMA properties, topology, and deployed
-versions. `false` preserves unknown workload evidence and blocks resize
-preparation. Independently of that
-operator statement, the controller refreshes `dynamic-memslots` and
-`unplugged-inaccessible` from the selected QOM device through bounded QMP
-requests before every prepared resize.
+preallocation/share/core-dump/page-size/NUMA properties, topology, trust, driver,
+QEMU, and libvirt versions. Missing or writable-by-service evidence is not a
+valid deployment. Before every prepared resize the controller verifies the
+attestation SHA-256 and recollects its bounded live XML/QEMU/QMP/version inputs;
+any drift blocks actuation.
 
 #### Testing through the installed host service, not the standalone script
 
@@ -666,21 +666,49 @@ target/release/virtio-mem-host snapshot \
 target/release/virtio-mem-host validate \
   "$VM_NAME" "$VIRTIO_MEM_ALIAS" --connect qemu:///system
 
+# Read-only: after reviewing every positive declaration in review.json, bind
+# those declarations to the current live configuration. Review the output,
+# then install it at the configured protected path in a separately approved
+# operation.
+target/release/virtio-mem-host attest \
+  "$VM_NAME" "$VIRTIO_MEM_ALIAS" review.json \
+  --connect qemu:///system > reviewed-attestation.json
+
 # Read-only dry run: print the exact validated virsh argument vector
 target/release/virtio-mem-host resize \
   "$VM_NAME" "$VIRTIO_MEM_ALIAS" "$TARGET_BYTES" \
-  --workload-reviewed \
+  --attestation reviewed-attestation.json \
   --host-min-headroom-bytes 4294967296 \
   --connect qemu:///system
+```
+
+Review and attestation inputs are bounded to 64 KiB and must be UTF-8 strict
+JSON; unknown fields and any false, zero, or empty required value fail closed:
+
+```json
+{
+  "trusted_development_guest": true,
+  "workload_reviewed": true,
+  "no_vdpa": true,
+  "no_rdma_migration": true,
+  "no_vfio_nvme": true,
+  "no_mlock": true,
+  "no_secure_virtualization": true,
+  "no_unsupported_vhost_user": true,
+  "balloon_resize_inactive": true,
+  "memory_slot_budget": 32,
+  "vfio_mapping_budget": 8,
+  "windows_driver_version": "REVIEWED-INSTALLED-VERSION"
+}
 ```
 
 The CLI defaults to `qemu:///system` and accepts a constrained alias. Snapshot
 and validate issue only `virsh dumpxml`. Resize defaults to dry-run and does
 not issue `update-memory-device` unless `--apply` is present. Both dry-run and
-apply require fresh QMP/XML confirmation of `dynamic-memslots` and
-`unplugged-inaccessible`, `requested == current`, a block-aligned canonical-
-byte target with device headroom, explicit `--workload-reviewed` operator
-evidence, and a positive host reserve. Grow operations read
+apply require an integrity-valid exact-match attestation, fresh QMP/XML
+confirmation of `dynamic-memslots` and `unplugged-inaccessible`,
+`requested == current`, a block-aligned canonical-byte target with device
+headroom, and a positive host reserve. Grow operations read
 `/proc/meminfo` and fail closed unless `MemAvailable` covers the growth delta
 plus `--host-min-headroom-bytes`; shrink operations do not require available
 host RAM.
@@ -696,9 +724,9 @@ Live M9a validation on 2026-09-05 confirmed both selected-device QMP
 properties, a 2 MiB block/THP match, `mem-lock=off`, and no VFIO-NVMe, RDMA,
 or unsupported vhost-user dependency. The operator completed the workload
 review. The CLI produced the exact 2 MiB dry-run vector without `--apply`, and
-the before/after XML hashes matched. Systemd configuration must set
-`VIRTIO_MEM_WORKLOAD_REVIEWED=true` only after the same review; `false` keeps
-resize preparation fail-closed.
+the before/after XML hashes matched. That historical static acknowledgement is
+superseded by M9d: systemd configuration now names the reviewed attestation,
+and absent or drifted evidence keeps resize preparation fail-closed.
 
 After reviewing the dry-run vector and obtaining approval for the exact VM,
 alias, target, and expected live mutation, repeat the same command with
@@ -771,7 +799,7 @@ interface.
 
 Before expanding live actuation or enabling unattended demand publication:
 
-- M9d tests must hash the reviewed domain/QEMU configuration, accept an exact
+- M9d tests hash the reviewed domain/QEMU configuration, accept an exact
   match, and fail closed on changed aliases, incompatible device classes,
   QMP properties, memory backend/page/NUMA attributes, slot and VFIO mapping
   budgets, balloon-resize state, topology, trust classification, deployed

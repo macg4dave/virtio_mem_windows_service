@@ -19,8 +19,8 @@ pub enum HostConfigError {
     InvalidDuration,
     #[error("VIRTIO_MEM_STATS_SOURCE must be 'dommemstat' or 'qga': {0}")]
     InvalidStatsSource(String),
-    #[error("VIRTIO_MEM_WORKLOAD_REVIEWED must be 'true' or 'false': {0}")]
-    InvalidConfirmation(String),
+    #[error("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH must be non-empty")]
+    InvalidAttestationPath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,7 +47,7 @@ pub struct HostConfig {
     pub virsh_binary: String,
     pub stats_source: StatsSource,
     pub host_min_headroom_bytes: u64,
-    pub workload_reviewed: bool,
+    pub compatibility_attestation_path: String,
 }
 
 impl HostConfig {
@@ -77,7 +77,7 @@ impl HostConfig {
                 .unwrap_or_else(|_| "virsh".to_owned()),
             stats_source,
             host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
-            workload_reviewed: confirmation("VIRTIO_MEM_WORKLOAD_REVIEWED")?,
+            compatibility_attestation_path: required("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH")?,
         };
         config.validate()?;
         Ok(config)
@@ -107,6 +107,9 @@ impl HostConfig {
         {
             return Err(HostConfigError::InvalidDuration);
         }
+        if self.compatibility_attestation_path.trim().is_empty() {
+            return Err(HostConfigError::InvalidAttestationPath);
+        }
         Ok(())
     }
 }
@@ -129,19 +132,6 @@ fn positive(name: &'static str) -> Result<u64, HostConfigError> {
         .ok_or(HostConfigError::InvalidPositiveInteger { name, value })
 }
 
-fn confirmation(name: &'static str) -> Result<bool, HostConfigError> {
-    let value = required(name)?;
-    parse_confirmation(&value)
-}
-
-fn parse_confirmation(value: &str) -> Result<bool, HostConfigError> {
-    match value {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        _ => Err(HostConfigError::InvalidConfirmation(value.to_owned())),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,18 +150,33 @@ mod tests {
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
             host_min_headroom_bytes: 1,
-            workload_reviewed: false,
+            compatibility_attestation_path: "/etc/virtio-mem-host/guest.attestation.json"
+                .to_owned(),
         };
         assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
     }
 
     #[test]
-    fn parses_only_explicit_workload_review_confirmation() {
-        assert_eq!(parse_confirmation("true"), Ok(true));
-        assert_eq!(parse_confirmation("false"), Ok(false));
-        assert!(matches!(
-            parse_confirmation("TRUE"),
-            Err(HostConfigError::InvalidConfirmation(_))
-        ));
+    fn rejects_empty_attestation_path() {
+        let mut config = HostConfig {
+            vm_name: "guest".to_owned(),
+            alias: "memory0".to_owned(),
+            min_memory_bytes: 1,
+            max_memory_bytes: 2,
+            lower_threshold_bytes: 1,
+            upper_threshold_bytes: 2,
+            poll_interval: Duration::from_secs(1),
+            command_timeout: Duration::from_secs(1),
+            convergence_timeout: Duration::from_secs(1),
+            virsh_binary: "virsh".to_owned(),
+            stats_source: StatsSource::DomMemStat,
+            host_min_headroom_bytes: 1,
+            compatibility_attestation_path: "valid".to_owned(),
+        };
+        config.compatibility_attestation_path = " ".to_owned();
+        assert_eq!(
+            config.validate(),
+            Err(HostConfigError::InvalidAttestationPath)
+        );
     }
 }

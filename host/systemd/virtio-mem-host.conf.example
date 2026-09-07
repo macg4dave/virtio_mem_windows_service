@@ -25,7 +25,7 @@ VIRTIO_MEM_STATS_SOURCE=dommemstat
 # MemAvailable covers the requested delta plus this reserve.
 VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES=4294967296
 
-# Required explicit operator evidence. Set true only after reviewing this VM
-# and workload for vfio-nvme, RDMA migration, mlock, and unsupported vhost-user
-# dependencies. False keeps resize preparation fail-closed.
-VIRTIO_MEM_WORKLOAD_REVIEWED=false
+# Required reviewed M9d attestation. Generate a candidate with the Rust
+# `attest` command after completing the documented review, install it read-only
+# for the service account, and regenerate/review it after any reported drift.
+VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH=/etc/virtio-mem-host/win11_gpu.attestation.json

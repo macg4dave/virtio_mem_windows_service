@@ -57,9 +57,10 @@ formatted Event Log message-resource packaging remain.
 - Confirm live XML alias, size, block, `requested`, and `current` values.
 - Verify `dynamic-memslots` and `unplugged-inaccessible` requirements where
    supported.
-- Bind the reviewed live domain, QEMU command line/properties, memory backend,
-   memory-slot and VFIO mapping budgets, active balloon-resize state, topology,
-   and deployed versions into one M9d fingerprint.
+- [x] Bind the reviewed live domain, allocation-neutral QEMU command
+   line/properties, memory backend, memory-slot and VFIO mapping budgets,
+   active balloon-resize state, topology, trust/driver declarations, and
+   deployed versions into one M9d SHA-256 fingerprint.
 - Rule out or explicitly qualify vDPA, RDMA migration, VFIO-NVMe, `mlock`,
    encrypted/secure virtualization, incompatible vhost-user backends, and
    sparse/preallocated/shared/core-dump/NUMA backend combinations.
@@ -140,9 +141,9 @@ driver interface proposal and does not authorize implementation or install.
 
 Before simulation consumes live-shaped inputs, complete M9e host-stat
 correctness/freshness, M10c host-side allocation join, and M10d report
-delivery/freshness. M9d compatibility-attestation drift protection and M10b
-failure/recovery evidence remain gates for live multi-target actuation, not
-for hermetic pool simulation.
+delivery/freshness. Completed M9d compatibility-attestation drift protection
+and M10b failure/recovery evidence remain gates for live multi-target
+actuation, not for hermetic pool simulation.
 
 - Model host reserve, actual VM allocations, pool-free capacity, stale reports,
    and in-flight operations.

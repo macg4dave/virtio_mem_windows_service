@@ -1,11 +1,13 @@
 use std::io::Write;
 use std::time::Duration;
 
-use virtio_mem_core::{
-    parse_behavior_evidence, parse_virtio_mem_xml_for_alias, CompatibilityEvidence,
-};
+use virtio_mem_core::{parse_behavior_evidence, parse_virtio_mem_xml_for_alias};
 
-use crate::compatibility_source::{CompatibilitySource, VirshQmpCompatibilitySource};
+use crate::attestation::{
+    read_review, AttestedCompatibilitySource, CompatibilityAttestation,
+    VirshCompatibilityEvidenceSource,
+};
+use crate::compatibility_source::CompatibilitySource;
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
 use crate::resize_sink::VirshResizeSink;
 use crate::virsh::{Virsh, VirshCommand};
@@ -17,6 +19,12 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 pub enum CliCommand {
     Evidence {
         path: String,
+    },
+    Attest {
+        vm: String,
+        alias: String,
+        review_path: String,
+        connection: String,
     },
     Snapshot {
         vm: String,
@@ -34,7 +42,7 @@ pub enum CliCommand {
         target_bytes: u64,
         connection: String,
         apply: bool,
-        workload_reviewed: bool,
+        attestation_path: String,
         host_min_headroom_bytes: u64,
     },
 }
@@ -43,7 +51,10 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     let Some(mode) = args.first().map(String::as_str) else {
         return Ok(None);
     };
-    if !matches!(mode, "evidence" | "snapshot" | "validate" | "resize") {
+    if !matches!(
+        mode,
+        "evidence" | "attest" | "snapshot" | "validate" | "resize"
+    ) {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
     }
     if mode == "evidence" {
@@ -54,7 +65,11 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             path: args[1].clone(),
         }));
     }
-    let (minimum, maximum) = if mode == "resize" { (7, 10) } else { (3, 5) };
+    let (minimum, maximum) = match mode {
+        "resize" => (8, 11),
+        "attest" => (4, 6),
+        _ => (3, 5),
+    };
     if args.len() < minimum || args.len() > maximum {
         return Err(usage().to_owned());
     }
@@ -62,11 +77,17 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     let alias = args[2].clone();
     let mut connection = DEFAULT_CONNECTION.to_owned();
     let mut apply = false;
-    let mut workload_reviewed = false;
+    let mut attestation_path = None;
     let mut host_min_headroom_bytes = None;
     let mut connection_supplied = false;
     let mut target_bytes = None;
     let mut index = 3;
+    let review_path = if mode == "attest" {
+        index += 1;
+        Some(args[3].clone())
+    } else {
+        None
+    };
     if mode == "resize" {
         target_bytes = Some(
             args[index]
@@ -80,8 +101,17 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     while index < args.len() {
         match args[index].as_str() {
             "--apply" if mode == "resize" && !apply => apply = true,
-            "--workload-reviewed" if mode == "resize" && !workload_reviewed => {
-                workload_reviewed = true;
+            "--attestation" if mode == "resize" => {
+                if attestation_path.is_some() {
+                    return Err("--attestation may be supplied only once".to_owned());
+                }
+                index += 1;
+                attestation_path = Some(
+                    args.get(index)
+                        .filter(|value| !value.trim().is_empty())
+                        .ok_or_else(|| "--attestation requires a file path".to_owned())?
+                        .clone(),
+                );
             }
             "--host-min-headroom-bytes" if mode == "resize" => {
                 if host_min_headroom_bytes.is_some() {
@@ -127,9 +157,6 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     {
         return Err("ALIAS contains unsupported characters".to_owned());
     }
-    if mode == "resize" && !workload_reviewed {
-        return Err("resize requires --workload-reviewed".to_owned());
-    }
     let command = match mode {
         "snapshot" => CliCommand::Snapshot {
             vm,
@@ -141,6 +168,13 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             alias,
             connection,
         },
+        "attest" => CliCommand::Attest {
+            vm,
+            alias,
+            review_path: review_path
+                .ok_or_else(|| "attest review path was not supplied".to_owned())?,
+            connection,
+        },
         "resize" => CliCommand::Resize {
             vm,
             alias,
@@ -148,7 +182,8 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
                 .ok_or_else(|| "resize target was not supplied".to_owned())?,
             connection,
             apply,
-            workload_reviewed,
+            attestation_path: attestation_path
+                .ok_or_else(|| "resize requires --attestation FILE".to_owned())?,
             host_min_headroom_bytes: host_min_headroom_bytes
                 .ok_or_else(|| "resize requires --host-min-headroom-bytes BYTES".to_owned())?,
         },
@@ -158,7 +193,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host evidence FILE\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --workload-reviewed --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
+    "Usage: virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -176,6 +211,18 @@ fn run_with<H: HostMemorySource, W: Write>(
             let json = std::fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read evidence file {path}: {error}"))?;
             run_evidence_with(&json, output)
+        }
+        CliCommand::Attest {
+            vm,
+            alias,
+            review_path,
+            connection,
+        } => {
+            let virsh = Virsh::with_connection("virsh", DEFAULT_TIMEOUT, connection);
+            let evidence = VirshCompatibilityEvidenceSource::new(virsh, vm, alias).collect()?;
+            let review = read_review(std::path::Path::new(&review_path))?;
+            let document = CompatibilityAttestation::new(evidence, review)?;
+            writeln!(output, "{}", document.to_pretty_json()?).map_err(|error| error.to_string())
         }
         CliCommand::Snapshot {
             vm,
@@ -199,19 +246,15 @@ fn run_with<H: HostMemorySource, W: Write>(
             target_bytes,
             connection,
             apply,
-            workload_reviewed,
+            attestation_path,
             host_min_headroom_bytes,
         } => {
             let virsh = Virsh::with_connection("virsh", DEFAULT_TIMEOUT, &connection);
-            let compatibility_source = VirshQmpCompatibilitySource::new(
+            let compatibility_source = AttestedCompatibilitySource::new(
                 virsh.clone(),
                 vm.clone(),
                 alias.clone(),
-                if workload_reviewed {
-                    CompatibilityEvidence::Confirmed
-                } else {
-                    CompatibilityEvidence::Unknown
-                },
+                attestation_path,
             );
             run_resize_with(
                 virsh,
@@ -406,13 +449,18 @@ mod tests {
                 "guest",
                 "memory0",
                 "2097152",
-                "--workload-reviewed",
+                "--attestation",
+                "reviewed.json",
                 "--host-min-headroom-bytes",
                 "1073741824",
                 "--apply"
             ]))
             .expect("resize"),
             Some(CliCommand::Resize { apply: true, .. })
+        ));
+        assert!(matches!(
+            parse_args(&args(&["attest", "guest", "memory0", "review.json"])).expect("attest"),
+            Some(CliCommand::Attest { .. })
         ));
     }
 

@@ -65,13 +65,17 @@ administers Windows processes.
 The controller uses the same byte-based state and resize policy as the Windows
 service. Before a resize, it validates the selected live XML state and target,
 reads `dynamic-memslots` and `unplugged-inaccessible` from the selected live
-QOM device, and requires a separately recorded operator workload review. The
-current review is a static boolean; M9d must bind it to a fingerprint of the
-reviewed live domain/QEMU configuration and fail closed when it changes. That
-attestation includes the selected memory backend and NUMA placement, block/page
-size, memory-slot and VFIO mapping budgets, vDPA/RDMA/VFIO-NVMe/`mlock` and
-secure-virtualization exclusions, vhost-user backend/version compatibility,
-active balloon resizing, device topology, and deployed stack versions.
+QOM device, and validates a separately recorded version-1 JSON attestation.
+Its SHA-256 fingerprint binds review declarations to fresh alias-scoped domain
+XML, native QEMU arguments, QMP properties/QEMU version, and libvirt version.
+Those live inputs cover the selected backend, NUMA/page properties, slot/VFIO
+topology, balloon, and incompatible device configuration; only changing
+virtio-mem `requested`/`current` values are scrubbed. Bound declarations record
+slot and VFIO budgets, trusted-development classification, Windows driver
+version, and vDPA/RDMA/VFIO-NVMe/`mlock`/secure-virtualization/vhost-user/
+balloon exclusions. The service account reads but must not modify this file.
+Every resize fails closed on missing, malformed, tampered, unsupported-version,
+or drifted evidence.
 After a request, it waits for `requested` and `current` to converge and never
 sends a follow-up request while they differ. Invalid configuration, failed QGA
 calls, malformed XML, failed resize commands, and convergence timeouts are

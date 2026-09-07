@@ -121,6 +121,14 @@ mod tests {
     use super::*;
     use crate::virsh::{VirshCommand, VirshError};
 
+    struct DriftedAttestation;
+
+    impl CompatibilitySource for DriftedAttestation {
+        fn compatibility(&self) -> Result<VirtioMemCompatibility, String> {
+            Err("live compatibility evidence drifted: domain_xml".to_owned())
+        }
+    }
+
     const CONVERGED_XML: &str = "<domain><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
     const PENDING_XML: &str = "<domain><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>6</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
     const UNKNOWN_COMPATIBILITY_XML: &str = "<domain><memory model='virtio-mem'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></domain>";
@@ -202,5 +210,28 @@ mod tests {
             .expect_err("unknown compatibility must fail closed");
         assert!(error.contains("dynamic-memslots"));
         assert_eq!(calls.take().len(), 1);
+    }
+
+    #[test]
+    fn rejects_attestation_drift_before_sending_a_resize() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sink = VirshResizeSink::new(
+            Fake {
+                xml: CONVERGED_XML,
+                calls: Rc::clone(&calls),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_compatibility_source(DriftedAttestation);
+
+        let error = sink
+            .request_resize(6 * 1024 * 1024)
+            .expect_err("drift must fail before actuation");
+        assert!(error.contains("drifted: domain_xml"));
+        assert_eq!(
+            calls.take(),
+            vec![vec!["dumpxml".to_owned(), "guest".to_owned()]]
+        );
     }
 }

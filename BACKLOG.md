@@ -1,5 +1,23 @@
 # BACKLOG
 
+## 2026-09-07 M9d compatibility-attestation drift guard
+
+- Replaced the static workload-review boolean with a required version-1 JSON
+  attestation path for both the installed controller and explicit resize CLI.
+- The SHA-256 fingerprint binds VM/alias identity, allocation-neutral live
+  domain XML and native QEMU argv, alias-scoped QMP properties, QEMU/libvirt
+  versions, slot/VFIO budgets, workload/device exclusions, balloon state,
+  trusted-development classification, and Windows driver version.
+- Added a read-only `attest VM ALIAS REVIEW_FILE` command that emits a reviewed
+  candidate without installing it or actuating memory. Every resize rereads
+  the protected file, verifies integrity, recollects fresh live evidence, and
+  fails closed on missing, malformed, tampered, unsupported, or drifted input.
+- Deterministic tests cover exact match, review/fingerprint tampering, identity,
+  XML/QEMU/QMP/version drift, and allocation changes that must not revoke an
+  otherwise unchanged configuration. The RHEL gate passes 29 core and 35 host
+  tests, formatting, release build, Clippy with warnings denied, and Bash
+  syntax. No live host, service, VM, or memory state was changed.
+
 ## 2026-09-07 M10b bounded retry/recovery policy selected
 
 - Selected a default-off host state machine for Windows shrink qualification:
@@ -756,9 +774,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | Ready | 4-6 hours | Fingerprint backend, slot/VFIO budget, balloon, workload/device, topology, trust, and version evidence; fail closed on drift |
-| TASK-020 | M10c host-side current-allocation join | Copilot | Ready | 3-5 hours | Join fresh raw Windows telemetry with alias-scoped live libvirt `current` and calculate the target on the host |
 | TASK-025 | M9e host telemetry correctness and freshness | Copilot | Ready | 3-5 hours | Correct `dommemstat` balloon semantics, enforce `last-update` freshness, and replace the QGA-only Bash preview with Rust controller logic |
+| TASK-020 | M10c host-side current-allocation join | Copilot | Ready | 3-5 hours | Join fresh raw Windows telemetry with alias-scoped live libvirt `current` and calculate the target on the host after TASK-025 |
 
 ## In Progress
 
@@ -928,6 +945,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | 2026-09-07 | Version-1 SHA-256 evidence binds the full reviewed live configuration and operator declarations; every resize recollects evidence and fails closed on tamper or drift, with allocation-neutral hermetic tests. |
 | TASK-001 | Rust service scaffolding | Copilot | 2026-09-04 | Service lifecycle, configuration, SCM adapter, native telemetry worker, legacy QGA adapter boundary, cancellation, error handling, and live SCM validation are complete; demand publication continues under TASK-009. |
 | TASK-002 | QEMU Guest Agent validation | Copilot + Operator | 2026-09-04 | Repeated live advertised-QGA and `dommemstat` probes passed across agent restart and guest reboot; later audit classified the QGA memory adapter as custom and moved `dommemstat` semantics/freshness to TASK-025. |
 | TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |

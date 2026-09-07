@@ -1,5 +1,6 @@
 //! RHEL host-side adapters for the shared virtio-mem control policy.
 
+pub mod attestation;
 pub mod cli;
 pub mod compatibility_source;
 pub mod config;

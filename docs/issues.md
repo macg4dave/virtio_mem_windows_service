@@ -12,7 +12,6 @@
 | ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; does not block host allocation accounting or simulation | Windows observability | Medium |
 | ISSUE-012 | Production Windows telemetry samples are discarded pending the selected host-side allocation join | Open; architecture decided, implementation M10c | Demand integration | High |
 | ISSUE-013 | Demand report v1 lacks freshness/identity/provenance and the JSON-lines sink has no retention/rotation contract | Open; M10d | Demand delivery | High |
-| ISSUE-014 | Host workload approval is a static boolean and omits audited backend, memory-slot/VFIO budget, balloon, incompatible-workload, topology, trust, and version evidence | Open; M9d | Host safety | High |
 | ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b, automatic shrink must become default-off until qualified | Host recovery | High |
 
 M10a3 live evidence on 2026-09-07 narrowed ISSUE-015: one 2 MiB growth
@@ -42,6 +41,7 @@ and re-notification remain independently disabled by default.
 | ISSUE-007 | Invalid service configuration was loaded before SCM dispatcher attachment, causing Windows error 1053 without status or Event Log context | Resolved by dispatching SCM before configuration loading; live invalid-config recovery emitted event 2000 and exit code 1 | `windows/src/main.rs` startup-route regression and M7 live validation | 2026-09-04 |
 | ISSUE-009 | Shared virtio-mem state validation rejected the live fully-unplugged `requested=current=0` state | Resolved by allowing zero observed state while retaining positive-target validation | `VirtioMemState` and live XML regression tests; M9 live CLI validation | 2026-09-05 |
 | ISSUE-010 | Host policy rejected a converged allocation below its configured minimum, preventing the installed controller from bootstrapping a fully unplugged device | Resolved with one aligned request to the configured minimum; normal policy remains one block at a time and above-maximum state fails closed | `plan_resize` regression test and M9b live zero-to-1-GiB systemd convergence | 2026-09-05 |
+| ISSUE-014 | Static workload approval omitted audited configuration and could survive drift | Resolved by a version-1 SHA-256 attestation checked against fresh allocation-neutral domain XML/QEMU argv, QMP properties/version, libvirt version, and bound review declarations before every resize | `host/src/attestation.rs` exact-match, tamper, allocation-progress, and drift tests | 2026-09-07 |
 
 ### M8/V1 read-only evidence — 2026-08-18
 
@@ -199,8 +199,9 @@ and re-notification remain independently disabled by default.
   invalid. The parser's total-like bounds and missing freshness checks reopen
   ISSUE-006 under M9e.
 - `dynamic-memslots` and `unplugged-inaccessible` are only part of the required
-  attestation. M9d now covers backend, slot/mapping, incompatible workload,
-  balloon-resize, topology, trust, and version evidence.
+  attestation. M9d now binds backend, slot/mapping, incompatible workload,
+  balloon-resize, topology, trust, driver, and stack-version evidence and
+  rejects drift before resize.
 - Source inspection suggests the Windows driver may not periodically retry a
   no-progress shrink. This is an inference requiring M10b live evidence;
   automatic shrinking must gain a default-off control before qualification.

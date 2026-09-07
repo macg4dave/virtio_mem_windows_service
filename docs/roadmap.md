@@ -15,11 +15,10 @@ basic configuration model, startup validation path, and live Windows SCM
 lifecycle/recovery path are implemented and tested. The
 workspace contains an installed, active single-VM host controller with
 XML/state validation and a bounded runtime loop. The next unprivileged
-implementation priority is the Phase 2 demand-report integration contract:
-implement the selected host-side allocation join, add freshness and identity
-to the report envelope, and bound durable delivery. M9d must complete and bind
-the expanded compatibility attestation, while new M9e corrects and
-freshness-qualifies host telemetry. The existing one-VM host controller
+implementation priority is M9e host telemetry correctness/freshness followed
+by the Phase 2 host-side allocation join, report identity/freshness, and bounded
+delivery. M9d now binds the expanded compatibility attestation. The existing
+one-VM host controller
 remains the only resize authority until Phase 3 global arbitration has been
 validated. The Virtio specification and pinned QEMU/libvirt/virtio-win
 sources establish `requested`/`current` as the host allocation contract;
@@ -42,8 +41,8 @@ technology preview.
 
 ## Verified evidence
 
-- **Current platform gates:** the latest RHEL gate passes 22 shared-core and
-    29 host tests; the latest native-Windows gate passes 64 tests. Keep these
+- **Current platform gates:** the latest RHEL gate passes 29 shared-core and
+    35 host tests; the latest native-Windows gate passes 64 tests. Keep these
     as separate supported-platform results rather than one workspace total.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -106,7 +105,13 @@ technology preview.
     confirmed no RDMA or unsupported vhost-user workload dependency. The exact
     dry-run vector passed without `--apply` and live XML remained unchanged.
     This evidence applies to the exact trusted development configuration;
-    M9d now owns the broader upstream-attestation fingerprint.
+    M9d subsequently bound the broader upstream-attestation fingerprint.
+- **M9d hermetic compatibility drift guard (2026-09-07):** a version-1
+    SHA-256 attestation binds reviewed workload/trust/driver/slot/VFIO facts to
+    allocation-neutral live domain XML and QEMU argv, alias-scoped QMP
+    properties, and QEMU/libvirt versions. Every resize recollects those inputs
+    and fails closed on missing, malformed, tampered, or drifted evidence;
+    allocation convergence alone does not invalidate the review.
 - **Upstream audit (2026-09-05):** pinned review found incomplete
     `dommemstat` semantics/freshness, a non-upstream QGA memory command,
     additional backend/slot/VFIO/balloon/version compatibility inputs, an
@@ -178,8 +183,8 @@ live integration evidence.
 
 - [x] **Stage A — Native RHEL gate:** `scripts/build-rust.sh` uses the workspace
   lockfile and validates the shared core and host controller without trying to
-  compile Windows SCM APIs for Linux. Current evidence is a release build, 22
-  shared-core tests, 29 host tests, rustfmt, warnings-as-errors Clippy, and
+  compile Windows SCM APIs for Linux. Current evidence is a release build, 29
+  shared-core tests, 35 host tests, rustfmt, warnings-as-errors Clippy, and
   Bash syntax.
 - [x] **Stage B — RHEL orchestration:** `scripts/windows-remote-build.sh`,
   `.vscode/tasks.json`, and the Makefile provide explicit endpoint checking,
@@ -223,7 +228,7 @@ this milestone and does not block ordinary developer builds.
 
 ## Verified wins to preserve
 
-- **Local quality baseline:** the current platform gates pass 22 core, 29 host,
+- **Local quality baseline:** the current platform gates pass 29 core, 35 host,
     and 64 Windows tests plus their release build and Clippy checks.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -295,7 +300,7 @@ readiness in the remaining host-side work.
 | M9a | Virtio-mem safety and compatibility gate | [x] | M8, M9 | Fresh live QMP properties, THP/block match, explicit operator review, VFIO device classification, locked/RDMA/vhost-user exclusion, exact dry run, and XML non-mutation passed on `win11_gpu` |
 | M9b | RHEL systemd host controller | [x] | M1, M8, M9, M9a | Installed one-VM systemd controller completed a guarded zero-to-1-GiB bootstrap on `win11_gpu`, converged, retained its minimum, and remains active without overlapping requests |
 | M9c | Rust host CLI replaces Bash resize helper | [x] | M9, M9a | Rust owns snapshot, validation, exact dry-run arguments, and explicitly applied resize commands; hermetic regression tests pass and the duplicate Bash helper is removed |
-| M9d | Compatibility attestation drift guard | [ ] | M9a, M9b | Workload approval is bound to a live domain/QEMU configuration fingerprint and actuation fails closed when the reviewed configuration changes |
+| M9d | Compatibility attestation drift guard | [x] | M9a, M9b | Version-1 reviewed evidence is SHA-256-bound to allocation-neutral live domain/QEMU/QMP/version inputs; hermetic exact-match, tamper, and drift tests pass |
 | M9e | Host telemetry correctness and freshness | [ ] | M8, M9b | `dommemstat` balloon semantics and `last-update` freshness are correct, invalid/stale samples fail closed, live libvirt `current` remains allocation authority, and Rust replaces the QGA-only Bash decision preview |
 | M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native telemetry, version-1 calculator, bounded pressure state, desired target, advisory safe floor, append-only JSON-lines output, and generic worker are tested; production publication, trustworthy allocation ownership, bounded delivery, and workload evidence remain; no direct host actuation |
 | M10c | Host-side current-allocation join | [ ] | M9e, M10 | A fresh raw Windows telemetry envelope is joined on the host with alias-scoped live libvirt `current`, and the host calculates the target; Windows never guesses allocation, receives an allocation feed, or invokes host tools |
@@ -465,9 +470,9 @@ operator-only recovery path instead of increasing the retry budget.
 - [x] Add boundary tests for maximum values and unit conversion round trips.
 - [x] Add compatibility checks for `dynamic-memslots`/`unplugged-inaccessible`
     and known incompatible device classes before enabling live automation;
-    initial live M9a evidence passed. M9d expands and fingerprints backend,
-    slot/mapping, balloon, incompatible-workload, topology, trust, and version
-    evidence and separately tracks expiry after configuration changes.
+    initial live M9a evidence passed. M9d now fingerprints backend,
+    slot/mapping, balloon, incompatible-workload, topology, trust, driver, and
+    stack-version evidence and revokes authorization after configuration drift.
 - [ ] Complete M9e `dommemstat` semantics and freshness validation; balloon
     `actual` must not bound `unused`/`available` or substitute for live
     virtio-mem `current`.
@@ -617,7 +622,7 @@ recommendation agent; it does not issue Linux/libvirt commands or direct
 
 ### G0. Demand integration prerequisites
 
-- [ ] **M9d:** bind workload compatibility authorization to a fingerprint of
+- [x] **M9d:** bind workload compatibility authorization to a fingerprint of
     the complete reviewed live domain/QEMU configuration and revoke it on
     drift.
 - [ ] **M9e:** correct `dommemstat` balloon semantics, validate source
@@ -794,7 +799,6 @@ implementation before live resize automation is expanded.
 | B15 | The signed Windows `viomem.sys` state message is kernel-debug output and informational debug prints may be filtered before capture | Optional DbgView evidence may be absent or ambiguous without persistent debug configuration changes | Qualify filtering and cleanup without boot logging, registry mutation, driver restart, or reboot; stop rather than escalate automatically |
 | B16 | The host-side join is selected but not implemented | Blocks trustworthy demand publication; Windows must publish fresh raw telemetry and the host must join alias-scoped live libvirt `current` before calculating a target | Implement and test M10c without a host-allocation feed or guest host-control authority |
 | B17 | Demand report v1 lacks freshness, VM/session identity, sequence, and allocation provenance; JSON-lines output has no retention/rotation contract | Blocks replay-safe Phase 3 ingestion and risks ambiguous, stale, partial, or unbounded records | Complete M10d with a versioned envelope and bounded durable-delivery rules |
-| B18 | Workload compatibility review is a static boolean and does not cover the full audited configuration | Configuration drift or an omitted backend/slot/VFIO/balloon/workload/version constraint can leave host actuation authorized by stale evidence | Complete M9d and fail closed when the reviewed fingerprint changes |
 | B19 | Runtime failure injection does not yet cover the selected bounded Windows-shrink state machine or the full active-controller recovery matrix | Shrink can remain divergent without a proven same-target wakeup; rejection, reboot, restart, cancellation, and non-disruptive abandon-to-current also lack sufficient evidence | Implement the default-off controls; prove the 30/60/120-second, three-re-notification, 300-second policy and one-shot recovery under M10b before automated reclaim |
 | B20 | `dommemstat actual` is incorrectly treated as a total-like bound and `last-update` is ignored | Valid Windows counters can be discarded and stale telemetry can drive policy | Complete M9e; keep live libvirt `current` authoritative for allocation |
 | B21 | Phase 2 instances have no atomic global host reservation | Multiple active controllers/devices can race the same host headroom | Support one active development controller/device until M11 arbitration |
@@ -830,7 +834,6 @@ The project is complete only when:
 
 - QEMU Guest Agent availability and Windows virtio-serial permissions.
 - Memory allocation hysteresis tuning under real workload pressure.
-- Stale workload compatibility authorization after domain/QEMU configuration drift.
 - Stale or semantically misclassified `dommemstat` input until M9e.
 - Windows shrink remaining divergent without a periodic retry event.
 - Independent Phase 2 controllers racing host reserve; only one is supported.

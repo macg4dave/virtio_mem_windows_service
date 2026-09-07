@@ -76,12 +76,12 @@ documented gates.
   Optional bounded kernel tracing may help explain notification or shrink
   failures, but it is not an allocation source or a prerequisite for host
   accounting.
-- The installed single-VM controller is active. Its workload compatibility
-  approval is currently a static boolean and must be bound to a live
-  configuration fingerprint before configuration drift can be trusted. The
-  full M9d review also covers memory backends, memory-slot and VFIO budgets,
-  vDPA/RDMA/vhost-user/VFIO-NVMe/`mlock`, balloon-resize conflicts, and
-  deployed versions.
+- The host controller now requires a version-1 SHA-256 compatibility
+  attestation. Before every resize it checks the protected review document and
+  recollects allocation-neutral domain XML/QEMU argv, alias-scoped QMP
+  properties, and QEMU/libvirt versions. Backend, slot/VFIO, incompatible
+  workload/device, balloon, topology, trust, and driver/stack drift blocks
+  actuation.
 - Windows shrink retry behavior is not qualified. M10b must prove bounded
   progress/recovery and add a default-off automatic-shrink control before
   automated reclaim is supported.
