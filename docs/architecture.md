@@ -188,7 +188,10 @@ The upstream driver is built as a KMDF/Visual Studio solution with separate
 VirtIO/WDF library dependencies and Win10/Win11 architecture configurations.
 This repository does not build, install, sign, or modify that kernel driver.
 Any driver fork or added status interface requires its own signing, security,
-installation, rollback, and live-validation plan.
+installation, rollback, and live-validation plan. The completed M10aX
+[feasibility proposal](driver-status-interface-feasibility.md) defines those
+gates for a cached read-only diagnostic snapshot while leaving implementation
+deferred.
 
 Read-only inspection of the signed `100.102.104.29400` driver confirms that
 PnP properties, registry parameters, Event Log channels, and registered trace

@@ -14,7 +14,7 @@
 | Logging and metrics | In Progress | Both | Both | Rust | Windows SCM lifecycle and failure records are live-verified in XML EventData; classic text descriptions need message-resource packaging and broader metrics remain |
 | Error handling and recovery | In Progress | Both | Both | Rust | Intentional Windows stop is live-verified at exit zero; invalid configuration exits one and triggered the configured 5-second recovery restart; host recovery remains |
 | Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, Rust validation, virtio-mem inspection, read-only decision preview, and guarded reversible live-resize test helpers added; live resize remains explicitly opt-in |
-| RHEL-controlled cross-platform developer gate | Complete | Both | Ops | Bash + VS Code tasks | Latest gates pass 31 core, 40 host, and 66 native Windows tests with release builds, formatting, and warnings-as-errors Clippy |
+| RHEL-controlled cross-platform developer gate | Complete | Both | Ops | Bash + VS Code tasks | Latest gates pass 32 core, 42 host, and 66 native Windows tests with release builds, formatting, and warnings-as-errors Clippy |
 | Native Windows memory telemetry | In Progress | Windows | Demand agent | Rust | `GlobalMemoryStatusEx` and `GetPerformanceInfo` collector implemented with checked byte conversion and deterministic validation tests; live workload evidence remains |
 | Versioned Windows demand report | In Progress | Windows | Demand agent | Rust | Version 2 raw telemetry carries VM/service/session identity, dual clocks, sequence, and explicit native-source/host-join provenance; the separate calculated report remains advisory |
 | Demand report output | In Progress | Windows | Demand agent | Rust | Production emits allocation-free JSON-lines; the host enforces replay/session and 64-KiB-record/1-MiB-file bounds, while M10d still owns ACLs, durable handoff, retention, and rotation |
@@ -32,7 +32,7 @@
 | Global VM pool accounting | Planned | Host | Global controller | Rust | Host reserve and actual observed VM allocations; Phase 3 |
 | Growth and reclaim priorities | Planned | Host | Global controller | Rust | Separate per-VM growth and reclaim priority; Phase 3 |
 | Trend-aware safe reclaim | Planned | Both | Policy | Rust | Rolling history, safe floors, bounded aligned steps, and convergence gates; Phase 3 |
-| viomem user-mode interface | Deferred | Windows | Driver research | Rust + upstream driver | Device interface exists upstream, but a supported user-mode status/IOCTL contract is unverified |
+| viomem user-mode interface | Feasibility complete; implementation deferred | Windows | Driver research | Rust + upstream driver | M10aX specifies a versioned cached read-only diagnostic IOCTL with administrator/SYSTEM ACL, hostile-input/concurrency tests, external signing/install, and rollback gates; implementation remains No-Go pending M10b operational value and external driver ownership |
 
 ## Platform Support
 

@@ -54,11 +54,9 @@ The latest native RHEL gate passed:
 - `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
 
-The latest pre-M10d Windows-native gate passes 66 tests with warnings denied and
+The latest M10d Windows-native gate passes 66 tests with warnings denied and
 produced a checksum-verified executable with SHA-256
-`c81405f3121c1479b57e100002637a5fd12225a6880baa6c6b5c0020e7bc87cc`.
-The M10d Windows changes still require the native remote gate; no Windows SSH
-alias was configured in the current RHEL shell.
+`4c28f41b7d57984bac1fad82461fddba18831cdf19945257cd795cddc84ca314`.
 
 Live M7 validation on `ice101.lan` passed the LocalService
 install/start/observe/stop/delete sequence. Event IDs 1000–1003 were observed
@@ -95,11 +93,11 @@ was built on the Win11 guest and fetched to
   trust, driver, QEMU, and libvirt evidence and rejects drift before resize.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
-- Complete the M10a2 correlated behavior-evidence harness and the M10b
-  failure/recovery matrix, including Windows shrink retry/recovery
-  qualification and a default-off automatic-shrink control. M10a1/M10a3
-  kernel tracing is optional diagnostic work; use M10aX only for a concrete
-  diagnostic requirement unmet by host observation and bounded tracing.
+- Use the completed M10a2 correlated behavior-evidence harness to complete the
+  M10b failure/recovery matrix, including Windows shrink retry/recovery
+  qualification and a default-off automatic-shrink control. The completed
+  M10aX feasibility proposal addresses the diagnostic gap left by M10a1/M10a3
+  without authorizing driver implementation or installation.
   The M10b policy is selected: five-second observation, exact-target
   notifications after 30/60/120 seconds without progress, at most three
   notifications, an immutable 300-second deadline, a non-fatal latched stall,
@@ -131,7 +129,10 @@ was built on the Win11 guest and fetched to
   filter change, but observed no matching informational record. A later
   checksum-verified capture around the one-block operation also produced no
   matching record. This limits installed-driver diagnosis but does not block
-  host allocation accounting.
+  host allocation accounting. M10aX now specifies a versioned cached read-only
+  status IOCTL, administrator/SYSTEM access, external build/signing,
+  disposable-guest testing, and exact rollback gates; implementation remains
+  No-Go pending M10b operational value and external driver ownership.
 - M10a2's shared-core evidence contract is implemented and hermetically tested:
   required host, Windows-health, controller, identity, explicit-unit, ordering,
   and converged-endpoint evidence fails closed when incomplete or mixed;

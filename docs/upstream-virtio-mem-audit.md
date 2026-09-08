@@ -173,6 +173,13 @@ restart the driver, or reboot the guest. Automatic shrink remains blocked on
 M10b behavioral and recovery evidence, regardless of whether diagnostic trace
 is available.
 
+The later M10aX
+[`driver status-interface feasibility proposal`](driver-status-interface-feasibility.md)
+uses the observed no-progress and partial-progress stalls as its concrete
+diagnostic need. It specifies a cached, read-only result surface and separate
+security, ABI, signing, disposable-guest, and rollback gates. It does not
+authorize implementation and does not change this allocation contract.
+
 ## Preserved invariants
 
 The audit did not change these validated rules:

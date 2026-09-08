@@ -8,7 +8,7 @@
 | ISSUE-003 | Error handling for libvirt communication | Open | Linux | High |
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
-| ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; does not block host allocation accounting or simulation | Windows observability | Medium |
+| ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; M10aX feasibility proposal complete, implementation No-Go | Windows observability | Medium |
 | ISSUE-013 | M10d v2 identity/provenance and read-side replay/size checks are implemented, but the JSON-lines sink still lacks ACL provisioning, durable acknowledgement/handoff, and retention/rotation | Open; M10d partially addressed | Demand delivery | High |
 | ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b, automatic shrink must become default-off until qualified | Host recovery | High |
 
@@ -21,6 +21,12 @@ A follow-up 3 GiB-to-2 GiB probe removed 257 blocks (514 MiB) immediately but
 left 255 blocks (510 MiB) above target for the rest of the same bound. The
 larger request therefore rules out a simple minimum-control-size explanation
 and provides concrete partial-progress-without-retry evidence.
+
+M10aX records the resulting interface feasibility proposal in
+[`driver-status-interface-feasibility.md`](driver-status-interface-feasibility.md).
+The proposal can distinguish notification, branch, partial/no-progress, device
+response, and Windows failure outcomes, but it does not authorize a driver
+fork or install and does not change host allocation authority.
 
 The selected M10b qualification policy now bounds this risk explicitly: exact
 same-target notifications after 30/60/120 seconds without block progress, no

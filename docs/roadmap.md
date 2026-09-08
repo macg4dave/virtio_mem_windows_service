@@ -29,7 +29,10 @@ M10a read-only discovery found no supported installed-driver query for
 `requested_size`/`plugged_size`. That limits guest-side diagnosis but no
 longer blocks M10c/M10d or hermetic M11 simulation. Bounded kernel-debug
 capture remains optional, separately approved evidence for notification,
-branch, and shrink-recovery behavior.
+branch, and shrink-recovery behavior. M10aX now records a proposal for the
+unmet stalled-shrink diagnostic need, but keeps implementation No-Go pending
+M10b operational value, external driver ownership, security/signing review,
+and disposable-guest rollback.
 The QGA memory command may be unavailable on the guest, but that is no longer
 a Windows service startup blocker because the service uses native
 `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry. The host controller
@@ -317,7 +320,7 @@ readiness in the remaining host-side work.
 | M10a2 | Correlated behavior-evidence harness | [x] | M8, M9a | Versioned shared-core JSON validation requires ordered clocks, repeated operation/VM/device identity, explicit bytes, stable/converged libvirt endpoints, Windows health, and controller state; driver records are optional diagnostics |
 | M10a3 | Optional bounded driver observation | [x] | M9b, M10a2 | One 2 MiB grow converged, but the predeclared 1 GiB recovery target remained 2 MiB above current for 60 samples/300 seconds; no matching driver record appeared, no overlapping request was issued, and graceful domain recreation restored convergence/controller state |
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
-| M10aX | Conditional driver status-interface feasibility | [ ] | Concrete unmet diagnostic need | Only if host observation plus bounded tracing cannot meet an operational diagnostic requirement, a separate proposal covers interface security, driver build/signing/install, compatibility, tests, and rollback |
+| M10aX | Conditional driver status-interface feasibility | [x] | Concrete unmet diagnostic need | The M10a3 no-progress and larger partial-progress stalls plus empty bounded captures justify a proposal for a cached read-only status IOCTL; security, ABI, tests, external build/signing/install, and rollback gates are specified, while implementation remains No-Go |
 | M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | Live probes prove no-progress and partial-progress-without-retry plus graceful domain-recreation recovery; the selected default-off 30/60/120-second, three-notification, 300-second policy and abandon-to-current path now require hermetic and live qualification with the remaining failure matrix |
 | M11 | Phase 3 global pool simulation | [ ] | M9e, M10d, M10a | Hermetic multi-VM simulation models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states; live multi-target actuation additionally requires M9d and M10b |
 | M11a | Controlled reclaim and convergence | [ ] | M11 | Trend-aware safe floors, bounded aligned reclaim, hysteresis, in-flight protection, convergence waits, and stop-on-pressure behavior pass simulation tests |
@@ -662,10 +665,11 @@ or provenance-free demand input before evaluating policy.
 - [x] **M10a3, optional:** after disposable-guest rehearsal when practical,
     run one separately approved bounded observation with an explicit recovery
     target and without assuming that a shrink is guaranteed rollback.
-- [ ] **M10aX, conditional:** only for a concrete unmet diagnostic requirement,
-    specify—but do not implement—a separately built and signed read-only driver
-    status interface with its own security, compatibility, test, install, and
-    rollback gates.
+- [x] **M10aX, conditional:** the observed no-progress/partial-progress shrink
+    stalls and empty bounded captures establish the unmet diagnostic need. The
+    separate feasibility proposal specifies—but does not implement—a versioned
+    read-only driver status interface with security, compatibility, test,
+    external build/signing/install, and rollback gates.
 
 ### G2. Global RAM pool model
 

@@ -805,8 +805,8 @@ with zero failures. Run the native
 Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
 scripts/windows-remote-build.sh all`; success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
-2026-09-08 gate passed 66 tests and verified artifact SHA-256
-`c81405f3121c1479b57e100002637a5fd12225a6880baa6c6b5c0020e7bc87cc`.
+2026-09-08 M10d gate passed 66 tests and verified artifact SHA-256
+`4c28f41b7d57984bac1fad82461fddba18831cdf19945257cd795cddc84ca314`.
 
 M10d must still provision least-privilege ACLs and implement deterministic
 publisher-side retention/rotation, durable acknowledgement, restart-safe replay
@@ -981,6 +981,14 @@ gates:
   a versioned read-only driver interface. Cover ACLs, malformed requests,
   timeout, compatibility, build/signing/install, rollback, and disposable-
   guest tests; do not add driver work to the normal Rust gate.
+
+The M10a3 and larger-shrink evidence met that condition because neither host
+state nor two bounded captures distinguish driver notification, branch, or
+failure outcome. The completed
+[`driver-status-interface-feasibility.md`](driver-status-interface-feasibility.md)
+defines the separate ABI, security, test, signing, disposable-guest, install,
+and rollback gates. It authorizes no driver build, install, live query, or Rust
+service integration.
 
 ## Known Blockers
 

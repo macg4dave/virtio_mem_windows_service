@@ -1,5 +1,24 @@
 # BACKLOG
 
+## 2026-09-08 M10aX driver status-interface feasibility
+
+- M10a3's no-progress shrink, the larger partial-progress shrink, and two
+  empty bounded driver captures establish the concrete unmet diagnostic need:
+  host evidence cannot distinguish notification receipt, branch selection, no
+  removable Windows range, or a device/driver failure.
+- Completed a proposal-only feasibility review for a versioned, buffered,
+  read-only, administrator/SYSTEM-only status IOCTL backed by an internally
+  consistent cached snapshot. It exposes bounded aggregate state and outcome
+  counters, never memory contents, block maps, physical ranges, or controls.
+- The proposal defines ABI evolution, access control, malformed-request and
+  concurrency testing, external driver build/signing gates, disposable-guest
+  qualification, exact package rollback, and protected-guest approval gates.
+- Implementation remains No-Go pending M10b proof that the extra diagnostic
+  distinctions change an operational decision, upstream/fork ownership,
+  security review, a signing route, and rehearsed disposable-guest rollback.
+  No driver code, build, install, guest/host mutation, or Rust consumer was
+  added.
+
 ## 2026-09-08 M10d envelope/replay slice started
 
 - Claimed TASK-021 and introduced raw-telemetry schema version 2 with explicit
@@ -10,8 +29,10 @@
   session sequence zero, and a bounded set of 16 retired sessions. It rejects
   partial final records, records over 64 KiB, and files over 1 MiB before JSON
   parsing or policy evaluation.
-- The hermetic gate passes 32 shared-core and 42 host tests. Native Windows
-  validation still requires the repository's remote Windows build path.
+- The gate passes 32 shared-core, 42 host, and 66 native Windows tests, plus
+  formatting, warnings-as-errors Clippy, release builds, and Bash syntax. The
+  checksum-verified Windows artifact SHA-256 is
+  `4c28f41b7d57984bac1fad82461fddba18831cdf19945257cd795cddc84ca314`.
 - TASK-021 remains in progress: implement publisher rotation/retention, atomic
   reader acknowledgement/handoff, durable restart-safe replay state, and
   least-privilege ProgramData/transport ACL provisioning and tests.
@@ -831,13 +852,12 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, the advisory calculator, raw production publisher, and host-side current-allocation join are implemented. TASK-021 adds session/sequence/provenance, bounded handoff, and retention semantics. ProgramData ACLs and live workload tuning remain. |
-| TASK-021 | M10d demand envelope and bounded delivery | Copilot | In Progress | Version 2 identity/provenance, producer ordering, process-local host replay checks, and 64-KiB-record/1-MiB-file/partial-line rejection pass hermetic tests. Next: publisher rotation/retention, atomic acknowledgement/handoff, durable restart-safe replay state, and ProgramData/transport ACLs. |
+| TASK-021 | M10d demand envelope and bounded delivery | Copilot | In Progress | Version 2 identity/provenance, producer ordering, process-local host replay checks, and 64-KiB-record/1-MiB-file/partial-line rejection pass 32 core, 42 host, and 66 native Windows tests. Next: publisher rotation/retention, atomic acknowledgement/handoff, durable restart-safe replay state, and ProgramData/transport ACLs. |
 
 ## Planned
 
 | ID | Milestone | Owner | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- | --- |
-| TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | Concrete unmet diagnostic need | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
 | TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned; policy selected | TASK-015, TASK-025 | Add separate default-off shrink/re-notification controls; hermetically prove the 30/60/120-second, three-re-notification, immutable 300-second state machine and latched stall; then qualify exact-target wakeup and one-shot abandon-to-current live, plus rejection, interruption, cancellation, and restart without replay or overlap |
 
 ### 2026-08-18 live KVM handoff
@@ -1016,12 +1036,13 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-015 | M10a2 correlated behavior-evidence harness | Copilot | 2026-09-05 | Added bounded version-1 shared-core JSON validation for repeated identity, explicit bytes, ordered timestamps, required host/Windows/controller layers, stable geometry, converged endpoints, and optional aligned driver diagnostics; seven focused tests pass. |
 | TASK-014 | M10a1 optional driver diagnostic qualification | Copilot + Operator | 2026-09-07 | Signed bounded no-resize capture and exact driver/process/service/file/registry cleanup passed without persistent debug configuration; no matching informational record appeared. |
 | TASK-016 | M10a3 optional bounded driver observation | Copilot + Operator | 2026-09-07 | One-block grow converged; recovery shrink stayed divergent for 60 samples/300 seconds without overlap; a graceful domain recreation then restored 1 GiB convergence, healthy telemetry, and the controller with zero restarts. |
+| TASK-018 | M10aX driver status-interface feasibility | Copilot | 2026-09-08 | Proposal defines a versioned cached read-only status IOCTL, administrator/SYSTEM ACL, compatibility, hostile-input/concurrency tests, external build/signing, disposable-guest install, and exact rollback gates. Implementation remains No-Go pending M10b operational value and external driver ownership. |
 
 ## Blocked
 
 No current implementation task is blocked solely by the absence of a
-user-mode `viomem.sys` state query. Optional TASK-014/TASK-016 diagnostics wait
-for explicit protected-guest approval when their evidence is needed.
+user-mode `viomem.sys` state query. The completed TASK-018 feasibility proposal
+does not authorize driver work or a protected-guest trial.
 
 ## Architecture Decisions
 

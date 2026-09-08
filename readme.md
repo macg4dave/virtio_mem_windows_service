@@ -51,7 +51,7 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest gates pass 31 shared-core, 40 host, and 66 native-Windows tests.
+The latest gates pass 32 shared-core, 42 host, and 66 native-Windows tests.
 These are separate supported-platform results, not one cross-platform
 workspace run. Release builds, formatting, Clippy warnings-as-errors, and Bash
 syntax validation pass.
@@ -215,6 +215,7 @@ For a live resize, follow the approval and rollback procedure in
 | [`docs/testing.md`](docs/testing.md) | Local, host, guest, and live validation procedures |
 | [`docs/issues.md`](docs/issues.md) | Known incidents and unresolved issues |
 | [`docs/upstream-virtio-mem-audit.md`](docs/upstream-virtio-mem-audit.md) | Pinned upstream findings and resulting project decisions |
+| [`docs/driver-status-interface-feasibility.md`](docs/driver-status-interface-feasibility.md) | M10aX proposal and No-Go gates for an optional read-only driver diagnostic interface |
 | [`docs/engineering-standards.md`](docs/engineering-standards.md) | Coding and safety standards |
 
 ## Repository layout
