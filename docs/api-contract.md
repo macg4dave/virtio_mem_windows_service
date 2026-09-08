@@ -111,12 +111,10 @@ The implemented versioned report is:
 }
 ```
 
-Version 1 is a local foundation, not an ingestion-ready envelope. It has no
-sample timestamp, VM/service identity, boot or service-session identifier,
-sequence/correlation identifier, or current-allocation provenance. Consumers
-must not infer freshness, reject replay, or join it to a VM allocation using
-undocumented context. M10d will introduce a new schema version for those
-fields rather than silently changing version 1.
+This calculated `DemandReport` remains version 1 and is a local policy value,
+not the production guest-to-host envelope. Production uses the separate raw
+telemetry contract below and calculates the recommendation only after the host
+joins authoritative live allocation.
 
 `GlobalMemoryStatusEx` is the implemented source for physical totals,
 available physical memory, and memory load. `GetPerformanceInfo` is the
@@ -158,27 +156,33 @@ report sink remain separate operational work.
 one complete JSON object plus a newline to the configured report path and
 returns directory, encoding, write, and flush failures explicitly.
 
-The M10c production Windows worker instead appends `RawTelemetryEnvelope`
-records. Version 1 contains exactly `version`, `vm_name`,
-`observed_unix_seconds`, and `memory`; `memory` is the validated raw
-`MemoryTelemetrySnapshot`. It contains no current allocation, recommendation,
-or resize field. The Windows configuration schema is version 3 and binds the
-record to its configured libvirt VM name.
+The production Windows worker appends `RawTelemetryEnvelope` records. M10d
+version 2 contains `vm_name`, `service_name`, `session_id`,
+`observed_unix_millis`, `monotonic_millis`, and `sequence`, plus the fixed
+provenance values `windows_native_memory_apis` and
+`host_live_libvirt_current_required`. `memory` is the validated raw
+`MemoryTelemetrySnapshot`. The record contains no current allocation,
+recommendation, or resize field. Each process session starts at sequence zero;
+subsequent records strictly increase sequence and monotonic time. The Windows
+configuration schema remains version 3 and binds the record to its configured
+libvirt VM and service names.
 
 The host reads the latest non-empty JSON-lines record from its explicitly
-configured VM-scoped path. It rejects missing/malformed records, unsupported
-versions, a wrong or empty VM name, invalid counters, observations older than
-the configured maximum age, and observations beyond the configured future
-skew. It then reads and validates fresh alias-scoped live XML, suppresses
-policy while `requested != current`, and passes only the live `current` plus
-raw counters to the shared calculator. A target conflicting with live device
-geometry fails closed. Calculated shrink remains advisory and is not actuated
-until M10b qualifies and enables it.
+configured VM-scoped path and expected service identity. It rejects
+missing/malformed records, unsupported versions, missing provenance, wrong or
+empty identity, invalid counters, stale/future observations, replayed or
+non-increasing same-session ordering, invalid new-session sequence, reuse of
+one of the last 16 retired sessions, a non-newline-terminated partial record,
+records over 64 KiB, and files over 1 MiB. It then reads and validates fresh
+alias-scoped live XML, suppresses policy while `requested != current`, and
+passes only the live `current` plus raw counters to the shared calculator. A
+target conflicting with live device geometry fails closed. Calculated shrink
+remains advisory and is not actuated until M10b qualifies and enables it.
 
-Version 1 has no service/boot session, monotonic or sequence ordering,
-allocation-provenance field, rotation, retention, maximum-record/file size,
-reader acknowledgement, or atomic handoff contract. M10d owns those additions
-and the deployment transport/ACL contract.
+Replay state is currently process-local. Durable acknowledgement/reader
+handoff, restart-safe ordering state, publisher-side rotation/retention, and
+deployment ACL provisioning remain open M10d work; unattended publication is
+not production-ready until those bounds are implemented and tested.
 
 ### Current-allocation ownership
 

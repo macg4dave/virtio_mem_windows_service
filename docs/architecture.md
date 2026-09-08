@@ -149,9 +149,10 @@ with stable event IDs; raw XML EventData and recovery behavior are verified
 live. Production runs `RawTelemetryWorker`, which publishes VM-scoped,
 wall-clock-stamped raw counters without allocation input. The host validates
 freshness and VM identity, joins the record with alias-scoped live libvirt
-`current`, and calculates the target through shared policy. M10d must add
-session/sequence/provenance, ACL, bounded handoff, and retention semantics. No Windows
-production resize sink is permitted. The QGA named-pipe client is
+`current`, and calculates the target through shared policy. M10d has added
+version-2 producer identity and process-local replay validation, and must add
+durable acknowledgement, ACL, bounded handoff, and retention/rotation
+semantics. No Windows production resize sink is permitted. The QGA named-pipe client is
 retained as an explicit adapter/test boundary, but the SCM worker does not
 open the QGA virtio-serial device; the host controller owns QGA requests.
 Interactive and SCM startup use the same native telemetry worker boundary and

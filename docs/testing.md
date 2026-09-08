@@ -773,18 +773,22 @@ a live VM first:
   explicit.
 
 The JSON-lines publisher tests read emitted files back as complete records.
-The production `RawTelemetryWorker` emits a version-1
-`RawTelemetryEnvelope` containing only the configured VM name, Unix observation
-seconds, and validated raw counters; assertions prove that allocation and
-target fields are absent. The default path is under
+The production `RawTelemetryWorker` emits a version-2
+`RawTelemetryEnvelope` containing configured VM/service identity, a generated
+process-session identifier, Unix and monotonic milliseconds, a strictly increasing
+session sequence, explicit telemetry/allocation provenance, and validated raw
+counters; assertions prove that allocation and target fields are absent. The default path is under
 `C:\ProgramData\VirtioMemService`. Configuration schema version 3 adds the VM
 name used by both interactive and SCM publication paths.
 
 The host requires `VIRTIO_MEM_RAW_TELEMETRY_PATH`,
+`VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME`,
 `VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS`, and
 `VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS`. Hermetic tests inject the
 clock and verify the latest complete record is accepted only for the expected
-VM and freshness window. The host then obtains alias-scoped live XML and
+VM/service and freshness window. They reject replayed/non-monotonic ordering,
+retired session reuse, incomplete final lines, records over 64 KiB, and files
+over 1 MiB. The host then obtains alias-scoped live XML and
 calculates through the shared `DemandCalculator`; configured minimum,
 aggregate physical memory, QGA total, and balloon `actual` are never allocation
 substitutes. Live-device geometry conflicts fail closed, and automatic shrink
@@ -796,16 +800,18 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-Success is 31 shared-core and 40 host tests with zero failures. Run the native
+The 2026-09-08 M10d first-slice gate passes 32 shared-core and 42 host tests
+with zero failures. Run the native
 Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
 scripts/windows-remote-build.sh all`; success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
 2026-09-08 gate passed 66 tests and verified artifact SHA-256
 `c81405f3121c1479b57e100002637a5fd12225a6880baa6c6b5c0020e7bc87cc`.
 
-M10d must still define the deployment transport and provision least-privilege
-ACLs, record/file size bounds, retention, rotation, acknowledgement, and atomic
-reader handoff before unattended service output is production-ready.
+M10d must still provision least-privilege ACLs and implement deterministic
+publisher-side retention/rotation, durable acknowledgement, restart-safe replay
+state, and atomic reader handoff before unattended service output is
+production-ready.
 
 The native collector calls `GlobalMemoryStatusEx` for physical memory and
 `GetPerformanceInfo` for page-based commit/system counters. Page counters are

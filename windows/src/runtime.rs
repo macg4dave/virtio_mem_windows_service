@@ -73,6 +73,10 @@ pub struct RawTelemetryWorker<T, P, C> {
     publisher: P,
     clock: C,
     vm_name: String,
+    service_name: String,
+    session_id: String,
+    next_sequence: u64,
+    previous_monotonic_millis: Option<u64>,
     interval: Duration,
 }
 
@@ -87,11 +91,23 @@ where
         publisher: P,
         clock: C,
         vm_name: impl Into<String>,
+        service_name: impl Into<String>,
+        session_id: impl Into<String>,
         interval: Duration,
     ) -> Result<Self, String> {
         let vm_name = vm_name.into();
-        if vm_name.trim().is_empty() {
-            return Err("raw telemetry VM name must be non-empty".to_owned());
+        let service_name = service_name.into();
+        let session_id = session_id.into();
+        for (field, value) in [
+            ("VM", vm_name.as_str()),
+            ("service", service_name.as_str()),
+            ("session", session_id.as_str()),
+        ] {
+            if value.trim().is_empty() || value.len() > 128 || !value.is_ascii() {
+                return Err(format!(
+                    "raw telemetry {field} identity must be non-empty ASCII of at most 128 bytes"
+                ));
+            }
         }
         if interval.is_zero() {
             return Err("raw telemetry polling interval must be greater than zero".to_owned());
@@ -101,6 +117,10 @@ where
             publisher,
             clock,
             vm_name,
+            service_name,
+            session_id,
+            next_sequence: 0,
+            previous_monotonic_millis: None,
             interval,
         })
     }
@@ -110,12 +130,31 @@ where
             .telemetry
             .collect()
             .map_err(|error| format!("native memory telemetry failed: {error}"))?;
-        let observed_unix_seconds = self.clock.now_unix_seconds()?;
-        let envelope =
-            RawTelemetryEnvelope::new(self.vm_name.clone(), observed_unix_seconds, memory);
+        let observed_unix_millis = self.clock.now_unix_millis()?;
+        let monotonic_millis = self.clock.monotonic_millis()?;
+        if self
+            .previous_monotonic_millis
+            .is_some_and(|previous| monotonic_millis <= previous)
+        {
+            return Err("raw telemetry monotonic clock did not advance".to_owned());
+        }
+        let envelope = RawTelemetryEnvelope::new(
+            self.vm_name.clone(),
+            self.service_name.clone(),
+            self.session_id.clone(),
+            observed_unix_millis,
+            monotonic_millis,
+            self.next_sequence,
+            memory,
+        );
         self.publisher
             .publish(&envelope)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
+        self.previous_monotonic_millis = Some(monotonic_millis);
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| "raw telemetry sequence exhausted".to_owned())?;
         Ok(envelope)
     }
 
@@ -628,8 +667,12 @@ mod tests {
     struct FixedTelemetryClock(u64);
 
     impl TelemetryClock for FixedTelemetryClock {
-        fn now_unix_seconds(&self) -> Result<u64, String> {
+        fn now_unix_millis(&self) -> Result<u64, String> {
             Ok(self.0)
+        }
+
+        fn monotonic_millis(&self) -> Result<u64, String> {
+            Ok(10)
         }
     }
 
@@ -650,8 +693,10 @@ mod tests {
         let mut worker = RawTelemetryWorker::new(
             DemandTelemetryFixture,
             RawTelemetryPublisherFixture::default(),
-            FixedTelemetryClock(1_000),
+            FixedTelemetryClock(1_000_000),
             "guest",
+            "VirtioMemService",
+            "session-a",
             Duration::from_secs(30),
         )
         .expect("worker should be valid");
@@ -659,8 +704,12 @@ mod tests {
         let envelope = worker.poll_once().expect("raw publication should pass");
 
         assert_eq!(envelope.vm_name, "guest");
-        assert_eq!(envelope.observed_unix_seconds, 1_000);
+        assert_eq!(envelope.observed_unix_millis, 1_000_000);
+        assert_eq!(envelope.sequence, 0);
+        assert_eq!(envelope.session_id, "session-a");
         assert_eq!(worker.publisher().envelopes, vec![envelope]);
+        assert!(worker.poll_once().is_err(), "monotonic time must advance");
+        assert_eq!(worker.publisher().envelopes.len(), 1);
     }
 
     #[derive(Default, Debug)]

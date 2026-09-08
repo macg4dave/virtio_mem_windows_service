@@ -38,24 +38,27 @@ guest; upstream Windows virtio-mem support remains technology preview.
 - Windows native demand telemetry using `GlobalMemoryStatusEx` and
   `GetPerformanceInfo`, versioned advisory reports, aligned recommendations,
   JSON-lines publication, and a generic stoppable demand worker.
-- Production Windows raw telemetry publication with VM/time fields, plus host
-  freshness/identity validation and target calculation joined to fresh
-  alias-scoped live libvirt `current`.
+- Production Windows raw telemetry schema version 2 with VM/service/session
+  identity, dual-clock ordering, sequence, and explicit provenance, plus host
+  freshness/replay/partial/size validation and target calculation joined to
+  fresh alias-scoped live libvirt `current`.
 
 ## Current evidence
 
 The latest native RHEL gate passed:
 
-- 31 shared-core and 40 host tests, with no failures.
+- 32 shared-core and 42 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
 - `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
 
-The latest Windows-native gate passes 66 tests with warnings denied and
+The latest pre-M10d Windows-native gate passes 66 tests with warnings denied and
 produced a checksum-verified executable with SHA-256
 `c81405f3121c1479b57e100002637a5fd12225a6880baa6c6b5c0020e7bc87cc`.
+The M10d Windows changes still require the native remote gate; no Windows SSH
+alias was configured in the current RHEL shell.
 
 Live M7 validation on `ice101.lan` passed the LocalService
 install/start/observe/stop/delete sequence. Event IDs 1000–1003 were observed
@@ -82,10 +85,10 @@ was built on the Win11 guest and fetched to
 
 ## Open implementation work
 
-- Add the M10d report envelope and delivery contract: VM/service/session
-  identity beyond the M10c VM name, monotonic/session sequence, allocation
-  provenance, replay rules, partial/oversized-record handling, ACLs, bounded
-  reader handoff, and retention/rotation.
+- Finish the M10d delivery contract. Version 2 identity/provenance, producer
+  ordering, process-local replay checks, and partial/oversized read rejection
+  are implemented. Durable acknowledgement and restart-safe replay state,
+  atomic reader handoff, ACLs, and publisher retention/rotation remain.
 - Install a freshly reviewed M9d attestation with read-only service-account
   access before deploying this build. The implemented version-1 SHA-256 guard
   binds backend, memory-slot, VFIO, incompatible-workload, balloon, topology,

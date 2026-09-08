@@ -634,6 +634,7 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 4 * GIB,

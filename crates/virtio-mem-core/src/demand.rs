@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const RAW_TELEMETRY_VERSION: u16 = 1;
+pub const RAW_TELEMETRY_VERSION: u16 = 2;
 pub const DEMAND_REPORT_VERSION: u16 = 1;
 
 /// Native, canonical-byte memory observations collected from the Windows guest.
@@ -58,27 +58,57 @@ impl MemoryTelemetrySnapshot {
     }
 }
 
-/// The minimal M10c transport record. M10d extends this contract with service
-/// session identity, monotonic ordering, sequence, and allocation provenance.
+/// The native source used for the guest memory counters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelemetrySource {
+    WindowsNativeMemoryApis,
+}
+
+/// Declares that this guest record carries no allocation and requires a host join.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AllocationProvenance {
+    HostLiveLibvirtCurrentRequired,
+}
+
+/// The M10d raw-telemetry record. Allocation remains host-owned and is not
+/// present in this guest-produced envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawTelemetryEnvelope {
     pub version: u16,
     pub vm_name: String,
-    pub observed_unix_seconds: u64,
+    pub service_name: String,
+    pub session_id: String,
+    pub observed_unix_millis: u64,
+    pub monotonic_millis: u64,
+    pub sequence: u64,
+    pub telemetry_source: TelemetrySource,
+    pub allocation_provenance: AllocationProvenance,
     pub memory: MemoryTelemetrySnapshot,
 }
 
 impl RawTelemetryEnvelope {
     pub fn new(
         vm_name: impl Into<String>,
-        observed_unix_seconds: u64,
+        service_name: impl Into<String>,
+        session_id: impl Into<String>,
+        observed_unix_millis: u64,
+        monotonic_millis: u64,
+        sequence: u64,
         memory: MemoryTelemetrySnapshot,
     ) -> Self {
         Self {
             version: RAW_TELEMETRY_VERSION,
             vm_name: vm_name.into(),
-            observed_unix_seconds,
+            service_name: service_name.into(),
+            session_id: session_id.into(),
+            observed_unix_millis,
+            monotonic_millis,
+            sequence,
+            telemetry_source: TelemetrySource::WindowsNativeMemoryApis,
+            allocation_provenance: AllocationProvenance::HostLiveLibvirtCurrentRequired,
             memory,
         }
     }
@@ -86,15 +116,22 @@ impl RawTelemetryEnvelope {
     pub fn validate_for(
         &self,
         expected_vm_name: &str,
-        now_unix_seconds: u64,
-        max_age_seconds: u64,
-        future_tolerance_seconds: u64,
+        expected_service_name: &str,
+        now_unix_millis: u64,
+        max_age_millis: u64,
+        future_tolerance_millis: u64,
     ) -> Result<(), DemandError> {
         if self.version != RAW_TELEMETRY_VERSION {
             return Err(DemandError::UnsupportedTelemetryVersion(self.version));
         }
-        if self.vm_name.trim().is_empty() {
-            return Err(DemandError::InvalidTelemetryIdentity);
+        for (field, value) in [
+            ("vm_name", self.vm_name.as_str()),
+            ("service_name", self.service_name.as_str()),
+            ("session_id", self.session_id.as_str()),
+        ] {
+            if value.trim().is_empty() || value.len() > 128 || !value.is_ascii() {
+                return Err(DemandError::InvalidTelemetryIdentity(field));
+            }
         }
         if self.vm_name != expected_vm_name {
             return Err(DemandError::WrongTelemetryVm {
@@ -102,22 +139,51 @@ impl RawTelemetryEnvelope {
                 actual: self.vm_name.clone(),
             });
         }
-        if max_age_seconds == 0 {
-            return Err(DemandError::InvalidTelemetryFreshness);
-        }
-        if self.observed_unix_seconds > now_unix_seconds.saturating_add(future_tolerance_seconds) {
-            return Err(DemandError::FutureTelemetry {
-                observed: self.observed_unix_seconds,
-                now: now_unix_seconds,
+        if self.service_name != expected_service_name {
+            return Err(DemandError::WrongTelemetryService {
+                expected: expected_service_name.to_owned(),
+                actual: self.service_name.clone(),
             });
         }
-        if now_unix_seconds.saturating_sub(self.observed_unix_seconds) > max_age_seconds {
+        if max_age_millis == 0 {
+            return Err(DemandError::InvalidTelemetryFreshness);
+        }
+        if self.observed_unix_millis > now_unix_millis.saturating_add(future_tolerance_millis) {
+            return Err(DemandError::FutureTelemetry {
+                observed: self.observed_unix_millis,
+                now: now_unix_millis,
+            });
+        }
+        if now_unix_millis.saturating_sub(self.observed_unix_millis) > max_age_millis {
             return Err(DemandError::StaleTelemetry {
-                observed: self.observed_unix_seconds,
-                now: now_unix_seconds,
+                observed: self.observed_unix_millis,
+                now: now_unix_millis,
             });
         }
         self.memory.validate()
+    }
+
+    /// Validates ordering against the last accepted record from this producer.
+    pub fn validate_successor(&self, previous: &Self) -> Result<(), DemandError> {
+        if self.vm_name != previous.vm_name || self.service_name != previous.service_name {
+            return Err(DemandError::ChangedTelemetryIdentity);
+        }
+        if self.session_id == previous.session_id {
+            if self.sequence <= previous.sequence {
+                return Err(DemandError::ReplayedTelemetrySequence(self.sequence));
+            }
+            if self.monotonic_millis <= previous.monotonic_millis {
+                return Err(DemandError::NonIncreasingTelemetryMonotonicClock(
+                    self.monotonic_millis,
+                ));
+            }
+        } else if self.sequence != 0 {
+            return Err(DemandError::InvalidTelemetrySessionStart(self.sequence));
+        }
+        if self.observed_unix_millis < previous.observed_unix_millis {
+            return Err(DemandError::TelemetryWallClockMovedBackwards);
+        }
+        Ok(())
     }
 }
 
@@ -152,16 +218,28 @@ pub enum DemandError {
     PerformanceInfo(u32),
     #[error("unsupported raw telemetry version: {0}")]
     UnsupportedTelemetryVersion(u16),
-    #[error("raw telemetry VM identity is empty")]
-    InvalidTelemetryIdentity,
+    #[error("raw telemetry identity field is invalid: {0}")]
+    InvalidTelemetryIdentity(&'static str),
     #[error("raw telemetry belongs to VM {actual}, expected {expected}")]
     WrongTelemetryVm { expected: String, actual: String },
+    #[error("raw telemetry belongs to service {actual}, expected {expected}")]
+    WrongTelemetryService { expected: String, actual: String },
     #[error("raw telemetry maximum age must be greater than zero")]
     InvalidTelemetryFreshness,
     #[error("raw telemetry observation {observed} is stale at {now}")]
     StaleTelemetry { observed: u64, now: u64 },
     #[error("raw telemetry observation {observed} is in the future at {now}")]
     FutureTelemetry { observed: u64, now: u64 },
+    #[error("raw telemetry VM or service identity changed")]
+    ChangedTelemetryIdentity,
+    #[error("raw telemetry sequence is replayed or non-increasing: {0}")]
+    ReplayedTelemetrySequence(u64),
+    #[error("raw telemetry monotonic clock is non-increasing: {0}")]
+    NonIncreasingTelemetryMonotonicClock(u64),
+    #[error("new raw telemetry session must begin at sequence zero, got {0}")]
+    InvalidTelemetrySessionStart(u64),
+    #[error("raw telemetry wall clock moved backwards across records")]
+    TelemetryWallClockMovedBackwards,
 }
 
 /// Bounds and alignment used by the advisory target calculator.
@@ -353,13 +431,97 @@ mod tests {
 
     #[test]
     fn validates_fresh_vm_scoped_raw_telemetry() {
-        let envelope = RawTelemetryEnvelope::new("guest", 995, snapshot());
-        assert_eq!(envelope.validate_for("guest", 1_000, 60, 5), Ok(()));
-        assert!(envelope.validate_for("other", 1_000, 60, 5).is_err());
-        assert!(envelope.validate_for("guest", 1_056, 60, 5).is_err());
-        assert!(RawTelemetryEnvelope::new("guest", 1_006, snapshot())
-            .validate_for("guest", 1_000, 60, 5)
+        let envelope = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            995_000,
+            10,
+            0,
+            snapshot(),
+        );
+        assert_eq!(
+            envelope.validate_for("guest", "VirtioMemService", 1_000_000, 60_000, 5_000),
+            Ok(())
+        );
+        assert!(envelope
+            .validate_for("other", "VirtioMemService", 1_000_000, 60_000, 5_000)
             .is_err());
+        assert!(envelope
+            .validate_for("guest", "other-service", 1_000_000, 60_000, 5_000)
+            .is_err());
+        assert!(envelope
+            .validate_for("guest", "VirtioMemService", 1_056_000, 60_000, 5_000)
+            .is_err());
+        assert!(RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_006_000,
+            20,
+            1,
+            snapshot(),
+        )
+        .validate_for("guest", "VirtioMemService", 1_000_000, 60_000, 5_000)
+        .is_err());
+
+        let mut unsupported = envelope.clone();
+        unsupported.version = 1;
+        assert_eq!(
+            unsupported.validate_for("guest", "VirtioMemService", 1_000_000, 60_000, 5_000),
+            Err(DemandError::UnsupportedTelemetryVersion(1))
+        );
+
+        let mut missing_provenance = serde_json::to_value(&envelope).expect("encode envelope");
+        missing_provenance
+            .as_object_mut()
+            .expect("envelope is an object")
+            .remove("allocation_provenance");
+        assert!(serde_json::from_value::<RawTelemetryEnvelope>(missing_provenance).is_err());
+    }
+
+    #[test]
+    fn validates_sequence_and_session_ordering() {
+        let first = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000,
+            10,
+            0,
+            snapshot(),
+        );
+        let next = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_001,
+            20,
+            1,
+            snapshot(),
+        );
+        assert_eq!(next.validate_successor(&first), Ok(()));
+        assert_eq!(
+            first.validate_successor(&first),
+            Err(DemandError::ReplayedTelemetrySequence(0))
+        );
+
+        let restarted = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-b",
+            1_002,
+            1,
+            0,
+            snapshot(),
+        );
+        assert_eq!(restarted.validate_successor(&next), Ok(()));
+        let mut invalid_restart = restarted.clone();
+        invalid_restart.sequence = 1;
+        assert_eq!(
+            invalid_restart.validate_successor(&next),
+            Err(DemandError::InvalidTelemetrySessionStart(1))
+        );
     }
 
     #[test]

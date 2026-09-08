@@ -222,6 +222,7 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 4 * GIB,
@@ -232,7 +233,11 @@ mod tests {
     fn critical_envelope() -> RawTelemetryEnvelope {
         RawTelemetryEnvelope::new(
             "guest",
-            1_000,
+            "VirtioMemService",
+            "session-a",
+            1_000_000,
+            10,
+            0,
             virtio_mem_core::MemoryTelemetrySnapshot {
                 physical_total_bytes: 16 * GIB,
                 physical_available_bytes: 2 * GIB,

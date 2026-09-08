@@ -59,10 +59,11 @@ syntax validation pass.
 ### Important limitations
 
 - Windows publishes raw telemetry only; the host owns target calculation after
-  joining the record with alias-scoped live libvirt `current`. The M10c
-  envelope has basic VM/time freshness but no service/session identity,
-  monotonic sequence, allocation provenance, bounded handoff, retention, or
-  rotation; those remain M10d work.
+  joining the record with alias-scoped live libvirt `current`. The M10d v2
+  envelope now has VM/service/session identity, millisecond wall/monotonic
+  ordering, sequence, provenance, replay checks, and read-side record/file
+  bounds. Durable acknowledgement, ACLs, bounded handoff, retention, and
+  rotation remain M10d work.
 - Windows SCM lifecycle and the first bounded recovery restart are
   live-verified under `LocalService`; ProgramData ACL, formatted Event Log
   message-resource packaging, and workload validation remain open.

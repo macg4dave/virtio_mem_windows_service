@@ -1,5 +1,21 @@
 # BACKLOG
 
+## 2026-09-08 M10d envelope/replay slice started
+
+- Claimed TASK-021 and introduced raw-telemetry schema version 2 with explicit
+  VM/service/session identity, Unix and monotonic milliseconds, session-local
+  sequence, native Windows telemetry provenance, and a required host live-
+  libvirt-current allocation join.
+- The host now validates expected service identity, same-session ordering, new-
+  session sequence zero, and a bounded set of 16 retired sessions. It rejects
+  partial final records, records over 64 KiB, and files over 1 MiB before JSON
+  parsing or policy evaluation.
+- The hermetic gate passes 32 shared-core and 42 host tests. Native Windows
+  validation still requires the repository's remote Windows build path.
+- TASK-021 remains in progress: implement publisher rotation/retention, atomic
+  reader acknowledgement/handoff, durable restart-safe replay state, and
+  least-privilege ProgramData/transport ACL provisioning and tests.
+
 ## 2026-09-08 M10c host-side current-allocation join
 
 - Moved the platform-neutral raw telemetry and demand-calculation contract into
@@ -815,13 +831,13 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, the advisory calculator, raw production publisher, and host-side current-allocation join are implemented. TASK-021 adds session/sequence/provenance, bounded handoff, and retention semantics. ProgramData ACLs and live workload tuning remain. |
+| TASK-021 | M10d demand envelope and bounded delivery | Copilot | In Progress | Version 2 identity/provenance, producer ordering, process-local host replay checks, and 64-KiB-record/1-MiB-file/partial-line rejection pass hermetic tests. Next: publisher rotation/retention, atomic acknowledgement/handoff, durable restart-safe replay state, and ProgramData/transport ACLs. |
 
 ## Planned
 
 | ID | Milestone | Owner | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- | --- |
 | TASK-018 | M10aX driver status-interface feasibility | Copilot + Operator | Conditional | Concrete unmet diagnostic need | A separate signed-driver proposal covers interface versioning, security, tests, installation, compatibility, and rollback |
-| TASK-021 | M10d demand envelope and bounded delivery | Copilot | Planned | TASK-020 | Versioned identity/freshness/provenance envelope, replay rules, ACLs, partial-record handling, and retention/rotation tests pass |
 | TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned; policy selected | TASK-015, TASK-025 | Add separate default-off shrink/re-notification controls; hermetically prove the 30/60/120-second, three-re-notification, immutable 300-second state machine and latched stall; then qualify exact-target wakeup and one-shot abandon-to-current live, plus rejection, interruption, cancellation, and restart without replay or overlap |
 
 ### 2026-08-18 live KVM handoff

@@ -29,11 +29,14 @@ is applied:
 - `system_cache_bytes`, `kernel_paged_bytes`, `kernel_nonpaged_bytes`:
   additional context from `GetPerformanceInfo`
 
-The M10c `RawTelemetryEnvelope` version 1 adds the minimum join fields:
-`version`, configured `vm_name`, Unix observation seconds, and the raw memory
-snapshot. It intentionally contains no allocation or recommendation. It does
-not include a service/boot session, monotonic ordering, sequence, correlation,
-or allocation provenance; M10d must add those with a new schema version.
+The M10d `RawTelemetryEnvelope` version 2 contains the configured `vm_name` and
+`service_name`, a process `session_id`, Unix observation milliseconds,
+process-monotonic milliseconds, a session-local sequence, raw memory snapshot,
+and explicit `windows_native_memory_apis` telemetry plus
+`host_live_libvirt_current_required` allocation provenance. It intentionally
+contains no allocation or recommendation. A new session begins at sequence
+zero; records within a session must strictly increase sequence and monotonic
+time.
 
 The derived demand state contains `physical_pressure`, `commit_pressure`, a
 `demand_state` of `release`, `stable`, `want_more`, `pressure`, or `critical`,
@@ -63,11 +66,11 @@ totals, and balloon `actual` are not allocation substitutes. The host rejects
 stale, future, wrong-VM, malformed, unsupported-version, invalid-counter, and
 live-device-conflicting inputs before policy.
 
-The M10d envelope must strengthen identity beyond the M10c VM name, add UTC
-precision plus monotonic/session ordering, a boot or service-session
-identifier, sequence or correlation identifier, and allocation-source/
-provenance metadata. Consumers must additionally reject replayed, truncated,
-oversized, and partial records according to documented bounds.
+The host currently retains the accepted record and up to 16 retired session
+identifiers in memory. It rejects replayed/non-monotonic records, retired
+session reuse, files above 1 MiB, records above 64 KiB, and a final line without
+a newline. Durable restart-safe acknowledgement, rotation/retention, atomic
+reader handoff, and deployment ACLs remain M10d work.
 
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and

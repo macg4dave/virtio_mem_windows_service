@@ -16,8 +16,8 @@ pub mod virtio_mem_xml;
 pub use config::ServiceConfig;
 pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 pub use demand::{
-    DemandAgent, DemandAgentError, DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig,
-    DemandRecommendation, DemandReport, DemandReportPublisher, DemandState,
+    process_session_id, DemandAgent, DemandAgentError, DemandCalculator, DemandError, DemandLimits,
+    DemandPolicyConfig, DemandRecommendation, DemandReport, DemandReportPublisher, DemandState,
     JsonLinesDemandReportPublisher, JsonLinesRawTelemetryPublisher, MemoryTelemetry,
     MemoryTelemetrySnapshot, NativeMemoryTelemetry, RawTelemetryEnvelope, RawTelemetryPublisher,
     SystemTelemetryClock, TelemetryClock,

@@ -32,9 +32,12 @@ workspace quality gate.
    and calculates the target there. Do not infer allocation
    from limits, QGA totals, balloon `actual`, or aggregate physical memory, and
    do not add a guest resize sink or host-allocation feed to Windows.
-- Complete M10d before unattended production delivery: strengthen service/
-   session identity, ordering, provenance, bounded retention, ACL, and
-   partial/oversized-record behavior.
+- Complete M10d before unattended production delivery. **Implemented first
+   slice:** version-2 service/session identity, dual-clock/sequence ordering,
+   explicit provenance, process-local replay checks, and read-side partial/
+   oversized-record rejection. Still required: durable acknowledgement,
+   restart-safe replay state, atomic handoff, bounded publisher retention/
+   rotation, and least-privilege ACL provisioning.
 - Keep demand reports advisory and separate from host resize authority.
 
 **Evidence:** local `run` mode exercises the configured worker and fails

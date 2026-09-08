@@ -48,6 +48,7 @@ fn main() -> ExitCode {
     let raw_telemetry = FileRawTelemetrySource::new(
         &config.raw_telemetry_path,
         &config.vm_name,
+        &config.raw_telemetry_service_name,
         config.raw_telemetry_max_age,
         config.raw_telemetry_future_tolerance,
     );

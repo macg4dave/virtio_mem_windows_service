@@ -23,6 +23,8 @@ pub enum HostConfigError {
     InvalidAttestationPath,
     #[error("VIRTIO_MEM_RAW_TELEMETRY_PATH must be non-empty")]
     InvalidRawTelemetryPath,
+    #[error("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME must be non-empty")]
+    InvalidRawTelemetryServiceName,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +53,7 @@ pub struct HostConfig {
     pub stats_max_age: Duration,
     pub stats_future_tolerance: Duration,
     pub raw_telemetry_path: String,
+    pub raw_telemetry_service_name: String,
     pub raw_telemetry_max_age: Duration,
     pub raw_telemetry_future_tolerance: Duration,
     pub host_min_headroom_bytes: u64,
@@ -88,6 +91,7 @@ impl HostConfig {
                 "VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS",
             )?),
             raw_telemetry_path: required("VIRTIO_MEM_RAW_TELEMETRY_PATH")?,
+            raw_telemetry_service_name: required("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME")?,
             raw_telemetry_max_age: Duration::from_secs(positive(
                 "VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS",
             )?),
@@ -135,6 +139,9 @@ impl HostConfig {
         if self.raw_telemetry_path.trim().is_empty() {
             return Err(HostConfigError::InvalidRawTelemetryPath);
         }
+        if self.raw_telemetry_service_name.trim().is_empty() {
+            return Err(HostConfigError::InvalidRawTelemetryServiceName);
+        }
         Ok(())
     }
 }
@@ -177,6 +184,7 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
@@ -203,6 +211,7 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
@@ -232,6 +241,7 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "valid".to_owned(),
+            raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,

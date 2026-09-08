@@ -1,7 +1,7 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub use virtio_mem_core::{
@@ -111,19 +111,50 @@ impl RawTelemetryPublisher for JsonLinesRawTelemetryPublisher {
 }
 
 pub trait TelemetryClock {
-    fn now_unix_seconds(&self) -> Result<u64, String>;
+    fn now_unix_millis(&self) -> Result<u64, String>;
+    fn monotonic_millis(&self) -> Result<u64, String>;
 }
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SystemTelemetryClock;
+#[derive(Debug, Clone)]
+pub struct SystemTelemetryClock {
+    started_at: Instant,
+}
+
+impl Default for SystemTelemetryClock {
+    fn default() -> Self {
+        Self {
+            started_at: Instant::now(),
+        }
+    }
+}
 
 impl TelemetryClock for SystemTelemetryClock {
-    fn now_unix_seconds(&self) -> Result<u64, String> {
-        SystemTime::now()
+    fn now_unix_millis(&self) -> Result<u64, String> {
+        let duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_secs())
-            .map_err(|error| format!("system clock is before the Unix epoch: {error}"))
+            .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?;
+        u64::try_from(duration.as_millis())
+            .map_err(|_| "system Unix timestamp does not fit in u64 milliseconds".to_owned())
     }
+
+    fn monotonic_millis(&self) -> Result<u64, String> {
+        u64::try_from(self.started_at.elapsed().as_millis())
+            .map_err(|_| "process monotonic timestamp does not fit in u64 milliseconds".to_owned())
+    }
+}
+
+pub fn process_session_id(service_name: &str) -> Result<String, String> {
+    if service_name.trim().is_empty() {
+        return Err("service name must be non-empty for session identity".to_owned());
+    }
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?;
+    Ok(format!(
+        "session-{:x}-{:x}",
+        duration.as_nanos(),
+        std::process::id()
+    ))
 }
 
 /// Collects and publishes one demand report per caller-selected poll cycle.
@@ -444,7 +475,15 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
-        let envelope = RawTelemetryEnvelope::new("guest", 1_000, snapshot(2 * GIB, 15 * GIB));
+        let envelope = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000_000,
+            10,
+            0,
+            snapshot(2 * GIB, 15 * GIB),
+        );
         let mut publisher = JsonLinesRawTelemetryPublisher::new(&path);
 
         publisher

@@ -9,7 +9,7 @@
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
 | ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; does not block host allocation accounting or simulation | Windows observability | Medium |
-| ISSUE-013 | The M10c envelope lacks service/session/sequence/provenance identity and the JSON-lines sink has no bounded handoff or retention/rotation contract | Open; M10d | Demand delivery | High |
+| ISSUE-013 | M10d v2 identity/provenance and read-side replay/size checks are implemented, but the JSON-lines sink still lacks ACL provisioning, durable acknowledgement/handoff, and retention/rotation | Open; M10d partially addressed | Demand delivery | High |
 | ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b, automatic shrink must become default-off until qualified | Host recovery | High |
 
 M10a3 live evidence on 2026-09-07 narrowed ISSUE-015: one 2 MiB growth

@@ -26,7 +26,9 @@ const SERVICE_DELETE: DWORD = 0x00010000;
 const SERVICE_START: DWORD = 0x00000010;
 
 use crate::config::ServiceConfig;
-use crate::demand::{JsonLinesRawTelemetryPublisher, NativeMemoryTelemetry, SystemTelemetryClock};
+use crate::demand::{
+    process_session_id, JsonLinesRawTelemetryPublisher, NativeMemoryTelemetry, SystemTelemetryClock,
+};
 use crate::event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
 };
@@ -386,17 +388,22 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
     let shutdown_timeout = config.shutdown_timeout;
     let poll_interval = config.poll_interval;
     let vm_name = config.vm_name;
+    let service_name = config.service_name;
     let telemetry_path = config.demand_report_path;
     let status_handle_value = status_handle as usize;
     let running_event_source = event_source.clone();
     let stop_observer = stop.clone();
     let mut host = ServiceHost::with_stop_and_shutdown_timeout(
         move |service_stop: &StopSignal| {
+            let session_id = process_session_id(&service_name)
+                .map_err(|error| format!("runtime wiring / session identity: {error}"))?;
             let mut worker = RawTelemetryWorker::new(
                 NativeMemoryTelemetry,
                 JsonLinesRawTelemetryPublisher::new(&telemetry_path),
-                SystemTelemetryClock,
+                SystemTelemetryClock::default(),
                 &vm_name,
+                &service_name,
+                session_id,
                 poll_interval,
             )
             .map_err(|error| format!("runtime wiring / worker construction: {error}"))?;
