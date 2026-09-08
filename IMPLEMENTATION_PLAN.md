@@ -32,12 +32,11 @@ workspace quality gate.
    and calculates the target there. Do not infer allocation
    from limits, QGA totals, balloon `actual`, or aggregate physical memory, and
    do not add a guest resize sink or host-allocation feed to Windows.
-- Complete M10d before unattended production delivery. **Implemented first
-   slice:** version-2 service/session identity, dual-clock/sequence ordering,
-   explicit provenance, process-local replay checks, and read-side partial/
-   oversized-record rejection. Still required: durable acknowledgement,
-   restart-safe replay state, atomic handoff, bounded publisher retention/
-   rotation, and least-privilege ACL provisioning.
+- Complete M10d before unattended production delivery. **Implemented:**
+   version-2 identity/provenance, dual-clock/sequence ordering, bounded atomic
+   handoff/retention, durable restart-safe replay acknowledgement, read-side
+   bounds, and LocalService ProgramData ACL provisioning. Installed ACL
+   verification remains.
 - Keep demand reports advisory and separate from host resize authority.
 
 **Evidence:** local `run` mode exercises the configured worker and fails
@@ -45,13 +44,15 @@ visibly when an adapter fails.
 
 ### 3. Finish installation and recovery operations
 
-- Provision the selected least-privilege account and ProgramData ACLs.
+- **Implemented, live verification pending:** provision a protected
+  LocalService ProgramData ACL during installation.
 - Validate install → start → observe → stop → remove on a Windows guest.
 - Configure bounded recovery only for unexpected failures.
 - Verify service status transitions and event-log visibility.
 
-**Status:** SCM lifecycle and recovery validation pass. ProgramData ACLs and
-formatted Event Log message-resource packaging remain.
+**Status:** SCM lifecycle and recovery validation pass. ProgramData ACL code
+passes the native build; installed ACL verification and formatted Event Log
+message-resource packaging remain.
 
 ## Host-side validation path
 

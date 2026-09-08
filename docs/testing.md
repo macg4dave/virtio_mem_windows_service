@@ -772,7 +772,9 @@ a live VM first:
 - verify invalid telemetry prevents publication and publisher failures remain
   explicit.
 
-The JSON-lines publisher tests read emitted files back as complete records.
+The legacy JSON-lines publisher tests read emitted files back as complete
+records. Production uses an atomic current-record handoff with three retained
+previous records.
 The production `RawTelemetryWorker` emits a version-2
 `RawTelemetryEnvelope` containing configured VM/service identity, a generated
 process-session identifier, Unix and monotonic milliseconds, a strictly increasing
@@ -800,18 +802,21 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-The 2026-09-08 M10d first-slice gate passes 32 shared-core and 42 host tests
-with zero failures. Run the native
+The 2026-09-08 local M10 gate passes 45 shared-core and 48 host tests with zero
+failures. It covers durable restart-safe acknowledgement, atomic handoff,
+bounded retention, the shrink schedule, latched stalls, cancellation/restart,
+and one-shot recovery. Run the native
 Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
 scripts/windows-remote-build.sh all`; success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
-2026-09-08 M10d gate passed 66 tests and verified artifact SHA-256
-`4c28f41b7d57984bac1fad82461fddba18831cdf19945257cd795cddc84ca314`.
+2026-09-08 native gate passed 67 tests and verified artifact SHA-256
+`ec4a965f468312615ec1416336f1f5674cd7fce34bbbf62f9a7bc55b3d5c0995`.
 
-M10d must still provision least-privilege ACLs and implement deterministic
-publisher-side retention/rotation, durable acknowledgement, restart-safe replay
-state, and atomic reader handoff before unattended service output is
-production-ready.
+M10d's implementation now provisions the LocalService ProgramData DACL and
+implements deterministic publisher retention/rotation, durable
+acknowledgement, restart-safe replay state, and atomic reader handoff. Native
+installation must still verify the resulting ACL; the current guest has no
+ProgramData directory because the newly built candidate was not installed.
 
 The native collector calls `GlobalMemoryStatusEx` for physical memory and
 `GetPerformanceInfo` for page-based commit/system counters. Page counters are
@@ -1072,3 +1077,25 @@ Validate an assembled document with the read-only CLI path:
 ```bash
 target/release/virtio-mem-host evidence /path/to/behavior-evidence.json
 ```
+
+Use the Rust qualification paths so Bash does not duplicate retry policy:
+
+```bash
+target/release/virtio-mem-host qualify-shrink VM ALIAS TARGET_BYTES \
+  --attestation REVIEWED_ATTESTATION --connect qemu:///system
+
+target/release/virtio-mem-host qualify-shrink VM ALIAS TARGET_BYTES \
+  --attestation REVIEWED_ATTESTATION --apply --connect qemu:///system
+
+target/release/virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES \
+  --attestation REVIEWED_ATTESTATION --apply --connect qemu:///system
+```
+
+`qualify-shrink` permits exactly one block and reuses the 30/60/120-second,
+three-notification, 300-second shared state machine. `abandon-shrink` requires two unchanged samples five
+seconds apart, immediately rereads before apply, sends one request to observed
+`current`, and waits at most 30 seconds. Both default to dry-run unless
+`--apply` is explicit. The prepared 2026-09-08 live batch could not start
+because sudo required interactive host authentication; it made no mutation,
+and read-only rechecks confirmed `requested=current=1 GiB` and the controller
+still active.

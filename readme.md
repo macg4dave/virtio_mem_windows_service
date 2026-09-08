@@ -51,7 +51,7 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest gates pass 32 shared-core, 42 host, and 66 native-Windows tests.
+The latest gates pass 45 shared-core, 48 host, and 67 native-Windows tests.
 These are separate supported-platform results, not one cross-platform
 workspace run. Release builds, formatting, Clippy warnings-as-errors, and Bash
 syntax validation pass.
@@ -61,9 +61,9 @@ syntax validation pass.
 - Windows publishes raw telemetry only; the host owns target calculation after
   joining the record with alias-scoped live libvirt `current`. The M10d v2
   envelope now has VM/service/session identity, millisecond wall/monotonic
-  ordering, sequence, provenance, replay checks, and read-side record/file
-  bounds. Durable acknowledgement, ACLs, bounded handoff, retention, and
-  rotation remain M10d work.
+  ordering, sequence, provenance, bounded atomic handoff/retention, and durable
+  restart-safe replay checks. ProgramData ACL provisioning is implemented but
+  still needs installed-guest verification.
 - Windows SCM lifecycle and the first bounded recovery restart are
   live-verified under `LocalService`; ProgramData ACL, formatted Event Log
   message-resource packaging, and workload validation remain open.
@@ -84,9 +84,10 @@ syntax validation pass.
   properties, and QEMU/libvirt versions. Backend, slot/VFIO, incompatible
   workload/device, balloon, topology, trust, and driver/stack drift blocks
   actuation.
-- Windows shrink retry behavior is not qualified. M10b must prove bounded
-  progress/recovery and add a default-off automatic-shrink control before
-  automated reclaim is supported.
+- Windows shrink retry behavior is not live-qualified. Default-off controls,
+  bounded same-target retry, latched stall, and one-shot abandon-to-current
+  recovery pass hermetic tests; automated reclaim remains unsupported until
+  the live M10b matrix passes.
 - Phase 2 supports one active controller for one explicitly named VM/device on
   this development host. Multi-controller/device actuation waits for M11
   global arbitration.

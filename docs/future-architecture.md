@@ -191,8 +191,9 @@ alias-scoped libvirt `current` remains the allocation input.
 
 The reviewed Windows driver is event driven and has no obvious periodic retry
 timer for a no-progress shrink. Automatic reclaim is not currently qualified;
-M10b must add a default-off control and prove autonomous retry, safe bounded
-same-target re-notification, or a controlled failed-shrink recovery path.
+M10b adds default-off controls and hermetically proves autonomous retry, safe
+bounded same-target re-notification, and a controlled failed-shrink recovery
+path; live qualification remains.
 
 The initial global states are:
 

@@ -1,5 +1,28 @@
 # BACKLOG
 
+## 2026-09-08 M10 delivery and shrink-recovery implementation
+
+- Completed TASK-021 code for atomic current-record publication, bounded
+  three-record retention, durable restart-safe host replay acknowledgement,
+  and LocalService ProgramData ACL provisioning. Native installed-ACL evidence
+  remains because the current guest has no ProgramData directory and the
+  candidate was not installed.
+- Advanced TASK-022 with separate default-off shrink/re-notification controls,
+  a fake-clock-tested 30/60/120-second three-notification state machine, an
+  immutable 300-second deadline, progress and ambiguity handling, non-fatal
+  latched stall, and cancellation/restart replay suppression.
+- Added bounded Rust `qualify-shrink` and operator-only `abandon-shrink` paths.
+  Recovery requires two stable samples, an immediate race-check read, one
+  request to observed `current`, and convergence within 30 seconds.
+- Validation passes 45 shared-core and 48 host tests, format, warnings-as-errors
+  Clippy, release build, and Bash syntax. The native Windows build passes 67
+  tests and produced verified SHA-256
+  `ec4a965f468312615ec1416336f1f5674cd7fce34bbbf62f9a7bc55b3d5c0995`.
+- The prepared `win11_gpu/ua-virtiomem0` one-block live batch stopped at the
+  outer sudo password prompt and was cancelled without mutation. Read-only
+  checks confirmed `requested=current=1 GiB`, both Windows services running,
+  and the host controller active. Live M10b and installed ACL evidence remain.
+
 ## 2026-09-08 beta build and live-validation agent policy
 
 - Updated the canonical agent instructions and every reusable task prompt so
@@ -870,14 +893,13 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, the advisory calculator, raw production publisher, and host-side current-allocation join are implemented. TASK-021 adds session/sequence/provenance, bounded handoff, and retention semantics. ProgramData ACLs and live workload tuning remain. |
-| TASK-021 | M10d demand envelope and bounded delivery | Copilot | In Progress | Version 2 identity/provenance, producer ordering, process-local host replay checks, and 64-KiB-record/1-MiB-file/partial-line rejection pass 32 core, 42 host, and 66 native Windows tests. Next: publisher rotation/retention, atomic acknowledgement/handoff, durable restart-safe replay state, and ProgramData/transport ACLs. |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
+| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | In Progress | Default-off controls, the 30/60/120-second three-notification/300-second state machine, progress handling, cancellation/restart suppression, latched stall, and one-shot abandon-to-current pass hermetic tests. The live batch is prepared; sudo authentication prevented execution and made no mutation. |
 
 ## Planned
 
 | ID | Milestone | Owner | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- | --- |
-| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | Planned; policy selected | TASK-015, TASK-025 | Add separate default-off shrink/re-notification controls; hermetically prove the 30/60/120-second, three-re-notification, immutable 300-second state machine and latched stall; then qualify exact-target wakeup and one-shot abandon-to-current live, plus rejection, interruption, cancellation, and restart without replay or overlap |
 
 ### 2026-08-18 live KVM handoff
 
@@ -1034,6 +1056,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-021 | M10d demand envelope and bounded delivery | Copilot | 2026-09-08 | Version 2 identity/provenance, atomic current-record handoff, three-record retention, durable restart-safe replay acknowledgement, read bounds, and LocalService ProgramData ACL provisioning pass 45 core/48 host/67 native Windows tests; installed ACL verification remains operational evidence. |
 | TASK-020 | M10c host-side current-allocation join | Copilot | 2026-09-08 | Windows publishes VM/time-scoped raw telemetry without allocation input; the host rejects invalid/stale/wrong-VM records, joins fresh alias-scoped live `current`, and calculates through shared policy. 31 core, 40 host, and 66 native Windows tests pass. |
 | TASK-025 | M9e host telemetry correctness and freshness | Copilot | 2026-09-08 | Correct balloon mapping, bounded advancing `last-update`, injected-clock failures, and the shared-path Rust `decision` preview pass hermetic tests; the QGA-only Bash preview is removed. |
 | TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | 2026-09-07 | Version-1 SHA-256 evidence binds the full reviewed live configuration and operator declarations; every resize recollects evidence and fails closed on tamper or drift, with allocation-neutral hermetic tests. |

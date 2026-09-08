@@ -27,7 +27,9 @@ VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS=5
 
 # Required M10d raw Windows telemetry input. The deployment transport must
 # present this VM/service-scoped path and provision its least-privilege ACL.
-# Durable handoff, retention, and rotation remain open M10d work.
+# The Windows publisher uses bounded atomic handoff/retention and the host
+# persists replay acknowledgement beside this file. Provision the transport
+# and parent-directory ACL for the selected deployment.
 VIRTIO_MEM_RAW_TELEMETRY_PATH=/run/virtio-mem-host/win11_gpu.telemetry.jsonl
 VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME=VirtioMemService
 VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS=60

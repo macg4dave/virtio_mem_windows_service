@@ -126,8 +126,9 @@ Windows Application Event Log with stable IDs and bounded messages. The
 generic `DemandServiceWorker` and report publisher remain available for tests;
 production runs `RawTelemetryWorker`. The host rejects stale or wrong-VM raw
 records, joins one with alias-scoped live libvirt `current`, and calculates the
-target. Windows receives no host allocation feed. M10d still owns session/
-sequence/provenance identity, bounded handoff, retention, and ACL requirements.
+target. Windows receives no host allocation feed. M10d now supplies session/
+sequence/provenance identity, bounded atomic handoff/retention, and ProgramData
+ACL provisioning; native installed-ACL verification remains.
 
 ## Service hosting rules
 

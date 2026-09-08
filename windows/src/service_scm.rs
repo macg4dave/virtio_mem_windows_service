@@ -298,7 +298,9 @@ fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
     };
     use winapi::um::securitybaseapi::SetFileSecurityW;
     use winapi::um::winbase::LocalFree;
-    use winapi::um::winnt::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+    use winapi::um::winnt::{
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
 
     if !config
         .service_account
@@ -345,7 +347,13 @@ fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
         ));
     }
     let path = to_wide(&report_parent.to_string_lossy());
-    let applied = unsafe { SetFileSecurityW(path.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
+    let applied = unsafe {
+        SetFileSecurityW(
+            path.as_ptr(),
+            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            descriptor,
+        )
+    };
     unsafe {
         LocalFree(descriptor as HLOCAL);
     }

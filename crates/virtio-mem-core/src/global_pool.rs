@@ -424,8 +424,20 @@ mod tests {
         )
         .expect("valid pool");
         assert_eq!(plan.pressure, HostPressureState::Pressure);
-        assert_eq!(plan.decisions[0], GlobalPoolDecision::Reclaim { vm_name: "a".to_owned(), target_bytes: 6 * GIB });
-        assert_eq!(plan.decisions[1], GlobalPoolDecision::Reclaim { vm_name: "b".to_owned(), target_bytes: 6 * GIB });
+        assert_eq!(
+            plan.decisions[0],
+            GlobalPoolDecision::Reclaim {
+                vm_name: "a".to_owned(),
+                target_bytes: 6 * GIB
+            }
+        );
+        assert_eq!(
+            plan.decisions[1],
+            GlobalPoolDecision::Reclaim {
+                vm_name: "b".to_owned(),
+                target_bytes: 6 * GIB
+            }
+        );
     }
 
     #[test]

@@ -197,14 +197,12 @@ where
                 }
             };
             if let ResizeDecision::Request { requested_bytes } = decision {
-                if requested_bytes < state.current_bytes {
-                    if !self.config.automatic_windows_shrink {
-                        eprintln!(
-                            "virtio-mem-host: calculated advisory shrink to {requested_bytes} bytes; automatic Windows shrink is disabled"
-                        );
-                        wait_interruptibly(stop, self.config.poll_interval);
-                        continue;
-                    }
+                if requested_bytes < state.current_bytes && !self.config.automatic_windows_shrink {
+                    eprintln!(
+                        "virtio-mem-host: calculated advisory shrink to {requested_bytes} bytes; automatic Windows shrink is disabled"
+                    );
+                    wait_interruptibly(stop, self.config.poll_interval);
+                    continue;
                 }
                 if requested_bytes > state.current_bytes {
                     let host_available = self

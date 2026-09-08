@@ -1,7 +1,10 @@
 use std::io::Write;
 use std::time::Duration;
 
-use virtio_mem_core::{parse_behavior_evidence, parse_virtio_mem_xml_for_alias, ResizeDecision};
+use virtio_mem_core::{
+    parse_behavior_evidence, parse_virtio_mem_xml_for_alias, AbandonAction, AbandonToCurrent,
+    ResizeDecision, ShrinkAction, ShrinkObservation, ShrinkOperation, ShrinkPolicy, ShrinkState,
+};
 
 use crate::attestation::{
     read_review, AttestedCompatibilitySource, CompatibilityAttestation,
@@ -13,7 +16,7 @@ use crate::dommemstat::DomMemStatSource;
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
 use crate::qga::VirshGuestAgent;
 use crate::resize_sink::VirshResizeSink;
-use crate::runtime::{evaluate_memory_decision, GuestStatsSource, MemoryStateSource};
+use crate::runtime::{evaluate_memory_decision, GuestStatsSource, MemoryStateSource, ResizeSink};
 use crate::virsh::{Virsh, VirshCommand};
 use crate::xml_source::VirshXmlSource;
 
@@ -53,6 +56,22 @@ pub enum CliCommand {
         attestation_path: String,
         host_min_headroom_bytes: u64,
     },
+    AbandonShrink {
+        vm: String,
+        alias: String,
+        immutable_target_bytes: u64,
+        connection: String,
+        apply: bool,
+        attestation_path: String,
+    },
+    QualifyShrink {
+        vm: String,
+        alias: String,
+        target_bytes: u64,
+        connection: String,
+        apply: bool,
+        attestation_path: String,
+    },
 }
 
 pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
@@ -61,7 +80,14 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     };
     if !matches!(
         mode,
-        "decision" | "evidence" | "attest" | "snapshot" | "validate" | "resize"
+        "decision"
+            | "evidence"
+            | "attest"
+            | "snapshot"
+            | "validate"
+            | "resize"
+            | "abandon-shrink"
+            | "qualify-shrink"
     ) {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
     }
@@ -83,6 +109,8 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     }
     let (minimum, maximum) = match mode {
         "resize" => (8, 11),
+        "abandon-shrink" => (6, 9),
+        "qualify-shrink" => (6, 9),
         "attest" => (4, 6),
         _ => (3, 5),
     };
@@ -104,7 +132,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     } else {
         None
     };
-    if mode == "resize" {
+    if matches!(mode, "resize" | "abandon-shrink" | "qualify-shrink") {
         target_bytes = Some(
             args[index]
                 .parse::<u64>()
@@ -116,8 +144,12 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     }
     while index < args.len() {
         match args[index].as_str() {
-            "--apply" if mode == "resize" && !apply => apply = true,
-            "--attestation" if mode == "resize" => {
+            "--apply"
+                if matches!(mode, "resize" | "abandon-shrink" | "qualify-shrink") && !apply =>
+            {
+                apply = true
+            }
+            "--attestation" if matches!(mode, "resize" | "abandon-shrink" | "qualify-shrink") => {
                 if attestation_path.is_some() {
                     return Err("--attestation may be supplied only once".to_owned());
                 }
@@ -203,13 +235,33 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             host_min_headroom_bytes: host_min_headroom_bytes
                 .ok_or_else(|| "resize requires --host-min-headroom-bytes BYTES".to_owned())?,
         },
+        "abandon-shrink" => CliCommand::AbandonShrink {
+            vm,
+            alias,
+            immutable_target_bytes: target_bytes
+                .ok_or_else(|| "immutable shrink target was not supplied".to_owned())?,
+            connection,
+            apply,
+            attestation_path: attestation_path
+                .ok_or_else(|| "abandon-shrink requires --attestation FILE".to_owned())?,
+        },
+        "qualify-shrink" => CliCommand::QualifyShrink {
+            vm,
+            alias,
+            target_bytes: target_bytes
+                .ok_or_else(|| "qualification shrink target was not supplied".to_owned())?,
+            connection,
+            apply,
+            attestation_path: attestation_path
+                .ok_or_else(|| "qualify-shrink requires --attestation FILE".to_owned())?,
+        },
         _ => return Err(format!("unknown CLI command: {mode}")),
     };
     Ok(Some(command))
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host decision [--connect URI]\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
+    "Usage: virtio-mem-host decision [--connect URI]\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]\n       virtio-mem-host qualify-shrink VM ALIAS TARGET_BYTES --attestation FILE [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -285,6 +337,66 @@ fn run_with<H: HostMemorySource, W: Write>(
                 },
                 host_memory,
                 compatibility_source,
+                output,
+            )
+        }
+        CliCommand::AbandonShrink {
+            vm,
+            alias,
+            immutable_target_bytes,
+            connection,
+            apply,
+            attestation_path,
+        } => {
+            let virsh = Virsh::with_connection("virsh", DEFAULT_TIMEOUT, &connection);
+            let state_source = VirshXmlSource::new(virsh.clone(), vm.clone(), alias.clone());
+            let compatibility_source = AttestedCompatibilitySource::new(
+                virsh.clone(),
+                vm.clone(),
+                alias.clone(),
+                attestation_path,
+            );
+            let sink = VirshResizeSink::new(virsh, vm, alias)
+                .with_compatibility_source(compatibility_source);
+            run_abandon_shrink_with(
+                &state_source,
+                &sink,
+                AbandonOptions {
+                    immutable_target_bytes,
+                    connection,
+                    apply,
+                },
+                std::thread::sleep,
+                output,
+            )
+        }
+        CliCommand::QualifyShrink {
+            vm,
+            alias,
+            target_bytes,
+            connection,
+            apply,
+            attestation_path,
+        } => {
+            let virsh = Virsh::with_connection("virsh", DEFAULT_TIMEOUT, &connection);
+            let state_source = VirshXmlSource::new(virsh.clone(), vm.clone(), alias.clone());
+            let compatibility_source = AttestedCompatibilitySource::new(
+                virsh.clone(),
+                vm.clone(),
+                alias.clone(),
+                attestation_path,
+            );
+            let sink = VirshResizeSink::new(virsh, vm, alias)
+                .with_compatibility_source(compatibility_source);
+            run_qualify_shrink_with(
+                &state_source,
+                &sink,
+                QualifyOptions {
+                    target_bytes,
+                    connection,
+                    apply,
+                },
+                std::thread::sleep,
                 output,
             )
         }
@@ -453,9 +565,221 @@ fn run_resize_with<C: VirshCommand, H: HostMemorySource, E: CompatibilitySource,
     Ok(())
 }
 
+struct AbandonOptions {
+    immutable_target_bytes: u64,
+    connection: String,
+    apply: bool,
+}
+
+struct QualifyOptions {
+    target_bytes: u64,
+    connection: String,
+    apply: bool,
+}
+
+fn run_qualify_shrink_with<
+    S: MemoryStateSource,
+    C: VirshCommand,
+    E: CompatibilitySource,
+    F: FnMut(Duration),
+    W: Write,
+>(
+    state_source: &S,
+    sink: &VirshResizeSink<C, E>,
+    options: QualifyOptions,
+    mut sleep: F,
+    output: &mut W,
+) -> Result<(), String> {
+    const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+    const SAMPLE_COUNT: u64 = 60;
+
+    let prepared = sink.prepare_resize(options.target_bytes)?;
+    if prepared.target_bytes() >= prepared.current_bytes() {
+        return Err("qualify-shrink requires a target below current allocation".to_owned());
+    }
+    let mut full_arguments = vec!["virsh".to_owned(), "-c".to_owned(), options.connection];
+    full_arguments.extend_from_slice(prepared.arguments());
+    let initial_current_bytes = prepared.current_bytes();
+    let initial = state_source.memory_state()?;
+    if initial.current_bytes != initial_current_bytes
+        || initial.requested_bytes != initial_current_bytes
+    {
+        return Err("live state changed before qualification shrink apply".to_owned());
+    }
+    if initial_current_bytes.saturating_sub(options.target_bytes) != initial.block_size_bytes {
+        return Err("qualify-shrink is limited to exactly one device block".to_owned());
+    }
+    if !options.apply {
+        return writeln!(output, "dry_run_argv={full_arguments:?}")
+            .map_err(|error| error.to_string());
+    }
+    let mut operation = ShrinkOperation::start(
+        ShrinkPolicy::qualification(initial.block_size_bytes),
+        0,
+        initial_current_bytes,
+        options.target_bytes,
+        options.target_bytes,
+    )?;
+    sink.apply_prepared(prepared)?;
+    writeln!(
+        output,
+        "shrink_requested target_bytes={} current_bytes={initial_current_bytes}",
+        options.target_bytes
+    )
+    .map_err(|error| error.to_string())?;
+
+    for sample in 1..=SAMPLE_COUNT {
+        sleep(SAMPLE_INTERVAL);
+        let state = state_source.memory_state()?;
+        state.validate().map_err(|error| error.to_string())?;
+        match operation.observe(shrink_observation(sample * 5_000, state)) {
+            ShrinkAction::Observe => {}
+            ShrinkAction::Progress { blocks_reclaimed } => {
+                writeln!(
+                    output,
+                    "shrink_progress elapsed_millis={} current_bytes={} blocks_reclaimed={blocks_reclaimed}",
+                    sample * 5_000,
+                    state.current_bytes
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            ShrinkAction::Renotify {
+                target_bytes,
+                retry_index,
+            } => {
+                if let Err(error) = sink.renotify_shrink(target_bytes) {
+                    operation.uncertain_command_result();
+                    return Err(format!(
+                        "shrink re-notification {retry_index} outcome is ambiguous: {error}"
+                    ));
+                }
+                writeln!(
+                    output,
+                    "shrink_renotified elapsed_millis={} target_bytes={target_bytes} retry_index={retry_index}",
+                    sample * 5_000
+                )
+                .map_err(|error| error.to_string())?;
+            }
+            ShrinkAction::Converged => {
+                return writeln!(
+                    output,
+                    "shrink_converged elapsed_millis={} target_bytes={}",
+                    sample * 5_000,
+                    options.target_bytes
+                )
+                .map_err(|error| error.to_string());
+            }
+            ShrinkAction::Latch { reason } => {
+                if operation.state() == &ShrinkState::Stalled {
+                    writeln!(
+                        output,
+                        "shrink_stalled elapsed_millis={} target_bytes={} current_bytes={} reason={reason}",
+                        sample * 5_000,
+                        options.target_bytes,
+                        state.current_bytes
+                    )
+                    .map_err(|error| error.to_string())?;
+                    return Ok(());
+                }
+                return Err(format!("shrink qualification latched: {reason}"));
+            }
+        }
+    }
+    Err("shrink qualification ended without convergence or a latched stall".to_owned())
+}
+
+fn run_abandon_shrink_with<
+    S: MemoryStateSource,
+    C: VirshCommand,
+    E: CompatibilitySource,
+    F: FnMut(Duration),
+    W: Write,
+>(
+    state_source: &S,
+    sink: &VirshResizeSink<C, E>,
+    options: AbandonOptions,
+    mut sleep: F,
+    output: &mut W,
+) -> Result<(), String> {
+    const SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
+    const CONVERGENCE_SAMPLES: usize = 6;
+
+    let first = state_source.memory_state()?;
+    first.validate().map_err(|error| error.to_string())?;
+    let mut recovery =
+        AbandonToCurrent::new(options.immutable_target_bytes, first.block_size_bytes)?;
+    let first_observation = shrink_observation(0, first);
+    if recovery.observe(first_observation) != AbandonAction::Wait {
+        return Err("first abandon-to-current sample is not a valid divergence".to_owned());
+    }
+    sleep(SAMPLE_INTERVAL);
+    let second = state_source.memory_state()?;
+    second.validate().map_err(|error| error.to_string())?;
+    if second.size_bytes != first.size_bytes || second.block_size_bytes != first.block_size_bytes {
+        return Err("virtio-mem geometry changed during recovery qualification".to_owned());
+    }
+    let stable_current_bytes = match recovery.observe(shrink_observation(5_000, second)) {
+        AbandonAction::Ready { target_bytes } => target_bytes,
+        AbandonAction::Wait => {
+            return Err("two unchanged samples did not qualify abandon-to-current".to_owned())
+        }
+        AbandonAction::Reject { reason } => return Err(reason),
+    };
+    let immediate = state_source.memory_state()?;
+    immediate.validate().map_err(|error| error.to_string())?;
+    recovery.verify_immediately_before_apply(shrink_observation(5_001, immediate))?;
+
+    let prepared =
+        sink.prepare_abandon_to_current(options.immutable_target_bytes, stable_current_bytes)?;
+    let mut full_arguments = vec!["virsh".to_owned(), "-c".to_owned(), options.connection];
+    full_arguments.extend_from_slice(prepared.arguments());
+    if !options.apply {
+        return writeln!(output, "dry_run_argv={full_arguments:?}")
+            .map_err(|error| error.to_string());
+    }
+
+    sink.apply_prepared(prepared)?;
+    for sample in 0..=CONVERGENCE_SAMPLES {
+        let state = state_source.memory_state()?;
+        state.validate().map_err(|error| error.to_string())?;
+        if state.requested_bytes == stable_current_bytes
+            && state.current_bytes == stable_current_bytes
+        {
+            return writeln!(
+                output,
+                "abandon_shrink_converged target_bytes={stable_current_bytes}"
+            )
+            .map_err(|error| error.to_string());
+        }
+        if state.requested_bytes != stable_current_bytes
+            || state.current_bytes > stable_current_bytes
+        {
+            return Err("abandon-to-current entered an unexpected live state".to_owned());
+        }
+        if sample < CONVERGENCE_SAMPLES {
+            sleep(SAMPLE_INTERVAL);
+        }
+    }
+    Err("abandon-to-current did not converge within 30 seconds".to_owned())
+}
+
+fn shrink_observation(
+    now_millis: u64,
+    state: virtio_mem_core::VirtioMemState,
+) -> ShrinkObservation {
+    ShrinkObservation {
+        now_millis,
+        requested_bytes: state.requested_bytes,
+        current_bytes: state.current_bytes,
+        fresh: true,
+        guest_running: true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::rc::Rc;
 
     use super::*;
@@ -465,6 +789,8 @@ mod tests {
 
     const GIB: u64 = 1 << 30;
     const CONVERGED_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></devices></domain>";
+    const SHRINK_PENDING_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>6</current></target><alias name='memory0'/></memory></devices></domain>";
+    const QUALIFICATION_PENDING_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='MiB'>4094</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></devices></domain>";
 
     struct FakeHostMemory(u64);
 
@@ -489,6 +815,64 @@ mod tests {
         }
     }
 
+    struct RecoveryVirsh {
+        calls: Rc<RefCell<Vec<Vec<String>>>>,
+    }
+
+    impl VirshCommand for RecoveryVirsh {
+        fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
+            self.calls.borrow_mut().push(arguments.to_vec());
+            if arguments.first().map(String::as_str) == Some("dumpxml") {
+                Ok(SHRINK_PENDING_XML.to_owned())
+            } else {
+                Ok(String::new())
+            }
+        }
+    }
+
+    struct QualificationVirsh {
+        calls: Rc<RefCell<Vec<Vec<String>>>>,
+        dump_count: RefCell<usize>,
+    }
+
+    impl VirshCommand for QualificationVirsh {
+        fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
+            self.calls.borrow_mut().push(arguments.to_vec());
+            if arguments.first().map(String::as_str) == Some("dumpxml") {
+                let mut count = self.dump_count.borrow_mut();
+                let xml = if *count == 0 {
+                    CONVERGED_XML
+                } else {
+                    QUALIFICATION_PENDING_XML
+                };
+                *count += 1;
+                Ok(xml.to_owned())
+            } else {
+                Ok(String::new())
+            }
+        }
+    }
+
+    struct ScriptedStates(RefCell<VecDeque<virtio_mem_core::VirtioMemState>>);
+
+    impl MemoryStateSource for ScriptedStates {
+        fn memory_state(&self) -> Result<virtio_mem_core::VirtioMemState, String> {
+            self.0
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| "scripted state sequence is exhausted".to_owned())
+        }
+    }
+
+    fn state(requested_bytes: u64, current_bytes: u64) -> virtio_mem_core::VirtioMemState {
+        virtio_mem_core::VirtioMemState {
+            size_bytes: 8 * GIB,
+            block_size_bytes: 2 * 1024 * 1024,
+            requested_bytes,
+            current_bytes,
+        }
+    }
+
     fn resize_options(apply: bool) -> ResizeOptions {
         ResizeOptions {
             vm: "guest".to_owned(),
@@ -510,6 +894,45 @@ mod tests {
             parse_args(&args(&["decision"])).expect("decision"),
             Some(CliCommand::Decision {
                 connection: DEFAULT_CONNECTION.to_owned()
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&[
+                "abandon-shrink",
+                "guest",
+                "memory0",
+                "4294967296",
+                "--attestation",
+                "reviewed.json",
+                "--apply",
+            ]))
+            .expect("abandon-shrink"),
+            Some(CliCommand::AbandonShrink {
+                vm: "guest".to_owned(),
+                alias: "memory0".to_owned(),
+                immutable_target_bytes: 4 * GIB,
+                connection: DEFAULT_CONNECTION.to_owned(),
+                apply: true,
+                attestation_path: "reviewed.json".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&[
+                "qualify-shrink",
+                "guest",
+                "memory0",
+                "4292870144",
+                "--attestation",
+                "reviewed.json",
+            ]))
+            .expect("qualify-shrink"),
+            Some(CliCommand::QualifyShrink {
+                vm: "guest".to_owned(),
+                alias: "memory0".to_owned(),
+                target_bytes: 4 * GIB - 2 * 1024 * 1024,
+                connection: DEFAULT_CONNECTION.to_owned(),
+                apply: false,
+                attestation_path: "reviewed.json".to_owned(),
             })
         );
         assert_eq!(
@@ -572,6 +995,121 @@ mod tests {
             "1073741824"
         ]))
         .is_err());
+        assert!(parse_args(&args(&["abandon-shrink", "guest", "memory0", "4294967296"])).is_err());
+        assert!(parse_args(&args(&["qualify-shrink", "guest", "memory0", "4292870144"])).is_err());
+    }
+
+    #[test]
+    fn abandon_shrink_qualifies_stability_rereads_and_converges_once() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let state_source = ScriptedStates(RefCell::new(VecDeque::from([
+            state(4 * GIB, 6 * GIB),
+            state(4 * GIB, 6 * GIB),
+            state(4 * GIB, 6 * GIB),
+            state(6 * GIB, 6 * GIB),
+        ])));
+        let sink = VirshResizeSink::new(
+            RecoveryVirsh {
+                calls: Rc::clone(&calls),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+        let mut waits = Vec::new();
+        let mut output = Vec::new();
+
+        run_abandon_shrink_with(
+            &state_source,
+            &sink,
+            AbandonOptions {
+                immutable_target_bytes: 4 * GIB,
+                connection: DEFAULT_CONNECTION.to_owned(),
+                apply: true,
+            },
+            |duration| waits.push(duration),
+            &mut output,
+        )
+        .expect("qualified recovery converges");
+
+        assert_eq!(waits, [Duration::from_secs(5)]);
+        assert_eq!(calls.borrow().len(), 2);
+        assert_eq!(calls.borrow()[1][0], "update-memory-device");
+        assert_eq!(
+            String::from_utf8(output).expect("UTF-8 output"),
+            "abandon_shrink_converged target_bytes=6442450944\n"
+        );
+    }
+
+    #[test]
+    fn qualify_shrink_uses_three_bounded_notifications_and_latches_stall() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let mut states = VecDeque::from([state(4 * GIB, 4 * GIB)]);
+        states.extend((0..60).map(|_| state(4 * GIB - 2 * 1024 * 1024, 4 * GIB)));
+        let state_source = ScriptedStates(RefCell::new(states));
+        let sink = VirshResizeSink::new(
+            QualificationVirsh {
+                calls: Rc::clone(&calls),
+                dump_count: RefCell::new(0),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+        let mut waits = Vec::new();
+        let mut output = Vec::new();
+
+        run_qualify_shrink_with(
+            &state_source,
+            &sink,
+            QualifyOptions {
+                target_bytes: 4 * GIB - 2 * 1024 * 1024,
+                connection: DEFAULT_CONNECTION.to_owned(),
+                apply: true,
+            },
+            |duration| waits.push(duration),
+            &mut output,
+        )
+        .expect("a bounded stall is an observed qualification outcome");
+
+        assert_eq!(waits.len(), 60);
+        assert_eq!(calls.borrow().len(), 8);
+        let output = String::from_utf8(output).expect("UTF-8 output");
+        assert!(output.contains("retry_index=1"));
+        assert!(output.contains("retry_index=2"));
+        assert!(output.contains("retry_index=3"));
+        assert!(output.contains("shrink_stalled elapsed_millis=300000"));
+    }
+
+    #[test]
+    fn abandon_shrink_rejects_moving_current_before_any_command() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let state_source = ScriptedStates(RefCell::new(VecDeque::from([
+            state(4 * GIB, 6 * GIB),
+            state(4 * GIB, 5 * GIB),
+        ])));
+        let sink = VirshResizeSink::new(
+            RecoveryVirsh {
+                calls: Rc::clone(&calls),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+
+        assert!(run_abandon_shrink_with(
+            &state_source,
+            &sink,
+            AbandonOptions {
+                immutable_target_bytes: 4 * GIB,
+                connection: DEFAULT_CONNECTION.to_owned(),
+                apply: true,
+            },
+            |_| {},
+            &mut Vec::new(),
+        )
+        .is_err());
+        assert!(calls.borrow().is_empty());
     }
 
     #[test]

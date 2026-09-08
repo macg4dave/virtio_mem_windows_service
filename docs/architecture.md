@@ -150,9 +150,9 @@ live. Production runs `RawTelemetryWorker`, which publishes VM-scoped,
 wall-clock-stamped raw counters without allocation input. The host validates
 freshness and VM identity, joins the record with alias-scoped live libvirt
 `current`, and calculates the target through shared policy. M10d has added
-version-2 producer identity and process-local replay validation, and must add
-durable acknowledgement, ACL, bounded handoff, and retention/rotation
-semantics. No Windows production resize sink is permitted. The QGA named-pipe client is
+version-2 producer identity, bounded atomic handoff/retention, durable
+restart-safe replay validation, and ProgramData ACL provisioning. Installed
+ACL verification remains. No Windows production resize sink is permitted. The QGA named-pipe client is
 retained as an explicit adapter/test boundary, but the SCM worker does not
 open the QGA virtio-serial device; the host controller owns QGA requests.
 Interactive and SCM startup use the same native telemetry worker boundary and
@@ -228,6 +228,6 @@ accounting or hermetic global-pool simulation.
     QEMU/libvirt cgroup memory limit is recommended defense-in-depth for fully
     trusted development guest `win11_gpu` and mandatory for untrusted or
     production deployments.
-- Automatic Windows shrinking remains unqualified. M10b must add a default-off
-    control and prove a bounded retry/re-notification/recovery model before
-    automated reclaim is supported.
+- Automatic Windows shrinking remains live-unqualified. M10b default-off
+    controls and bounded retry/re-notification/recovery pass hermetic tests;
+    live qualification remains before automated reclaim is supported.

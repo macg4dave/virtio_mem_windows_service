@@ -15,8 +15,8 @@ basic configuration model, startup validation path, and live Windows SCM
 lifecycle/recovery path are implemented and tested. The
 workspace contains an installed, active single-VM host controller with
 XML/state validation and a bounded runtime loop. The next unprivileged
-implementation priority is M10d report session/sequence/provenance identity
-and bounded delivery after the completed Phase 2 host-side join. M9d binds the expanded
+implementation priority is live qualification of the implemented M10d
+ProgramData ACL and M10b retry/recovery paths. M9d binds the expanded
 compatibility attestation, and M9e now freshness-qualifies host telemetry. The
 existing one-VM host controller
 remains the only resize authority until Phase 3 global arbitration has been
@@ -44,8 +44,8 @@ technology preview.
 
 ## Verified evidence
 
-- **Current platform gates:** the latest RHEL gate passes 29 shared-core and
-    35 host tests; the latest native-Windows gate passes 64 tests. Keep these
+- **Current platform gates:** the latest RHEL gate passes 45 shared-core and
+    48 host tests; the latest native-Windows gate passes 67 tests. Keep these
     as separate supported-platform results rather than one workspace total.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -314,14 +314,14 @@ readiness in the remaining host-side work.
 | M9e | Host telemetry correctness and freshness | [x] | M8, M9b | Balloon semantics, bounded advancing `last-update`, live-XML allocation authority, and the shared-path Rust decision preview pass hermetic tests |
 | M10 | Phase 2 demand-agent foundation | [~] | M4, M6 | Native telemetry, raw production publication, shared calculator, bounded pressure state, desired target, advisory safe floor, and host-side allocation join are tested; bounded delivery and workload evidence remain |
 | M10c | Host-side current-allocation join | [x] | M9e, M10 | A fresh VM-scoped raw Windows envelope is joined with alias-scoped live libvirt `current`; 31 core, 40 host, and 66 native Windows tests pass without guest allocation input or resize authority |
-| M10d | Demand envelope and bounded delivery | [~] | M10c | Version 2 identity/provenance, replay checks, and malformed/partial/oversized read rejection are implemented; ACLs, durable handoff, retention/rotation, and restart-safe replay remain |
+| M10d | Demand envelope and bounded delivery | [~] | M10c | Version 2 identity/provenance, atomic bounded handoff/retention, durable restart-safe replay state, and ProgramData ACL provisioning pass hermetic/native build tests; installed ACL verification remains |
 | M10a | Allocation-authority contract | [x] | M8, M9, M9a | Virtio 1.2 plus pinned QEMU/libvirt/virtio-win sources define `requested`/`current` semantics; live alias-scoped libvirt `current` is authoritative and driver debug output is diagnostic, not an accounting dependency |
 | M10a1 | Optional driver diagnostic qualification | [x] | M8, M9a | Signed DbgViewCLI completed a bounded no-resize kernel capture without boot/debug-filter/viomem changes; no matching informational record appeared and exact later cleanup removed all temporary process/service/file/registry state |
 | M10a2 | Correlated behavior-evidence harness | [x] | M8, M9a | Versioned shared-core JSON validation requires ordered clocks, repeated operation/VM/device identity, explicit bytes, stable/converged libvirt endpoints, Windows health, and controller state; driver records are optional diagnostics |
 | M10a3 | Optional bounded driver observation | [x] | M9b, M10a2 | One 2 MiB grow converged, but the predeclared 1 GiB recovery target remained 2 MiB above current for 60 samples/300 seconds; no matching driver record appeared, no overlapping request was issued, and graceful domain recreation restored convergence/controller state |
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
 | M10aX | Conditional driver status-interface feasibility | [x] | Concrete unmet diagnostic need | The M10a3 no-progress and larger partial-progress stalls plus empty bounded captures justify a proposal for a cached read-only status IOCTL; security, ABI, tests, external build/signing/install, and rollback gates are specified, while implementation remains No-Go |
-| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | Live probes prove no-progress and partial-progress-without-retry plus graceful domain-recreation recovery; the selected default-off 30/60/120-second, three-notification, 300-second policy and abandon-to-current path now require hermetic and live qualification with the remaining failure matrix |
+| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | Default-off controls, the 30/60/120-second three-notification/300-second state machine, latched stall, and one-shot abandon-to-current pass hermetic tests; live qualification and the remaining active-controller matrix remain |
 | M11 | Phase 3 global pool simulation | [ ] | M9e, M10d, M10a | Hermetic multi-VM simulation models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states; live multi-target actuation additionally requires M9d and M10b |
 | M11a | Controlled reclaim and convergence | [ ] | M11 | Trend-aware safe floors, bounded aligned reclaim, hysteresis, in-flight protection, convergence waits, and stop-on-pressure behavior pass simulation tests |
 | M12 | Hardening and observability | [ ] | M11a | Recovery, event logging, metrics, bounded timeout behavior, and restart tests pass for guest and global-controller paths |
@@ -533,11 +533,11 @@ no ambiguous or implicit unit conversion.
     restart through fakes.
 - [~] Verify no resize is issued after cancellation or while a request is
     pending.
-- [ ] Keep automatic Windows shrink disabled by default and prove bounded
+- [x] Keep automatic Windows shrink disabled by default and prove bounded
     retry and controlled recovery under the selected M10b state machine.
-- [ ] Prove the 30/60/120-second same-target schedule, three-notification
+- [x] Prove the 30/60/120-second same-target schedule, three-notification
     budget, immutable 300-second deadline, progress handling, and latched stall.
-- [ ] Prove cancellation/restart never replay work and a stall does not turn
+- [x] Prove cancellation/restart never replay work and a stall does not turn
     into a service-manager restart loop.
 - [x] Keep the harness independent of Linux tools and production VM state.
 
@@ -641,10 +641,10 @@ recommendation agent; it does not issue Linux/libvirt commands or direct
 - [x] **M10c:** implement and test the selected host-side join of fresh raw
     guest telemetry with alias-scoped live libvirt `current`. Windows must not
     infer allocation, receive an allocation feed, or invoke host tools.
-- [~] **M10d:** version the report envelope with VM/service/session identity,
+- [x] **M10d:** version the report envelope with VM/service/session identity,
     wall-clock and monotonic ordering, sequence/correlation, allocation
     provenance, and freshness/replay rules.
-- [ ] Bound any filesystem delivery with least-privilege ACLs, maximum record
+- [~] Bound filesystem delivery with least-privilege ACLs, maximum record
     and file sizes, retention/rotation, partial-write recovery, and explicit
     reader handoff.
 
@@ -808,8 +808,8 @@ implementation before live resize automation is expanded.
 | B13 | Native Windows telemetry and the versioned demand-report contract lack live workload evidence | Blocks production tuning and global-controller inputs, but not Windows service startup | Collect live workload evidence for `GlobalMemoryStatusEx`/`GetPerformanceInfo` reports without changing host actuation authority |
 | B14 | The protocol/source mapping is established, but installed-driver notification and branch behavior are not directly observable through a supported user-mode API | Does not block host accounting or simulation; reduces diagnosis when a Windows operation stalls | Use optional bounded tracing only when its diagnostic value justifies protected-guest mutation |
 | B15 | The signed Windows `viomem.sys` state message is kernel-debug output and informational debug prints may be filtered before capture | Optional DbgView evidence may be absent or ambiguous without persistent debug configuration changes | Qualify filtering and cleanup without boot logging, registry mutation, driver restart, or reboot; stop rather than escalate automatically |
-| B17 | The M10d v2 envelope and read-side replay/size checks are implemented, but JSON-lines output lacks durable acknowledgement, restart-safe replay state, ACL provisioning, and bounded handoff/retention/rotation | Blocks restart-safe Phase 3 ingestion and still risks lost, unacknowledged, or unbounded producer output | Complete M10d with bounded durable-delivery rules and least-privilege deployment |
-| B19 | Runtime failure injection does not yet cover the selected bounded Windows-shrink state machine or the full active-controller recovery matrix | Shrink can remain divergent without a proven same-target wakeup; rejection, reboot, restart, cancellation, and non-disruptive abandon-to-current also lack sufficient evidence | Implement the default-off controls; prove the 30/60/120-second, three-re-notification, 300-second policy and one-shot recovery under M10b before automated reclaim |
+| B17 | M10d bounded handoff, retention, durable replay state, and ProgramData ACL provisioning are implemented, but the new installer ACL has not been exercised on the Windows guest | Blocks claiming installed least-privilege delivery evidence | Install the candidate and verify exact ProgramData ACLs under LocalService |
+| B19 | The selected bounded Windows-shrink state machine passes hermetic tests, but the full active-controller live recovery matrix is incomplete | Same-target wakeup and non-disruptive abandon-to-current still lack live evidence | Run the prepared bounded M10b qualification under interactive host authentication before automated reclaim |
 | B21 | Phase 2 instances have no atomic global host reservation | Multiple active controllers/devices can race the same host headroom | Support one active development controller/device until M11 arbitration |
 
 Resolved blockers B4 (configuration location/format), B7 (unit boundaries),

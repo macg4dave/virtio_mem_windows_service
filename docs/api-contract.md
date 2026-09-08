@@ -156,7 +156,8 @@ report sink remain separate operational work.
 one complete JSON object plus a newline to the configured report path and
 returns directory, encoding, write, and flush failures explicitly.
 
-The production Windows worker appends `RawTelemetryEnvelope` records. M10d
+The production Windows worker atomically replaces one current
+`RawTelemetryEnvelope` record. M10d
 version 2 contains `vm_name`, `service_name`, `session_id`,
 `observed_unix_millis`, `monotonic_millis`, and `sequence`, plus the fixed
 provenance values `windows_native_memory_apis` and
@@ -167,7 +168,7 @@ subsequent records strictly increase sequence and monotonic time. The Windows
 configuration schema remains version 3 and binds the record to its configured
 libvirt VM and service names.
 
-The host reads the latest non-empty JSON-lines record from its explicitly
+The host reads the complete current record from its explicitly
 configured VM-scoped path and expected service identity. It rejects
 missing/malformed records, unsupported versions, missing provenance, wrong or
 empty identity, invalid counters, stale/future observations, replayed or
@@ -179,10 +180,13 @@ passes only the live `current` plus raw counters to the shared calculator. A
 target conflicting with live device geometry fails closed. Calculated shrink
 remains advisory and is not actuated until M10b qualifies and enables it.
 
-Replay state is currently process-local. Durable acknowledgement/reader
-handoff, restart-safe ordering state, publisher-side rotation/retention, and
-deployment ACL provisioning remain open M10d work; unattended publication is
-not production-ready until those bounds are implemented and tested.
+The publisher flushes a same-directory temporary file, atomically replaces the
+current record, and retains at most three previous records. The host persists
+the accepted envelope and the last 16 retired session IDs in an atomically
+replaced acknowledgement file, so restart cannot accept the same record or a
+retired session again. Windows installation provisions a protected ProgramData
+DACL for SYSTEM, Administrators, and LocalService; live installation/ACL
+verification remains an operational M10d gate.
 
 ### Current-allocation ownership
 
@@ -254,13 +258,14 @@ defense-in-depth for the fully trusted development/test `win11_gpu` guest and
 is mandatory for untrusted or production guests.
 
 The installed Windows driver has not been shown to retry an incomplete shrink
-without another event. Automatic shrink must remain disabled by default until
-M10b proves the selected bounded same-target re-notification and controlled
-failed-shrink recovery path. The qualification profile observes every five
+without another event. Automatic shrink remains disabled by default. M10b now
+implements the selected bounded same-target re-notification and controlled
+failed-shrink recovery paths, but they remain disabled pending live
+qualification. The qualification profile observes every five
 seconds, permits at most three exact-target re-notifications after 30, 60, and
 120 seconds without block progress, and retains one immutable 300-second
 operation deadline. Automatic shrink and re-notification are separate
-default-off controls; neither is implemented yet.
+default-off controls.
 
 The re-notification path is deliberately narrower than the ordinary resize
 contract. It may run only when a controller-owned shrink has
@@ -272,13 +277,21 @@ service-manager restart. Cancellation, restart, external requested-size
 change, invalid state, stale evidence, or ambiguous command outcome prohibits
 replay and enters recovery-required observation.
 
-M10b must separately qualify one non-disruptive recovery command. After two
-stable fresh samples and an immediate pre-apply read, abandon-to-current raises
+The operator-only `abandon-shrink` command implements the non-disruptive
+recovery contract. After two stable fresh samples and an immediate pre-apply
+read, abandon-to-current raises
 `requested` to the aligned observed `current`, preserving partial reclaim. It
 has one 30-second convergence window and no retry. It remains operator-approved
 only until live zero-progress and partial-progress cases pass; graceful domain
 recreation from a known persistent definition remains the final
 operator-approved fallback.
+
+The `qualify-shrink` command is the bounded live harness for the same shared
+state machine. Without `--apply` it prints the validated initial request. With
+`--apply` it permits exactly one device-block reclaim, samples every five
+seconds, reports block progress, sends only the
+immutable target at retry indices 1–3, and terminates on convergence or a
+non-fatal 300-second stall.
 
 ### Driver and state terminology
 

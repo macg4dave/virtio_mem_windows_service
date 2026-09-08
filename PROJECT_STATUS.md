@@ -4,8 +4,8 @@
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
 actuation are live validated. The host-side demand join is complete with
-native Windows and hermetic host evidence;
-bounded delivery and recovery hardening remain. Host-stat freshness and the complete compatibility
+native Windows and hermetic host evidence. Bounded delivery and M10b recovery
+logic are implemented; installed ACL and live shrink qualification remain. Host-stat freshness and the complete compatibility
 attestation is implemented and awaits a separately approved live installation.
 The allocation-authority contract is established from Virtio and pinned
 implementation sources; optional driver tracing remains diagnostic.
@@ -42,21 +42,27 @@ guest; upstream Windows virtio-mem support remains technology preview.
   identity, dual-clock ordering, sequence, and explicit provenance, plus host
   freshness/replay/partial/size validation and target calculation joined to
   fresh alias-scoped live libvirt `current`.
+- Atomic current-record publication with three-file retention, durable
+  restart-safe host acknowledgement, and LocalService ProgramData ACL
+  provisioning.
+- Default-off automatic shrink/re-notification, a fake-clock-tested
+  30/60/120-second retry state machine, non-fatal latched stalls, and bounded
+  `qualify-shrink`/`abandon-shrink` operator paths.
 
 ## Current evidence
 
 The latest native RHEL gate passed:
 
-- 32 shared-core and 42 host tests, with no failures.
+- 45 shared-core and 48 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
 - `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
 
-The latest M10d Windows-native gate passes 66 tests with warnings denied and
+The latest M10d Windows-native gate passes 67 tests with warnings denied and
 produced a checksum-verified executable with SHA-256
-`4c28f41b7d57984bac1fad82461fddba18831cdf19945257cd795cddc84ca314`.
+`ec4a965f468312615ec1416336f1f5674cd7fce34bbbf62f9a7bc55b3d5c0995`.
 
 Live M7 validation on `ice101.lan` passed the LocalService
 install/start/observe/stop/delete sequence. Event IDs 1000–1003 were observed
@@ -83,10 +89,9 @@ was built on the Win11 guest and fetched to
 
 ## Open implementation work
 
-- Finish the M10d delivery contract. Version 2 identity/provenance, producer
-  ordering, process-local replay checks, and partial/oversized read rejection
-  are implemented. Durable acknowledgement and restart-safe replay state,
-  atomic reader handoff, ACLs, and publisher retention/rotation remain.
+- Live-install the M10d Windows candidate and verify its protected ProgramData
+  ACL. Atomic handoff/retention and durable restart-safe replay state are
+  complete in code and tests; the current guest ProgramData directory is absent.
 - Install a freshly reviewed M9d attestation with read-only service-account
   access before deploying this build. The implemented version-1 SHA-256 guard
   binds backend, memory-slot, VFIO, incompatible-workload, balloon, topology,
@@ -94,15 +99,17 @@ was built on the Win11 guest and fetched to
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
 - Use the completed M10a2 correlated behavior-evidence harness to complete the
-  M10b failure/recovery matrix, including Windows shrink retry/recovery
-  qualification and a default-off automatic-shrink control. The completed
+  M10b live failure/recovery matrix. The default-off controls, retry schedule,
+  latched stall, and operator-only recovery are implemented hermetically. The completed
   M10aX feasibility proposal addresses the diagnostic gap left by M10a1/M10a3
   without authorizing driver implementation or installation.
   The M10b policy is selected: five-second observation, exact-target
   notifications after 30/60/120 seconds without progress, at most three
   notifications, an immutable 300-second deadline, a non-fatal latched stall,
   and separately qualified one-shot abandon-to-current recovery. Both shrink
-  and re-notification remain default-off until hermetic and live gates pass.
+  and re-notification remain default-off until live gates pass. The prepared
+  live batch made no mutation because sudo required interactive authentication;
+  the controller remains active and the device converged at 1 GiB.
 
 ## External blockers
 

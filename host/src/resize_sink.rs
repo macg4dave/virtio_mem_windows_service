@@ -153,6 +153,56 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
             target_bytes,
         })
     }
+
+    /// Prepares the one-shot M10b abandon-to-current recovery after two
+    /// independent observations have qualified `stable_current_bytes`.
+    /// This immediate read is the final race check before an operator applies
+    /// the command.
+    pub(crate) fn prepare_abandon_to_current(
+        &self,
+        immutable_target_bytes: u64,
+        stable_current_bytes: u64,
+    ) -> Result<PreparedResize, String> {
+        let snapshot = self
+            .command
+            .run(&["dumpxml".to_owned(), self.vm_name.clone()])
+            .map_err(|error| error.to_string())?;
+        let snapshot = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
+            .map_err(|error| error.to_string())?;
+        snapshot
+            .compatibility
+            .merge(self.compatibility_source.compatibility()?)
+            .map_err(|error| error.to_string())?
+            .validate_for_resize()
+            .map_err(|error| error.to_string())?;
+        let state = snapshot.memory;
+        state
+            .validate_target(stable_current_bytes)
+            .map_err(|error| error.to_string())?;
+        if state.requested_bytes != immutable_target_bytes
+            || state.current_bytes != stable_current_bytes
+            || state.current_bytes <= immutable_target_bytes
+        {
+            return Err(
+                "live state changed before abandon-to-current recovery could be applied".to_owned(),
+            );
+        }
+        let requested_kib = bytes_to_kibibytes(stable_current_bytes)
+            .ok_or_else(|| "recovery target must be an integer number of KiB".to_owned())?;
+        Ok(PreparedResize {
+            arguments: vec![
+                "update-memory-device".to_owned(),
+                self.vm_name.clone(),
+                "--alias".to_owned(),
+                self.alias.clone(),
+                "--requested-size".to_owned(),
+                requested_kib.to_string(),
+                "--live".to_owned(),
+            ],
+            current_bytes: state.current_bytes,
+            target_bytes: stable_current_bytes,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -266,6 +316,31 @@ mod tests {
         )
         .with_external_compatibility(VirtioMemCompatibility::confirmed());
         assert!(wrong.renotify_shrink(2 * 1024 * 1024 * 1024).is_err());
+    }
+
+    #[test]
+    fn abandon_to_current_requires_the_qualified_pending_state() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sink = VirshResizeSink::new(
+            Fake {
+                xml: SHRINK_PENDING_XML,
+                calls: Rc::clone(&calls),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+
+        let prepared = sink
+            .prepare_abandon_to_current(4 * 1024 * 1024 * 1024, 6 * 1024 * 1024 * 1024)
+            .expect("unchanged qualified state may recover to current");
+        assert_eq!(prepared.current_bytes(), prepared.target_bytes());
+        assert_eq!(calls.borrow().len(), 1);
+
+        assert!(sink
+            .prepare_abandon_to_current(4 * 1024 * 1024 * 1024, 5 * 1024 * 1024 * 1024)
+            .is_err());
+        assert_eq!(calls.borrow().len(), 2);
     }
 
     #[test]
