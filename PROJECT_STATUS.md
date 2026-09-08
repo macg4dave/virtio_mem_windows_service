@@ -5,7 +5,8 @@
 **Overall status:** Windows and host service lifecycles plus single-VM host
 actuation are live validated. The host-side demand join is complete with
 native Windows and hermetic host evidence. Bounded delivery and M10b recovery
-logic are implemented; installed ACL and live shrink qualification remain. Host-stat freshness and the complete compatibility
+logic are implemented and the one-block live recovery gate passed; installed
+ACL verification and the wider interruption matrix remain. Host-stat freshness and the complete compatibility
 attestation is implemented and awaits a separately approved live installation.
 The allocation-authority contract is established from Virtio and pinned
 implementation sources; optional driver tracing remains diagnostic.
@@ -16,8 +17,9 @@ guest; upstream Windows virtio-mem support remains technology preview.
 
 - Architecture, API contracts, data model, engineering standards, testing
   strategy, roadmap, backlog, and QEMU Guest Agent setup documentation.
-- Shared byte-based memory policy with alignment, bounds, hysteresis, and
-  requested/current convergence protection.
+- Shared byte-based memory policy with alignment, bounds, hysteresis,
+  requested/current convergence protection, 1 GiB growth quanta, and 64 MiB
+  reclaim quanta.
 - Windows QGA named-pipe boundary, parser, polling loop, cancellation wake-up,
   portable service lifecycle, validated JSON configuration, and native SCM
   adapter with install/start/stop/remove commands.
@@ -87,6 +89,14 @@ restored the same healthy 1 GiB baseline. The verified Windows service artifact
 was built on the Win11 guest and fetched to
 `.vscode-artifacts/windows/virtio-mem-service.exe`.
 
+On 2026-09-08, the bounded one-block M10b qualification completed its three
+30/60/120-second re-notifications, latched at 300 seconds, and successfully
+recovered with abandon-to-current. A later paced 256 MiB ramp grew 1 GiB to
+5 GiB, reclaimed 3,000 MiB, and then stalled at a 2,120 MiB current allocation.
+That request was recovered to convergence. Based on this size-sensitive live
+behavior, the selected service policy is now one 1 GiB growth quantum or one
+64 MiB reclaim quantum per converged decision.
+
 ## Open implementation work
 
 - Live-install the M10d Windows candidate and verify its protected ProgramData
@@ -98,18 +108,19 @@ was built on the Win11 guest and fetched to
   trust, driver, QEMU, and libvirt evidence and rejects drift before resize.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
-- Use the completed M10a2 correlated behavior-evidence harness to complete the
-  M10b live failure/recovery matrix. The default-off controls, retry schedule,
-  latched stall, and operator-only recovery are implemented hermetically. The completed
+- Use the completed M10a2 correlated behavior-evidence harness to finish the
+  remaining M10b interruption/restart matrix. The retry schedule, latched
+  stall, and operator recovery are implemented hermetically and passed the
+  one-block live qualification. The completed
   M10aX feasibility proposal addresses the diagnostic gap left by M10a1/M10a3
   without authorizing driver implementation or installation.
   The M10b policy is selected: five-second observation, exact-target
   notifications after 30/60/120 seconds without progress, at most three
   notifications, an immutable 300-second deadline, a non-fatal latched stall,
-  and separately qualified one-shot abandon-to-current recovery. Both shrink
-  and re-notification remain default-off until live gates pass. The prepared
-  live batch made no mutation because sudo required interactive authentication;
-  the controller remains active and the device converged at 1 GiB.
+  and separately qualified one-shot abandon-to-current recovery. Automatic
+  shrink remains default-off generally; the trusted development instance uses
+  the selected 64 MiB quantum after deployment. Re-notification remains a
+  separate control.
 
 ## External blockers
 
@@ -121,10 +132,10 @@ was built on the Win11 guest and fetched to
   `current` remains allocation authority.
 - Live resize remains gated by fresh XML validation and
   `requested == current` convergence at the time of each request.
-- Automatic Windows shrink is directly observed both to make no progress for a
-  one-block request and to make partial progress without retry for a 1 GiB
-  request. It is unqualified, and Phase 2 supports only one active
-  controller/device on this development host until M10b and M11.
+- Automatic Windows shrink is size-sensitive: one block made no progress, and
+  the paced 256 MiB ramp reclaimed 3,000 MiB before stalling. The trusted
+  development policy uses one 64 MiB quantum at a time; Phase 2 still supports
+  only one active controller/device on this host until M11.
 - A hard QEMU/libvirt cgroup memory limit is recommended defense-in-depth for
   trusted `win11_gpu`; it is mandatory for future untrusted or production
   deployments.

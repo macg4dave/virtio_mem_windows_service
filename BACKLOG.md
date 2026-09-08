@@ -1,5 +1,19 @@
 # BACKLOG
 
+## 2026-09-08 asymmetric service-quanta policy
+
+- A controller-isolated live ramp grew `win11_gpu` from 1 GiB to 5 GiB in
+  about four seconds, held it for 30 seconds, then lowered `requested` by
+  256 MiB every five seconds. Windows reclaimed 3,000 MiB before stabilizing
+  at 2,120 MiB with the final 1 GiB request still pending.
+- The interrupted ramp was recovered to the observed stable current allocation
+  (`requested=current=2222981120`) and the old controller remains stopped so
+  it cannot resume its obsolete 2 MiB-step policy.
+- Selected the replacement service rule: any growth decision emits one 1 GiB
+  quantum; a release decision emits one 64 MiB quantum. Pressure severity does
+  not multiply a request, both quanta must be live-block-aligned, and the next
+  quantum remains convergence-gated.
+
 ## 2026-09-08 M10 delivery and shrink-recovery implementation
 
 - Completed TASK-021 code for atomic current-record publication, bounded
@@ -894,7 +908,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
-| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | In Progress | Default-off controls, the 30/60/120-second three-notification/300-second state machine, progress handling, cancellation/restart suppression, latched stall, and one-shot abandon-to-current pass hermetic tests. The live batch is prepared; sudo authentication prevented execution and made no mutation. |
+| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | In Progress | One-block live retry/recovery passed; a paced 256 MiB ramp reclaimed 3,000 MiB before stalling; the 1 GiB grow/64 MiB reclaim policy is implemented. The remaining active-controller interruption/restart matrix is open. |
 
 ## Planned
 

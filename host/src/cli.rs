@@ -1164,6 +1164,8 @@ mod tests {
             max_memory_bytes: 8 * GIB,
             lower_threshold_bytes: GIB,
             upper_threshold_bytes: 3 * GIB,
+            grow_step_bytes: GIB,
+            shrink_step_bytes: 64 * 1024 * 1024,
             poll_interval: Duration::from_secs(30),
             command_timeout: Duration::from_secs(10),
             convergence_timeout: Duration::from_secs(300),
@@ -1200,7 +1202,7 @@ mod tests {
         .expect("valid preview");
         assert_eq!(
             String::from_utf8(output).expect("UTF-8 output"),
-            "source=dommemstat\nfree_bytes=536870912\navailable_bytes=6442450944\nrequested_bytes=4294967296\ncurrent_bytes=4294967296\ndecision=request target_bytes=4297064448\n"
+            "source=dommemstat\nfree_bytes=536870912\navailable_bytes=6442450944\nrequested_bytes=4294967296\ncurrent_bytes=4294967296\ndecision=request target_bytes=5368709120\n"
         );
     }
 

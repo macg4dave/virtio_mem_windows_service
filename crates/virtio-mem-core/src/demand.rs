@@ -248,6 +248,8 @@ pub struct DemandPolicyConfig {
     pub configured_minimum_bytes: u64,
     pub configured_maximum_bytes: u64,
     pub block_size_bytes: u64,
+    pub grow_step_bytes: u64,
+    pub shrink_step_bytes: u64,
 }
 
 impl DemandPolicyConfig {
@@ -266,6 +268,15 @@ impl DemandPolicyConfig {
         if !self.block_size_bytes.is_power_of_two() {
             return Err(DemandError::InvalidPolicy(
                 "block size must be a power of two",
+            ));
+        }
+        if self.grow_step_bytes == 0
+            || self.shrink_step_bytes == 0
+            || !self.grow_step_bytes.is_multiple_of(self.block_size_bytes)
+            || !self.shrink_step_bytes.is_multiple_of(self.block_size_bytes)
+        {
+            return Err(DemandError::InvalidPolicy(
+                "grow and shrink steps must be positive block-aligned values",
             ));
         }
         if !self
@@ -331,31 +342,17 @@ impl DemandCalculator {
         let commit_pressure = snapshot.commit_pressure()?;
         let pressure = physical_pressure.max(commit_pressure);
         let state = classify_pressure(pressure);
-        let desired_steps = match state {
-            DemandState::Release => -1_i64,
-            DemandState::Stable => 0,
-            DemandState::WantMore => 1,
-            DemandState::Pressure => 2,
-            DemandState::Critical => 4,
-        };
         let desired_target_bytes = if current_bytes < self.config.configured_minimum_bytes {
             self.config.configured_minimum_bytes
         } else {
-            aligned_target(
-                current_bytes,
-                desired_steps,
-                self.config.block_size_bytes,
+            directional_target(current_bytes, state, self.config)?
+        };
+        let safe_floor_bytes = current_bytes
+            .saturating_sub(self.config.shrink_step_bytes)
+            .clamp(
                 self.config.configured_minimum_bytes,
                 self.config.configured_maximum_bytes,
-            )?
-        };
-        let safe_floor_bytes = aligned_target(
-            current_bytes,
-            -1,
-            self.config.block_size_bytes,
-            self.config.configured_minimum_bytes,
-            self.config.configured_maximum_bytes,
-        )?;
+            );
 
         Ok(DemandReport {
             version: DEMAND_REPORT_VERSION,
@@ -389,24 +386,22 @@ fn classify_pressure(pressure: f64) -> DemandState {
     }
 }
 
-fn aligned_target(
+fn directional_target(
     current_bytes: u64,
-    steps: i64,
-    block_size_bytes: u64,
-    minimum_bytes: u64,
-    maximum_bytes: u64,
+    state: DemandState,
+    config: DemandPolicyConfig,
 ) -> Result<u64, DemandError> {
-    let delta = block_size_bytes
-        .checked_mul(steps.unsigned_abs())
-        .ok_or(DemandError::ArithmeticOverflow)?;
-    let target = if steps.is_negative() {
-        current_bytes.saturating_sub(delta)
-    } else {
-        current_bytes
-            .checked_add(delta)
-            .ok_or(DemandError::ArithmeticOverflow)?
+    let target = match state {
+        DemandState::Release => current_bytes.saturating_sub(config.shrink_step_bytes),
+        DemandState::Stable => current_bytes,
+        DemandState::WantMore | DemandState::Pressure | DemandState::Critical => current_bytes
+            .checked_add(config.grow_step_bytes)
+            .ok_or(DemandError::ArithmeticOverflow)?,
     };
-    Ok(target.clamp(minimum_bytes, maximum_bytes))
+    Ok(target.clamp(
+        config.configured_minimum_bytes,
+        config.configured_maximum_bytes,
+    ))
 }
 
 #[cfg(test)]
@@ -530,6 +525,8 @@ mod tests {
             configured_minimum_bytes: 4 * GIB,
             configured_maximum_bytes: 32 * GIB,
             block_size_bytes: 2 * GIB,
+            grow_step_bytes: 2 * GIB,
+            shrink_step_bytes: 2 * GIB,
         })
         .expect("valid policy");
         let report = calculator
@@ -537,5 +534,42 @@ mod tests {
             .expect("zero is live state");
         assert_eq!(report.demand.desired_target_bytes, 4 * GIB);
         assert_eq!(report.demand.safe_floor_bytes, 4 * GIB);
+    }
+
+    #[test]
+    fn uses_one_gibibyte_growth_and_64_mibibyte_reclaim_quanta() {
+        const MIB: u64 = 1024 * 1024;
+        let calculator = DemandCalculator::new(DemandPolicyConfig {
+            configured_minimum_bytes: 4 * GIB,
+            configured_maximum_bytes: 32 * GIB,
+            block_size_bytes: 2 * MIB,
+            grow_step_bytes: GIB,
+            shrink_step_bytes: 64 * MIB,
+        })
+        .expect("valid asymmetric policy");
+
+        let grow = calculator
+            .calculate(snapshot(), 16 * GIB)
+            .expect("critical pressure grows once");
+        assert_eq!(grow.demand.state, DemandState::Critical);
+        assert_eq!(grow.demand.desired_target_bytes, 17 * GIB);
+
+        let mut release_snapshot = snapshot();
+        release_snapshot.physical_available_bytes = 15 * GIB;
+        release_snapshot.memory_load_percent = 6;
+        release_snapshot.commit_total_bytes = GIB;
+        release_snapshot.commit_peak_bytes = GIB;
+        let release = calculator
+            .calculate(release_snapshot, 16 * GIB)
+            .expect("low pressure releases once");
+        assert_eq!(release.demand.state, DemandState::Release);
+        assert_eq!(release.demand.desired_target_bytes, 16 * GIB - 64 * MIB);
+        assert_eq!(release.demand.safe_floor_bytes, 16 * GIB - 64 * MIB);
+
+        let invalid = DemandPolicyConfig {
+            shrink_step_bytes: 63 * MIB,
+            ..calculator.config
+        };
+        assert!(DemandCalculator::new(invalid).is_err());
     }
 }

@@ -24,6 +24,8 @@ pub fn evaluate_memory_decision(
         lower_threshold_bytes: config.lower_threshold_bytes,
         upper_threshold_bytes: config.upper_threshold_bytes,
         block_size_bytes: state.block_size_bytes,
+        grow_step_bytes: config.grow_step_bytes,
+        shrink_step_bytes: config.shrink_step_bytes,
     };
     plan_resize(
         stats,
@@ -43,6 +45,8 @@ pub fn evaluate_demand_join(
         configured_minimum_bytes: config.min_memory_bytes,
         configured_maximum_bytes: config.max_memory_bytes,
         block_size_bytes: state.block_size_bytes,
+        grow_step_bytes: config.grow_step_bytes,
+        shrink_step_bytes: config.shrink_step_bytes,
     })
     .map_err(|error| error.to_string())?;
     let report = calculator
@@ -281,6 +285,8 @@ mod tests {
             max_memory_bytes: 32 * GIB,
             lower_threshold_bytes: GIB,
             upper_threshold_bytes: 3 * GIB,
+            grow_step_bytes: GIB,
+            shrink_step_bytes: 64 * MIB,
             poll_interval: Duration::from_secs(30),
             command_timeout: Duration::from_secs(10),
             convergence_timeout: Duration::from_secs(300),
@@ -335,7 +341,7 @@ mod tests {
         )
         .expect("join should pass");
 
-        assert_eq!(report.demand.desired_target_bytes, 16 * GIB + 8 * MIB);
+        assert_eq!(report.demand.desired_target_bytes, 17 * GIB);
         assert_eq!(report.memory.physical_total_bytes, 16 * GIB);
     }
 

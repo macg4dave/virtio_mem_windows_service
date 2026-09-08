@@ -434,13 +434,44 @@ fn scrub_allocation_state(xml: &str) -> String {
 }
 
 fn scrub_qemu_argv(arguments: &str) -> String {
-    let marker = "requested-size=";
+    const KEY: &str = "requested-size";
     let mut scrubbed = arguments.to_owned();
     let mut offset = 0;
-    while let Some(found) = scrubbed[offset..].find(marker) {
-        let value_start = offset + found + marker.len();
+    while let Some(found) = scrubbed[offset..].find(KEY) {
+        let key_end = offset + found + KEY.len();
+        let mut separator = key_end;
+        while let Some(character) = scrubbed[separator..].chars().next() {
+            if character == '"' || character.is_whitespace() {
+                separator += character.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let Some(separator_character) = scrubbed[separator..].chars().next() else {
+            break;
+        };
+        if !matches!(separator_character, '=' | ':') {
+            offset = key_end;
+            continue;
+        }
+        let mut value_start = separator + separator_character.len_utf8();
+        while let Some(character) = scrubbed[value_start..].chars().next() {
+            if character.is_whitespace() {
+                value_start += character.len_utf8();
+            } else {
+                break;
+            }
+        }
+        let quoted = scrubbed[value_start..].starts_with('"');
+        if quoted {
+            value_start += 1;
+        }
         let value_end = scrubbed[value_start..]
-            .find(|character: char| character == ',' || character.is_whitespace())
+            .find(|character: char| {
+                (quoted && character == '"')
+                    || (!quoted
+                        && (character == ',' || character == '}' || character.is_whitespace()))
+            })
             .map_or(scrubbed.len(), |end| value_start + end);
         scrubbed.replace_range(value_start..value_end, "<allocation-state>");
         offset = value_start + "<allocation-state>".len();
@@ -570,6 +601,20 @@ mod tests {
         assert_eq!(
             sha256_hex(scrub_qemu_argv("-device virtio-mem,requested-size=1G,node=0").as_bytes()),
             sha256_hex(scrub_qemu_argv("-device virtio-mem,requested-size=4G,node=0").as_bytes())
+        );
+        assert_eq!(
+            sha256_hex(
+                scrub_qemu_argv(
+                    r#"-device '{"driver":"virtio-mem-pci","requested-size":1071644672,"node":0}'"#
+                )
+                .as_bytes()
+            ),
+            sha256_hex(
+                scrub_qemu_argv(
+                    r#"-device '{"driver":"virtio-mem-pci","requested-size":1073741824,"node":0}'"#
+                )
+                .as_bytes()
+            )
         );
         assert_ne!(
             scrub_allocation_state(before),

@@ -422,6 +422,8 @@ mod tests {
             configured_minimum_bytes: 4 * GIB,
             configured_maximum_bytes: 32 * GIB,
             block_size_bytes: 2 * GIB,
+            grow_step_bytes: 2 * GIB,
+            shrink_step_bytes: 2 * GIB,
         })
         .expect("policy should be valid")
     }

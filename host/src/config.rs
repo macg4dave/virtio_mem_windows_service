@@ -3,6 +3,9 @@ use std::time::Duration;
 
 use thiserror::Error;
 
+pub const DEFAULT_GROW_STEP_BYTES: u64 = 1024 * 1024 * 1024;
+pub const DEFAULT_SHRINK_STEP_BYTES: u64 = 64 * 1024 * 1024;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HostConfigError {
     #[error("required environment variable is missing or empty: {0}")]
@@ -15,6 +18,8 @@ pub enum HostConfigError {
     InvalidThresholdOrder,
     #[error("minimum memory must not exceed maximum memory")]
     InvalidMemoryRange,
+    #[error("grow and shrink steps must be greater than zero")]
+    InvalidResizeStep,
     #[error("host-controller durations must be greater than zero")]
     InvalidDuration,
     #[error("VIRTIO_MEM_STATS_SOURCE must be 'dommemstat' or 'qga': {0}")]
@@ -47,6 +52,8 @@ pub struct HostConfig {
     pub max_memory_bytes: u64,
     pub lower_threshold_bytes: u64,
     pub upper_threshold_bytes: u64,
+    pub grow_step_bytes: u64,
+    pub shrink_step_bytes: u64,
     pub poll_interval: Duration,
     pub command_timeout: Duration,
     pub convergence_timeout: Duration,
@@ -82,6 +89,14 @@ impl HostConfig {
             max_memory_bytes: positive("VIRTIO_MEM_MAX_MEMORY_BYTES")?,
             lower_threshold_bytes: positive("VIRTIO_MEM_LOWER_THRESHOLD_BYTES")?,
             upper_threshold_bytes: positive("VIRTIO_MEM_UPPER_THRESHOLD_BYTES")?,
+            grow_step_bytes: positive_or_default(
+                "VIRTIO_MEM_GROW_STEP_BYTES",
+                DEFAULT_GROW_STEP_BYTES,
+            )?,
+            shrink_step_bytes: positive_or_default(
+                "VIRTIO_MEM_SHRINK_STEP_BYTES",
+                DEFAULT_SHRINK_STEP_BYTES,
+            )?,
             poll_interval: Duration::from_secs(positive("VIRTIO_MEM_POLL_INTERVAL_SECONDS")?),
             command_timeout: Duration::from_secs(positive("VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS")?),
             convergence_timeout: Duration::from_secs(positive(
@@ -128,6 +143,9 @@ impl HostConfig {
         }
         if self.min_memory_bytes > self.max_memory_bytes {
             return Err(HostConfigError::InvalidMemoryRange);
+        }
+        if self.grow_step_bytes == 0 || self.shrink_step_bytes == 0 {
+            return Err(HostConfigError::InvalidResizeStep);
         }
         if self.poll_interval.is_zero()
             || self.command_timeout.is_zero()
@@ -179,6 +197,17 @@ fn positive(name: &'static str) -> Result<u64, HostConfigError> {
         .ok_or(HostConfigError::InvalidPositiveInteger { name, value })
 }
 
+fn positive_or_default(name: &'static str, default: u64) -> Result<u64, HostConfigError> {
+    match env::var(name) {
+        Err(_) => Ok(default),
+        Ok(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or(HostConfigError::InvalidPositiveInteger { name, value }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -191,6 +220,8 @@ mod tests {
             max_memory_bytes: 2,
             lower_threshold_bytes: 1,
             upper_threshold_bytes: 2,
+            grow_step_bytes: DEFAULT_GROW_STEP_BYTES,
+            shrink_step_bytes: DEFAULT_SHRINK_STEP_BYTES,
             poll_interval: Duration::from_secs(1),
             command_timeout: Duration::from_secs(1),
             convergence_timeout: Duration::from_secs(1),
@@ -220,6 +251,8 @@ mod tests {
             max_memory_bytes: 2,
             lower_threshold_bytes: 1,
             upper_threshold_bytes: 2,
+            grow_step_bytes: DEFAULT_GROW_STEP_BYTES,
+            shrink_step_bytes: DEFAULT_SHRINK_STEP_BYTES,
             poll_interval: Duration::from_secs(1),
             command_timeout: Duration::from_secs(1),
             convergence_timeout: Duration::from_secs(1),
@@ -252,6 +285,8 @@ mod tests {
             max_memory_bytes: 2,
             lower_threshold_bytes: 1,
             upper_threshold_bytes: 2,
+            grow_step_bytes: DEFAULT_GROW_STEP_BYTES,
+            shrink_step_bytes: DEFAULT_SHRINK_STEP_BYTES,
             poll_interval: Duration::from_secs(1),
             command_timeout: Duration::from_secs(1),
             convergence_timeout: Duration::from_secs(1),

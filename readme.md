@@ -25,7 +25,8 @@ The long-term goal is a system that can:
 - observe Windows memory pressure using native telemetry;
 - produce versioned, canonical-byte demand recommendations;
 - validate virtio-mem state and alignment before any change;
-- grow or reclaim memory in bounded, convergent steps; and
+- grow in 1 GiB quanta or reclaim in 64 MiB quanta, with each request bounded,
+  block-aligned, and convergence-gated; and
 - coordinate multiple guests without allowing one guest to consume the host's
   safety reserve.
 
@@ -37,8 +38,9 @@ the resize authority.
 
 The following capabilities are implemented and locally tested:
 
-- shared Rust memory policy with bounds, alignment, hysteresis, and
-  `requested != current` convergence protection;
+- shared Rust memory policy with bounds, alignment, hysteresis,
+  `requested != current` convergence protection, 1 GiB growth quanta, and
+  64 MiB reclaim quanta;
 - Windows QEMU Guest Agent named-pipe boundary and response parser;
 - wakeable polling and portable service lifecycle state machine;
 - validated versioned JSON configuration;
@@ -84,10 +86,11 @@ syntax validation pass.
   properties, and QEMU/libvirt versions. Backend, slot/VFIO, incompatible
   workload/device, balloon, topology, trust, and driver/stack drift blocks
   actuation.
-- Windows shrink retry behavior is not live-qualified. Default-off controls,
-  bounded same-target retry, latched stall, and one-shot abandon-to-current
-  recovery pass hermetic tests; automated reclaim remains unsupported until
-  the live M10b matrix passes.
+- Windows shrink behavior is size-sensitive: the live 256 MiB ramp reclaimed
+  about 2.93 GiB before stalling, while a one-device-block request made no
+  progress. The controller therefore uses 64 MiB reclaim quanta, retains
+  bounded same-target retry and abandon-to-current recovery, and never issues
+  another request until the prior target converges.
 - Phase 2 supports one active controller for one explicitly named VM/device on
   this development host. Multi-controller/device actuation waits for M11
   global arbitration.

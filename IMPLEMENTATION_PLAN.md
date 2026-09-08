@@ -158,8 +158,10 @@ actuation, not for hermetic pool simulation.
 ### 10. Add controlled reclaim and actuation
 
 - Add rolling demand history and conservative safe floors.
-- Reclaim one aligned step at a time and wait for convergence.
-- Keep automatic Windows shrinking disabled by default until M10b proves
+- Grow one aligned 1 GiB quantum or reclaim one aligned 64 MiB quantum at a
+  time and wait for convergence.
+- Keep automatic Windows shrinking disabled by default outside the trusted
+  development deployment until M10b proves
    autonomous retry, safe bounded same-target re-notification, or a controlled
    failed-shrink recovery path.
 - Fail closed on stale or inconsistent evidence.

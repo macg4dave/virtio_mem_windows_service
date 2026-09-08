@@ -154,6 +154,8 @@ mod tests {
                 lower_threshold_bytes: 2 * MIB,
                 upper_threshold_bytes: 6 * MIB,
                 block_size_bytes: 2 * MIB,
+                grow_step_bytes: 2 * MIB,
+                shrink_step_bytes: 2 * MIB,
             },
         )
     }

@@ -1,5 +1,16 @@
 # Known Issues
 
+## 2026-09-08 — Paced large-target shrink makes progress, then stalls
+
+A controller-isolated test grew `win11_gpu` from 1 GiB to 5 GiB, held for 30
+seconds, and reduced `requested` by 256 MiB every five seconds. `current`
+reclaimed 3,000 MiB before stabilizing at 2,120 MiB while the final 1 GiB
+request remained pending. The interrupted test was recovered to
+`requested=current=2222981120`; the old controller was left stopped pending
+deployment of the selected 1 GiB grow/64 MiB reclaim policy. This demonstrates
+size-sensitive partial progress, not guaranteed convergence for arbitrary
+targets.
+
 ## Open Issues
 
 | ID | Description | Status | Component | Priority |
@@ -9,7 +20,7 @@
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
 | ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; M10aX feasibility proposal complete, implementation No-Go | Windows observability | Medium |
-| ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete live recovery matrix | Open; hermetic M10b complete, live qualification pending | Host recovery | High |
+| ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete live recovery matrix | Open; one-block live retry/recovery passed and the asymmetric 1 GiB grow/64 MiB reclaim policy is selected; remaining interruption/restart matrix pending | Host recovery | High |
 
 M10a3 live evidence on 2026-09-07 narrowed ISSUE-015: one 2 MiB growth
 converged, but the recovery shrink remained at `requested=1073741824`,
@@ -47,7 +58,7 @@ and re-notification remain independently disabled by default.
 | ISSUE-005 | Virtio-mem rollback left `requested` and `current` divergent after the earlier 1 GiB test | Resolved after the updated Windows driver was installed; fresh XML reports `requested=0 KiB` and `current=0 KiB` | Fresh read-only `virsh dumpxml win11_gpu` convergence check | 2026-08-18 |
 | ISSUE-007 | Invalid service configuration was loaded before SCM dispatcher attachment, causing Windows error 1053 without status or Event Log context | Resolved by dispatching SCM before configuration loading; live invalid-config recovery emitted event 2000 and exit code 1 | `windows/src/main.rs` startup-route regression and M7 live validation | 2026-09-04 |
 | ISSUE-009 | Shared virtio-mem state validation rejected the live fully-unplugged `requested=current=0` state | Resolved by allowing zero observed state while retaining positive-target validation | `VirtioMemState` and live XML regression tests; M9 live CLI validation | 2026-09-05 |
-| ISSUE-010 | Host policy rejected a converged allocation below its configured minimum, preventing the installed controller from bootstrapping a fully unplugged device | Resolved with one aligned request to the configured minimum; normal policy remains one block at a time and above-maximum state fails closed | `plan_resize` regression test and M9b live zero-to-1-GiB systemd convergence | 2026-09-05 |
+| ISSUE-010 | Host policy rejected a converged allocation below its configured minimum, preventing the installed controller from bootstrapping a fully unplugged device | Resolved with one aligned request to the configured minimum; normal policy uses convergence-gated directional quanta and above-maximum state fails closed | `plan_resize` regression test and M9b live zero-to-1-GiB systemd convergence | 2026-09-05 |
 | ISSUE-014 | Static workload approval omitted audited configuration and could survive drift | Resolved by a version-1 SHA-256 attestation checked against fresh allocation-neutral domain XML/QEMU argv, QMP properties/version, libvirt version, and bound review declarations before every resize | `host/src/attestation.rs` exact-match, tamper, allocation-progress, and drift tests | 2026-09-07 |
 | ISSUE-006 | `dommemstat` treated balloon `actual` as a whole-guest bound and ignored `last-update` | Resolved by provenance-only `actual`, required `unused`/`available`, bounded freshness/future skew, and strict per-source advancement | `host/src/dommemstat.rs` injected-clock and semantic regression tests; TASK-025 | 2026-09-08 |
 

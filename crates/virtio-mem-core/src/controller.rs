@@ -9,6 +9,8 @@ pub struct MemoryControllerConfig {
     pub lower_threshold_bytes: u64,
     pub upper_threshold_bytes: u64,
     pub block_size_bytes: u64,
+    pub grow_step_bytes: u64,
+    pub shrink_step_bytes: u64,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -28,6 +30,15 @@ impl MemoryControllerConfig {
         if !self.block_size_bytes.is_power_of_two() {
             return Err(MemoryStatsError::InvalidConfiguration(
                 "block size must be a power of two",
+            ));
+        }
+        if self.grow_step_bytes == 0
+            || self.shrink_step_bytes == 0
+            || !self.grow_step_bytes.is_multiple_of(self.block_size_bytes)
+            || !self.shrink_step_bytes.is_multiple_of(self.block_size_bytes)
+        {
+            return Err(MemoryStatsError::InvalidConfiguration(
+                "grow and shrink steps must be positive block-aligned values",
             ));
         }
         if self.min_memory_bytes > self.max_memory_bytes {
@@ -71,7 +82,7 @@ pub fn plan_resize(
     }
     if stats.free_bytes < config.lower_threshold_bytes {
         let target = current_bytes
-            .saturating_add(config.block_size_bytes)
+            .saturating_add(config.grow_step_bytes)
             .min(config.max_memory_bytes);
         return Ok(if target == current_bytes {
             ResizeDecision::NoChange
@@ -83,7 +94,7 @@ pub fn plan_resize(
     }
     if stats.free_bytes > config.upper_threshold_bytes {
         let target = current_bytes
-            .saturating_sub(config.block_size_bytes)
+            .saturating_sub(config.shrink_step_bytes)
             .max(config.min_memory_bytes);
         return Ok(if target == current_bytes {
             ResizeDecision::NoChange
@@ -108,6 +119,8 @@ mod tests {
             lower_threshold_bytes: 2 * B,
             upper_threshold_bytes: 6 * B,
             block_size_bytes: 4 * B,
+            grow_step_bytes: 8 * B,
+            shrink_step_bytes: 4 * B,
         }
     }
     fn stats(free_bytes: u64) -> MemoryStats {
@@ -119,12 +132,12 @@ mod tests {
     }
 
     #[test]
-    fn plans_and_bounds_one_block_requests() {
+    fn plans_and_bounds_directional_step_requests() {
         const B: u64 = 1 << 20;
         assert_eq!(
             plan_resize(&stats(B), 16 * B, 16 * B, config()).expect("valid policy"),
             ResizeDecision::Request {
-                requested_bytes: 20 * B
+                requested_bytes: 24 * B
             }
         );
         assert_eq!(
@@ -190,6 +203,14 @@ mod tests {
             invalid.validate(),
             Err(MemoryStatsError::InvalidConfiguration(
                 "memory limits must be aligned to the block size"
+            ))
+        );
+        let mut invalid_step = config();
+        invalid_step.shrink_step_bytes = 3 * B;
+        assert_eq!(
+            invalid_step.validate(),
+            Err(MemoryStatsError::InvalidConfiguration(
+                "grow and shrink steps must be positive block-aligned values"
             ))
         );
     }

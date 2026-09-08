@@ -544,6 +544,8 @@ mod tests {
             lower_threshold_bytes: 2 * MIB,
             upper_threshold_bytes: 6 * MIB,
             block_size_bytes: 2 * MIB,
+            grow_step_bytes: 2 * MIB,
+            shrink_step_bytes: 2 * MIB,
         }
     }
 
@@ -743,6 +745,8 @@ mod tests {
             configured_minimum_bytes: 4 * GIB,
             configured_maximum_bytes: 32 * GIB,
             block_size_bytes: 2 * GIB,
+            grow_step_bytes: 2 * GIB,
+            shrink_step_bytes: 2 * GIB,
         })
         .expect("demand policy should be valid");
         let agent = DemandAgent::new(DemandTelemetryFixture, calculator);
@@ -766,6 +770,8 @@ mod tests {
             configured_minimum_bytes: 4 * GIB,
             configured_maximum_bytes: 32 * GIB,
             block_size_bytes: 2 * GIB,
+            grow_step_bytes: 2 * GIB,
+            shrink_step_bytes: 2 * GIB,
         })
         .expect("demand policy should be valid");
         let result = DemandServiceWorker::new(

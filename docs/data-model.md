@@ -90,6 +90,12 @@ The controller evaluates the last parsed `stat-free` value once per poll:
 Every target is clamped to the configured minimum and maximum and both limits
 must be aligned to `block_size_bytes`.
 
+Host service actuation uses directional quanta independent of the device's
+minimum block size: one 1 GiB quantum when any pressure state requests growth,
+and one 64 MiB quantum when release is advised. Each quantum must itself be a
+multiple of the live device block size. Pressure severity affects arbitration,
+not the size of a single per-VM request.
+
 Automatic shrink is not yet a supported Windows production path. Separate
 automatic-shrink and same-target re-notification controls now default off.
 M10b's bounded retry and abandon-to-current models pass hermetic tests, but

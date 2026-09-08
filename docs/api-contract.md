@@ -370,8 +370,9 @@ The Rust controller consumes parsed memory stats plus the live virtio-mem
 - `NoChange` when memory is within the hysteresis band or a safe limit has
   been reached
 - `WaitForConvergence` when a previous resize is still pending
-- `Request { requested_bytes }` for one aligned block of normal growth or
-  removal. A converged device below the configured minimum instead receives
+- `Request { requested_bytes }` for one directional service quantum: 1 GiB
+  for growth or 64 MiB for removal. Both quanta must be multiples of the live
+  device block size. A converged device below the configured minimum receives
   one aligned bootstrap request to that minimum; this permits a fully
   unplugged device to enter the managed range without hundreds of intermediate
   requests.
@@ -385,6 +386,12 @@ The controller never emits a target outside the configured minimum/maximum
 range and does not perform the host-side resize itself. A converged allocation
 above the configured maximum remains an inconsistent state and fails closed;
 only the below-minimum bootstrap has explicit reconciliation behavior.
+
+`VIRTIO_MEM_GROW_STEP_BYTES` and `VIRTIO_MEM_SHRINK_STEP_BYTES` optionally
+override the service defaults of `1073741824` and `67108864` bytes. Invalid,
+zero, or live-block-unaligned values fail closed. Pressure severity never
+multiplies a single per-VM request; another quantum requires convergence and a
+new telemetry decision.
 
 ## RHEL host controller contract
 

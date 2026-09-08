@@ -219,6 +219,10 @@ accounting or hermetic global-pool simulation.
     request plus a configured reserve (`VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES`)
     before sending it; insufficient headroom blocks the request for that
     poll cycle instead of failing the service.
+- Per-VM actuation is asymmetric: growth advances by at most 1 GiB per
+    converged request, while reclaim advances by at most 64 MiB. Both quanta
+    are block-aligned, clamped to configured limits, and suppressed while
+    `requested != current`.
 - When the connected QEMU Guest Agent does not implement the nonstandard
     `guest-get-memory-stats` extension, the host controller uses
     `virsh dommemstat`. Balloon `actual` remains provenance rather than an

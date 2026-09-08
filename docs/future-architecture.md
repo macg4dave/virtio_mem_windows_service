@@ -205,7 +205,7 @@ The initial global states are:
 - `EMERGENCY`: apply the pre-approved emergency policy and preserve explicit
   operator visibility; no unbounded or undocumented forced action.
 
-Hysteresis and block-sized decisions are required so the controller does not
+Hysteresis and block-aligned directional quanta are required so the controller does not
 oscillate between growth and reclaim.
 
 ## Confirmed `viomem.sys` integration facts
@@ -298,7 +298,7 @@ not be presented as a substitute for a configured VM minimum or a host reserve.
    only for installed-driver diagnostics.
 3. **Phase 3 arbitration:** add one Linux global pool model and simulated
    multi-VM arbitration before connecting live actuation.
-4. **Controlled reclaim:** add trend-aware safe floors, one aligned step at a
+4. **Controlled reclaim:** add trend-aware safe floors, one aligned 64 MiB step at a
    time, convergence waits, and stop-on-pressure behavior.
 5. **Optional driver interface:** investigate a supported read-only driver
    status interface only if a concrete operational diagnostic need cannot be

@@ -255,10 +255,10 @@ columns as unavailable, but XML `requested/current` convergence can still be
 observed.
 
 For Windows shrink tests, convergence timeout is not proof that the installed
-driver will retry. Source review found no obvious periodic retry timer. Do not
-enable unattended shrink until M10b proves the selected bounded policy and the
-controller has separate default-off automatic-shrink and re-notification
-controls. The qualification profile samples every five seconds, re-notifies
+driver will retry. Source review found no obvious periodic retry timer. The
+trusted `win11_gpu` development controller may use the explicitly selected
+64 MiB automatic-reclaim quantum after its deployment gate; other deployments
+remain default-off. The qualification profile samples every five seconds, re-notifies
 only the immutable target after 30, 60, and 120 seconds without block progress,
 allows at most three re-notifications, and never extends the initial 300-second
 deadline. Progress may move the no-progress clock but may not replenish either
@@ -325,6 +325,13 @@ An insufficient-headroom check is not treated as a fatal error; the
 controller logs and waits for the next poll interval rather than crashing the
 systemd unit.
 
+The host service defaults `VIRTIO_MEM_GROW_STEP_BYTES` to 1 GiB and
+`VIRTIO_MEM_SHRINK_STEP_BYTES` to 64 MiB. Tests must prove both are positive,
+aligned to the live device block, clamped at configured limits, and applied at
+most once before `requested == current` is observed again. Critical pressure
+still produces only one 1 GiB request; it does not multiply the actuation
+quantum.
+
 `VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH` is also required. It names a
 root/operator-owned, service-readable version-1 attestation created only after
 the explicitly scoped VM has been reviewed for vDPA, VFIO-NVMe, RDMA migration,
@@ -360,7 +367,7 @@ When the live device is fully unplugged (`requested=current=0`) and the
 configured minimum is 1 GiB, the controller uses its below-minimum bootstrap
 rule to request the aligned 1 GiB minimum once. Host-headroom, fresh XML,
 fresh QMP compatibility, workload-review, and convergence gates still apply.
-After convergence, ordinary policy resumes one block at a time and cannot
+After convergence, ordinary policy resumes one directional quantum at a time and cannot
 shrink below the configured minimum.
 
 The installed-service procedure passed on `win11_gpu` on 2026-09-05. The
