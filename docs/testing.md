@@ -796,11 +796,12 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-Success is 31 shared-core and 39 host tests with zero failures. Run the native
+Success is 31 shared-core and 40 host tests with zero failures. Run the native
 Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
 scripts/windows-remote-build.sh all`; success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
-current Linux environment cannot compile the Windows SCM APIs directly.
+2026-09-08 gate passed 66 tests and verified artifact SHA-256
+`c81405f3121c1479b57e100002637a5fd12225a6880baa6c6b5c0020e7bc87cc`.
 
 M10d must still define the deployment transport and provision least-privilege
 ACLs, record/file size bounds, retention, rotation, acknowledgement, and atomic

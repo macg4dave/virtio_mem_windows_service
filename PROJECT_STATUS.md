@@ -3,7 +3,8 @@
 **Updated:** 2026-09-08
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
-actuation are live validated. The host-side demand join is locally complete;
+actuation are live validated. The host-side demand join is complete with
+native Windows and hermetic host evidence;
 bounded delivery and recovery hardening remain. Host-stat freshness and the complete compatibility
 attestation is implemented and awaits a separately approved live installation.
 The allocation-authority contract is established from Virtio and pinned
@@ -52,9 +53,9 @@ The latest native RHEL gate passed:
 - `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
 - `bash -n scripts/*.sh`
 
-The M7 Windows-native gate passes 64 tests with warnings denied and produced a
-checksum-verified executable with SHA-256
-`2dc1bf9df309e86c39119890cad8c7419de831e3276ba36b920535a72ed26c8e`.
+The latest Windows-native gate passes 66 tests with warnings denied and
+produced a checksum-verified executable with SHA-256
+`c81405f3121c1479b57e100002637a5fd12225a6880baa6c6b5c0020e7bc87cc`.
 
 Live M7 validation on `ice101.lan` passed the LocalService
 install/start/observe/stop/delete sequence. Event IDs 1000–1003 were observed

@@ -9,7 +9,6 @@
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
 | ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; does not block host allocation accounting or simulation | Windows observability | Medium |
-| ISSUE-012 | M10c production raw publication and host join are implemented with passing core/host gates but await native Windows validation | Open; implementation ready for native gate | Demand integration | High |
 | ISSUE-013 | The M10c envelope lacks service/session/sequence/provenance identity and the JSON-lines sink has no bounded handoff or retention/rotation contract | Open; M10d | Demand delivery | High |
 | ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete deterministic/live recovery matrix | Open; M10b, automatic shrink must become default-off until qualified | Host recovery | High |
 
@@ -33,9 +32,9 @@ and re-notification remain independently disabled by default.
 
 ## Resolved Issues
 
-
 | ID | Description | Status | Fix Reference | Date Resolved |
 | --- | ----------- | ------ | -------------- | ------------- |
+| ISSUE-012 | Production Windows telemetry samples were discarded pending the selected host-side allocation join | Resolved | TASK-020 raw publisher and fresh alias-scoped `current` host join | 2026-09-08 |
 | ISSUE-001 | Host controller depended on unavailable `guest-get-memory-stats` | Resolved by configurable `dommemstat` default; upstream audit confirms the command is not upstream QGA and the retained adapter is custom/experimental | `host/src/dommemstat.rs`, `VIRTIO_MEM_STATS_SOURCE` config | 2026-08-18; clarified 2026-09-05 |
 | ISSUE-005 | Virtio-mem rollback left `requested` and `current` divergent after the earlier 1 GiB test | Resolved after the updated Windows driver was installed; fresh XML reports `requested=0 KiB` and `current=0 KiB` | Fresh read-only `virsh dumpxml win11_gpu` convergence check | 2026-08-18 |
 | ISSUE-007 | Invalid service configuration was loaded before SCM dispatcher attachment, causing Windows error 1053 without status or Event Log context | Resolved by dispatching SCM before configuration loading; live invalid-config recovery emitted event 2000 and exit code 1 | `windows/src/main.rs` startup-route regression and M7 live validation | 2026-09-04 |

@@ -51,11 +51,10 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest local RHEL gate passes 31 shared-core and 40 host tests. The prior
-native-Windows gate passes 64 tests; TASK-020's Windows publication changes
-still require a refreshed native gate. These are separate supported-platform
-results, not one cross-platform workspace run. Local release builds,
-formatting, Clippy warnings-as-errors, and Bash syntax validation pass.
+The latest gates pass 31 shared-core, 40 host, and 66 native-Windows tests.
+These are separate supported-platform results, not one cross-platform
+workspace run. Release builds, formatting, Clippy warnings-as-errors, and Bash
+syntax validation pass.
 
 ### Important limitations
 

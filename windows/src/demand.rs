@@ -351,7 +351,7 @@ mod tests {
         assert_eq!(
             policy().calculate(snapshot(8 * GIB, 4 * GIB), 3 * GIB),
             Err(DemandError::InvalidPolicy(
-                "current allocation must be positive and block aligned"
+                "current allocation must be block aligned"
             ))
         );
     }

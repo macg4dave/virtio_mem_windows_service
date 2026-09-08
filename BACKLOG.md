@@ -1,6 +1,6 @@
 # BACKLOG
 
-## 2026-09-08 M10c host-side current-allocation join in progress
+## 2026-09-08 M10c host-side current-allocation join
 
 - Moved the platform-neutral raw telemetry and demand-calculation contract into
   `virtio-mem-core`. Version 1 raw records carry only VM identity, Unix
@@ -13,9 +13,10 @@
   with a newly read alias-scoped live XML `current`, calculates through shared
   policy, rejects geometry conflicts, and leaves shrink advisory pending M10b.
 - The local gate passes 31 shared-core and 40 host tests, formatting, Clippy
-  with warnings denied, release build, Bash syntax, and diff checks. Native
-  Windows validation remains: this environment has no Windows Rust target or
-  configured remote-build alias, and no protected guest was modified.
+  with warnings denied, release build, Bash syntax, and diff checks. The native
+  Windows gate passes 66 tests, formatting, Clippy, and release build; the
+  fetched executable SHA-256 is
+  `c81405f3121c1479b57e100002637a5fd12225a6880baa6c6b5c0020e7bc87cc`.
 
 ## 2026-09-08 M9e host telemetry correctness and freshness
 
@@ -813,8 +814,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-020 | M10c host-side current-allocation join | Copilot | In Progress | Implementation and 31-core/40-host hermetic gates pass. Run the native Windows all-gate to validate schema-v3 config plus interactive/SCM `RawTelemetryWorker`; no host-allocation feed, guest resize interface, or automatic shrink was added. |
-| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, the advisory calculator, and raw production publisher are implemented. TASK-020 awaits its native Windows gate; TASK-021 adds session/sequence/provenance, bounded handoff, and retention semantics. ProgramData ACLs and live workload tuning remain. |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, the advisory calculator, raw production publisher, and host-side current-allocation join are implemented. TASK-021 adds session/sequence/provenance, bounded handoff, and retention semantics. ProgramData ACLs and live workload tuning remain. |
 
 ## Planned
 
@@ -979,6 +979,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-020 | M10c host-side current-allocation join | Copilot | 2026-09-08 | Windows publishes VM/time-scoped raw telemetry without allocation input; the host rejects invalid/stale/wrong-VM records, joins fresh alias-scoped live `current`, and calculates through shared policy. 31 core, 40 host, and 66 native Windows tests pass. |
 | TASK-025 | M9e host telemetry correctness and freshness | Copilot | 2026-09-08 | Correct balloon mapping, bounded advancing `last-update`, injected-clock failures, and the shared-path Rust `decision` preview pass hermetic tests; the QGA-only Bash preview is removed. |
 | TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | 2026-09-07 | Version-1 SHA-256 evidence binds the full reviewed live configuration and operator declarations; every resize recollects evidence and fails closed on tamper or drift, with allocation-neutral hermetic tests. |
 | TASK-001 | Rust service scaffolding | Copilot | 2026-09-04 | Service lifecycle, configuration, SCM adapter, native telemetry worker, legacy QGA adapter boundary, cancellation, error handling, and live SCM validation are complete; demand publication continues under TASK-009. |
