@@ -34,5 +34,5 @@ Also check that:
 
 Shell safety:
 
-- Review commands must be read-only by default. Do not edit/delete server files or mutate VM, libvirt, or systemd state without explicit current-turn approval naming the exact target and action.
-- Never use `sudo`, `su`, or `doas` during review without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never automate password entry.
+- Use read-only review commands unless reproducing a finding requires task-scoped beta installation, service lifecycle, or bounded reversible resize validation; those operations are authorized by default.
+- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.

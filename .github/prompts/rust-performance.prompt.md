@@ -24,5 +24,5 @@ Validate from `windows/` with tests, format check, Clippy, and release build. Re
 
 Shell safety:
 
-- Performance measurements must not mutate the server, VM, service manager, or files outside the repository without explicit approval naming the exact action.
-- Prefer normal-user benchmarks and tests. If a privileged run is required, ask first with the complete command, target, mutation, and rollback, then run the whole script once under `sudo`; never automate or collect the password.
+- Prefer normal-user benchmarks and tests. Task-scoped beta installation, service lifecycle, live measurement, and bounded reversible resize validation are authorized by default when required by the benchmark.
+- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.

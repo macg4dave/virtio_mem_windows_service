@@ -24,5 +24,5 @@ Validate from `windows/` with `cargo fmt --all -- --check`, `cargo test`, `cargo
 
 Shell safety:
 
-- Limit edits to the repository files required by the task; never alter or delete server-side files or VM/service state without explicit current-turn approval.
-- Keep validation unprivileged. If privilege is required, ask first with the complete command, target, mutation, and rollback, then run the whole script once under `sudo`; never automate password entry.
+- Limit edits to the repository files required by the task. Task-scoped beta installation, service lifecycle, live inspection, and bounded reversible resize validation are authorized by default.
+- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.

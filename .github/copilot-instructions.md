@@ -65,56 +65,50 @@ installed QEMU Guest Agent process owns that channel.
 - Hide errors or skip `set -euo pipefail`
 - Depend on Go toolchains or Go build flows
 
-## Shell and server safety
+## Shell and live-system safety
 
-- Treat the RHEL host, Windows guest, libvirt domains, systemd units, and all
-  files outside this repository as protected resources.
-- Never delete, edit, move, overwrite, chmod, chown, install, restart, stop,
-  reboot, resize, or otherwise mutate a protected resource without explicit
-  approval in the current turn naming the target and intended action. A broad
-  request to investigate or test is not approval for mutation.
-- Read-only discovery is the default. Before any potentially mutating command,
-  state its exact scope and expected effect, then wait for approval.
-- Never invoke `sudo`, `su`, or `doas` without first asking for approval in the
-  current turn. The approval request must name the complete command, protected
-  target, expected mutation, and rollback behavior.
-- When approval is granted for a privileged script, run the complete script
-  once under `sudo` (for example, `sudo bash scripts/example.sh ...`) rather
-  than mixing privileged and unprivileged subcommands. Do not add `sudo` to
-  individual commands opportunistically or chain unrelated privileged actions.
-- **Batch privileged reads into one approval and one sudo process.** When
-  several related read-only `virsh`, `systemctl`, `journalctl`, or host
-  inspection commands need the same permission, ask for approval for the
-  complete named batch, then run one approved script or `sudo bash -s` that
-  performs all of those reads. Never invoke `sudo` once per probe, retry the
-  same batch with separate `sudo` commands, or make the user authenticate 15
-  times for one investigation. Commands inside the approved privileged batch
-  must run without nested `sudo`.
-- Do not rely on sudo's credential-cache timeout to implement batching; the
-  command structure itself must contain a single privileged entry point. If a
-  batch fails because of authorization, stop at that boundary and report it
-  instead of launching individual privileged retries.
-- For an RHEL task that needs more than one privileged command, follow
-  `.github/prompts/rhel-privileged-batch.prompt.md`. Materialize the complete
-  task-specific script below the ignored
-  `.vscode-artifacts/privileged-tasks/` directory, show its exact scope to the
-  operator, and invoke that script once with one outer `sudo`. The temporary
-  script must contain no `sudo`, password handling, open-ended command input,
-  or unrelated operations. Do not treat the script as standing authorization
-  for a later task.
+The project is in beta qualification. Building, testing, and task-scoped live
+validation are authorized by default; an agent must not stop merely to request
+another approval for the operations listed below.
+
+- Agents may run repository build, format, lint, unit, integration, install,
+  service-lifecycle, and validation commands by default.
+- Agents may inspect the documented RHEL host, Windows test guest, libvirt/QEMU
+  domain, QEMU Guest Agent, and related systemd units needed by the task.
+- Agents may build and install a task's candidate artifacts, start, stop, or
+  restart the relevant test service, and run bounded live resize/convergence
+  tests by default when the target is uniquely identified by the task or the
+  repository's documented test configuration.
+- A live resize must use the repository's safety gates: capture the initial
+  state, validate the exact VM and device alias, use an aligned bounded target,
+  enforce timeouts and convergence checks, and restore the initial requested
+  size on failure and at the end of a reversible test. Never bypass an
+  attestation, compatibility, headroom, retention-floor, or rollback gate.
+- Before a live mutation, report the resolved target, command or task script,
+  expected effect, timeout, and rollback. This is an execution notice, not an
+  approval request; continue with the operation unless the scope is ambiguous
+  or a required safety precondition fails.
+- Privileged task-scoped validation is also allowed by default. Batch related
+  privileged commands into one task-specific Bash script under the ignored
+  `.vscode-artifacts/privileged-tasks/` directory and invoke it once with one
+  outer `sudo`, following `.github/prompts/rhel-privileged-batch.prompt.md`.
+  Commands inside the script must not invoke `sudo`, `su`, or `doas`.
 - Never ask the user to send a password, store credentials, or put a password
   in a script, environment file, command line, or repository. If the terminal
-  prompts for sudo authentication, the user must type it directly; do not use
-  `sudo -S`, echoed passwords, or password automation.
-- Prefer unprivileged, hermetic tests. If root or a privileged capability is
-  genuinely required, stop at the permission boundary and ask before running
-  the approved whole-script command.
-- Use a dedicated least-privilege service account for approved live libvirt or
-  systemd validation. Do not add passwordless broad `sudoers` rules or run the
+  prompts for authentication, the user types it directly; do not use `sudo -S`,
+  echoed passwords, or password automation.
+- Use the dedicated least-privilege service account for live libvirt or systemd
+  validation. Do not add broad passwordless `sudoers` rules or run the
   controller as root merely to make a test pass.
-- Do not edit or delete server-side files, service units, VM definitions, or
-  guest state from an automation prompt unless the user explicitly authorizes
-  that specific change.
+- Explicit current-turn approval is still required for host or guest reboot or
+  shutdown; deleting a pre-existing VM, service, user, data, or server-side
+  file; persistent VM-definition, firmware, driver, network, storage, ACL, or
+  security-policy changes; disabling a safety control; non-reversible resize;
+  or mutations not required by the selected task. Task-created temporary
+  services, files, and test configuration may be removed as part of the same
+  task's cleanup. Resolve ambiguity before acting.
+- If authorization or a safety check fails, stop and report the boundary. Do
+  not weaken controls, retry piecemeal, or expand the task's scope.
 
 ## Contract Rules
 
@@ -148,7 +142,8 @@ installed QEMU Guest Agent process owns that channel.
   - Test the `run` command (non-service mode) for worker logic and lifecycle changes.
   - Document any new CLI modes or command-line options in `docs/testing.md`.
   - Report the exact cargo test results in the commit or task notes.
-- All testing is performed locally. Document any blocking issues for local validation.
+- Run all applicable local and live beta validation. Document exact results and
+  any environment or authorization blocker.
 - Stack changes: validate that services can start and communicate correctly.
 - If a command cannot run locally, state the exact blocker.
 

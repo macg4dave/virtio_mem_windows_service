@@ -36,7 +36,6 @@ Rules:
 
 Shell safety:
 
-- Treat the server, VM, systemd/libvirt state, and files outside this repository as protected.
-- Do not edit, delete, move, overwrite, install, restart, stop, reboot, resize, chmod, or chown protected resources without explicit approval in the current turn naming the target and action.
-- Keep discovery read-only by default. Ask before any privileged command, naming the complete command, target, mutation, and rollback; after approval run the whole script once under `sudo`. Never collect, store, or automate the password.
-- Prefer unprivileged hermetic tests and least-privilege service accounts over broad root access.
+- Repository builds, tests, candidate installation, relevant service lifecycle checks, live inspection, and bounded reversible resize validation are authorized by default for beta work.
+- Run hermetic checks first. Before a live mutation, give the execution notice and follow the target, safety-gate, timeout, convergence, rollback, privilege-batching, and password rules in `.github/copilot-instructions.md`.
+- Reboots, deletions, persistent configuration changes, disabled safety gates, non-reversible resize, and unrelated mutations still require explicit approval.

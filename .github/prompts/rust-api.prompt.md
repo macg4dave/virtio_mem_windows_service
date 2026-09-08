@@ -24,5 +24,5 @@ Validate from `windows/` with `cargo test`, format check, Clippy, and release bu
 
 Shell safety:
 
-- Keep contract validation read-only and unprivileged unless live integration is explicitly approved for a named target.
-- Never edit/delete protected server files or mutate VM/libvirt/systemd state without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never automate or collect the password.
+- Run local contract validation first. Task-scoped beta installation, service lifecycle, live integration, and bounded reversible resize validation are authorized by default for an unambiguous target.
+- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.

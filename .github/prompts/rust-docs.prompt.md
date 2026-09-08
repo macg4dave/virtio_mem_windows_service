@@ -24,5 +24,5 @@ Validate Rust examples with the appropriate `cargo test` command from `windows/`
 
 Shell safety:
 
-- Documentation validation is read-only by default and must not edit/delete server files or change VM, libvirt, or systemd state without explicit approval.
-- Never use `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never automate or collect the password.
+- Prefer read-only documentation validation, but task-scoped beta installation, service lifecycle, live inspection, and bounded reversible resize validation are authorized by default when needed to verify an example or procedure.
+- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.

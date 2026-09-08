@@ -1,5 +1,24 @@
 # BACKLOG
 
+## 2026-09-08 beta build and live-validation agent policy
+
+- Updated the canonical agent instructions and every reusable task prompt so
+  repository builds, tests, candidate installation, relevant service lifecycle
+  checks, live inspection, and bounded reversible resize tests may run by
+  default during beta qualification without a second approval pause.
+- Live mutations still require an execution notice, an unambiguous target,
+  existing compatibility/attestation/headroom gates, bounded convergence, and
+  rollback to captured initial state. Privileged operations remain one
+  task-specific script under one outer `sudo`, with direct operator password
+  entry only.
+- Reboots, deletion of pre-existing resources, persistent platform/security
+  configuration changes, disabled safety controls, non-reversible resize, and
+  unrelated mutations remain explicit-approval operations. Cleanup of
+  temporary resources created by the same test is permitted by default.
+- Validation: `git diff --check` passed and a repository prompt scan found no
+  remaining rule that requires separate approval for task-scoped beta build,
+  test, service lifecycle, or bounded reversible resize work.
+
 ## 2026-09-08 M10aX driver status-interface feasibility
 
 - M10a3's no-progress shrink, the larger partial-progress shrink, and two

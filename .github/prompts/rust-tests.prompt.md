@@ -19,7 +19,7 @@ Details:
 Rules:
 
 - Add the smallest deterministic tests that reproduce the behavior.
-- Prefer unit tests for parsing, validation, policy, and error paths; do not require a live VM or QEMU Guest Agent.
+- Prefer unit tests for parsing, validation, policy, and error paths. Add or run live VM/QEMU Guest Agent coverage when it materially validates the beta acceptance criteria.
 - Cover empty, malformed, missing, inconsistent, minimum, maximum, threshold, alignment, and convergence cases where applicable.
 - Do not weaken assertions or hide failures with `unwrap()` in production code.
 - Avoid network, filesystem, timing, and platform-global dependencies unless the test explicitly isolates them.
@@ -29,6 +29,6 @@ Validate from `windows/` with `cargo test`, `cargo fmt --all -- --check`, and Cl
 
 Shell safety:
 
-- Keep tests unprivileged and hermetic unless live integration is explicitly requested.
-- Do not edit or delete server files, alter VM/libvirt/systemd state, or run mutating commands without current-turn approval naming the exact target and action.
-- Never use `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval, run the complete test script once under `sudo`; never automate or collect the password, and let the user type it directly into the terminal.
+- Run hermetic tests first, then applicable live beta tests. A task-scoped service lifecycle or bounded reversible resize is authorized by default when the target is unambiguous.
+- Give the execution notice and follow `.github/copilot-instructions.md`; use captured initial state, safety gates, timeouts, convergence checks, and rollback.
+- Batch privileged steps into one task script and one outer `sudo`; never automate or collect the password. Reboots, deletions, persistent configuration changes, disabled safety gates, and unrelated mutations still require explicit approval.

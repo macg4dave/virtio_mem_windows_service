@@ -31,6 +31,5 @@ Validate from `windows/` with tests, format check, Clippy, and release build whe
 
 Shell safety:
 
-- Treat host files, VM state, service units, and files outside the repository as protected resources.
-- Keep review and validation read-only by default; no delete/edit/restart/resize/install action without explicit approval naming the target and action.
-- Never use `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval run the whole script once under `sudo`; never request, store, or automate the password.
+- Keep review read-only where possible. Task-scoped beta installation, service lifecycle, live inspection, and bounded reversible resize validation are authorized by default when needed to reproduce or verify a finding.
+- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.

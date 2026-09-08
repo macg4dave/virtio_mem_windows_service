@@ -28,5 +28,6 @@ Do not add speculative features. Do not use AI agreement as validation.
 
 Shell safety:
 
-- Check and report the working tree before edits. Do not edit or delete files outside the repository, server files, VM definitions, or service state without explicit current-turn approval naming the target and action.
-- Keep discovery and local validation unprivileged. Ask before any privileged command, naming the complete command, target, mutation, and rollback; after approval run the whole script once under `sudo`. Never request, store, or automate the password.
+- Check and report the working tree before edits.
+- Build, test, install the task candidate, exercise the relevant service lifecycle, inspect the live test system, and run a bounded reversible resize by default when required by the task's beta acceptance criteria.
+- Give the live execution notice and follow `.github/copilot-instructions.md`, including safety gates, bounded convergence, rollback, one-script privilege batching, and direct operator password entry. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.

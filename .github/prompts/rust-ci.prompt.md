@@ -9,7 +9,7 @@ Rules:
 
 - Keep automation in Bash and preserve `#!/bin/bash` plus `set -euo pipefail`.
 - Keep Rust validation reproducible and run formatting, tests, Clippy, and release build checks where supported.
-- Do not hide failures, ignore exit codes, add privileged actions, or depend on Go/Python/Node.js/PowerShell.
+- Do not hide failures, ignore exit codes, or depend on Go/Python/Node.js/PowerShell.
 - Do not remove existing checks unless explicitly requested and documented.
 - Keep Windows-target assumptions explicit; distinguish local Rust validation from live RHEL/libvirt/QEMU validation.
 - Make scripts explicit-scope and allowlist friendly; never add broad network scans or remote admin actions.
@@ -24,6 +24,6 @@ Validate the affected script and run the relevant Rust checks from `windows/`. R
 
 Shell safety:
 
-- Run formatting, Cargo tests, Clippy, and builds as the normal user whenever possible; these checks must not silently gain root privileges.
-- Do not add or run privileged install, service, VM, libvirt, or filesystem mutation steps without explicit current-turn approval naming the target and action.
-- Never invoke `sudo`, `su`, or `doas` without current-turn approval naming the complete command, target, mutation, and rollback. After approval, run the whole script once under `sudo`, not a mixture of privileged subcommands. Never automate or collect the password; the user types it directly into the terminal.
+- Run formatting, Cargo tests, Clippy, and builds as the normal user whenever possible.
+- Beta build/test work may install its candidate, exercise the relevant service lifecycle, inspect live VM/libvirt state, and run a bounded reversible resize by default. Give the execution notice and follow the live-system rules in `.github/copilot-instructions.md`.
+- Batch privileged steps into one task script and one outer `sudo`; never automate or collect the password. Reboots, deletions, persistent configuration changes, disabled safety gates, and unrelated mutations still require explicit approval.
