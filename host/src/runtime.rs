@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use virtio_mem_core::{
     plan_resize, DemandCalculator, DemandPolicyConfig, DemandReport, MemoryControllerConfig,
-    MemoryStats, RawTelemetryEnvelope, ResizeDecision, VirtioMemState,
+    MemoryStats, RawTelemetryEnvelope, ResizeDecision, ShrinkAction, ShrinkObservation,
+    ShrinkOperation, ShrinkPolicy, VirtioMemState,
 };
 
 use crate::config::HostConfig;
@@ -68,6 +69,10 @@ pub trait MemoryStateSource {
 }
 pub trait ResizeSink {
     fn request_resize(&self, requested_bytes: u64) -> Result<(), String>;
+
+    fn renotify_shrink(&self, _target_bytes: u64) -> Result<(), String> {
+        Err("shrink re-notification is unsupported by this resize sink".to_owned())
+    }
 }
 
 #[derive(Debug, Error)]
@@ -119,6 +124,9 @@ where
 
     pub fn run(&self, stop: &AtomicBool) -> Result<(), HostRuntimeError> {
         let mut pending_since = None;
+        let runtime_started = Instant::now();
+        let mut owned_request = false;
+        let mut shrink_operation: Option<ShrinkOperation> = None;
         while !stop.load(Ordering::Acquire) {
             let state = self
                 .state_source
@@ -128,6 +136,41 @@ where
                 .validate()
                 .map_err(|error| HostRuntimeError::MemoryState(error.to_string()))?;
             if state.requested_bytes != state.current_bytes {
+                if let Some(operation) = shrink_operation.as_mut() {
+                    let now_millis =
+                        u64::try_from(runtime_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    match operation.observe(ShrinkObservation {
+                        now_millis,
+                        requested_bytes: state.requested_bytes,
+                        current_bytes: state.current_bytes,
+                        fresh: true,
+                        guest_running: true,
+                    }) {
+                        ShrinkAction::Renotify { target_bytes, .. }
+                            if self.config.shrink_renotification =>
+                        {
+                            if let Err(error) = self.resize_sink.renotify_shrink(target_bytes) {
+                                let _ = operation.uncertain_command_result();
+                                eprintln!(
+                                    "virtio-mem-host: shrink re-notification outcome is ambiguous; actuation latched off: {error}"
+                                );
+                            }
+                        }
+                        ShrinkAction::Latch { reason } => {
+                            eprintln!("virtio-mem-host: shrink actuation latched off: {reason}");
+                        }
+                        _ => {}
+                    }
+                    wait_interruptibly(stop, self.config.poll_interval);
+                    continue;
+                }
+                if !owned_request {
+                    eprintln!(
+                        "virtio-mem-host: observing unowned divergent requested/current state; recovery is required and replay is suppressed"
+                    );
+                    wait_interruptibly(stop, self.config.poll_interval);
+                    continue;
+                }
                 let started = pending_since.get_or_insert_with(Instant::now);
                 if started.elapsed() >= self.config.convergence_timeout {
                     return Err(HostRuntimeError::ConvergenceTimeout(
@@ -138,6 +181,8 @@ where
                 continue;
             }
             pending_since = None;
+            owned_request = false;
+            shrink_operation = None;
             let envelope = self
                 .raw_telemetry
                 .read()
@@ -153,11 +198,13 @@ where
             };
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if requested_bytes < state.current_bytes {
-                    eprintln!(
-                        "virtio-mem-host: calculated advisory shrink to {requested_bytes} bytes; automatic Windows shrink remains disabled pending M10b"
-                    );
-                    wait_interruptibly(stop, self.config.poll_interval);
-                    continue;
+                    if !self.config.automatic_windows_shrink {
+                        eprintln!(
+                            "virtio-mem-host: calculated advisory shrink to {requested_bytes} bytes; automatic Windows shrink is disabled"
+                        );
+                        wait_interruptibly(stop, self.config.poll_interval);
+                        continue;
+                    }
                 }
                 if requested_bytes > state.current_bytes {
                     let host_available = self
@@ -177,10 +224,32 @@ where
                         continue;
                     }
                 }
-                self.resize_sink
-                    .request_resize(requested_bytes)
-                    .map_err(HostRuntimeError::Resize)?;
+                if let Err(error) = self.resize_sink.request_resize(requested_bytes) {
+                    if requested_bytes < state.current_bytes {
+                        eprintln!(
+                            "virtio-mem-host: initial shrink outcome is ambiguous; replay suppressed pending a fresh state read: {error}"
+                        );
+                        wait_interruptibly(stop, self.config.poll_interval);
+                        continue;
+                    }
+                    return Err(HostRuntimeError::Resize(error));
+                }
+                owned_request = true;
                 pending_since = Some(Instant::now());
+                if requested_bytes < state.current_bytes {
+                    let now_millis =
+                        u64::try_from(runtime_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    shrink_operation = Some(
+                        ShrinkOperation::start(
+                            ShrinkPolicy::qualification(state.block_size_bytes),
+                            now_millis,
+                            state.current_bytes,
+                            requested_bytes,
+                            report.demand.safe_floor_bytes,
+                        )
+                        .map_err(HostRuntimeError::Controller)?,
+                    );
+                }
             }
             wait_interruptibly(stop, self.config.poll_interval);
         }
@@ -227,6 +296,8 @@ mod tests {
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 4 * GIB,
             compatibility_attestation_path: "reviewed.json".to_owned(),
+            automatic_windows_shrink: false,
+            shrink_renotification: false,
         }
     }
 

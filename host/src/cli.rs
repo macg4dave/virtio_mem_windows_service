@@ -639,6 +639,8 @@ mod tests {
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 4 * GIB,
             compatibility_attestation_path: "reviewed.json".to_owned(),
+            automatic_windows_shrink: false,
+            shrink_renotification: false,
         };
         let mut output = Vec::new();
         run_decision_with(

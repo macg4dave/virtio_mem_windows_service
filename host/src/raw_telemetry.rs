@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use virtio_mem_core::RawTelemetryEnvelope;
 
 pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
@@ -37,7 +38,8 @@ impl UnixClock for SystemUnixClock {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ReplayState {
     last: Option<RawTelemetryEnvelope>,
     retired_sessions: VecDeque<String>,
@@ -46,6 +48,7 @@ struct ReplayState {
 #[derive(Debug)]
 pub struct FileRawTelemetrySource<T = SystemUnixClock> {
     path: PathBuf,
+    replay_state_path: PathBuf,
     expected_vm_name: String,
     expected_service_name: String,
     max_age: Duration,
@@ -62,14 +65,16 @@ impl FileRawTelemetrySource<SystemUnixClock> {
         max_age: Duration,
         future_tolerance: Duration,
     ) -> Self {
+        let path = path.into();
         Self::with_clock(
-            path,
+            &path,
             expected_vm_name,
             expected_service_name,
             max_age,
             future_tolerance,
             SystemUnixClock,
         )
+        .with_replay_state_path(default_replay_state_path(&path))
     }
 }
 
@@ -84,6 +89,7 @@ impl<T> FileRawTelemetrySource<T> {
     ) -> Self {
         Self {
             path: path.into(),
+            replay_state_path: PathBuf::new(),
             expected_vm_name: expected_vm_name.into(),
             expected_service_name: expected_service_name.into(),
             max_age,
@@ -95,6 +101,11 @@ impl<T> FileRawTelemetrySource<T> {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn with_replay_state_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.replay_state_path = path.into();
+        self
     }
 }
 
@@ -155,6 +166,9 @@ impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
             .replay
             .lock()
             .map_err(|_| "raw telemetry replay state lock is poisoned".to_owned())?;
+        if replay.last.is_none() && replay.retired_sessions.is_empty() {
+            *replay = load_replay_state(&self.replay_state_path)?;
+        }
         if replay
             .retired_sessions
             .iter()
@@ -178,8 +192,55 @@ impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
             }
         }
         replay.last = Some(envelope.clone());
+        persist_replay_state(&self.replay_state_path, &replay)?;
         Ok(envelope)
     }
+}
+
+fn default_replay_state_path(telemetry_path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.ack.json", telemetry_path.display()))
+}
+
+fn load_replay_state(path: &Path) -> Result<ReplayState, String> {
+    let path = if path.as_os_str().is_empty() {
+        return Ok(ReplayState::default());
+    } else {
+        path
+    };
+    let contents = match std::fs::read(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ReplayState::default())
+        }
+        Err(error) => return Err(format!("read raw telemetry acknowledgement: {error}")),
+    };
+    if contents.len() > MAX_RAW_TELEMETRY_RECORD_BYTES {
+        return Err("raw telemetry acknowledgement exceeds size limit".to_owned());
+    }
+    serde_json::from_slice(&contents)
+        .map_err(|error| format!("parse raw telemetry acknowledgement: {error}"))
+}
+
+fn persist_replay_state(path: &Path, state: &ReplayState) -> Result<(), String> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create acknowledgement directory: {error}"))?;
+    }
+    let bytes = serde_json::to_vec(state)
+        .map_err(|error| format!("encode raw telemetry acknowledgement: {error}"))?;
+    let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
+    std::fs::write(&temporary, bytes)
+        .map_err(|error| format!("write raw telemetry acknowledgement: {error}"))?;
+    std::fs::rename(&temporary, path).map_err(|error| {
+        let _ = std::fs::remove_file(&temporary);
+        format!("publish raw telemetry acknowledgement: {error}")
+    })
 }
 
 fn duration_millis(duration: Duration) -> Result<u64, String> {
@@ -394,5 +455,44 @@ mod tests {
             assert!(source.read().is_err(), "{name} should fail");
             std::fs::remove_file(path).expect("remove fixture");
         }
+    }
+
+    #[test]
+    fn durable_acknowledgement_rejects_replay_after_reader_restart() {
+        let path = path("durable-replay");
+        let acknowledgement = PathBuf::from(format!("{}.ack", path.display()));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&acknowledgement);
+        let first = envelope("session-a", 995_000, 10, 0);
+        std::fs::write(
+            &path,
+            format!("{}\n", serde_json::to_string(&first).expect("encode")),
+        )
+        .expect("write fixture");
+
+        let first_reader = FileRawTelemetrySource::with_clock(
+            &path,
+            "guest",
+            "VirtioMemService",
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+            FixedClock(1_000_000),
+        )
+        .with_replay_state_path(&acknowledgement);
+        assert_eq!(first_reader.read(), Ok(first));
+
+        let restarted_reader = FileRawTelemetrySource::with_clock(
+            &path,
+            "guest",
+            "VirtioMemService",
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+            FixedClock(1_000_000),
+        )
+        .with_replay_state_path(&acknowledgement);
+        assert!(restarted_reader.read().is_err());
+
+        std::fs::remove_file(path).expect("remove fixture");
+        std::fs::remove_file(acknowledgement).expect("remove acknowledgement");
     }
 }

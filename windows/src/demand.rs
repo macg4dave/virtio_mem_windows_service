@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
+pub const RAW_TELEMETRY_RETENTION_FILES: usize = 3;
+
 pub use virtio_mem_core::{
     DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig, DemandRecommendation,
     DemandReport, DemandState, MemoryTelemetrySnapshot, RawTelemetryEnvelope,
@@ -107,6 +110,140 @@ impl RawTelemetryPublisher for JsonLinesRawTelemetryPublisher {
             .map_err(|error| format!("write raw telemetry: {error}"))?;
         file.flush()
             .map_err(|error| format!("flush raw telemetry: {error}"))
+    }
+}
+
+/// Publishes one complete current record through an atomic replace and keeps a
+/// bounded set of previous records for diagnostics. Readers never consume a
+/// partially written current record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AtomicRawTelemetryPublisher {
+    path: PathBuf,
+    retention_files: usize,
+}
+
+impl AtomicRawTelemetryPublisher {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            retention_files: RAW_TELEMETRY_RETENTION_FILES,
+        }
+    }
+
+    pub fn with_retention(path: impl Into<PathBuf>, retention_files: usize) -> Self {
+        Self {
+            path: path.into(),
+            retention_files,
+        }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn backup_path(&self, index: usize) -> PathBuf {
+        PathBuf::from(format!("{}.{}", self.path.display(), index))
+    }
+}
+
+impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
+    fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String> {
+        let mut encoded = serde_json::to_vec(envelope)
+            .map_err(|error| format!("encode raw telemetry: {error}"))?;
+        encoded.push(b'\n');
+        if encoded.len() > MAX_RAW_TELEMETRY_RECORD_BYTES {
+            return Err(format!(
+                "raw telemetry record exceeds {MAX_RAW_TELEMETRY_RECORD_BYTES} byte limit"
+            ));
+        }
+        if let Some(parent) = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create raw telemetry directory: {error}"))?;
+        }
+
+        if self.retention_files > 0 {
+            let oldest = self.backup_path(self.retention_files);
+            match std::fs::remove_file(&oldest) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("remove oldest raw telemetry backup: {error}")),
+            }
+            for index in (1..self.retention_files).rev() {
+                let from = self.backup_path(index);
+                let to = self.backup_path(index + 1);
+                match std::fs::rename(&from, &to) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(format!("rotate raw telemetry backup: {error}")),
+                }
+            }
+            if self.path.exists() {
+                std::fs::copy(&self.path, self.backup_path(1))
+                    .map_err(|error| format!("retain previous raw telemetry record: {error}"))?;
+            }
+        }
+
+        let temporary = PathBuf::from(format!(
+            "{}.tmp-{}",
+            self.path.display(),
+            std::process::id()
+        ));
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("open raw telemetry handoff: {error}"))?;
+        file.write_all(&encoded)
+            .map_err(|error| format!("write raw telemetry handoff: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("flush raw telemetry handoff: {error}"))?;
+        drop(file);
+        atomic_replace(&temporary, &self.path).map_err(|error| {
+            let _ = std::fs::remove_file(&temporary);
+            format!("publish raw telemetry handoff: {error}")
+        })
+    }
+}
+
+#[cfg(not(windows))]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    std::fs::rename(source, destination)
+}
+
+#[cfg(windows)]
+fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use winapi::shared::minwindef::FALSE;
+    use winapi::um::winbase::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
+
+    let source = source
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let destination = destination
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    // SAFETY: Both pointers reference NUL-terminated UTF-16 buffers that live
+    // for the complete call, and MoveFileExW does not retain them.
+    if unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            destination.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    } == FALSE
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
     }
 }
 
@@ -497,6 +634,48 @@ mod tests {
         assert!(!content.contains("desired_target_bytes"));
         assert!(!content.contains("current_bytes"));
         std::fs::remove_file(path).expect("test record should be removed");
+    }
+
+    #[test]
+    fn atomic_publisher_handoffs_complete_records_with_bounded_retention() {
+        let path = std::env::temp_dir().join(format!(
+            "virtio-mem-raw-telemetry-{}-atomic.jsonl",
+            std::process::id()
+        ));
+        for suffix in ["", ".1", ".2", ".3"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+        }
+        let mut publisher = AtomicRawTelemetryPublisher::with_retention(&path, 2);
+        for sequence in 0..4 {
+            let envelope = RawTelemetryEnvelope::new(
+                "guest",
+                "VirtioMemService",
+                "session-a",
+                1_000_000 + sequence,
+                10 + sequence,
+                sequence,
+                snapshot(2 * GIB, 15 * GIB),
+            );
+            publisher.publish(&envelope).expect("atomic publish");
+        }
+        let current: RawTelemetryEnvelope = serde_json::from_str(
+            std::fs::read_to_string(&path)
+                .expect("current record")
+                .trim(),
+        )
+        .expect("complete JSON");
+        let previous: RawTelemetryEnvelope = serde_json::from_str(
+            std::fs::read_to_string(format!("{}.1", path.display()))
+                .expect("previous record")
+                .trim(),
+        )
+        .expect("complete retained JSON");
+        assert_eq!(current.sequence, 3);
+        assert_eq!(previous.sequence, 2);
+        assert!(std::fs::metadata(format!("{}.3", path.display())).is_err());
+        for suffix in ["", ".1", ".2"] {
+            std::fs::remove_file(format!("{}{suffix}", path.display())).expect("remove fixture");
+        }
     }
 
     #[test]

@@ -27,7 +27,7 @@ const SERVICE_START: DWORD = 0x00000010;
 
 use crate::config::ServiceConfig;
 use crate::demand::{
-    process_session_id, JsonLinesRawTelemetryPublisher, NativeMemoryTelemetry, SystemTelemetryClock,
+    process_session_id, AtomicRawTelemetryPublisher, NativeMemoryTelemetry, SystemTelemetryClock,
 };
 use crate::event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
@@ -171,6 +171,7 @@ fn to_wide(value: &str) -> Vec<u16> {
 
 pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
     let registration = WindowsServiceRegistration::from_config(config)?;
+    provision_program_data_acl(config)?;
     let manager_name = to_wide("");
     let manager = unsafe {
         OpenSCManagerW(
@@ -290,6 +291,73 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
     Ok(())
 }
 
+fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
+    use winapi::shared::minwindef::HLOCAL;
+    use winapi::shared::sddl::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use winapi::um::securitybaseapi::SetFileSecurityW;
+    use winapi::um::winbase::LocalFree;
+    use winapi::um::winnt::{DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR};
+
+    if !config
+        .service_account
+        .eq_ignore_ascii_case(r"NT AUTHORITY\LocalService")
+    {
+        return Err(
+            "automatic ProgramData ACL provisioning supports only NT AUTHORITY\\LocalService"
+                .to_owned(),
+        );
+    }
+    let report_parent = std::path::Path::new(&config.demand_report_path)
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| "demand report path has no parent directory".to_owned())?;
+    let config_parent = std::path::Path::new(&config.config_path)
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| "configuration path has no parent directory".to_owned())?;
+    if report_parent != config_parent {
+        return Err("configuration and telemetry files must share one ACL root".to_owned());
+    }
+    std::fs::create_dir_all(report_parent)
+        .map_err(|error| format!("create service data directory: {error}"))?;
+
+    // Protected DACL: SYSTEM and Administrators have full control; LocalService
+    // has the file/directory rights required to create and atomically replace
+    // telemetry while no broad Users/Everyone ACE is inherited.
+    let sddl = to_wide("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)");
+    let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+    // SAFETY: The SDDL and path are NUL-terminated UTF-16 buffers, the API
+    // initializes descriptor, and LocalFree releases the returned allocation.
+    let converted = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1.into(),
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if converted == FALSE {
+        return Err(format!(
+            "convert ProgramData security descriptor: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let path = to_wide(&report_parent.to_string_lossy());
+    let applied = unsafe { SetFileSecurityW(path.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
+    unsafe {
+        LocalFree(descriptor as HLOCAL);
+    }
+    if applied == FALSE {
+        return Err(format!(
+            "apply ProgramData security descriptor: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(())
+}
+
 pub fn run_as_service() -> Result<bool, String> {
     let service_name = to_wide(crate::config::DEFAULT_SERVICE_NAME);
     let mut table = [
@@ -399,7 +467,7 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
                 .map_err(|error| format!("runtime wiring / session identity: {error}"))?;
             let mut worker = RawTelemetryWorker::new(
                 NativeMemoryTelemetry,
-                JsonLinesRawTelemetryPublisher::new(&telemetry_path),
+                AtomicRawTelemetryPublisher::new(&telemetry_path),
                 SystemTelemetryClock::default(),
                 &vm_name,
                 &service_name,

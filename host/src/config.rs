@@ -25,6 +25,8 @@ pub enum HostConfigError {
     InvalidRawTelemetryPath,
     #[error("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME must be non-empty")]
     InvalidRawTelemetryServiceName,
+    #[error("environment variable {name} must be 'true' or 'false': {value}")]
+    InvalidBoolean { name: &'static str, value: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +60,8 @@ pub struct HostConfig {
     pub raw_telemetry_future_tolerance: Duration,
     pub host_min_headroom_bytes: u64,
     pub compatibility_attestation_path: String,
+    pub automatic_windows_shrink: bool,
+    pub shrink_renotification: bool,
 }
 
 impl HostConfig {
@@ -100,6 +104,8 @@ impl HostConfig {
             )?),
             host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
             compatibility_attestation_path: required("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH")?,
+            automatic_windows_shrink: optional_bool("VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK")?,
+            shrink_renotification: optional_bool("VIRTIO_MEM_SHRINK_RENOTIFICATION")?,
         };
         config.validate()?;
         Ok(config)
@@ -143,6 +149,15 @@ impl HostConfig {
             return Err(HostConfigError::InvalidRawTelemetryServiceName);
         }
         Ok(())
+    }
+}
+
+fn optional_bool(name: &'static str) -> Result<bool, HostConfigError> {
+    match env::var(name) {
+        Err(_) => Ok(false),
+        Ok(value) if value.eq_ignore_ascii_case("true") => Ok(true),
+        Ok(value) if value.eq_ignore_ascii_case("false") || value.trim().is_empty() => Ok(false),
+        Ok(value) => Err(HostConfigError::InvalidBoolean { name, value }),
     }
 }
 
@@ -190,6 +205,8 @@ mod tests {
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "/etc/virtio-mem-host/guest.attestation.json"
                 .to_owned(),
+            automatic_windows_shrink: false,
+            shrink_renotification: false,
         };
         assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
     }
@@ -216,6 +233,8 @@ mod tests {
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "valid".to_owned(),
+            automatic_windows_shrink: false,
+            shrink_renotification: false,
         };
         config.compatibility_attestation_path = " ".to_owned();
         assert_eq!(
@@ -246,6 +265,8 @@ mod tests {
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "valid".to_owned(),
+            automatic_windows_shrink: false,
+            shrink_renotification: false,
         };
         config.raw_telemetry_path = " ".to_owned();
         assert_eq!(

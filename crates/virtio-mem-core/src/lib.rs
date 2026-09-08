@@ -5,6 +5,8 @@ pub mod compatibility;
 pub mod controller;
 pub mod demand;
 pub mod error;
+pub mod global_pool;
+pub mod shrink_recovery;
 pub mod stats;
 pub mod units;
 pub mod virtio_mem;
@@ -24,6 +26,14 @@ pub use demand::{
     TelemetrySource, DEMAND_REPORT_VERSION, RAW_TELEMETRY_VERSION,
 };
 pub use error::{MemoryStatsError, PollError, ServiceLoopError, VirtioMemError};
+pub use global_pool::{
+    arbitrate_global_pool, GlobalPoolConfig, GlobalPoolDecision, GlobalPoolError, GlobalPoolPlan,
+    HostPressureState, VmPoolInput,
+};
+pub use shrink_recovery::{
+    AbandonAction, AbandonToCurrent, ShrinkAction, ShrinkObservation, ShrinkOperation,
+    ShrinkPolicy, ShrinkState,
+};
 pub use stats::{parse_memory_stats, parse_memory_stats_with_id, MemoryStats};
 pub use units::{bytes_to_kibibytes, kibibytes_to_bytes, BYTES_PER_KIB};
 pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES, MIN_HEADROOM_BYTES};

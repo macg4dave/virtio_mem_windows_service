@@ -32,6 +32,9 @@ VIRTIO_MEM_RAW_TELEMETRY_PATH=/run/virtio-mem-host/win11_gpu.telemetry.jsonl
 VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME=VirtioMemService
 VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS=60
 VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS=5
+# M10b safety controls are independent and default off when omitted.
+VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false
+VIRTIO_MEM_SHRINK_RENOTIFICATION=false
 
 # Required: a grow request is blocked unless the RHEL host's /proc/meminfo
 # MemAvailable covers the requested delta plus this reserve.

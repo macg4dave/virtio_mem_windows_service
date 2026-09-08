@@ -2,7 +2,7 @@ use std::process;
 
 use virtio_mem_service::{
     install_service, process_session_id, remove_service, run_as_service, start_service,
-    stop_service, JsonLinesRawTelemetryPublisher, NativeMemoryTelemetry, RawTelemetryWorker,
+    stop_service, AtomicRawTelemetryPublisher, NativeMemoryTelemetry, RawTelemetryWorker,
     RuntimeWiringError, ServiceConfig, ServiceHost, SystemTelemetryClock,
 };
 
@@ -59,7 +59,7 @@ fn run_service(config: ServiceConfig) -> Result<(), RuntimeWiringError> {
         process_session_id(&config.service_name).map_err(RuntimeWiringError::WorkerConstruction)?;
     let worker = RawTelemetryWorker::new(
         NativeMemoryTelemetry,
-        JsonLinesRawTelemetryPublisher::new(&config.demand_report_path),
+        AtomicRawTelemetryPublisher::new(&config.demand_report_path),
         SystemTelemetryClock::default(),
         config.vm_name,
         config.service_name,

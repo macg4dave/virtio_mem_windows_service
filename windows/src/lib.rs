@@ -16,11 +16,12 @@ pub mod virtio_mem_xml;
 pub use config::ServiceConfig;
 pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 pub use demand::{
-    process_session_id, DemandAgent, DemandAgentError, DemandCalculator, DemandError, DemandLimits,
-    DemandPolicyConfig, DemandRecommendation, DemandReport, DemandReportPublisher, DemandState,
-    JsonLinesDemandReportPublisher, JsonLinesRawTelemetryPublisher, MemoryTelemetry,
-    MemoryTelemetrySnapshot, NativeMemoryTelemetry, RawTelemetryEnvelope, RawTelemetryPublisher,
-    SystemTelemetryClock, TelemetryClock,
+    process_session_id, AtomicRawTelemetryPublisher, DemandAgent, DemandAgentError,
+    DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig, DemandRecommendation,
+    DemandReport, DemandReportPublisher, DemandState, JsonLinesDemandReportPublisher,
+    JsonLinesRawTelemetryPublisher, MemoryTelemetry, MemoryTelemetrySnapshot,
+    NativeMemoryTelemetry, RawTelemetryEnvelope, RawTelemetryPublisher, SystemTelemetryClock,
+    TelemetryClock,
 };
 pub use error::{
     ConfigurationError, MemoryStatsError, PollError, RuntimeWiringError, ServiceHostError,
