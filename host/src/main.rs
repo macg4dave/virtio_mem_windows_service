@@ -4,11 +4,13 @@ use std::sync::{atomic::AtomicBool, Arc};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
-use virtio_mem_host::config::HostConfig;
+use virtio_mem_host::config::{DemandSourceMode, HostConfig, StatsSource};
+use virtio_mem_host::dommemstat::DomMemStatSource;
 use virtio_mem_host::host_memory::ProcMeminfoSource;
+use virtio_mem_host::qga::VirshGuestAgent;
 use virtio_mem_host::raw_telemetry::FileRawTelemetrySource;
 use virtio_mem_host::resize_sink::VirshResizeSink;
-use virtio_mem_host::runtime::HostRuntime;
+use virtio_mem_host::runtime::{DemandSource, GuestStatsDemandSource, HostRuntime};
 use virtio_mem_host::virsh::Virsh;
 use virtio_mem_host::xml_source::VirshXmlSource;
 
@@ -44,16 +46,52 @@ fn main() -> ExitCode {
         eprintln!("virtio-mem-host signal setup error: {error}");
         return ExitCode::FAILURE;
     }
+    match config.demand_source {
+        DemandSourceMode::Raw => run_controller(
+            FileRawTelemetrySource::new(
+                &config.raw_telemetry_path,
+                &config.vm_name,
+                &config.raw_telemetry_service_name,
+                config.raw_telemetry_max_age,
+                config.raw_telemetry_future_tolerance,
+            ),
+            config,
+            &stop,
+        ),
+        DemandSourceMode::GuestStats => {
+            let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
+            match config.stats_source {
+                StatsSource::DomMemStat => run_controller(
+                    GuestStatsDemandSource::new(DomMemStatSource::new(
+                        virsh,
+                        config.vm_name.clone(),
+                        config.stats_max_age,
+                        config.stats_future_tolerance,
+                    )),
+                    config,
+                    &stop,
+                ),
+                StatsSource::Qga => run_controller(
+                    GuestStatsDemandSource::new(VirshGuestAgent::new(
+                        virsh,
+                        config.vm_name.clone(),
+                    )),
+                    config,
+                    &stop,
+                ),
+            }
+        }
+    }
+}
+
+fn run_controller<D: DemandSource>(
+    demand_source: D,
+    config: HostConfig,
+    stop: &AtomicBool,
+) -> ExitCode {
     let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
-    let raw_telemetry = FileRawTelemetrySource::new(
-        &config.raw_telemetry_path,
-        &config.vm_name,
-        &config.raw_telemetry_service_name,
-        config.raw_telemetry_max_age,
-        config.raw_telemetry_future_tolerance,
-    );
     let runtime = HostRuntime::new(
-        raw_telemetry,
+        demand_source,
         VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),
         VirshResizeSink::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
             .with_compatibility_source(AttestedCompatibilitySource::new(
@@ -65,7 +103,7 @@ fn main() -> ExitCode {
         ProcMeminfoSource::new(),
         config,
     );
-    match runtime.run(&stop) {
+    match runtime.run(stop) {
         Ok(()) => {
             eprintln!("virtio-mem-host stopped");
             ExitCode::SUCCESS

@@ -44,8 +44,8 @@ technology preview.
 
 ## Verified evidence
 
-- **Current platform gates:** the latest RHEL gate passes 45 shared-core and
-    48 host tests; the latest native-Windows gate passes 67 tests. Keep these
+- **Current platform gates:** the latest RHEL gate passes 46 shared-core and
+    49 host tests; the latest native-Windows gate passes 67 tests. Keep these
     as separate supported-platform results rather than one workspace total.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.

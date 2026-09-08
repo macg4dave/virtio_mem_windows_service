@@ -13,6 +13,13 @@
   quantum; a release decision emits one 64 MiB quantum. Pressure severity does
   not multiply a request, both quanta must be live-block-aligned, and the next
   quantum remains convergence-gated.
+- Added an explicit `guest-stats` compatibility mode for the validated
+  pre-M10d live instance. Raw Windows telemetry remains the production default;
+  the compatibility mode does not synthesize an envelope and reuses the same
+  directional policy and guarded resize sink.
+- Validation passes 46 shared-core, 49 host, and 67 native Windows tests plus
+  release, format, and warnings-as-errors gates. The native artifact SHA-256 is
+  `d91e6ccd2a0fdbac1da8bcd96a4e05ecf77964834e20d973c844e44d77d1e9dd`.
 
 ## 2026-09-08 M10 delivery and shrink-recovery implementation
 

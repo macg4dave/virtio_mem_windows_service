@@ -318,6 +318,12 @@ duplicate fields, and missing/stale/future/non-advancing `last-update`.
 example uses 60 and 5 seconds. The configured balloon stats period must be
 shorter than the controller poll interval so each long-running sample advances.
 
+Production defaults to `VIRTIO_MEM_DEMAND_SOURCE=raw`. The explicit
+`guest-stats` compatibility mode is limited to a trusted development instance
+without a provisioned M10d transport. Its tests must prove it feeds
+`MemoryStats` directly into the shared directional controller and does not
+synthesize a raw Windows telemetry envelope.
+
 `VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES` is a required configuration value: the
 controller will not send a grow request unless the RHEL host's
 `/proc/meminfo` `MemAvailable` covers the requested delta plus this reserve.
@@ -809,7 +815,7 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-The 2026-09-08 local M10 gate passes 45 shared-core and 48 host tests with zero
+The 2026-09-09 local M10 gate passes 46 shared-core and 49 host tests with zero
 failures. It covers durable restart-safe acknowledgement, atomic handoff,
 bounded retention, the shrink schedule, latched stalls, cancellation/restart,
 and one-shot recovery. Run the native
@@ -817,7 +823,7 @@ Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
 scripts/windows-remote-build.sh all`; success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
 2026-09-08 native gate passed 67 tests and verified artifact SHA-256
-`ec4a965f468312615ec1416336f1f5674cd7fce34bbbf62f9a7bc55b3d5c0995`.
+`d91e6ccd2a0fdbac1da8bcd96a4e05ecf77964834e20d973c844e44d77d1e9dd`.
 
 M10d's implementation now provisions the LocalService ProgramData DACL and
 implements deterministic publisher retention/rotation, durable

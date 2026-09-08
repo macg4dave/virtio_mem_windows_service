@@ -1171,6 +1171,7 @@ mod tests {
             convergence_timeout: Duration::from_secs(300),
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
+            demand_source: crate::config::DemandSourceMode::Raw,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "guest.telemetry.jsonl".to_owned(),

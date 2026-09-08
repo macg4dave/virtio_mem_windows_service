@@ -1,6 +1,6 @@
 # Project Status & Next Steps
 
-**Updated:** 2026-09-08
+**Updated:** 2026-09-09
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
 actuation are live validated. The host-side demand join is complete with
@@ -55,7 +55,7 @@ guest; upstream Windows virtio-mem support remains technology preview.
 
 The latest native RHEL gate passed:
 
-- 45 shared-core and 48 host tests, with no failures.
+- 46 shared-core and 49 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -64,7 +64,7 @@ The latest native RHEL gate passed:
 
 The latest M10d Windows-native gate passes 67 tests with warnings denied and
 produced a checksum-verified executable with SHA-256
-`ec4a965f468312615ec1416336f1f5674cd7fce34bbbf62f9a7bc55b3d5c0995`.
+`d91e6ccd2a0fdbac1da8bcd96a4e05ecf77964834e20d973c844e44d77d1e9dd`.
 
 Live M7 validation on `ice101.lan` passed the LocalService
 install/start/observe/stop/delete sequence. Event IDs 1000–1003 were observed

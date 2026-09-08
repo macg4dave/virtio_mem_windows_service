@@ -23,6 +23,10 @@ VIRTIO_MEM_CONVERGENCE_TIMEOUT_SECONDS=300
 # dommemstat (virtio-balloon counters) is the default and does not require
 # guest-get-memory-stats support. Set to "qga" only if the connected guest
 # agent implements guest-get-memory-stats.
+# Raw Windows telemetry is the production demand source. The explicit
+# `guest-stats` mode exists for validated pre-M10d development deployments
+# whose cross-guest raw-telemetry transport is not yet provisioned.
+VIRTIO_MEM_DEMAND_SOURCE=raw
 VIRTIO_MEM_STATS_SOURCE=dommemstat
 # `last-update` must be no older than this bound and must advance between
 # controller samples. Small positive future skew is tolerated explicitly.

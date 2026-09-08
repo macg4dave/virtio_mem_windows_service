@@ -62,6 +62,73 @@ pub trait GuestStatsSource {
     fn get_memory_stats(&self) -> Result<MemoryStats, String>;
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub struct DemandDecision {
+    pub decision: ResizeDecision,
+    pub safe_floor_bytes: u64,
+}
+
+pub trait DemandSource {
+    fn evaluate(
+        &self,
+        state: VirtioMemState,
+        config: &HostConfig,
+    ) -> Result<DemandDecision, String>;
+}
+
+impl<T: RawTelemetrySource> DemandSource for T {
+    fn evaluate(
+        &self,
+        state: VirtioMemState,
+        config: &HostConfig,
+    ) -> Result<DemandDecision, String> {
+        let report = evaluate_demand_join(self.read()?, state, config)?;
+        let decision = if report.demand.desired_target_bytes == state.current_bytes {
+            ResizeDecision::NoChange
+        } else {
+            ResizeDecision::Request {
+                requested_bytes: report.demand.desired_target_bytes,
+            }
+        };
+        Ok(DemandDecision {
+            decision,
+            safe_floor_bytes: report.demand.safe_floor_bytes,
+        })
+    }
+}
+
+pub struct GuestStatsDemandSource<T> {
+    source: T,
+}
+
+impl<T> GuestStatsDemandSource<T> {
+    pub fn new(source: T) -> Self {
+        Self { source }
+    }
+}
+
+impl<T: GuestStatsSource> DemandSource for GuestStatsDemandSource<T> {
+    fn evaluate(
+        &self,
+        state: VirtioMemState,
+        config: &HostConfig,
+    ) -> Result<DemandDecision, String> {
+        let decision = evaluate_memory_decision(&self.source.get_memory_stats()?, state, config)?;
+        let safe_floor_bytes = match decision {
+            ResizeDecision::Request { requested_bytes }
+                if requested_bytes < state.current_bytes =>
+            {
+                requested_bytes
+            }
+            _ => state.current_bytes,
+        };
+        Ok(DemandDecision {
+            decision,
+            safe_floor_bytes,
+        })
+    }
+}
+
 impl GuestStatsSource for Box<dyn GuestStatsSource> {
     fn get_memory_stats(&self) -> Result<MemoryStats, String> {
         (**self).get_memory_stats()
@@ -81,8 +148,8 @@ pub trait ResizeSink {
 
 #[derive(Debug, Error)]
 pub enum HostRuntimeError {
-    #[error("raw Windows telemetry failed validation: {0}")]
-    RawTelemetry(String),
+    #[error("memory demand input failed validation: {0}")]
+    DemandInput(String),
     #[error("live virtio-mem state failed validation: {0}")]
     MemoryState(String),
     #[error("memory controller configuration is invalid: {0}")]
@@ -96,7 +163,7 @@ pub enum HostRuntimeError {
 }
 
 pub struct HostRuntime<G, S, R, H> {
-    raw_telemetry: G,
+    demand_source: G,
     state_source: S,
     resize_sink: R,
     host_memory: H,
@@ -105,20 +172,20 @@ pub struct HostRuntime<G, S, R, H> {
 
 impl<G, S, R, H> HostRuntime<G, S, R, H>
 where
-    G: RawTelemetrySource,
+    G: DemandSource,
     S: MemoryStateSource,
     R: ResizeSink,
     H: HostMemorySource,
 {
     pub fn new(
-        raw_telemetry: G,
+        demand_source: G,
         state_source: S,
         resize_sink: R,
         host_memory: H,
         config: HostConfig,
     ) -> Self {
         Self {
-            raw_telemetry,
+            demand_source,
             state_source,
             resize_sink,
             host_memory,
@@ -187,19 +254,11 @@ where
             pending_since = None;
             owned_request = false;
             shrink_operation = None;
-            let envelope = self
-                .raw_telemetry
-                .read()
-                .map_err(HostRuntimeError::RawTelemetry)?;
-            let report = evaluate_demand_join(envelope, state, &self.config)
-                .map_err(HostRuntimeError::Controller)?;
-            let decision = if report.demand.desired_target_bytes == state.current_bytes {
-                ResizeDecision::NoChange
-            } else {
-                ResizeDecision::Request {
-                    requested_bytes: report.demand.desired_target_bytes,
-                }
-            };
+            let demand = self
+                .demand_source
+                .evaluate(state, &self.config)
+                .map_err(HostRuntimeError::DemandInput)?;
+            let decision = demand.decision;
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if requested_bytes < state.current_bytes && !self.config.automatic_windows_shrink {
                     eprintln!(
@@ -247,7 +306,7 @@ where
                             now_millis,
                             state.current_bytes,
                             requested_bytes,
-                            report.demand.safe_floor_bytes,
+                            demand.safe_floor_bytes,
                         )
                         .map_err(HostRuntimeError::Controller)?,
                     );
@@ -292,6 +351,7 @@ mod tests {
             convergence_timeout: Duration::from_secs(300),
             virsh_binary: "virsh".to_owned(),
             stats_source: crate::config::StatsSource::DomMemStat,
+            demand_source: crate::config::DemandSourceMode::Raw,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "guest.telemetry.jsonl".to_owned(),
@@ -358,6 +418,48 @@ mod tests {
             &config(),
         )
         .is_err());
+    }
+
+    struct FixedGuestStats(MemoryStats);
+
+    impl GuestStatsSource for FixedGuestStats {
+        fn get_memory_stats(&self) -> Result<MemoryStats, String> {
+            Ok(MemoryStats {
+                free_bytes: self.0.free_bytes,
+                available_bytes: self.0.available_bytes,
+                total_bytes: self.0.total_bytes,
+            })
+        }
+    }
+
+    #[test]
+    fn guest_stats_compatibility_mode_uses_directional_quanta() {
+        let demand = GuestStatsDemandSource::new(FixedGuestStats(MemoryStats {
+            free_bytes: 4 * GIB,
+            available_bytes: 8 * GIB,
+            total_bytes: 8 * GIB,
+        }));
+        let evaluation = demand
+            .evaluate(
+                VirtioMemState {
+                    size_bytes: 40 * GIB,
+                    block_size_bytes: 2 * MIB,
+                    requested_bytes: 16 * GIB,
+                    current_bytes: 16 * GIB,
+                },
+                &config(),
+            )
+            .expect("guest stats are valid");
+
+        assert_eq!(
+            evaluation,
+            DemandDecision {
+                decision: ResizeDecision::Request {
+                    requested_bytes: 16 * GIB - 64 * MIB,
+                },
+                safe_floor_bytes: 16 * GIB - 64 * MIB,
+            }
+        );
     }
 
     #[test]

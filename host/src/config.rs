@@ -24,6 +24,8 @@ pub enum HostConfigError {
     InvalidDuration,
     #[error("VIRTIO_MEM_STATS_SOURCE must be 'dommemstat' or 'qga': {0}")]
     InvalidStatsSource(String),
+    #[error("VIRTIO_MEM_DEMAND_SOURCE must be 'raw' or 'guest-stats': {0}")]
+    InvalidDemandSource(String),
     #[error("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH must be non-empty")]
     InvalidAttestationPath,
     #[error("VIRTIO_MEM_RAW_TELEMETRY_PATH must be non-empty")]
@@ -44,6 +46,12 @@ pub enum StatsSource {
     Qga,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DemandSourceMode {
+    Raw,
+    GuestStats,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostConfig {
     pub vm_name: String,
@@ -59,6 +67,7 @@ pub struct HostConfig {
     pub convergence_timeout: Duration,
     pub virsh_binary: String,
     pub stats_source: StatsSource,
+    pub demand_source: DemandSourceMode,
     pub stats_max_age: Duration,
     pub stats_future_tolerance: Duration,
     pub raw_telemetry_path: String,
@@ -81,6 +90,13 @@ impl HostConfig {
             Ok(value) if value.trim().is_empty() => StatsSource::DomMemStat,
             Ok(other) => return Err(HostConfigError::InvalidStatsSource(other)),
             Err(_) => StatsSource::DomMemStat,
+        };
+        let demand_source = match env::var("VIRTIO_MEM_DEMAND_SOURCE") {
+            Ok(value) if value.eq_ignore_ascii_case("raw") => DemandSourceMode::Raw,
+            Ok(value) if value.eq_ignore_ascii_case("guest-stats") => DemandSourceMode::GuestStats,
+            Ok(value) if value.trim().is_empty() => DemandSourceMode::Raw,
+            Ok(other) => return Err(HostConfigError::InvalidDemandSource(other)),
+            Err(_) => DemandSourceMode::Raw,
         };
         let config = Self {
             vm_name,
@@ -105,6 +121,7 @@ impl HostConfig {
             virsh_binary: env::var("VIRTIO_MEM_VIRSH_BINARY")
                 .unwrap_or_else(|_| "virsh".to_owned()),
             stats_source,
+            demand_source,
             stats_max_age: Duration::from_secs(positive("VIRTIO_MEM_STATS_MAX_AGE_SECONDS")?),
             stats_future_tolerance: Duration::from_secs(positive(
                 "VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS",
@@ -227,6 +244,7 @@ mod tests {
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
+            demand_source: DemandSourceMode::Raw,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
@@ -258,6 +276,7 @@ mod tests {
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
+            demand_source: DemandSourceMode::Raw,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
@@ -292,6 +311,7 @@ mod tests {
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
             stats_source: StatsSource::DomMemStat,
+            demand_source: DemandSourceMode::Raw,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "valid".to_owned(),

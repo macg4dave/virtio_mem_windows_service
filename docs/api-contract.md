@@ -400,6 +400,13 @@ virtio-mem alias. The alias is restricted to letters, digits, `_`, `.`, and
 `-`. The controller invokes `virsh` with a fixed argument vector; it does not
 use a command shell. Its host calls are:
 
+`VIRTIO_MEM_DEMAND_SOURCE=raw` is the production default and requires the
+validated M10d envelope. `guest-stats` is an explicit compatibility mode for a
+trusted development deployment whose raw-telemetry transport is not yet
+provisioned; it uses the selected `dommemstat` or custom-QGA source without
+constructing or pretending to have a raw Windows envelope. Both modes use the
+same directional target evaluator, compatibility gate, and resize sink.
+
 - optional `virsh qemu-agent-command <vm>
   {"execute":"guest-get-memory-stats"}` only after validating the exact
   custom/downstream capability
