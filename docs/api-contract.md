@@ -142,8 +142,10 @@ zero denominators, impossible counters, and arithmetic overflow.
 `DemandCalculator` clamps recommendations to configured byte limits and aligns
 every target to the configured block size. It produces a one-block conservative
 safe-floor recommendation, but neither that floor nor the desired target is a
-resize command. The Windows service remains advisory and the existing host
-controller remains the only Phase 2 actuation authority.
+resize command. The calculator and its data types are platform-neutral shared
+Rust code. Production invokes them on the host only after the M10c join; the
+Windows service remains measurement-only and the host controller remains the
+only Phase 2 actuation authority.
 
 `DemandAgent` provides the runtime boundary for one caller-selected poll cycle:
 it collects a snapshot, calculates a report using the observed current
@@ -152,15 +154,31 @@ collection or publication failure is returned explicitly. The publisher has no
 resize interface; integration with the main SCM worker and a persistent/event
 report sink remain separate operational work.
 
-`JsonLinesDemandReportPublisher` is the current local append-only sink. It appends
+`JsonLinesDemandReportPublisher` remains a local test/foundation sink. It appends
 one complete JSON object plus a newline to the configured report path and
-returns directory, encoding, write, and flush failures explicitly. The generic
-`DemandServiceWorker` uses this publication boundary when supplied with a
-validated current-allocation provider; the main SCM worker does not guess that
-state from QGA totals or configured limits. Version 1 has no rotation,
-retention, maximum-file, reader acknowledgement, or atomic handoff contract
-and must not be enabled as an unattended production spool until M10d defines
-and tests those behaviors.
+returns directory, encoding, write, and flush failures explicitly.
+
+The M10c production Windows worker instead appends `RawTelemetryEnvelope`
+records. Version 1 contains exactly `version`, `vm_name`,
+`observed_unix_seconds`, and `memory`; `memory` is the validated raw
+`MemoryTelemetrySnapshot`. It contains no current allocation, recommendation,
+or resize field. The Windows configuration schema is version 3 and binds the
+record to its configured libvirt VM name.
+
+The host reads the latest non-empty JSON-lines record from its explicitly
+configured VM-scoped path. It rejects missing/malformed records, unsupported
+versions, a wrong or empty VM name, invalid counters, observations older than
+the configured maximum age, and observations beyond the configured future
+skew. It then reads and validates fresh alias-scoped live XML, suppresses
+policy while `requested != current`, and passes only the live `current` plus
+raw counters to the shared calculator. A target conflicting with live device
+geometry fails closed. Calculated shrink remains advisory and is not actuated
+until M10b qualifies and enables it.
+
+Version 1 has no service/boot session, monotonic or sequence ordering,
+allocation-provenance field, rotation, retention, maximum-record/file size,
+reader acknowledgement, or atomic handoff contract. M10d owns those additions
+and the deployment transport/ACL contract.
 
 ### Current-allocation ownership
 
@@ -169,9 +187,9 @@ service has no supported driver status API and must not invoke libvirt or infer
 allocation from aggregate physical memory. The M10c decision is a host-side
 join: Windows publishes a fresh, versioned raw telemetry envelope; the host
 joins it with alias-scoped live libvirt `current` and calculates the target.
-There is no host-to-guest allocation feed and no guest resize authority. Until
-M10c/M10d implement that contract, the production SCM worker validates native
-telemetry but does not publish `DemandReport` values.
+There is no host-to-guest allocation feed and no guest resize authority. The
+production SCM worker publishes raw telemetry only; it never publishes a
+guest-calculated `DemandReport`.
 
 ## Memory Change Request
 

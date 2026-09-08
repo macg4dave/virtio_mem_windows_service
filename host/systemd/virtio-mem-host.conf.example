@@ -25,6 +25,13 @@ VIRTIO_MEM_STATS_SOURCE=dommemstat
 VIRTIO_MEM_STATS_MAX_AGE_SECONDS=60
 VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS=5
 
+# Required M10c raw Windows telemetry input. The deployment transport must
+# present the Windows JSON-lines output at this host-local, VM-scoped path.
+# M10d adds bounded handoff, retention, rotation, and ACL requirements.
+VIRTIO_MEM_RAW_TELEMETRY_PATH=/run/virtio-mem-host/win11_gpu.telemetry.jsonl
+VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS=60
+VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS=5
+
 # Required: a grow request is blocked unless the RHEL host's /proc/meminfo
 # MemAvailable covers the requested delta plus this reserve.
 VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES=4294967296

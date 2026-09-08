@@ -437,11 +437,12 @@ Get-Service VirtioMemService | Select-Object -Property Status, StartType
 The executable first attempts the SCM dispatcher when invoked as `run` (the
 default command with no arguments). If it is not launched by SCM, it falls
 back to the interactive worker host, which is useful for local lifecycle
-testing. The production worker is `NativeTelemetryWorker`: it reads and
-validates `GlobalMemoryStatusEx`/`GetPerformanceInfo` during initialization and
-each poll, then currently discards the sample. The QGA client remains a tested
-adapter boundary but is not constructed by interactive or SCM startup. No
-demand report or resize is produced by this path.
+testing. The production `RawTelemetryWorker` reads and validates
+`GlobalMemoryStatusEx`/`GetPerformanceInfo`, adds the configured VM name and
+Unix observation time, and appends a raw JSON-lines record during
+initialization and each poll. The QGA client remains a tested adapter boundary
+but is not constructed by interactive or SCM startup. No allocation input,
+guest-calculated demand report, or resize is produced by this path.
 
 For SCM validation under the configured `LocalService` account, deploy the
 binary to `C:\Program Files\VirtioMemService` and grant that account
@@ -573,7 +574,7 @@ x64, and hostname `ICE101`.
 QGA `guest-get-memory-stats` returns `command ... has not been found`, and
 `guest-info` does not advertise that command. This is expected for upstream
 QGA, not a transport failure; three `dommemstat` samples prove observability,
-while M9e still has to qualify their semantics and freshness.
+and M9e subsequently qualified their semantics and freshness in Rust.
 
 The compatible `virsh dumpxml win11_gpu` inspection found virtio-mem alias
 `ua-virtiomem0`, size `20971520 KiB` (20 GiB), block `2048 KiB` (2 MiB), and
@@ -771,16 +772,39 @@ a live VM first:
 - verify invalid telemetry prevents publication and publisher failures remain
   explicit.
 
-The JSON-lines publisher test reads the emitted file back and parses each line
-as a complete version-1 `DemandReport`. Version 1 has no freshness/identity
-envelope and the sink has no retention, rotation, acknowledgement, or atomic
-handoff contract, so this proves local append/flush behavior only. The default
-path is under `C:\ProgramData\VirtioMemService`; installation must provision
-the directory and least-privilege ACLs before enabling unattended service
-output. The main SCM
-worker remains unconnected to publication until M10c implements the selected
-host-side join; tests must not substitute a configured minimum, aggregate
-physical memory, QGA total, or balloon `actual` for live libvirt `current`.
+The JSON-lines publisher tests read emitted files back as complete records.
+The production `RawTelemetryWorker` emits a version-1
+`RawTelemetryEnvelope` containing only the configured VM name, Unix observation
+seconds, and validated raw counters; assertions prove that allocation and
+target fields are absent. The default path is under
+`C:\ProgramData\VirtioMemService`. Configuration schema version 3 adds the VM
+name used by both interactive and SCM publication paths.
+
+The host requires `VIRTIO_MEM_RAW_TELEMETRY_PATH`,
+`VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS`, and
+`VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS`. Hermetic tests inject the
+clock and verify the latest complete record is accepted only for the expected
+VM and freshness window. The host then obtains alias-scoped live XML and
+calculates through the shared `DemandCalculator`; configured minimum,
+aggregate physical memory, QGA total, and balloon `actual` are never allocation
+substitutes. Live-device geometry conflicts fail closed, and automatic shrink
+remains blocked pending M10b.
+
+Run the M10c hermetic host gate from the repository root:
+
+```bash
+cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
+```
+
+Success is 31 shared-core and 39 host tests with zero failures. Run the native
+Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
+scripts/windows-remote-build.sh all`; success includes the raw publisher and
+worker tests, formatting, warnings-as-errors Clippy, and a release build. The
+current Linux environment cannot compile the Windows SCM APIs directly.
+
+M10d must still define the deployment transport and provision least-privilege
+ACLs, record/file size bounds, retention, rotation, acknowledgement, and atomic
+reader handoff before unattended service output is production-ready.
 
 The native collector calls `GlobalMemoryStatusEx` for physical memory and
 `GetPerformanceInfo` for page-based commit/system counters. Page counters are

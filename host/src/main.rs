@@ -4,12 +4,11 @@ use std::sync::{atomic::AtomicBool, Arc};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
-use virtio_mem_host::config::{HostConfig, StatsSource};
-use virtio_mem_host::dommemstat::DomMemStatSource;
+use virtio_mem_host::config::HostConfig;
 use virtio_mem_host::host_memory::ProcMeminfoSource;
-use virtio_mem_host::qga::VirshGuestAgent;
+use virtio_mem_host::raw_telemetry::FileRawTelemetrySource;
 use virtio_mem_host::resize_sink::VirshResizeSink;
-use virtio_mem_host::runtime::{GuestStatsSource, HostRuntime};
+use virtio_mem_host::runtime::HostRuntime;
 use virtio_mem_host::virsh::Virsh;
 use virtio_mem_host::xml_source::VirshXmlSource;
 
@@ -46,17 +45,14 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
-    let guest_agent: Box<dyn GuestStatsSource> = match config.stats_source {
-        StatsSource::DomMemStat => Box::new(DomMemStatSource::new(
-            virsh.clone(),
-            config.vm_name.clone(),
-            config.stats_max_age,
-            config.stats_future_tolerance,
-        )),
-        StatsSource::Qga => Box::new(VirshGuestAgent::new(virsh.clone(), config.vm_name.clone())),
-    };
+    let raw_telemetry = FileRawTelemetrySource::new(
+        &config.raw_telemetry_path,
+        &config.vm_name,
+        config.raw_telemetry_max_age,
+        config.raw_telemetry_future_tolerance,
+    );
     let runtime = HostRuntime::new(
-        guest_agent,
+        raw_telemetry,
         VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),
         VirshResizeSink::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
             .with_compatibility_source(AttestedCompatibilitySource::new(

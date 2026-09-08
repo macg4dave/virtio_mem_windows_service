@@ -209,8 +209,8 @@ approval):
 1. Verify the advertised capability list rather than assuming support from a
    version number.
 2. Use the repository helper and its `dommemstat` default when the custom
-   command is absent. Treat it as development telemetry until M9e adds
-   freshness and correct balloon semantics.
+   command is absent. The Rust host source enforces M9e freshness and correct
+   balloon semantics before policy evaluation.
 3. Do not treat an absent Windows QGA command as a Windows service failure.
 
 ### Issue: JSON parsing errors

@@ -91,7 +91,7 @@ These concerns are intentionally separate:
 - **Actuation** changes virtio-mem and reports whether the guest converged.
 
 The Phase 2 Windows service owns guest measurement only. The host owns the
-planned M10c join, recommendation, allocation decision, and resize request. A
+M10c join, recommendation, allocation decision, and resize request. A
 future global Linux controller will own cross-VM policy.
 
 ## Service Boundaries
@@ -139,17 +139,18 @@ These rules are adapted from [Microsoft's Windows service walkthrough](https://l
 and its [current Windows service guidance](https://learn.microsoft.com/en-us/dotnet/core/extensions/windows-service); the implementation remains Rust-only.
 
 The current Rust implementation provides `ServiceHost`, `StopSignal`, a
-wakeable native-telemetry polling loop, validated `ServiceConfig` defaults, a
+wakeable raw-telemetry publication loop, validated `ServiceConfig` defaults, a
 native SCM callback/registration adapter, installation/start/stop/removal
 commands, the pure Rust `VirtioMemState` byte/alignment validator, a versioned
 JSON configuration loader, and a generic `DemandServiceWorker` that publishes
 advisory reports through an injected JSON-lines sink. The SCM path emits
 bounded lifecycle and failure records to the Windows Application Event Log
 with stable event IDs; raw XML EventData and recovery behavior are verified
-live. Production still runs `NativeTelemetryWorker` and discards validated
-samples. M10c will implement the host-side join of fresh raw telemetry with
-live libvirt allocation; M10d must add report
-freshness, identity, provenance, ACL, and retention semantics. No Windows
+live. Production runs `RawTelemetryWorker`, which publishes VM-scoped,
+wall-clock-stamped raw counters without allocation input. The host validates
+freshness and VM identity, joins the record with alias-scoped live libvirt
+`current`, and calculates the target through shared policy. M10d must add
+session/sequence/provenance, ACL, bounded handoff, and retention semantics. No Windows
 production resize sink is permitted. The QGA named-pipe client is
 retained as an explicit adapter/test boundary, but the SCM worker does not
 open the QGA virtio-serial device; the host controller owns QGA requests.

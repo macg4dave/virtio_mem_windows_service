@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 use crate::demand::{
     DemandAgent, DemandAgentError, DemandReport, DemandReportPublisher, MemoryTelemetry,
-    MemoryTelemetrySnapshot,
+    MemoryTelemetrySnapshot, RawTelemetryEnvelope, RawTelemetryPublisher, TelemetryClock,
 };
 use crate::error::{PollError, ServiceLoopError};
 use crate::service_host::{ServiceWorker, StopSignal};
@@ -59,6 +59,86 @@ where
             self.poll_once()?;
             if !stop.is_cancelled() {
                 stop.wait(self.interval);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Production M10c worker: publishes only raw, VM-scoped Windows telemetry.
+/// It has no current-allocation input and no resize interface.
+#[derive(Debug)]
+pub struct RawTelemetryWorker<T, P, C> {
+    telemetry: T,
+    publisher: P,
+    clock: C,
+    vm_name: String,
+    interval: Duration,
+}
+
+impl<T, P, C> RawTelemetryWorker<T, P, C>
+where
+    T: MemoryTelemetry,
+    P: RawTelemetryPublisher,
+    C: TelemetryClock,
+{
+    pub fn new(
+        telemetry: T,
+        publisher: P,
+        clock: C,
+        vm_name: impl Into<String>,
+        interval: Duration,
+    ) -> Result<Self, String> {
+        let vm_name = vm_name.into();
+        if vm_name.trim().is_empty() {
+            return Err("raw telemetry VM name must be non-empty".to_owned());
+        }
+        if interval.is_zero() {
+            return Err("raw telemetry polling interval must be greater than zero".to_owned());
+        }
+        Ok(Self {
+            telemetry,
+            publisher,
+            clock,
+            vm_name,
+            interval,
+        })
+    }
+
+    pub fn poll_once(&mut self) -> Result<RawTelemetryEnvelope, String> {
+        let memory = self
+            .telemetry
+            .collect()
+            .map_err(|error| format!("native memory telemetry failed: {error}"))?;
+        let observed_unix_seconds = self.clock.now_unix_seconds()?;
+        let envelope =
+            RawTelemetryEnvelope::new(self.vm_name.clone(), observed_unix_seconds, memory);
+        self.publisher
+            .publish(&envelope)
+            .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
+        Ok(envelope)
+    }
+
+    pub fn publisher(&self) -> &P {
+        &self.publisher
+    }
+}
+
+impl<T, P, C> ServiceWorker for RawTelemetryWorker<T, P, C>
+where
+    T: MemoryTelemetry + Send + 'static,
+    P: RawTelemetryPublisher + Send + 'static,
+    C: TelemetryClock + Send + 'static,
+{
+    fn initialize(&mut self, _stop: &StopSignal) -> Result<(), String> {
+        self.poll_once().map(|_| ())
+    }
+
+    fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
+        while !stop.is_cancelled() {
+            stop.wait(self.interval);
+            if !stop.is_cancelled() {
+                self.poll_once()?;
             }
         }
         Ok(())
@@ -542,6 +622,45 @@ mod tests {
                 kernel_nonpaged_bytes: 0,
             })
         }
+    }
+
+    #[derive(Debug)]
+    struct FixedTelemetryClock(u64);
+
+    impl TelemetryClock for FixedTelemetryClock {
+        fn now_unix_seconds(&self) -> Result<u64, String> {
+            Ok(self.0)
+        }
+    }
+
+    #[derive(Default, Debug)]
+    struct RawTelemetryPublisherFixture {
+        envelopes: Vec<RawTelemetryEnvelope>,
+    }
+
+    impl RawTelemetryPublisher for RawTelemetryPublisherFixture {
+        fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String> {
+            self.envelopes.push(envelope.clone());
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn raw_worker_publishes_vm_scoped_observation_without_allocation_input() {
+        let mut worker = RawTelemetryWorker::new(
+            DemandTelemetryFixture,
+            RawTelemetryPublisherFixture::default(),
+            FixedTelemetryClock(1_000),
+            "guest",
+            Duration::from_secs(30),
+        )
+        .expect("worker should be valid");
+
+        let envelope = worker.poll_once().expect("raw publication should pass");
+
+        assert_eq!(envelope.vm_name, "guest");
+        assert_eq!(envelope.observed_unix_seconds, 1_000);
+        assert_eq!(worker.publisher().envelopes, vec![envelope]);
     }
 
     #[derive(Default, Debug)]

@@ -9,13 +9,15 @@ pub const DEFAULT_DISPLAY_NAME: &str = "Virtio-mem Windows Service";
 pub const DEFAULT_DESCRIPTION: &str = "Monitors Windows guest memory for virtio-mem coordination";
 pub const DEFAULT_QGA_PIPE_PATH: &str = r"\\.\Global\org.qemu.guest_agent.0";
 pub const DEFAULT_SERVICE_ACCOUNT: &str = r"NT AUTHORITY\LocalService";
+pub const DEFAULT_VM_NAME: &str = "win11_gpu";
 pub const DEFAULT_DEMAND_REPORT_PATH: &str =
     r"C:\ProgramData\VirtioMemService\demand-reports.jsonl";
 pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VirtioMemService\config.json";
-const CONFIG_SCHEMA_VERSION: u32 = 2;
+const CONFIG_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
+    pub vm_name: String,
     pub service_name: String,
     pub display_name: String,
     pub description: String,
@@ -31,6 +33,7 @@ pub struct ServiceConfig {
 impl Default for ServiceConfig {
     fn default() -> Self {
         Self {
+            vm_name: DEFAULT_VM_NAME.to_owned(),
             service_name: DEFAULT_SERVICE_NAME.to_owned(),
             display_name: DEFAULT_DISPLAY_NAME.to_owned(),
             description: DEFAULT_DESCRIPTION.to_owned(),
@@ -48,6 +51,7 @@ impl Default for ServiceConfig {
 impl ServiceConfig {
     pub fn validate(&self) -> Result<(), ConfigurationError> {
         for (value, field) in [
+            (&self.vm_name, "VM name"),
             (&self.service_name, "service name"),
             (&self.display_name, "display name"),
             (&self.description, "description"),
@@ -98,6 +102,7 @@ impl ServiceConfig {
             ));
         }
         let config = Self {
+            vm_name: persisted.vm_name,
             service_name: persisted.service_name,
             display_name: persisted.display_name,
             description: persisted.description,
@@ -141,6 +146,7 @@ impl ServiceConfig {
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedServiceConfig {
     schema_version: u32,
+    vm_name: String,
     service_name: String,
     display_name: String,
     description: String,
@@ -165,6 +171,7 @@ impl TryFrom<&ServiceConfig> for PersistedServiceConfig {
 
         Ok(Self {
             schema_version: CONFIG_SCHEMA_VERSION,
+            vm_name: config.vm_name.clone(),
             service_name: config.service_name.clone(),
             display_name: config.display_name.clone(),
             description: config.description.clone(),
@@ -267,6 +274,7 @@ mod tests {
         let path = test_path("config-schema");
         let fixture = PersistedServiceConfig {
             schema_version: 99,
+            vm_name: DEFAULT_VM_NAME.to_owned(),
             service_name: DEFAULT_SERVICE_NAME.to_owned(),
             display_name: DEFAULT_DISPLAY_NAME.to_owned(),
             description: DEFAULT_DESCRIPTION.to_owned(),

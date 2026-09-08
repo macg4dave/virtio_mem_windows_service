@@ -7,6 +7,7 @@ pub mod config;
 pub mod dommemstat;
 pub mod host_memory;
 pub mod qga;
+pub mod raw_telemetry;
 pub mod resize_sink;
 pub mod runtime;
 pub mod virsh;

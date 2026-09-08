@@ -5,7 +5,8 @@
 
 **Current phase:** Phase 2 — Core Functionality
 **Project status:** Single-VM host actuation and service lifecycles are live
-validated; trustworthy Windows demand publication and recovery hardening remain.
+validated; the host-side demand join is implemented, while bounded delivery
+and recovery hardening remain.
 
 ---
 
@@ -43,26 +44,26 @@ The following capabilities are implemented and locally tested:
 - validated versioned JSON configuration;
 - Windows SCM dispatcher and local service registration commands;
 - native `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry;
+- VM-scoped, wall-clock-stamped raw telemetry publication from production
+  Windows workers and host-side validation/join with live libvirt `current`;
 - versioned advisory demand reports with aligned targets and safe floors;
 - append-only JSON-lines report output and a stoppable demand worker;
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest platform-specific gates pass 29 shared-core tests, 30 RHEL-host
-tests, and 64 native-Windows tests. These are separate supported-platform
-results, not one cross-platform workspace run. Release builds, formatting,
-Clippy warnings-as-errors, and Bash syntax validation also pass in their
-documented gates.
+The latest local RHEL gate passes 31 shared-core and 40 host tests. The prior
+native-Windows gate passes 64 tests; TASK-020's Windows publication changes
+still require a refreshed native gate. These are separate supported-platform
+results, not one cross-platform workspace run. Local release builds,
+formatting, Clippy warnings-as-errors, and Bash syntax validation pass.
 
 ### Important limitations
 
-- The Windows entry point collects native telemetry but does not yet publish
-  demand reports. Current-allocation ownership is now fixed at the host's
-  alias-scoped live libvirt `current`; M10c must implement that join before the
-  existing calculator can be wired without guessing.
-- Demand report version 1 has no freshness, VM/session identity, sequence, or
-  allocation-provenance envelope, and its JSON-lines sink has no retention or
-  rotation policy.
+- Windows publishes raw telemetry only; the host owns target calculation after
+  joining the record with alias-scoped live libvirt `current`. The M10c
+  envelope has basic VM/time freshness but no service/session identity,
+  monotonic sequence, allocation provenance, bounded handoff, retention, or
+  rotation; those remain M10d work.
 - Windows SCM lifecycle and the first bounded recovery restart are
   live-verified under `LocalService`; ProgramData ACL, formatted Event Log
   message-resource packaging, and workload validation remain open.

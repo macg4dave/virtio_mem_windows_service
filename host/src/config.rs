@@ -21,6 +21,8 @@ pub enum HostConfigError {
     InvalidStatsSource(String),
     #[error("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH must be non-empty")]
     InvalidAttestationPath,
+    #[error("VIRTIO_MEM_RAW_TELEMETRY_PATH must be non-empty")]
+    InvalidRawTelemetryPath,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +50,9 @@ pub struct HostConfig {
     pub stats_source: StatsSource,
     pub stats_max_age: Duration,
     pub stats_future_tolerance: Duration,
+    pub raw_telemetry_path: String,
+    pub raw_telemetry_max_age: Duration,
+    pub raw_telemetry_future_tolerance: Duration,
     pub host_min_headroom_bytes: u64,
     pub compatibility_attestation_path: String,
 }
@@ -82,6 +87,13 @@ impl HostConfig {
             stats_future_tolerance: Duration::from_secs(positive(
                 "VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS",
             )?),
+            raw_telemetry_path: required("VIRTIO_MEM_RAW_TELEMETRY_PATH")?,
+            raw_telemetry_max_age: Duration::from_secs(positive(
+                "VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS",
+            )?),
+            raw_telemetry_future_tolerance: Duration::from_secs(positive(
+                "VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS",
+            )?),
             host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
             compatibility_attestation_path: required("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH")?,
         };
@@ -112,11 +124,16 @@ impl HostConfig {
             || self.convergence_timeout.is_zero()
             || self.stats_max_age.is_zero()
             || self.stats_future_tolerance.is_zero()
+            || self.raw_telemetry_max_age.is_zero()
+            || self.raw_telemetry_future_tolerance.is_zero()
         {
             return Err(HostConfigError::InvalidDuration);
         }
         if self.compatibility_attestation_path.trim().is_empty() {
             return Err(HostConfigError::InvalidAttestationPath);
+        }
+        if self.raw_telemetry_path.trim().is_empty() {
+            return Err(HostConfigError::InvalidRawTelemetryPath);
         }
         Ok(())
     }
@@ -159,6 +176,9 @@ mod tests {
             stats_source: StatsSource::DomMemStat,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
+            raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_max_age: Duration::from_secs(60),
+            raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "/etc/virtio-mem-host/guest.attestation.json"
                 .to_owned(),
@@ -182,6 +202,9 @@ mod tests {
             stats_source: StatsSource::DomMemStat,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
+            raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_max_age: Duration::from_secs(60),
+            raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "valid".to_owned(),
         };
@@ -189,6 +212,35 @@ mod tests {
         assert_eq!(
             config.validate(),
             Err(HostConfigError::InvalidAttestationPath)
+        );
+    }
+
+    #[test]
+    fn rejects_empty_raw_telemetry_path() {
+        let mut config = HostConfig {
+            vm_name: "guest".to_owned(),
+            alias: "memory0".to_owned(),
+            min_memory_bytes: 1,
+            max_memory_bytes: 2,
+            lower_threshold_bytes: 1,
+            upper_threshold_bytes: 2,
+            poll_interval: Duration::from_secs(1),
+            command_timeout: Duration::from_secs(1),
+            convergence_timeout: Duration::from_secs(1),
+            virsh_binary: "virsh".to_owned(),
+            stats_source: StatsSource::DomMemStat,
+            stats_max_age: Duration::from_secs(60),
+            stats_future_tolerance: Duration::from_secs(5),
+            raw_telemetry_path: "valid".to_owned(),
+            raw_telemetry_max_age: Duration::from_secs(60),
+            raw_telemetry_future_tolerance: Duration::from_secs(5),
+            host_min_headroom_bytes: 1,
+            compatibility_attestation_path: "valid".to_owned(),
+        };
+        config.raw_telemetry_path = " ".to_owned();
+        assert_eq!(
+            config.validate(),
+            Err(HostConfigError::InvalidRawTelemetryPath)
         );
     }
 }

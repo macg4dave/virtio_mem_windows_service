@@ -22,7 +22,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
-    Decision,
+    Decision {
+        connection: String,
+    },
     Evidence {
         path: String,
     },
@@ -72,10 +74,12 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
         }));
     }
     if mode == "decision" {
-        if args.len() != 1 {
-            return Err(usage().to_owned());
-        }
-        return Ok(Some(CliCommand::Decision));
+        let connection = match args {
+            [_] => DEFAULT_CONNECTION.to_owned(),
+            [_, option, value] if option == "--connect" && !value.is_empty() => value.clone(),
+            _ => return Err(usage().to_owned()),
+        };
+        return Ok(Some(CliCommand::Decision { connection }));
     }
     let (minimum, maximum) = match mode {
         "resize" => (8, 11),
@@ -205,7 +209,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host decision\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
+    "Usage: virtio-mem-host decision [--connect URI]\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -219,7 +223,7 @@ fn run_with<H: HostMemorySource, W: Write>(
     output: &mut W,
 ) -> Result<(), String> {
     match command {
-        CliCommand::Decision => run_configured_decision(output),
+        CliCommand::Decision { connection } => run_configured_decision(&connection, output),
         CliCommand::Evidence { path } => {
             let json = std::fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read evidence file {path}: {error}"))?;
@@ -287,9 +291,13 @@ fn run_with<H: HostMemorySource, W: Write>(
     }
 }
 
-fn run_configured_decision<W: Write>(output: &mut W) -> Result<(), String> {
+fn run_configured_decision<W: Write>(connection: &str, output: &mut W) -> Result<(), String> {
     let config = HostConfig::from_env().map_err(|error| error.to_string())?;
-    let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
+    let virsh = Virsh::with_connection(
+        config.virsh_binary.clone(),
+        config.command_timeout,
+        connection,
+    );
     let state_source =
         VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone());
     match config.stats_source {
@@ -500,7 +508,16 @@ mod tests {
     fn parses_snapshot_and_resize_modes() {
         assert_eq!(
             parse_args(&args(&["decision"])).expect("decision"),
-            Some(CliCommand::Decision)
+            Some(CliCommand::Decision {
+                connection: DEFAULT_CONNECTION.to_owned()
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["decision", "--connect", "test:///default"]))
+                .expect("decision connection"),
+            Some(CliCommand::Decision {
+                connection: "test:///default".to_owned()
+            })
         );
         assert_eq!(
             parse_args(&args(&["evidence", "capture.json"])).expect("evidence"),
@@ -616,6 +633,9 @@ mod tests {
             stats_source: StatsSource::DomMemStat,
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
+            raw_telemetry_path: "guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_max_age: Duration::from_secs(60),
+            raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 4 * GIB,
             compatibility_attestation_path: "reviewed.json".to_owned(),
         };

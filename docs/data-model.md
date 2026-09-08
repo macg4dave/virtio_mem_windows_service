@@ -29,9 +29,11 @@ is applied:
 - `system_cache_bytes`, `kernel_paged_bytes`, `kernel_nonpaged_bytes`:
   additional context from `GetPerformanceInfo`
 
-Version 1 does **not** include a sample timestamp, VM identity, service/boot
-session, sequence, or allocation provenance. Those are required additions for
-M10d and must use a new schema version.
+The M10c `RawTelemetryEnvelope` version 1 adds the minimum join fields:
+`version`, configured `vm_name`, Unix observation seconds, and the raw memory
+snapshot. It intentionally contains no allocation or recommendation. It does
+not include a service/boot session, monotonic ordering, sequence, correlation,
+or allocation provenance; M10d must add those with a new schema version.
 
 The derived demand state contains `physical_pressure`, `commit_pressure`, a
 `demand_state` of `release`, `stable`, `want_more`, `pressure`, or `critical`,
@@ -54,17 +56,18 @@ This keeps native telemetry and recommendation generation independent from QGA,
 libvirt, and any future report transport. Publication failure is observable and
 does not trigger a resize fallback.
 
-No production owner currently supplies that allocation to the calculator.
-M10c will move the production join to the host: Windows publishes raw telemetry
-and the host combines it with alias-scoped live libvirt `current` before
-calculating demand. Aggregate physical memory, configured limits, QGA totals,
-and balloon `actual` are not allocation substitutes.
+Production calculation now occurs on the host. Windows publishes only the raw
+envelope, and the host combines it with alias-scoped live libvirt `current`
+before calculating demand. Aggregate physical memory, configured limits, QGA
+totals, and balloon `actual` are not allocation substitutes. The host rejects
+stale, future, wrong-VM, malformed, unsupported-version, invalid-counter, and
+live-device-conflicting inputs before policy.
 
-The M10d envelope must add VM and service identity, UTC sample time,
-monotonic/session ordering, a boot or service-session identifier, sequence or
-correlation identifier, and allocation-source/provenance metadata. Consumers
-must reject stale, replayed, cross-VM, truncated, and unsupported-version
-records according to documented bounds.
+The M10d envelope must strengthen identity beyond the M10c VM name, add UTC
+precision plus monotonic/session ordering, a boot or service-session
+identifier, sequence or correlation identifier, and allocation-source/
+provenance metadata. Consumers must additionally reject replayed, truncated,
+oversized, and partial records according to documented bounds.
 
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and

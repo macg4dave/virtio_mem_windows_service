@@ -112,23 +112,22 @@ service. It also includes a stoppable polling scheduler, portable
 `ServiceHost` lifecycle wrapper, and a native SCM dispatcher that shares the
 same cancellation signal as the worker. `ServiceConfig` supplies validated
 service identity, legacy adapter endpoint, timing, least-privilege defaults, and
-versioned JSON
+version-3 JSON
 loading from `C:\ProgramData\VirtioMemService\config.json`; ACL provisioning
 and live KVM channel validation are not implemented yet. The demand
 agent foundation additionally collects native Windows memory counters through
 `GlobalMemoryStatusEx` and `GetPerformanceInfo`, validates canonical-byte
-snapshots, and emits a versioned advisory demand report without issuing a
-resize. `DemandAgent` exposes a testable one-cycle collection/publication
-boundary; wiring its persistent report sink into the SCM worker is still
-pending. SCM lifecycle and failure events are separately emitted to the
+snapshots. The interactive and SCM entry points publish version-1 raw
+telemetry envelopes containing the configured VM name, Unix observation time,
+and counters to `demand_report_path`; they never accept an allocation or emit a
+resize. `DemandAgent` remains a local calculator test boundary. SCM lifecycle
+and failure events are separately emitted to the
 Windows Application Event Log with stable IDs and bounded messages. The
-generic `DemandServiceWorker` and JSON-lines publisher are
-available, but the SCM entry point currently runs `NativeTelemetryWorker` and
-discards each validated sample. Before publication is wired, M10c must
-implement the selected architecture: Windows publishes a fresh raw telemetry
-envelope, and the host joins it with alias-scoped live libvirt `current` before
-calculating the target. Windows receives no host allocation feed. Report
-freshness, identity, retention, and ACL requirements are also still open.
+generic `DemandServiceWorker` and report publisher remain available for tests;
+production runs `RawTelemetryWorker`. The host rejects stale or wrong-VM raw
+records, joins one with alias-scoped live libvirt `current`, and calculates the
+target. Windows receives no host allocation feed. M10d still owns session/
+sequence/provenance identity, bounded handoff, retention, and ACL requirements.
 
 ## Service hosting rules
 

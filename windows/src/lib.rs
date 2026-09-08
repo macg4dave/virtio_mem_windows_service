@@ -18,8 +18,9 @@ pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 pub use demand::{
     DemandAgent, DemandAgentError, DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig,
     DemandRecommendation, DemandReport, DemandReportPublisher, DemandState,
-    JsonLinesDemandReportPublisher, MemoryTelemetry, MemoryTelemetrySnapshot,
-    NativeMemoryTelemetry,
+    JsonLinesDemandReportPublisher, JsonLinesRawTelemetryPublisher, MemoryTelemetry,
+    MemoryTelemetrySnapshot, NativeMemoryTelemetry, RawTelemetryEnvelope, RawTelemetryPublisher,
+    SystemTelemetryClock, TelemetryClock,
 };
 pub use error::{
     ConfigurationError, MemoryStatsError, PollError, RuntimeWiringError, ServiceHostError,
@@ -31,7 +32,7 @@ pub use event_log::{
 pub use qga::{NamedPipeGuestAgent, DEFAULT_QGA_OPERATION_TIMEOUT};
 pub use runtime::{
     DemandServiceWorker, GuestAgent, MemoryPoller, NativeTelemetryWorker, QgaPollingWorker,
-    ServiceRuntime,
+    RawTelemetryWorker, ServiceRuntime,
 };
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};

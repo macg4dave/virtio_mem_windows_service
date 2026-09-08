@@ -1,5 +1,39 @@
 # BACKLOG
 
+## 2026-09-08 M10c host-side current-allocation join in progress
+
+- Moved the platform-neutral raw telemetry and demand-calculation contract into
+  `virtio-mem-core`. Version 1 raw records carry only VM identity, Unix
+  observation seconds, and validated canonical-byte Windows counters.
+- Wired interactive and SCM Windows paths to append raw telemetry without an
+  allocation input or resize interface. Configuration schema version 3 adds
+  the libvirt VM name used for the join.
+- Added a host file source with injected-clock freshness checks and wrong-VM,
+  malformed, missing, future, and stale rejection. The runtime joins the record
+  with a newly read alias-scoped live XML `current`, calculates through shared
+  policy, rejects geometry conflicts, and leaves shrink advisory pending M10b.
+- The local gate passes 31 shared-core and 40 host tests, formatting, Clippy
+  with warnings denied, release build, Bash syntax, and diff checks. Native
+  Windows validation remains: this environment has no Windows Rust target or
+  configured remote-build alias, and no protected guest was modified.
+
+## 2026-09-08 M9e host telemetry correctness and freshness
+
+- Corrected `dommemstat` mapping so balloon `actual` is retained only as
+  provenance, `unused` is free memory, and required `available` supplies the
+  available/total-like legacy bound. `unused` and `available` may exceed
+  `actual`; only `unused > available` is inconsistent.
+- Added required 60-second maximum-age and 5-second future-skew example bounds,
+  injected wall-clock tests, and per-source strict `last-update` advancement.
+  Missing, stale, future, regressing, non-advancing, malformed, duplicate, and
+  overflowing samples fail closed.
+- Added the read-only Rust `decision` command using the service configuration,
+  selected stats source, live alias-scoped XML, and exact runtime policy
+  evaluator. Removed the duplicate QGA-only Bash preview.
+- The native RHEL gate passes 29 core and 35 host tests, release build,
+  formatting, Clippy with warnings denied, and Bash syntax. No live host,
+  service, VM, or memory state was changed.
+
 ## 2026-09-07 M9d compatibility-attestation drift guard
 
 - Replaced the static workload-review boolean with a required version-1 JSON
@@ -774,14 +808,13 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-020 | M10c host-side current-allocation join | Copilot | Ready | 3-5 hours | Join fresh raw Windows telemetry with alias-scoped live libvirt `current` and calculate the target on the host after TASK-025 |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-025 | M9e host telemetry correctness and freshness | Copilot | In Progress | Correcting balloon-counter mapping, adding injected-clock `last-update` freshness/advancement checks, and replacing the QGA-only Bash preview with the Rust controller decision path. |
-| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry and the version-1 advisory calculator/publisher are implemented. Production runs `NativeTelemetryWorker` and discards samples; TASK-020 implements the selected host-side allocation join, and TASK-021 adds freshness/identity/retention semantics. ProgramData ACLs and live workload tuning remain. |
+| TASK-020 | M10c host-side current-allocation join | Copilot | In Progress | Implementation and 31-core/40-host hermetic gates pass. Run the native Windows all-gate to validate schema-v3 config plus interactive/SCM `RawTelemetryWorker`; no host-allocation feed, guest resize interface, or automatic shrink was added. |
+| TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, the advisory calculator, and raw production publisher are implemented. TASK-020 awaits its native Windows gate; TASK-021 adds session/sequence/provenance, bounded handoff, and retention semantics. ProgramData ACLs and live workload tuning remain. |
 
 ## Planned
 
@@ -875,7 +908,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
 - Documented the recommended one-time administrator setup for a dedicated
   least-privilege `virtio-mem-host` account instead of repeated root prompts or
   broad passwordless sudo access.
-- Added `scripts/preview-memory-decision.sh`, a read-only policy preview that
+- Added `scripts/preview-memory-decision.sh`, a read-only policy preview (later
+  removed when M9e moved the preview onto the shared Rust controller path) that
   reports no-change, blocked, grow, or shrink decisions and never issues a
   live resize command.
 - Added `scripts/live-resize-test.sh`, which requires explicit `--apply`, logs
@@ -945,6 +979,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-025 | M9e host telemetry correctness and freshness | Copilot | 2026-09-08 | Correct balloon mapping, bounded advancing `last-update`, injected-clock failures, and the shared-path Rust `decision` preview pass hermetic tests; the QGA-only Bash preview is removed. |
 | TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | 2026-09-07 | Version-1 SHA-256 evidence binds the full reviewed live configuration and operator declarations; every resize recollects evidence and fails closed on tamper or drift, with allocation-neutral hermetic tests. |
 | TASK-001 | Rust service scaffolding | Copilot | 2026-09-04 | Service lifecycle, configuration, SCM adapter, native telemetry worker, legacy QGA adapter boundary, cancellation, error handling, and live SCM validation are complete; demand publication continues under TASK-009. |
 | TASK-002 | QEMU Guest Agent validation | Copilot + Operator | 2026-09-04 | Repeated live advertised-QGA and `dommemstat` probes passed across agent restart and guest reboot; later audit classified the QGA memory adapter as custom and moved `dommemstat` semantics/freshness to TASK-025. |
@@ -983,8 +1018,8 @@ for explicit protected-guest approval when their evidence is needed.
   host joins alias-scoped live libvirt `current` and calculates the target.
 - `guest-get-memory-stats` is a custom/downstream adapter contract, not an
   upstream QGA capability. Upstream QGA remains a health/identity channel.
-- `dommemstat actual` is balloon state, so M9e corrects its bounds and adds
-  source freshness before production qualification.
+- `dommemstat actual` is balloon state; M9e now corrects its mapping and
+  enforces source freshness before policy evaluation.
 - Phase 2 permits one active controller/device on the development host. M11
   must provide atomic global reservation before multi-target actuation.
 - Windows automatic shrink must gain a default-off control and remain disabled

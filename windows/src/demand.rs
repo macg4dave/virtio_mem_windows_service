@@ -1,93 +1,13 @@
-use serde::{Deserialize, Serialize};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
-/// Native, canonical-byte memory observations collected from the Windows guest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MemoryTelemetrySnapshot {
-    pub physical_total_bytes: u64,
-    pub physical_available_bytes: u64,
-    pub memory_load_percent: u32,
-    pub commit_total_bytes: u64,
-    pub commit_limit_bytes: u64,
-    pub commit_peak_bytes: u64,
-    pub system_cache_bytes: u64,
-    pub kernel_paged_bytes: u64,
-    pub kernel_nonpaged_bytes: u64,
-}
-
-impl MemoryTelemetrySnapshot {
-    pub fn validate(&self) -> Result<(), DemandError> {
-        if self.physical_total_bytes == 0 {
-            return Err(DemandError::ZeroCounter("physical total"));
-        }
-        if self.commit_limit_bytes == 0 {
-            return Err(DemandError::ZeroCounter("commit limit"));
-        }
-        if self.physical_available_bytes > self.physical_total_bytes {
-            return Err(DemandError::InconsistentCounters(
-                "physical available exceeds physical total",
-            ));
-        }
-        if self.commit_total_bytes > self.commit_limit_bytes {
-            return Err(DemandError::InconsistentCounters(
-                "commit total exceeds commit limit",
-            ));
-        }
-        if self.commit_peak_bytes < self.commit_total_bytes {
-            return Err(DemandError::InconsistentCounters(
-                "commit peak is below commit total",
-            ));
-        }
-        if self.memory_load_percent > 100 {
-            return Err(DemandError::InvalidMemoryLoad(self.memory_load_percent));
-        }
-        Ok(())
-    }
-
-    pub fn physical_pressure(&self) -> Result<f64, DemandError> {
-        self.validate()?;
-        Ok(1.0 - (self.physical_available_bytes as f64 / self.physical_total_bytes as f64))
-    }
-
-    pub fn commit_pressure(&self) -> Result<f64, DemandError> {
-        self.validate()?;
-        Ok(self.commit_total_bytes as f64 / self.commit_limit_bytes as f64)
-    }
-}
-
-/// Provisional demand levels. They are recommendations and never authorize a resize.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DemandState {
-    Release,
-    Stable,
-    WantMore,
-    Pressure,
-    Critical,
-}
-
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum DemandError {
-    #[error("memory counter must be greater than zero: {0}")]
-    ZeroCounter(&'static str),
-    #[error("inconsistent memory counters: {0}")]
-    InconsistentCounters(&'static str),
-    #[error("memory load percentage is outside 0..=100: {0}")]
-    InvalidMemoryLoad(u32),
-    #[error("demand policy value is invalid: {0}")]
-    InvalidPolicy(&'static str),
-    #[error("memory target arithmetic overflow")]
-    ArithmeticOverflow,
-    #[error("native Windows memory telemetry is unavailable on this platform")]
-    UnsupportedPlatform,
-    #[error("GlobalMemoryStatusEx failed: {0}")]
-    GlobalMemoryStatus(u32),
-    #[error("GetPerformanceInfo failed: {0}")]
-    PerformanceInfo(u32),
-}
+pub use virtio_mem_core::{
+    DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig, DemandRecommendation,
+    DemandReport, DemandState, MemoryTelemetrySnapshot, RawTelemetryEnvelope,
+};
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum DemandAgentError {
@@ -95,135 +15,6 @@ pub enum DemandAgentError {
     Telemetry(#[from] DemandError),
     #[error("publish demand report: {0}")]
     Publication(String),
-}
-
-/// Bounds and alignment used by the advisory target calculator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DemandPolicyConfig {
-    pub configured_minimum_bytes: u64,
-    pub configured_maximum_bytes: u64,
-    pub block_size_bytes: u64,
-}
-
-impl DemandPolicyConfig {
-    pub fn validate(&self) -> Result<(), DemandError> {
-        if self.configured_minimum_bytes == 0
-            || self.configured_maximum_bytes == 0
-            || self.block_size_bytes == 0
-        {
-            return Err(DemandError::InvalidPolicy(
-                "values must be greater than zero",
-            ));
-        }
-        if self.configured_minimum_bytes > self.configured_maximum_bytes {
-            return Err(DemandError::InvalidPolicy("minimum exceeds maximum"));
-        }
-        if !self.block_size_bytes.is_power_of_two() {
-            return Err(DemandError::InvalidPolicy(
-                "block size must be a power of two",
-            ));
-        }
-        if !self
-            .configured_minimum_bytes
-            .is_multiple_of(self.block_size_bytes)
-            || !self
-                .configured_maximum_bytes
-                .is_multiple_of(self.block_size_bytes)
-        {
-            return Err(DemandError::InvalidPolicy("limits must be block aligned"));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct DemandReport {
-    pub version: u16,
-    pub memory: MemoryTelemetrySnapshot,
-    pub demand: DemandRecommendation,
-    pub limits: DemandLimits,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct DemandRecommendation {
-    pub state: DemandState,
-    pub physical_pressure: f64,
-    pub commit_pressure: f64,
-    pub desired_target_bytes: u64,
-    pub safe_floor_bytes: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DemandLimits {
-    pub configured_minimum_bytes: u64,
-    pub configured_maximum_bytes: u64,
-}
-
-#[derive(Debug)]
-pub struct DemandCalculator {
-    config: DemandPolicyConfig,
-}
-
-impl DemandCalculator {
-    pub fn new(config: DemandPolicyConfig) -> Result<Self, DemandError> {
-        config.validate()?;
-        Ok(Self { config })
-    }
-
-    pub fn calculate(
-        &self,
-        snapshot: MemoryTelemetrySnapshot,
-        current_bytes: u64,
-    ) -> Result<DemandReport, DemandError> {
-        snapshot.validate()?;
-        if current_bytes == 0 || !current_bytes.is_multiple_of(self.config.block_size_bytes) {
-            return Err(DemandError::InvalidPolicy(
-                "current allocation must be positive and block aligned",
-            ));
-        }
-
-        let physical_pressure = snapshot.physical_pressure()?;
-        let commit_pressure = snapshot.commit_pressure()?;
-        let pressure = physical_pressure.max(commit_pressure);
-        let state = classify_pressure(pressure);
-        let desired_steps = match state {
-            DemandState::Release => -1_i64,
-            DemandState::Stable => 0,
-            DemandState::WantMore => 1,
-            DemandState::Pressure => 2,
-            DemandState::Critical => 4,
-        };
-        let desired_target_bytes = aligned_target(
-            current_bytes,
-            desired_steps,
-            self.config.block_size_bytes,
-            self.config.configured_minimum_bytes,
-            self.config.configured_maximum_bytes,
-        )?;
-        let safe_floor_bytes = aligned_target(
-            current_bytes,
-            -1,
-            self.config.block_size_bytes,
-            self.config.configured_minimum_bytes,
-            current_bytes,
-        )?;
-
-        Ok(DemandReport {
-            version: 1,
-            memory: snapshot,
-            demand: DemandRecommendation {
-                state,
-                physical_pressure,
-                commit_pressure,
-                desired_target_bytes,
-                safe_floor_bytes,
-            },
-            limits: DemandLimits {
-                configured_minimum_bytes: self.config.configured_minimum_bytes,
-                configured_maximum_bytes: self.config.configured_maximum_bytes,
-            },
-        })
-    }
 }
 
 /// Publishes an advisory report without granting the publisher resize authority.
@@ -273,6 +64,68 @@ impl DemandReportPublisher for JsonLinesDemandReportPublisher {
     }
 }
 
+/// Publishes raw telemetry without accepting allocation or resize input.
+pub trait RawTelemetryPublisher {
+    fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String>;
+}
+
+/// Appends complete raw telemetry envelopes as newline-delimited JSON records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonLinesRawTelemetryPublisher {
+    path: PathBuf,
+}
+
+impl JsonLinesRawTelemetryPublisher {
+    pub fn new(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl RawTelemetryPublisher for JsonLinesRawTelemetryPublisher {
+    fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String> {
+        if let Some(parent) = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("create raw telemetry directory: {error}"))?;
+        }
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .map_err(|error| format!("open raw telemetry {}: {error}", self.path.display()))?;
+        let mut encoded = serde_json::to_vec(envelope)
+            .map_err(|error| format!("encode raw telemetry: {error}"))?;
+        encoded.push(b'\n');
+        file.write_all(&encoded)
+            .map_err(|error| format!("write raw telemetry: {error}"))?;
+        file.flush()
+            .map_err(|error| format!("flush raw telemetry: {error}"))
+    }
+}
+
+pub trait TelemetryClock {
+    fn now_unix_seconds(&self) -> Result<u64, String>;
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemTelemetryClock;
+
+impl TelemetryClock for SystemTelemetryClock {
+    fn now_unix_seconds(&self) -> Result<u64, String> {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_secs())
+            .map_err(|error| format!("system clock is before the Unix epoch: {error}"))
+    }
+}
+
 /// Collects and publishes one demand report per caller-selected poll cycle.
 ///
 /// The caller supplies the observed current allocation. This keeps the agent
@@ -316,40 +169,6 @@ where
             .map_err(DemandAgentError::Publication)?;
         Ok(report)
     }
-}
-
-fn classify_pressure(pressure: f64) -> DemandState {
-    if pressure < 0.25 {
-        DemandState::Release
-    } else if pressure < 0.60 {
-        DemandState::Stable
-    } else if pressure < 0.75 {
-        DemandState::WantMore
-    } else if pressure < 0.90 {
-        DemandState::Pressure
-    } else {
-        DemandState::Critical
-    }
-}
-
-fn aligned_target(
-    current_bytes: u64,
-    steps: i64,
-    block_size_bytes: u64,
-    minimum_bytes: u64,
-    maximum_bytes: u64,
-) -> Result<u64, DemandError> {
-    let delta = block_size_bytes
-        .checked_mul(steps.unsigned_abs())
-        .ok_or(DemandError::ArithmeticOverflow)?;
-    let target = if steps.is_negative() {
-        current_bytes.saturating_sub(delta)
-    } else {
-        current_bytes
-            .checked_add(delta)
-            .ok_or(DemandError::ArithmeticOverflow)?
-    };
-    Ok(target.clamp(minimum_bytes, maximum_bytes))
 }
 
 /// Collects native Windows memory counters using the documented system APIs.
@@ -615,6 +434,29 @@ mod tests {
 
         assert_eq!(records, vec![report]);
         assert!(content.ends_with('\n'));
+        std::fs::remove_file(path).expect("test record should be removed");
+    }
+
+    #[test]
+    fn raw_json_lines_publisher_appends_only_raw_vm_scoped_telemetry() {
+        let path = std::env::temp_dir().join(format!(
+            "virtio-mem-raw-telemetry-{}-publisher.jsonl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let envelope = RawTelemetryEnvelope::new("guest", 1_000, snapshot(2 * GIB, 15 * GIB));
+        let mut publisher = JsonLinesRawTelemetryPublisher::new(&path);
+
+        publisher
+            .publish(&envelope)
+            .expect("raw record should be written");
+        let content = std::fs::read_to_string(&path).expect("raw record should be readable");
+        let decoded: RawTelemetryEnvelope =
+            serde_json::from_str(content.trim()).expect("raw record should parse");
+
+        assert_eq!(decoded, envelope);
+        assert!(!content.contains("desired_target_bytes"));
+        assert!(!content.contains("current_bytes"));
         std::fs::remove_file(path).expect("test record should be removed");
     }
 

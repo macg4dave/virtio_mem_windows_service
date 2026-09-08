@@ -186,8 +186,8 @@ topology, trust classification, and deployed versions.
 
 Host-side `dommemstat` is pressure telemetry, not allocation authority:
 `actual` is balloon state and can legitimately be below `unused` or
-`available`. M9e must validate `last-update`; live alias-scoped libvirt
-`current` remains the allocation input.
+`available`. M9e now validates bounded advancing `last-update`; live
+alias-scoped libvirt `current` remains the allocation input.
 
 The reviewed Windows driver is event driven and has no obvious periodic retry
 timer for a no-progress shrink. Automatic reclaim is not currently qualified;

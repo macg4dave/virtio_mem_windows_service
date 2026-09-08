@@ -299,7 +299,8 @@ These constraints are not optional recommendations for a future improvement; the
 - As of 2026-08-18, `win11_gpu` reports libvirt `11.10.0`, QEMU API `11.10.0`,
   hypervisor `10.1.0`, and QGA `110.0.2`; `guest-info` succeeds repeatedly but
   the nonstandard `guest-get-memory-stats` extension is absent. `dommemstat`
-  remains the observed default source pending M9e freshness qualification.
+  remains the observed default source and M9e now enforces freshness before
+  policy evaluation.
 - The installed signed Windows virtio-mem driver is
   `100.102.104.29400`, corresponding to upstream `mm314`. Windows virtio-mem
   is technology preview; only the fully trusted development/test `win11_gpu`

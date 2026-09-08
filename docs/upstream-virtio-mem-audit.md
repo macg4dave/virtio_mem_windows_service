@@ -51,8 +51,7 @@ balloon accounting excludes memory provided through virtio-mem. Consequently,
 the selected virtio-mem device's current allocation. The live observation
 `available > actual` is therefore not, by itself, malformed data.
 
-The current parser still applies total-like bounds and does not consume
-`last-update`. M9e/TASK-025 will:
+M9e/TASK-025 corrected the parser and now:
 
 - parse and enforce explicit freshness, including missing, stale, future, and
   non-advancing timestamps;
@@ -63,9 +62,9 @@ The current parser still applies total-like bounds and does not consume
 - replace the Bash preview's QGA-only policy path with a Rust decision command
   that uses the same source, freshness, and validation logic as the controller.
 
-Until M9e completes, `dommemstat` remains the configured source used by the
-development controller, but it is not considered freshness-qualified for
-production automation. ISSUE-006 is reopened.
+`dommemstat` remains the configured source used by the development controller
+and is freshness-qualified for policy input. ISSUE-006 is resolved; live XML
+`current` remains the separate allocation authority.
 
 ### 2. `guest-get-memory-stats` is not an upstream QGA command
 

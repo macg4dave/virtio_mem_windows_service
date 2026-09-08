@@ -1,10 +1,10 @@
 # Project Status & Next Steps
 
-**Updated:** 2026-09-07
+**Updated:** 2026-09-08
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
-actuation are live validated. Trustworthy demand publication, host-stat
-freshness and recovery hardening remain; the complete compatibility
+actuation are live validated. The host-side demand join is locally complete;
+bounded delivery and recovery hardening remain. Host-stat freshness and the complete compatibility
 attestation is implemented and awaits a separately approved live installation.
 The allocation-authority contract is established from Virtio and pinned
 implementation sources; optional driver tracing remains diagnostic.
@@ -22,6 +22,9 @@ guest; upstream Windows virtio-mem support remains technology preview.
   adapter with install/start/stop/remove commands.
 - Host-side virtio-mem XML validation, bounded `virsh` adapters, `dommemstat`
   fallback, convergence suppression, device headroom, and host headroom gates.
+- Freshness-qualified `dommemstat` snapshots with balloon-correct semantics,
+  configured age/skew bounds, strict advancement, and a Rust decision preview
+  sharing the controller evaluator.
 - Authoritative Rust host CLI for alias-scoped snapshot/validation, exact
   dry-run argument reporting, and explicitly applied one-shot resize; the
   duplicate Bash resize implementation is removed.
@@ -34,12 +37,15 @@ guest; upstream Windows virtio-mem support remains technology preview.
 - Windows native demand telemetry using `GlobalMemoryStatusEx` and
   `GetPerformanceInfo`, versioned advisory reports, aligned recommendations,
   JSON-lines publication, and a generic stoppable demand worker.
+- Production Windows raw telemetry publication with VM/time fields, plus host
+  freshness/identity validation and target calculation joined to fresh
+  alias-scoped live libvirt `current`.
 
 ## Current evidence
 
 The latest native RHEL gate passed:
 
-- 29 shared-core and 35 host tests, with no failures.
+- 31 shared-core and 40 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -75,20 +81,14 @@ was built on the Win11 guest and fetched to
 
 ## Open implementation work
 
-- Implement the M10c host-side join: publish a fresh raw Windows telemetry
-  envelope, join it with alias-scoped live libvirt `current`, and calculate
-  the target on the host without adding guest actuation. Production currently
-  runs `NativeTelemetryWorker` and discards each validated sample.
 - Add the M10d report envelope and delivery contract: VM/service/session
-  identity, timestamps and sequence, allocation provenance, freshness/replay
-  rules, partial-record handling, ACLs, and retention/rotation.
+  identity beyond the M10c VM name, monotonic/session sequence, allocation
+  provenance, replay rules, partial/oversized-record handling, ACLs, bounded
+  reader handoff, and retention/rotation.
 - Install a freshly reviewed M9d attestation with read-only service-account
   access before deploying this build. The implemented version-1 SHA-256 guard
   binds backend, memory-slot, VFIO, incompatible-workload, balloon, topology,
   trust, driver, QEMU, and libvirt evidence and rejects drift before resize.
-- Complete M9e host-telemetry correctness and freshness: fix `dommemstat`
-  balloon semantics, validate `last-update`, and replace the QGA-only Bash
-  decision preview with the controller's Rust source path.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
 - Complete the M10a2 correlated behavior-evidence harness and the M10b
@@ -107,9 +107,9 @@ was built on the Win11 guest and fetched to
 - `guest-get-memory-stats` is absent from upstream QGA schemas; upgrading an
   upstream QGA is not a remedy. The custom adapter remains experimental and
   the host controller uses `dommemstat` by default.
-- `dommemstat actual` is balloon state, not whole-guest or virtio-mem
-  allocation, and source freshness is not checked yet. M9e is required before
-  this telemetry is considered production-qualified.
+- `dommemstat actual` is balloon provenance, not whole-guest or virtio-mem
+  allocation. M9e now requires fresh, advancing `last-update`; live libvirt
+  `current` remains allocation authority.
 - Live resize remains gated by fresh XML validation and
   `requested == current` convergence at the time of each request.
 - Automatic Windows shrink is directly observed both to make no progress for a

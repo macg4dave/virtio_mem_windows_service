@@ -27,14 +27,14 @@ workspace quality gate.
 - **Superseded production path:** `NamedPipeGuestAgent` remains a tested legacy
    adapter boundary, but interactive and SCM workers use native Windows
    telemetry and do not open the QGA-owned device.
-- Complete M10c using the recorded host-side join: publish a fresh, versioned
-   raw Windows telemetry envelope, join it on the host with alias-scoped live
-   libvirt `current`, and calculate the target there. Do not infer allocation
+- **Implemented:** M10c publishes a fresh, versioned raw Windows telemetry
+   envelope, joins it on the host with alias-scoped live libvirt `current`,
+   and calculates the target there. Do not infer allocation
    from limits, QGA totals, balloon `actual`, or aggregate physical memory, and
    do not add a guest resize sink or host-allocation feed to Windows.
-- Complete M10d before constructing the production publisher: add report
-   identity, freshness, ordering, provenance, bounded retention, ACL, and
-   partial-record behavior.
+- Complete M10d before unattended production delivery: strengthen service/
+   session identity, ordering, provenance, bounded retention, ACL, and
+   partial/oversized-record behavior.
 - Keep demand reports advisory and separate from host resize authority.
 
 **Evidence:** local `run` mode exercises the configured worker and fails
@@ -68,14 +68,14 @@ formatted Event Log message-resource packaging remain.
 
 ### 5. Correct and freshness-qualify host telemetry (M9e)
 
-- Treat `dommemstat actual` as a balloon value, not a whole-guest total or an
+- [x] Treat `dommemstat actual` as a balloon value, not a whole-guest total or an
    upper bound for `unused`/`available`.
-- Parse and enforce bounded `last-update` freshness; reject missing, stale,
+- [x] Parse and enforce bounded `last-update` freshness; reject missing, stale,
    future, and non-advancing evidence where policy requires a fresh sample.
-- Keep alias-scoped live libvirt `current` authoritative for allocation.
-- Replace the QGA-only Bash decision preview with a Rust command that reuses
+- [x] Keep alias-scoped live libvirt `current` authoritative for allocation.
+- [x] Replace the QGA-only Bash decision preview with a Rust command that reuses
    the controller's configured source and freshness checks.
-- Retain `guest-get-memory-stats` only as an opt-in custom/downstream adapter;
+- [x] Retain `guest-get-memory-stats` only as an opt-in custom/downstream adapter;
    it is not part of upstream QGA.
 
 ### 6. Validate the one-VM host controller
