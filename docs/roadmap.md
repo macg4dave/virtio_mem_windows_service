@@ -16,8 +16,8 @@ lifecycle/recovery path are implemented and tested. The
 workspace contains an installed, active single-VM host controller with
 XML/state validation and a bounded runtime loop. The next implementation
 priority is M10e's quantitative desired-allocation model; installed M10d
-ProgramData ACL evidence and the remaining M10b diagnostic/recovery matrix
-continue in parallel. M9d binds the expanded
+ProgramData ACL evidence continues in parallel. M10b's bounded
+diagnostic/recovery matrix is closed. M9d binds the expanded
 compatibility attestation, and M9e now freshness-qualifies host telemetry. The
 existing one-VM host controller remains the only resize authority until the
 M10e-M10g target-controller redesign and Phase 3 global arbitration have been
@@ -31,9 +31,10 @@ M10a read-only discovery found no supported installed-driver query for
 longer blocks M10c/M10d or hermetic M11 simulation. Bounded kernel-debug
 capture remains optional, separately approved evidence for notification,
 branch, and shrink-recovery behavior. M10aX now records a proposal for the
-unmet stalled-shrink diagnostic need, but keeps implementation No-Go pending
-M10b operational value, external driver ownership, security/signing review,
-and disposable-guest rollback.
+unmet stalled-shrink diagnostic need. M10b did not establish enough additional
+operational value to authorize driver work, so implementation remains No-Go
+without external driver ownership, security/signing review, and
+disposable-guest rollback.
 The QGA memory command may be unavailable on the guest, but that is no longer
 a Windows service startup blocker because the service uses native
 `GlobalMemoryStatusEx` and `GetPerformanceInfo` telemetry. The host controller
@@ -219,8 +220,9 @@ live integration evidence.
   non-zero until corrected.
 - [~] **Stage F — Live validation:** M7 SCM lifecycle/recovery, M8 QGA/reboot,
   and M9/M9a/M9b host inspection, compatibility, installation, bootstrap, and
-  convergence evidence pass. Cross-layer capture, report integration, and the
-  failure/recovery matrix remain under separate approval procedures.
+  convergence evidence pass, and the bounded M10b failure/recovery matrix is
+  closed. Cross-layer capture and report integration remain under separate
+  approval procedures.
 
 ### Blockers and exit criteria
 
@@ -323,7 +325,7 @@ readiness in the remaining host-side work.
 | M10a3 | Optional bounded driver observation | [x] | M9b, M10a2 | One 2 MiB grow converged, but the predeclared 1 GiB recovery target remained 2 MiB above current for 60 samples/300 seconds; no matching driver record appeared, no overlapping request was issued, and graceful domain recreation restored convergence/controller state |
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
 | M10aX | Conditional driver status-interface feasibility | [x] | Concrete unmet diagnostic need | The M10a3 no-progress and larger partial-progress stalls plus empty bounded captures justify a proposal for a cached read-only status IOCTL; security, ABI, tests, external build/signing/install, and rollback gates are specified, while implementation remains No-Go |
-| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | Hermetic interruption/restart/cancellation/ownership and typed command-failure paths plus installed candidate rejection/no-replay pass; one-block recovery and partial/no-progress shrink evidence pass; reviewed attestation regeneration and active-controller reboot/interruption remain |
+| M10b | Single-VM failure, Windows shrink, and recovery matrix | [x] | M7, M9b, M9e, M10a2 | Hermetic interruption/restart/cancellation/ownership and typed command-failure paths pass; installed candidate rejection/no-replay, bounded retry/stall behavior, one-block abandon-to-current recovery, and partial/no-progress shrink evidence are accepted as closure evidence |
 | M10e | Quantitative desired-allocation model | [~] | M10c, M10d, M10a | Implement the normative estimator in `target-controller.md`: checked physical/commit candidates, fixed-visible-base validation, effective device maximum, normal/floor reserves, immediate growth, 10-minute high-water reclaim history, 256 MiB downward hysteresis, and restart-safe checkpoint produce absolute aligned desired and safe-floor targets |
 | M10f | Desired/requested/current reconciler | [ ] | M10e, M10b | Reconcile durable desired, device requested, authoritative current, and explicit health; bound growth/reclaim to 1 GiB/64 MiB, permit only upward shrink supersession, freeze owned shrink on stale telemetry, account partial progress, and resolve journaled commands without replay |
 | M10g | Single-VM target-controller qualification | [ ] | M10f, M9d | Report controller correctness separately from platform reclaim capability using hermetic faults and a bounded committed/resident live workload; automatic shrink remains default-on, while failures expose constrained/latched health and preserve all safety gates |
@@ -333,6 +335,13 @@ readiness in the remaining host-side work.
 | M13 | Operational release readiness | [ ] | M12 | Default-on shrink upgrade semantics, explicit disable and dry-run latch-clear procedures, health/monitoring, compatibility evidence, rollback, and repeatable host automation are complete |
 
 ### M10b bounded Windows-shrink qualification profile
+
+**Closed 2026-09-09.** The operator accepted the completed hermetic matrix,
+installed-candidate rejection/no-replay result, bounded one-block
+retry/recovery qualification, and larger partial/no-progress probes as
+sufficient milestone evidence. The previously planned clean active-controller
+reboot plus refreshed-attestation batch remains an optional operational
+follow-up and is not recorded as having passed.
 
 M10b qualifies one explicit host-side state machine. These values are a
 diagnostic and recovery profile, not workload-tuned production policy and not
@@ -764,7 +773,7 @@ reclaim passes before any automatic multi-VM live action.
 - [x] Add bounded in-flight shutdown handling.
 - [x] Verify non-zero failure exit behavior for SCM recovery.
 - [ ] Add regression tests for restart and recovery decisions.
-- [~] Retain the M10b 30/60/120-second same-target schedule and immutable
+- [x] Retain the M10b 30/60/120-second same-target schedule and immutable
     300-second deadline for bounded qualification/diagnosis only. M10f must
     separate operation health from desired-memory policy; transport failures
     remain separately classified and no resize may be retried blindly.
@@ -800,8 +809,8 @@ reclaim passes before any automatic multi-VM live action.
     latency is recorded, while native telemetry overhead remains open.
 - [ ] Tune physical/commit reserves, base tolerance, the 10-minute reclaim
     window, maximum sample gap, and 256 MiB hysteresis using M10g evidence.
-- [~] Confirm no overlapping polls or resize requests; M9b observed no
-    overlapping resize, while the wider failure/restart matrix remains M10b.
+- [x] Confirm no overlapping polls or resize requests through M9b live
+    evidence and the closed M10b hermetic/live qualification scope.
 - [ ] Verify bounded shutdown under slow QGA responses.
 - [ ] Set explicit latency and shutdown acceptance thresholds from measured KVM
     results rather than assumptions.

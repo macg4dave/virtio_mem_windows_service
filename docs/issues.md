@@ -20,7 +20,6 @@ targets.
 | ISSUE-004 | Full-device virtio-mem test risked exhausting host memory | Open; safety guard added 2026-08-18 | Host validation | Critical |
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
 | ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; M10aX feasibility proposal complete, implementation No-Go | Windows observability | Medium |
-| ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete live recovery matrix | Open; one-block live retry/recovery passed, but 64 MiB automatic reclaim made no progress and the remaining interruption/restart matrix is pending | Host recovery | High |
 | ISSUE-016 | The directional step controller does not calculate durable memory need and rejects renewed pressure while a shrink is pending | Open; M10e-M10g normative contract added, automatic reclaim now defaults on with latching | Host policy/reconciliation | Critical |
 
 M10a3 live evidence on 2026-09-07 narrowed ISSUE-015: one 2 MiB growth
@@ -42,10 +41,9 @@ fork or install and does not change host allocation authority.
 The implemented M10b qualification profile bounds this risk explicitly: exact
 same-target notifications after 30/60/120 seconds without block progress, no
 more than three notifications, and an immutable 300-second deadline. A stall
-is latched without exiting the worker. Separate live evidence must prove that
-re-notification wakes the driver and that a one-shot abandon-to-current request
-converges safely after two stable samples. The one-block live run showed no
-retry progress but did prove abandon-to-current recovery; a later automatic
+is latched without exiting the worker. The one-block live run showed that
+re-notification did not wake the driver but did prove that one-shot
+abandon-to-current recovery converges safely after two stable samples; a later automatic
 64 MiB request also made no progress. Hermetic tests cover the schedule,
 progress, stale/external state, cancellation/restart, ambiguous commands,
 latched stall, stable recovery, and immediate reread. Automatic shrink now
@@ -62,8 +60,8 @@ three allocation-derived contents, distinguishes preparation rejection from
 an invoked command with unknown outcome, latches observation/ownership faults,
 rate-limits unowned-divergence reporting, and emits operation-correlated
 shrink events. Hermetic restart, interruption, cancellation, external-target,
-and no-replay tests pass; candidate installed-service evidence remains part of
-the open live matrix.
+and no-replay tests pass; candidate installed-service evidence was then part
+of the still-open live matrix.
 The prepared candidate rollout timed out before the privileged script began;
 the unchanged installed controller then reached `NRestarts=31` while the live
 allocation remained converged. No candidate binary, attestation, service
@@ -81,13 +79,15 @@ The corrected invocation then passed: installed and candidate hashes matched
 the service remained active at `NRestarts=0`, and exactly one typed pre-command
 rejection was emitted. No resize/unknown-command event appeared, allocation
 remained converged at `2105344 KiB`, and temporary install files were removed.
-The remaining attestation regeneration and active-controller interruption
-matrix are separate gates.
+At operator direction, M10b accepts this bounded hermetic/live evidence as its
+closure scope. The clean active-controller reboot and refreshed-attestation
+batch remains optional operational follow-up and is not claimed as passed.
 
 ## Resolved Issues
 
 | ID | Description | Status | Fix Reference | Date Resolved |
 | --- | ----------- | ------ | -------------- | ------------- |
+| ISSUE-015 | Windows shrink retry and recovery behavior lacked bounded interruption, cancellation, restart, ownership, stall, and no-replay handling | Resolved by operator-accepted M10b scope; clean reboot/refreshed-attestation rerun remains optional and is not claimed as passed | `shrink_recovery`, `resize_sink`, runtime recovery regressions, installed rejection/no-replay, and bounded live recovery evidence | 2026-09-09 |
 | ISSUE-013 | Demand delivery lacked bounded atomic handoff, retention, durable restart-safe replay state, and ACL provisioning | Resolved in code; installed ACL evidence remains an operational gate | `AtomicRawTelemetryPublisher`, `FileRawTelemetrySource` acknowledgement state, and `provision_program_data_acl` | 2026-09-08 |
 | ISSUE-012 | Production Windows telemetry samples were discarded pending the selected host-side allocation join | Resolved | TASK-020 raw publisher and fresh alias-scoped `current` host join | 2026-09-08 |
 | ISSUE-001 | Host controller depended on unavailable `guest-get-memory-stats` | Resolved by configurable `dommemstat` default; upstream audit confirms the command is not upstream QGA and the retained adapter is custom/experimental | `host/src/dommemstat.rs`, `VIRTIO_MEM_STATS_SOURCE` config | 2026-08-18; clarified 2026-09-05 |

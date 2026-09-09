@@ -4,12 +4,13 @@
 **Phase:** Phase 2 — Core Functionality
 **Overall status:** Windows and host service lifecycles plus single-VM host
 actuation are live validated. The host-side demand join is complete with
-native Windows and hermetic host evidence. Bounded delivery and M10b recovery
-logic are implemented and the one-block live recovery gate passed; installed
-ACL verification and the wider interruption matrix remain. Host-stat freshness
-and the complete compatibility attestation are implemented and installed; the
-corrected allocation-neutral hash requires deliberate attestation regeneration
-before the candidate controller can actuate.
+native Windows and hermetic host evidence. M10b's bounded recovery scope is
+closed from its hermetic matrix, installed rejection/no-replay result, and
+bounded live shrink/recovery evidence. Installed ACL verification remains.
+Host-stat freshness and the complete compatibility attestation are implemented
+and installed; the corrected allocation-neutral hash still requires deliberate
+attestation regeneration before the candidate controller can actuate, but that
+operational refresh is no longer an M10b exit gate.
 The allocation-authority contract is established from Virtio and pinned
 implementation sources; optional driver tracing remains diagnostic.
 `win11_gpu` is a fully trusted development/test KVM
@@ -142,6 +143,13 @@ independent Windows/service probes, pending-reboot and installer checks,
 crash/reboot-event correlation, exactly one expected boot transition, and a
 quiet stabilization window before attestation or other persistent work.
 
+M10b/TASK-022 was closed by operator direction on 2026-09-09. The completed
+hermetic interruption/restart/cancellation/ownership and typed-failure matrix,
+installed candidate rejection/no-replay, bounded one-block retry and
+abandon-to-current recovery, and larger partial/no-progress shrink probes are
+accepted as sufficient milestone evidence. The clean active-controller reboot
+and refreshed-attestation batch remains optional and is not claimed as passed.
+
 ## Open implementation work
 
 - Implement M10e's normative quantitative target contract from
@@ -169,19 +177,6 @@ quiet stabilization window before attestation or other persistent work.
   trust, driver, QEMU, and libvirt evidence and rejects drift before resize.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
   message resource; SCM lifecycle/recovery and raw XML EventData are verified.
-- Use the completed M10a2 correlated behavior-evidence harness to finish the
-  remaining M10b interruption/restart matrix. The retry schedule, latched
-  stall, and operator recovery are implemented hermetically and passed the
-  one-block live qualification. The completed
-  M10aX feasibility proposal addresses the diagnostic gap left by M10a1/M10a3
-  without authorizing driver implementation or installation.
-  The M10b policy is selected: five-second observation, exact-target
-  notifications after 30/60/120 seconds without progress, at most three
-  notifications, an immutable 300-second deadline, a non-fatal latched stall,
-  and separately qualified one-shot abandon-to-current recovery. Automatic
-  shrink defaults on with the selected 64 MiB quantum; re-notification remains
-  a separate default-off diagnostic control.
-
 ## External blockers
 
 - `guest-get-memory-stats` is absent from upstream QGA schemas; upgrading an
@@ -212,7 +207,8 @@ quiet stabilization window before attestation or other persistent work.
   host allocation accounting. M10aX now specifies a versioned cached read-only
   status IOCTL, administrator/SYSTEM access, external build/signing,
   disposable-guest testing, and exact rollback gates; implementation remains
-  No-Go pending M10b operational value and external driver ownership.
+  No-Go because closed M10b evidence did not justify the interface and external
+  driver ownership remains absent.
 - M10a2's shared-core evidence contract is implemented and hermetically tested:
   required host, Windows-health, controller, identity, explicit-unit, ordering,
   and converged-endpoint evidence fails closed when incomplete or mixed;

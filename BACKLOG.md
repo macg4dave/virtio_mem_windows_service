@@ -1,5 +1,18 @@
 # BACKLOG
 
+## 2026-09-09 M10b operator-accepted closure
+
+- Closed M10b/TASK-022 at operator direction using the completed hermetic
+  interruption, restart, cancellation, ownership, stall, typed-failure, and
+  no-replay matrix plus the installed-candidate rejection, bounded one-block
+  recovery, and larger partial/no-progress live evidence.
+- The clean active-controller reboot and refreshed-attestation batch was not
+  completed and is not claimed as passing evidence. It remains an optional
+  operational follow-up rather than a TASK-022 exit gate.
+- ISSUE-015 is resolved by the accepted bounded recovery scope. M10f/M10g
+  retain responsibility for durable desired/requested/current reconciliation
+  and broader controller/platform qualification.
+
 ## 2026-09-09 M10b runtime recovery hardening
 
 - Corrected the allocation-neutral M9d domain fingerprint to normalize
@@ -195,9 +208,10 @@
 - The proposal defines ABI evolution, access control, malformed-request and
   concurrency testing, external driver build/signing gates, disposable-guest
   qualification, exact package rollback, and protected-guest approval gates.
-- Implementation remains No-Go pending M10b proof that the extra diagnostic
-  distinctions change an operational decision, upstream/fork ownership,
-  security review, a signing route, and rehearsed disposable-guest rollback.
+- Closed M10b evidence did not show that the extra diagnostic distinctions
+  change an operational decision. Implementation remains No-Go without
+  upstream/fork ownership, security review, a signing route, and rehearsed
+  disposable-guest rollback.
   No driver code, build, install, guest/host mutation, or Rust consumer was
   added.
 
@@ -1037,7 +1051,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | --- | --- | --- | --- | --- |
 | TASK-026 | M10e quantitative desired-allocation model | Copilot | In Progress | Target-estimator, history, reserve, safe-floor, base-calibration, effective-maximum, and M10f/M10g handoff contracts are being made deterministic. Automatic shrink is now an explicit default-on product capability with bounded fail-closed latching rather than a post-M10g opt-in. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
-| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | In Progress | Hermetic restart/interruption/cancellation/ownership and typed command-failure tests pass (47 core/58 host). Candidate service rejection/no-replay, one-block recovery, and partial/no-progress evidence pass. The first active-controller reboot run was invalidated by a second planned Sunshine/MSI reboot; layered Windows health and quiet-window gates are now mandatory. Reviewed attestation regeneration and a clean reboot/interruption run remain. |
 
 ## Planned
 
@@ -1201,6 +1214,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | 2026-09-09 | Operator accepted closure from 47 core/58 host hermetic tests, installed candidate rejection/no-replay, bounded one-block retry and abandon-to-current recovery, and partial/no-progress live shrink evidence. The unexecuted clean reboot/refreshed-attestation batch remains optional and is not claimed as passed. |
 | TASK-021 | M10d demand envelope and bounded delivery | Copilot | 2026-09-08 | Version 2 identity/provenance, atomic current-record handoff, three-record retention, durable restart-safe replay acknowledgement, read bounds, and LocalService ProgramData ACL provisioning pass 45 core/48 host/67 native Windows tests; installed ACL verification remains operational evidence. |
 | TASK-020 | M10c host-side current-allocation join | Copilot | 2026-09-08 | Windows publishes VM/time-scoped raw telemetry without allocation input; the host rejects invalid/stale/wrong-VM records, joins fresh alias-scoped live `current`, and calculates through shared policy. 31 core, 40 host, and 66 native Windows tests pass. |
 | TASK-025 | M9e host telemetry correctness and freshness | Copilot | 2026-09-08 | Correct balloon mapping, bounded advancing `last-update`, injected-clock failures, and the shared-path Rust `decision` preview pass hermetic tests; the QGA-only Bash preview is removed. |
@@ -1223,7 +1237,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-015 | M10a2 correlated behavior-evidence harness | Copilot | 2026-09-05 | Added bounded version-1 shared-core JSON validation for repeated identity, explicit bytes, ordered timestamps, required host/Windows/controller layers, stable geometry, converged endpoints, and optional aligned driver diagnostics; seven focused tests pass. |
 | TASK-014 | M10a1 optional driver diagnostic qualification | Copilot + Operator | 2026-09-07 | Signed bounded no-resize capture and exact driver/process/service/file/registry cleanup passed without persistent debug configuration; no matching informational record appeared. |
 | TASK-016 | M10a3 optional bounded driver observation | Copilot + Operator | 2026-09-07 | One-block grow converged; recovery shrink stayed divergent for 60 samples/300 seconds without overlap; a graceful domain recreation then restored 1 GiB convergence, healthy telemetry, and the controller with zero restarts. |
-| TASK-018 | M10aX driver status-interface feasibility | Copilot | 2026-09-08 | Proposal defines a versioned cached read-only status IOCTL, administrator/SYSTEM ACL, compatibility, hostile-input/concurrency tests, external build/signing, disposable-guest install, and exact rollback gates. Implementation remains No-Go pending M10b operational value and external driver ownership. |
+| TASK-018 | M10aX driver status-interface feasibility | Copilot | 2026-09-08 | Proposal defines a versioned cached read-only status IOCTL, administrator/SYSTEM ACL, compatibility, hostile-input/concurrency tests, external signing/install, and exact rollback gates. Closed M10b evidence did not justify implementation; it remains No-Go without external driver ownership and the other proposal gates. |
 
 ## Blocked
 

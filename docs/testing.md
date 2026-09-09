@@ -512,8 +512,8 @@ Service installation also registers the configured description and bounded
 failure actions: restart after 5 seconds, 30 seconds, and 60 seconds, with a
 24-hour reset period. Recovery actions are enabled for non-crash failures so
 unexpected non-zero worker exits can be recovered; intentional stop remains a
-successful zero-exit lifecycle. The wider restart/reboot/interruption matrix
-remains M10b work.
+successful zero-exit lifecycle. M10b's bounded restart/interruption/recovery
+scope is closed; broader target-controller qualification remains M10g work.
 
 The SCM path writes lifecycle and failure records to the Windows Application
 Event Log with source `VirtioMemService`. Query the latest records from an
@@ -1117,6 +1117,11 @@ checks showed fresh balloon telemetry, running `viomem`, and an active
 controller with `NRestarts=0`.
 
 ### M10b bounded retry/recovery qualification
+
+M10b was closed by operator acceptance on 2026-09-09 using the completed
+hermetic matrix and existing bounded live evidence. The clean
+active-controller reboot plus refreshed-attestation batch remains optional
+follow-up evidence; it has not been recorded as passing.
 
 Run the deterministic recovery matrix before any live operation:
 
