@@ -71,13 +71,16 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - Require a hard QEMU/libvirt memory limit for production or untrusted guests.
   It is recommended defense-in-depth for the fully trusted development/test
   `win11_gpu` exception.
-- Keep automatic Windows shrink disabled until M10g target-controller
-  qualification passes. A 64 MiB request made no live progress. Treat 1 GiB
-  growth and 64 MiB reclaim as actuation bounds toward an M10e absolute target,
-  not as demand estimates. Re-notification remains a separate default-off
-  diagnostic capability: only the immutable target may be repeated, at most
-  three times on the 30/60/120-second profile, without extending the
-  300-second diagnostic deadline or replaying after restart.
+- Keep automatic Windows shrink enabled by default as a core product
+  capability. Treat 1 GiB growth and 64 MiB reclaim as actuation bounds toward
+  the M10e absolute target, not as demand estimates. Reclaim requires the
+  warmed-history safe floor and M10f ownership/latch rules; stale telemetry,
+  ambiguity, or stall must freeze or latch rather than overlap or blindly
+  retry. Re-notification remains a separate default-off diagnostic capability:
+  only the immutable target may be repeated, at most three times on the
+  30/60/120-second profile, without extending the 300-second diagnostic
+  deadline or replaying after restart. Follow
+  [`target-controller.md`](target-controller.md) for the normative policy.
 - Use `SIGTERM` and `SIGINT` for one wakeable cancellation path. Operational
   failures must produce contextual journal output and a non-zero process exit.
 - Configure an explicit non-login service account and verify its least-privilege

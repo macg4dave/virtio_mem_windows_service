@@ -232,8 +232,11 @@ accounting or hermetic global-pool simulation.
     QEMU/libvirt cgroup memory limit is recommended defense-in-depth for fully
     trusted development guest `win11_gpu` and mandatory for untrusted or
     production deployments.
-- Automatic Windows shrinking remains disabled after a live 64 MiB request
-    made no progress. M10b's bounded retry/re-notification/recovery is retained
-    as diagnostic and operator-recovery behavior. M10e-M10g must add and
-    qualify an absolute target plus desired/requested/current reconciliation
-    before automated reclaim is supported.
+- Automatic Windows shrinking defaults enabled because reclaim is a core
+    product capability. A live 64 MiB request made no progress, so normal
+    re-notification remains disabled and the controller latches rather than
+    overlapping or blindly retrying. M10e-M10g add the normative absolute
+    target, warmed-history floor, durable desired/requested/current
+    reconciliation, restart-safe command intent, and separate controller/
+    platform qualification defined in
+    [`target-controller.md`](target-controller.md).

@@ -255,10 +255,11 @@ columns as unavailable, but XML `requested/current` convergence can still be
 observed.
 
 For Windows shrink tests, convergence timeout is not proof that the installed
-driver will retry. Source review found no obvious periodic retry timer. The
-trusted `win11_gpu` development controller may use the explicitly selected
-64 MiB automatic-reclaim quantum after its deployment gate; other deployments
-remain default-off. The qualification profile samples every five seconds, re-notifies
+driver will retry. Source review found no obvious periodic retry timer. All
+deployments now default to the selected 64 MiB automatic-reclaim quantum.
+Set `VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false` only for diagnosis or a
+deliberate rollout pause; all estimator/reconciler safety gates remain
+mandatory. The qualification profile samples every five seconds and re-notifies
 only the immutable target after 30, 60, and 120 seconds without block progress,
 allows at most three re-notifications, and never extends the initial 300-second
 deadline. Progress may move the no-progress clock but may not replenish either
@@ -807,8 +808,18 @@ retired session reuse, incomplete final lines, records over 64 KiB, and files
 over 1 MiB. The host then obtains alias-scoped live XML and
 calculates through the shared `DemandCalculator`; configured minimum,
 aggregate physical memory, QGA total, and balloon `actual` are never allocation
-substitutes. Live-device geometry conflicts fail closed, and automatic shrink
-remains blocked pending M10b.
+substitutes. Live-device geometry conflicts fail closed. Automatic shrink
+defaults enabled; explicit `false` pauses it, while same-target diagnostic
+re-notification defaults disabled. Until M10e-M10f land, the implemented
+directional path still enforces a single bounded request and latches an
+ambiguous or stalled shrink rather than blindly replaying it.
+
+M10e-M10g validation must follow
+[`target-controller.md`](target-controller.md): prove the physical/commit
+formula, base tolerance, effective maximum, reserve ordering, history gaps,
+10-minute warm-up, 256 MiB downward hysteresis, safe-floor ordering, bounded
+quanta, upward-only supersession, stale-during-shrink freeze, command journal,
+durable latch, restart/no-replay, and separate controller/platform outcomes.
 
 Run the M10c hermetic host gate from the repository root:
 
@@ -816,7 +827,7 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-The 2026-09-09 local M10 gate passes 46 shared-core and 50 host tests with zero
+The 2026-09-09 local M10 gate passes 46 shared-core and 52 host tests with zero
 failures. It covers durable restart-safe acknowledgement, atomic handoff,
 bounded retention, the shrink schedule, latched stalls, cancellation/restart,
 and one-shot recovery. Run the native

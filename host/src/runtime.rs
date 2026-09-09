@@ -198,6 +198,7 @@ where
         let runtime_started = Instant::now();
         let mut owned_request = false;
         let mut shrink_operation: Option<ShrinkOperation> = None;
+        let mut actuation_latched = false;
         while !stop.load(Ordering::Acquire) {
             let state = self
                 .state_source
@@ -260,6 +261,13 @@ where
                 .map_err(HostRuntimeError::DemandInput)?;
             let decision = demand.decision;
             if let ResizeDecision::Request { requested_bytes } = decision {
+                if actuation_latched {
+                    eprintln!(
+                        "virtio-mem-host: automatic actuation remains latched off after an ambiguous command outcome"
+                    );
+                    wait_interruptibly(stop, self.config.poll_interval);
+                    continue;
+                }
                 if requested_bytes < state.current_bytes && !self.config.automatic_windows_shrink {
                     eprintln!(
                         "virtio-mem-host: calculated advisory shrink to {requested_bytes} bytes; automatic Windows shrink is disabled"
@@ -287,6 +295,7 @@ where
                 }
                 if let Err(error) = self.resize_sink.request_resize(requested_bytes) {
                     if requested_bytes < state.current_bytes {
+                        actuation_latched = true;
                         eprintln!(
                             "virtio-mem-host: initial shrink outcome is ambiguous; replay suppressed pending a fresh state read: {error}"
                         );
@@ -331,6 +340,8 @@ fn wait_interruptibly(stop: &AtomicBool, duration: Duration) {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     const MIB: u64 = 1024 * 1024;
@@ -466,5 +477,84 @@ mod tests {
     fn returns_immediately_for_a_cancelled_runtime() {
         let stop = AtomicBool::new(true);
         wait_interruptibly(&stop, Duration::from_secs(60));
+    }
+
+    struct RepeatedShrinkDemand<'a> {
+        evaluations: Cell<u32>,
+        stop: &'a AtomicBool,
+    }
+
+    impl DemandSource for RepeatedShrinkDemand<'_> {
+        fn evaluate(
+            &self,
+            state: VirtioMemState,
+            _config: &HostConfig,
+        ) -> Result<DemandDecision, String> {
+            let evaluations = self.evaluations.get().saturating_add(1);
+            self.evaluations.set(evaluations);
+            if evaluations >= 2 {
+                self.stop.store(true, Ordering::Release);
+            }
+            Ok(DemandDecision {
+                decision: ResizeDecision::Request {
+                    requested_bytes: state.current_bytes - 64 * MIB,
+                },
+                safe_floor_bytes: state.current_bytes - 64 * MIB,
+            })
+        }
+    }
+
+    struct ConvergedState;
+
+    impl MemoryStateSource for ConvergedState {
+        fn memory_state(&self) -> Result<VirtioMemState, String> {
+            Ok(VirtioMemState {
+                size_bytes: 40 * GIB,
+                block_size_bytes: 2 * MIB,
+                requested_bytes: 16 * GIB,
+                current_bytes: 16 * GIB,
+            })
+        }
+    }
+
+    struct AmbiguousShrinkSink(Cell<u32>);
+
+    impl ResizeSink for &AmbiguousShrinkSink {
+        fn request_resize(&self, _requested_bytes: u64) -> Result<(), String> {
+            self.0.set(self.0.get().saturating_add(1));
+            Err("command timed out".to_owned())
+        }
+    }
+
+    struct UnusedHostMemory;
+
+    impl HostMemorySource for UnusedHostMemory {
+        fn available_bytes(&self) -> Result<u64, String> {
+            Err("shrink must not query host growth headroom".to_owned())
+        }
+    }
+
+    #[test]
+    fn ambiguous_automatic_shrink_is_not_replayed_on_the_next_poll() {
+        let stop = AtomicBool::new(false);
+        let demand = RepeatedShrinkDemand {
+            evaluations: Cell::new(0),
+            stop: &stop,
+        };
+        let sink = AmbiguousShrinkSink(Cell::new(0));
+        let mut runtime_config = config();
+        runtime_config.automatic_windows_shrink = true;
+        runtime_config.poll_interval = Duration::from_millis(1);
+        let runtime = HostRuntime::new(
+            demand,
+            ConvergedState,
+            &sink,
+            UnusedHostMemory,
+            runtime_config,
+        );
+
+        runtime.run(&stop).expect("latched ambiguity is non-fatal");
+
+        assert_eq!(sink.0.get(), 1);
     }
 }

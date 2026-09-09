@@ -169,9 +169,10 @@ attempt must account for Windows debug-print filtering as well as the capture
 process and temporary `Dbgv.sys`; a successful no-resize tool run alone does
 not prove that informational viomem records can reach the capture buffer. It
 must not silently enable boot logging, persist a debug-filter registry change,
-restart the driver, or reboot the guest. Automatic shrink remains blocked on
-M10b behavioral and recovery evidence, regardless of whether diagnostic trace
-is available.
+restart the driver, or reboot the guest. The original audit blocked automatic
+shrink on M10b evidence. The later default-on product decision preserves M10b
+as diagnosis/recovery and adds M10e warmed-history plus M10f durable latching;
+diagnostic trace availability still grants no actuation authority.
 
 The later M10aX
 [`driver status-interface feasibility proposal`](driver-status-interface-feasibility.md)

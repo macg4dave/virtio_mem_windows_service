@@ -54,7 +54,7 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest gates pass 46 shared-core, 50 host, and 67 native-Windows tests.
+The latest gates pass 46 shared-core, 52 host, and 67 native-Windows tests.
 These are separate supported-platform results, not one cross-platform
 workspace run. Release builds, formatting, Clippy warnings-as-errors, and Bash
 syntax validation pass.
@@ -89,10 +89,10 @@ syntax validation pass.
   actuation.
 - Windows shrink behavior is size-sensitive: the live 256 MiB ramp reclaimed
   about 2.93 GiB before stalling, while a one-device-block request made no
-  progress. A live 64 MiB request also made no progress for 300 seconds, so
-  automatic reclaim remains disabled. The controller calculates 64 MiB reclaim
-  quanta for future qualification, retains bounded recovery, and never issues
-  another request until the prior target converges.
+  progress. A live 64 MiB request also made no progress for 300 seconds and
+  latched cleanly. Automatic reclaim now defaults enabled because it is a core
+  product capability; freshness, safe floors, bounded 64 MiB requests,
+  convergence, and ambiguity/stall latching prevent blind repeated reclaim.
 - M10e-M10g will replace the per-poll directional-step policy with an absolute
   desired target and explicit `desired`/`requested`/`current` reconciliation.
   Fixed no-progress deadlines remain health and recovery bounds; they will not
@@ -105,7 +105,9 @@ syntax validation pass.
   production or untrusted guest because QEMU does not fully protect unplugged
   memory from guest access.
 
-See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
+See the [roadmap](docs/roadmap.md) for milestone status and exit gates and the
+[target-controller contract](docs/target-controller.md) for normative
+M10e-M10g policy.
 
 ## Architecture
 
@@ -134,8 +136,9 @@ See the [roadmap](docs/roadmap.md) for milestone status and exit gates.
 - Windows code does not invoke Linux commands, `virsh`, or libvirt.
 - Host automation is explicit-scope and read-only unless a live action is
   deliberately approved.
-- The controller never sends a follow-up resize while `requested` and
-  `current` differ.
+- The controller never sends an ordinary follow-up resize while `requested`
+  and `current` differ. M10f adds only a freshly validated upward cancellation
+  or supersession of a pending shrink; it never permits a second lower target.
 - Memory values cross internal boundaries as checked `u64` byte counts.
 - Live resize tests are opt-in, bounded, aligned, and reversible by default.
 - Direct `viomem.sys` user-mode control remains deferred until a supported
@@ -221,6 +224,7 @@ For a live resize, follow the approval and rollback procedure in
 | [`docs/future-architecture.md`](docs/future-architecture.md) | Phase 3 global-controller design |
 | [`docs/api-contract.md`](docs/api-contract.md) | QGA, demand-report, and resize contracts |
 | [`docs/data-model.md`](docs/data-model.md) | Memory state and policy data model |
+| [`docs/target-controller.md`](docs/target-controller.md) | Normative M10e-M10g estimator, reconciler, persistence, and qualification contract |
 | [`docs/feature-matrix.md`](docs/feature-matrix.md) | Feature status by component |
 | [`docs/testing.md`](docs/testing.md) | Local, host, guest, and live validation procedures |
 | [`docs/issues.md`](docs/issues.md) | Known incidents and unresolved issues |

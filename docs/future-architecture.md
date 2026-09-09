@@ -164,7 +164,10 @@ configured maximum ─ administrative/device ceiling
 The Windows agent may calculate `desired target` and recommend a `safe floor`,
 in local version-1 tests, but production target calculation moves to the Linux
 controller after the M10c join. A safe floor is advisory until it has been
-validated against workload history and actual virtio-mem convergence.
+validated against workload history and actual virtio-mem convergence. The
+normative M10e-M10g estimator, reconciliation, checkpoint, and qualification
+contract is in [`target-controller.md`](target-controller.md); M11 must reuse it
+rather than derive a second demand formula.
 
 ## Arbitration policy
 
@@ -304,8 +307,10 @@ not be presented as a substitute for a configured VM minimum or a host reserve.
    status interface only if a concrete operational diagnostic need cannot be
    met by QEMU/libvirt observation and bounded tracing.
 
-No automatic shrink policy should be enabled based solely on instantaneous
-available memory or on an unverified driver assumption.
+Automatic shrink defaults enabled as a core product capability, but no request
+may be based solely on instantaneous available memory or an unverified driver
+assumption. Reclaim requires warmed history, a validated safe floor, bounded
+actuation, command ownership, and durable ambiguity/stall latching.
 
 ## References
 

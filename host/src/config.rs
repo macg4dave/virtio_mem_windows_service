@@ -5,6 +5,10 @@ use thiserror::Error;
 
 pub const DEFAULT_GROW_STEP_BYTES: u64 = 1024 * 1024 * 1024;
 pub const DEFAULT_SHRINK_STEP_BYTES: u64 = 64 * 1024 * 1024;
+/// Automatic reclaim is a core product capability unless explicitly paused.
+pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = true;
+/// Same-target re-notification remains an explicitly selected diagnostic mode.
+pub const DEFAULT_SHRINK_RENOTIFICATION: bool = false;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HostConfigError {
@@ -136,8 +140,14 @@ impl HostConfig {
             )?),
             host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
             compatibility_attestation_path: required("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH")?,
-            automatic_windows_shrink: optional_bool("VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK")?,
-            shrink_renotification: optional_bool("VIRTIO_MEM_SHRINK_RENOTIFICATION")?,
+            automatic_windows_shrink: optional_bool(
+                "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
+                DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
+            )?,
+            shrink_renotification: optional_bool(
+                "VIRTIO_MEM_SHRINK_RENOTIFICATION",
+                DEFAULT_SHRINK_RENOTIFICATION,
+            )?,
         };
         config.validate()?;
         Ok(config)
@@ -187,12 +197,28 @@ impl HostConfig {
     }
 }
 
-fn optional_bool(name: &'static str) -> Result<bool, HostConfigError> {
+fn optional_bool(name: &'static str, default: bool) -> Result<bool, HostConfigError> {
     match env::var(name) {
-        Err(_) => Ok(false),
-        Ok(value) if value.eq_ignore_ascii_case("true") => Ok(true),
-        Ok(value) if value.eq_ignore_ascii_case("false") || value.trim().is_empty() => Ok(false),
-        Ok(value) => Err(HostConfigError::InvalidBoolean { name, value }),
+        Ok(value) => parse_optional_bool(name, Some(value), default),
+        Err(env::VarError::NotPresent) => parse_optional_bool(name, None, default),
+        Err(env::VarError::NotUnicode(value)) => Err(HostConfigError::InvalidBoolean {
+            name,
+            value: value.to_string_lossy().into_owned(),
+        }),
+    }
+}
+
+fn parse_optional_bool(
+    name: &'static str,
+    value: Option<String>,
+    default: bool,
+) -> Result<bool, HostConfigError> {
+    match value {
+        None => Ok(default),
+        Some(value) if value.eq_ignore_ascii_case("true") => Ok(true),
+        Some(value) if value.eq_ignore_ascii_case("false") => Ok(false),
+        Some(value) if value.trim().is_empty() => Ok(default),
+        Some(value) => Err(HostConfigError::InvalidBoolean { name, value }),
     }
 }
 
@@ -228,6 +254,34 @@ fn positive_or_default(name: &'static str, default: u64) -> Result<u64, HostConf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_shrink_defaults_on_while_renotification_defaults_off() {
+        assert_eq!(
+            parse_optional_bool(
+                "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
+                None,
+                DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
+            ),
+            Ok(true)
+        );
+        assert_eq!(
+            parse_optional_bool(
+                "VIRTIO_MEM_SHRINK_RENOTIFICATION",
+                Some(String::new()),
+                DEFAULT_SHRINK_RENOTIFICATION,
+            ),
+            Ok(false)
+        );
+        assert_eq!(
+            parse_optional_bool(
+                "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
+                Some("false".to_owned()),
+                DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
+            ),
+            Ok(false)
+        );
+    }
     #[test]
     fn rejects_unsafe_aliases() {
         let config = HostConfig {

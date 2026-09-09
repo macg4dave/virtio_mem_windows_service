@@ -217,8 +217,10 @@ The official virtio-mem guidance adds several operational constraints that affec
 - The guest can fail to fulfill a shrink request if it cannot free or hotunplug
   memory reliably. The reviewed Windows driver exposes no obvious periodic
   retry timer. M10b proved bounded diagnosis and abandon-to-current recovery,
-  but 64 MiB automatic reclaim made no progress; automatic shrink remains
-  disabled until the M10e-M10g target controller passes qualification.
+  but 64 MiB automatic reclaim made no progress. Automatic shrink now defaults
+  enabled as a core capability, with warmed-history eligibility and durable
+  stall/ambiguity latching supplied by M10e-M10f. M10g reports controller and
+  platform-reclaim qualification separately.
 - QEMU does not currently provide the same protection for unplugged memory
   that virtio-balloon does. A hard QEMU/libvirt cgroup memory limit is
   recommended defense-in-depth for fully trusted development guest

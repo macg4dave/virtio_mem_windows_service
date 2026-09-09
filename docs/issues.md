@@ -21,7 +21,7 @@ targets.
 | ISSUE-008 | Classic Event Log text rendering is unreliable without a registered message resource; XML `EventData` contains the correct bounded message | Open; XML query documented | Windows observability | Medium |
 | ISSUE-011 | Signed `viomem.sys` exposes no supported user-mode diagnostic query; its state message is filtered kernel-debug output | Open diagnostic limitation; M10aX feasibility proposal complete, implementation No-Go | Windows observability | Medium |
 | ISSUE-015 | Windows shrink retry behavior plus active-controller rejection, non-convergence, reboot, cancellation, and restart paths lack a complete live recovery matrix | Open; one-block live retry/recovery passed, but 64 MiB automatic reclaim made no progress and the remaining interruption/restart matrix is pending | Host recovery | High |
-| ISSUE-016 | The directional step controller does not calculate durable memory need and rejects renewed pressure while a shrink is pending | Open; M10e-M10g planned, automatic reclaim disabled | Host policy/reconciliation | Critical |
+| ISSUE-016 | The directional step controller does not calculate durable memory need and rejects renewed pressure while a shrink is pending | Open; M10e-M10g normative contract added, automatic reclaim now defaults on with latching | Host policy/reconciliation | Critical |
 
 M10a3 live evidence on 2026-09-07 narrowed ISSUE-015: one 2 MiB growth
 converged, but the recovery shrink remained at `requested=1073741824`,
@@ -48,9 +48,10 @@ converges safely after two stable samples. The one-block live run showed no
 retry progress but did prove abandon-to-current recovery; a later automatic
 64 MiB request also made no progress. Hermetic tests cover the schedule,
 progress, stale/external state, cancellation/restart, ambiguous commands,
-latched stall, stable recovery, and immediate reread. Automatic shrink remains
-disabled. M10e-M10g replace per-poll steps with a quantitative desired target
-and safe three-state reconciliation; M10b remains diagnostic/recovery behavior.
+latched stall, stable recovery, and immediate reread. Automatic shrink now
+defaults enabled while same-target re-notification remains disabled. M10e-M10g replace per-poll steps with a quantitative desired target
+and safe three-value reconciliation with explicit control health; M10b remains
+diagnostic/recovery behavior.
 
 ## Resolved Issues
 
@@ -193,9 +194,10 @@ and safe three-state reconciliation; M10b remains diagnostic/recovery behavior.
 - Driver debug output echoes device configuration and is useful for diagnosing
   notification, branch, and failure behavior, but is not an independent state
   source. M10c/M10d and hermetic M11 simulation no longer depend on capture.
-- Automatic shrink remains blocked on M10b recovery evidence. Any live test
-  must use a named recovery target and must not claim shrink is guaranteed
-  rollback.
+- At the time of this 2026-09-05 review, automatic shrink remained blocked on
+  M10b recovery evidence. The 2026-09-09 default-on product decision supersedes
+  that rollout setting without changing the requirement that any live test use
+  a named recovery target and never claim shrink is guaranteed rollback.
 
 ### Whole-roadmap audit — 2026-09-05
 

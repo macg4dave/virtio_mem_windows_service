@@ -148,25 +148,45 @@ useful bounds, but they do not answer how much memory Windows still needs.
 Complete this single-VM redesign before making its behavior a global-pool
 primitive:
 
-1. **M10e — desired target:** calculate one absolute virtio-mem target from
-   fresh native Windows availability/commit telemetry, explicit fixed/base
-   guest memory, configurable reserves, rolling history, hysteresis, safe
-   floors, and configured limits. Align the target to device geometry. Treat
-   1 GiB growth and 64 MiB reclaim as actuation bounds, not demand estimates.
-2. **M10f — reconciliation:** model `desired`, `requested`, and `current`
-   separately. Preserve `current` as accounting authority, allow fresh
-   pressure to raise or cancel a pending shrink, prohibit a second lower
-   target while reclaim is pending, and retain partial reclaim as useful
+1. **M10e — instantaneous estimate:** implement the checked formula and
+   invariants in [`docs/target-controller.md`](docs/target-controller.md).
+   Calculate separate physical-availability and commit-headroom candidates,
+   take their maximum, validate configured fixed visible base memory against
+   `physical_total - current`, and clamp to the aligned effective maximum that
+   includes the device's 1 GiB safety headroom. Do not size RAM from pressure
+   ratios or the since-boot commit peak.
+2. **M10e — stable target:** calculate normal desired and conservative safe-
+   floor candidates with distinct byte reserves. Grow desired immediately;
+   lower it only from a complete fresh 10-minute high-water window and a
+   256 MiB downward deadband. Persist a bounded atomic checkpoint and require
+   warm-up after missing, stale, incompatible, or cross-session history.
+3. **M10f — reconciliation:** model policy `desired`, device `requested`,
+   authoritative `current`, and explicit controller health separately. Move
+   toward desired by at most 1 GiB growth or 64 MiB reclaim. Permit only an
+   upward target while shrink is pending, cancel to current before later
+   growth, prohibit a second lower target, and retain partial reclaim as useful
    constrained progress.
-3. **M10f — timing:** retain finite transport/command deadlines and telemetry
-   freshness. Convert no-progress deadlines into health/diagnostic signals;
-   they must not calculate or rewrite desired memory. Prefer reliable device
-   events when available and reconcile with periodic polling.
-4. **M10g — qualification:** use deterministic clocks/fakes and then a bounded
-   live workload covering +4 GiB growth, settling at +2 GiB demand, renewed
-   pressure during shrink, zero/partial progress, stale input, ambiguity,
-   cancellation, and restart. Keep automatic reclaim disabled until this gate
-   passes.
+4. **M10f — intent and timing:** write command intent before actuation and
+   resolve every success, error, timeout, cancellation, and restart against a
+   fresh live reread. Persist ambiguity/stall latches and never replay a
+   recorded command. Freeze an owned shrink to current when guest telemetry
+   becomes stale; otherwise fail recovery-required. Deadlines update health,
+   never demand.
+5. **M10g — controller qualification:** use deterministic clocks, boundary
+   generation, fakes, and fault injection to prove formulas, history, restart
+   warm-up, alignment, bounded actuation, supersession, stale-input freeze,
+   constrained progress, journal resolution, and no replay.
+6. **M10g — platform qualification:** run a bounded Rust workload covering
+   committed-only and resident demand, +4 GiB growth settling at +2 GiB,
+   renewed pressure during shrink, zero/partial/full progress, ambiguity,
+   cancellation, and restart. Report controller correctness separately from
+   the selected stack's ability to reclaim reliably.
+
+Automatic shrink is a default-on product capability from M10e onward and is
+already the host configuration default. Qualification does not turn the
+feature on; it establishes support evidence. Freshness, warm-up, safe floors,
+default-off re-notification, one-request convergence, and durable latching are
+the operational safety controls.
 
 ### 10. Build hermetic global-pool simulation
 
@@ -189,18 +209,21 @@ remain gates for live multi-target actuation, not for hermetic pool simulation.
   growth or 64 MiB reclaim actuation.
 - Reuse M10f upward supersession and constrained-current accounting; never
   issue a second lower target while a shrink remains pending.
-- Keep automatic Windows shrinking disabled until M10g proves target-controller
-  behavior and controlled failed-shrink recovery on the trusted development
-  guest; other deployments remain default-off.
+- Keep automatic Windows shrinking enabled by default while preserving the
+  M10e warm-up/floor gates and M10f durable ambiguity/stall latch. M10g reports
+  controller and platform-reclaim qualification separately; failure remains
+  explicit rather than silently converting the product to growth-only mode.
 - Fail closed on stale or inconsistent evidence.
 - Keep direct driver IOCTL work deferred unless a separate signed-driver track
    proves a supported interface.
 
 ## Phase 4 and operations
 
-After Phase 3 gates pass, implement recovery classification, structured
-observability, metrics, health checks, restart behavior, release packaging,
-rollback, and repeatable deployment procedures. Track this work in M12/M13 of
+After Phase 3 gates pass, implement recovery classification; estimator,
+history, desired/requested/current, capacity-limited, constrained, and durable-
+latch observability; metrics; restart/journal recovery; dry-run latch clearing;
+default-on upgrade and explicit-disable behavior; release packaging; rollback;
+and repeatable deployment procedures. Track this work in M12/M13 of
 `docs/roadmap.md` rather than creating a second task numbering scheme.
 
 ## Validation gates

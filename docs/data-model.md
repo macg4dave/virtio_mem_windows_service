@@ -96,19 +96,25 @@ and one 64 MiB quantum when release is advised. Each quantum must itself be a
 multiple of the live device block size. Pressure severity affects arbitration,
 not the size of a single per-VM request.
 
-Automatic shrink is not yet a supported Windows production path. Separate
-automatic-shrink and same-target re-notification controls now default off. A
-live 64 MiB request made no progress, so the controls remain off until M10g.
-M10b's bounded retry and abandon-to-current models are diagnostic/recovery
+Automatic shrink is a default-on product capability; same-target diagnostic
+re-notification remains independently default-off. Enabled reclaim still
+requires fresh continuous telemetry, warmed history, a valid safe floor,
+compatible converged state, current attestation, and an unlatched reconciler.
+A live 64 MiB request made no progress, so that run is negative platform-
+qualification evidence rather than a reason to make the product growth-only.
+M10b's bounded retry and abandon-to-current models remain diagnostic/recovery
 state; they do not calculate durable demand.
 
-M10e-M10f will add three separate controller values: `desired_bytes` is the
+M10e-M10f add three separate controller values: `desired_bytes` is the
 absolute policy target calculated from fresh guest demand, `requested_bytes`
-is the target accepted by the device, and `current_bytes` is authoritative
-actual allocation. A pending shrink may be superseded only upward on fresh
+is device intent, and `current_bytes` is authoritative actual allocation.
+They are not controller states. Control health separately records converged,
+growing, shrinking, constrained, command-unknown, recovery-required, and
+latched conditions. A pending shrink may be superseded only upward on fresh
 pressure. Partial or stalled reclaim leaves desired unchanged and is exposed
 as constrained current state; a no-progress deadline is health evidence, not
-a memory-sizing input.
+a memory-sizing input. See the normative formulas and state table in
+[`target-controller.md`](target-controller.md).
 
 The host-only `ShrinkOperation` contains block size, immutable target, latest
 current, creation/progress times, immutable deadline, retry index, and terminal
@@ -123,8 +129,9 @@ The qualification profile uses five-second observation, no-progress delays of
 30, 60, and 120 seconds, at most three exact-target re-notifications, and a
 300-second deadline. Abandon-to-current is a distinct one-shot recovery with a
 30-second deadline and no retry. Configuration keeps automatic shrink and
-re-notification as independent default-off booleans; target construction
-continues to enforce the shared one-block reclaim and safe-floor bounds.
+re-notification independent: shrink defaults on and re-notification defaults
+off. Target construction continues to enforce bounded reclaim and safe-floor
+rules.
 
 ### Host memory-stat snapshot
 
@@ -212,9 +219,16 @@ use them for allocation accounting.
 
 ### Persistence
 
-Currently, state is transient (no database). State is recalculated on each poll cycle.
+M10d replay acknowledgement is persistent. The legacy directional policy and
+M10b operation ownership remain process-local. M10e-M10f add a versioned,
+bounded, atomically replaced host checkpoint for qualified target history,
+durable desired, fingerprints, command intent, and the actuation latch. This is
+a small state file rather than a database.
 
-The controller treats `virtio_mem_current_bytes` as authoritative for calculating the next step. A resize is suppressed while requested and current sizes have not converged.
+The controller treats `virtio_mem_current_bytes` as authoritative. Ordinary
+resize is suppressed while requested and current differ; M10f adds only the
+validated upward-supersession exception defined in the target-controller
+contract.
 
 ### Future State Storage
 

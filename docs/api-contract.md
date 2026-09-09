@@ -220,7 +220,7 @@ The official libvirt/QEMU model treats virtio-mem as a NUMA-aware memory balloon
 - `requested`: desired memory exposure for the guest
 - `current`: actual memory currently in use by the guest
 
-`requested` must be an integer multiple of `block` and must never exceed `size`. `current` may lag behind `requested` while the guest reclaims or plugs blocks; the controller must treat `requested != current` as an in-flight resize and avoid issuing another change until the guest settles.
+`requested` must be an integer multiple of `block` and must never exceed `size`. `current` may lag behind `requested` while the guest reclaims or plugs blocks; the controller must treat `requested != current` as an in-flight resize and avoid issuing another ordinary change until the guest settles. M10f's only exception is an upward, journaled, freshly revalidated pending-shrink supersession; it never sends a second lower target.
 
 Observed `requested` and `current` may both be zero when the virtio-mem device
 is fully unplugged. Zero is therefore valid live state, but it is not a valid
@@ -258,14 +258,15 @@ defense-in-depth for the fully trusted development/test `win11_gpu` guest and
 is mandatory for untrusted or production guests.
 
 The installed Windows driver has not been shown to retry an incomplete shrink
-without another event. Automatic shrink remains disabled by default. M10b now
-implements the selected bounded same-target re-notification and controlled
-failed-shrink recovery paths, but they remain disabled pending live
-qualification. The qualification profile observes every five
+without another event. Automatic shrink now defaults enabled because reclaim
+is a core product capability. M10b implements selected bounded same-target
+re-notification and controlled failed-shrink recovery paths; re-notification
+remains default-off and abandon-to-current remains an explicit recovery
+operation. The qualification profile observes every five
 seconds, permits at most three exact-target re-notifications after 30, 60, and
 120 seconds without block progress, and retains one immutable 300-second
-operation deadline. Automatic shrink and re-notification are separate
-default-off controls.
+operation deadline. Automatic shrink and re-notification are independent
+controls with defaults `true` and `false`, respectively.
 
 The re-notification path is deliberately narrower than the ordinary resize
 contract. It may run only when a controller-owned shrink has
@@ -360,7 +361,10 @@ source trait and never invokes `virsh` or Linux commands.
 - Do not change request/response format without updating this document
 - Never infer support for a custom QGA command from a QGA version number
 - Version any breaking changes to the protocol
-- Do not issue another resize while `requested` and `current` differ
+- Do not issue another ordinary resize while `requested` and `current` differ.
+  M10f permits only the journaled, freshly validated upward supersession of a
+  pending shrink defined in `target-controller.md`; it never permits a second
+  lower target.
 
 ## Controller Decision Contract
 
@@ -392,6 +396,21 @@ override the service defaults of `1073741824` and `67108864` bytes. Invalid,
 zero, or live-block-unaligned values fail closed. Pressure severity never
 multiplies a single per-VM request; another quantum requires convergence and a
 new telemetry decision.
+
+`VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK` defaults to `true` when absent or empty;
+`false` is an explicit diagnostic or rollout pause. This default never bypasses
+freshness, warmed target history, safe floor, compatibility attestation, host/
+device limits, command ownership, convergence, or latching. Same-target
+`VIRTIO_MEM_SHRINK_RENOTIFICATION` remains independently default `false`.
+
+M10e replaces the directional demand estimate with the quantitative formula,
+history, reserves, fixed-visible-base check, and effective maximum in
+[`target-controller.md`](target-controller.md). M10f replaces the three-result
+decision boundary above with a richer estimator/reconciler result while
+preserving the existing byte, alignment, authority, attestation, and command
+safety contracts. Any serialized calculated-report semantic change must bump
+`DEMAND_REPORT_VERSION`; the allocation-free M10d raw telemetry schema is
+unchanged unless its fields change.
 
 ## RHEL host controller contract
 

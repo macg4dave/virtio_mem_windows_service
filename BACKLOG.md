@@ -18,6 +18,37 @@
   needs.
 - Updated M11/M11a to consume absolute desired targets and constrained actual
   allocation rather than reproducing the current per-poll decrement loop.
+- Made automatic shrink a default-on product capability in code and the host
+  configuration example. Same-target re-notification remains default-off;
+  freshness, warmed history, safe floors, bounded 64 MiB actuation, one-request
+  convergence, and ambiguity/stall latching remain mandatory.
+- Added the normative `docs/target-controller.md` contract with checked
+  formulas, fixed-visible-base validation, effective device maximum, reserve
+  defaults, 10-minute high-water history, 256 MiB downward hysteresis, M10f
+  transitions/journaling, and separate M10g controller/platform qualification.
+
+### M10e-M10g acceptance decisions
+
+- **TASK-026 / M10e:** implement the normative estimator, named configuration,
+  history checkpoint, immediate-growth/delayed-reclaim behavior, conservative
+  restart warm-up, explicit capacity-limited health, and boundary/overflow/
+  alignment tests. Exit requires deterministic +4 GiB then +2 GiB target
+  traces without actuation-sized demand guesses.
+- **TASK-027 / M10f:** implement explicit control health, bounded movement,
+  upward-only pending-shrink supersession, stale-input freeze, partial-progress
+  accounting, write-before-command intent, durable latch, restart resolution,
+  and dry-run-default latch clearing. Exit requires no lower overlap and no
+  command replay across every modeled result.
+- **TASK-028 / M10g:** report controller qualification independently from
+  platform reclaim qualification. Exit requires the complete hermetic matrix
+  and bounded live committed-only/resident workload evidence with captured
+  initial state and recovery. Automatic shrink stays default-on; zero/partial
+  driver progress must become explicit constrained/latched health rather than
+  silently changing the product to growth-only operation.
+- Current local validation passes 46 shared-core and 52 host tests, formatting,
+  warnings-as-errors Clippy, the core/host release build, Bash syntax, and diff
+  checks. The Windows crate was not changed; its latest native gate remains 67
+  tests.
 
 ## 2026-09-08 asymmetric service-quanta policy
 
@@ -936,7 +967,6 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-026 | M10e quantitative desired-allocation model | Copilot | Ready | Large | TASK-020, TASK-021 |
 | TASK-027 | M10f desired/requested/current reconciler | Copilot | Ready after TASK-026 | Large | TASK-022, TASK-026 |
 | TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | Ready after TASK-027 | Large | TASK-019, TASK-027 |
 
@@ -944,6 +974,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
+| TASK-026 | M10e quantitative desired-allocation model | Copilot | In Progress | Target-estimator, history, reserve, safe-floor, base-calibration, effective-maximum, and M10f/M10g handoff contracts are being made deterministic. Automatic shrink is now an explicit default-on product capability with bounded fail-closed latching rather than a post-M10g opt-in. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
 | TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | In Progress | One-block live retry/recovery passed; a paced 256 MiB ramp reclaimed 3,000 MiB before stalling; the 1 GiB grow/64 MiB reclaim policy is implemented. The remaining active-controller interruption/restart matrix is open. |
 
@@ -1155,9 +1186,10 @@ does not authorize driver work or a protected-guest trial.
   enforces source freshness before policy evaluation.
 - Phase 2 permits one active controller/device on the development host. M11
   must provide atomic global reservation before multi-target actuation.
-- Windows automatic shrink has a default-off control and remains disabled.
-  M10b proved bounded diagnosis/recovery behavior but not a production demand
-  algorithm; M10e-M10g now gate automatic reclaim.
+- Windows automatic shrink defaults enabled as a core product capability;
+  explicit `false` remains available for diagnosis or rollout pause. M10b
+  proved bounded diagnosis/recovery behavior, while M10e-M10g add quantitative
+  sizing, warmed-history eligibility, durable reconciliation, and qualification.
 
 ### 2026-08-18 demand-agent and global-controller design review
 

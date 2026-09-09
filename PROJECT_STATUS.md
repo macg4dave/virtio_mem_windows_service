@@ -14,8 +14,9 @@ implementation sources; optional driver tracing remains diagnostic.
 guest; upstream Windows virtio-mem support remains technology preview.
 Live shrink evidence has exposed the next design boundary: directional steps
 and fixed no-progress deadlines cannot calculate durable guest demand.
-M10e-M10g now define a quantitative absolute-target model, three-state
-reconciliation, and single-VM qualification before global arbitration.
+M10e-M10g now define a quantitative absolute-target model, three-value
+desired/requested/current reconciliation with separate control health, and
+single-VM qualification before global arbitration.
 
 ## Completed locally
 
@@ -51,7 +52,7 @@ reconciliation, and single-VM qualification before global arbitration.
 - Atomic current-record publication with three-file retention, durable
   restart-safe host acknowledgement, and LocalService ProgramData ACL
   provisioning.
-- Default-off automatic shrink/re-notification, a fake-clock-tested
+- Default-on automatic shrink, default-off re-notification, a fake-clock-tested
   30/60/120-second retry state machine, non-fatal latched stalls, and bounded
   `qualify-shrink`/`abandon-shrink` operator paths.
 
@@ -59,7 +60,7 @@ reconciliation, and single-VM qualification before global arbitration.
 
 The latest native RHEL gate passed:
 
-- 46 shared-core and 50 host tests, with no failures.
+- 46 shared-core and 52 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -100,22 +101,27 @@ recovered with abandon-to-current. A later paced 256 MiB ramp grew 1 GiB to
 That request was recovered to convergence. A subsequent automatic 64 MiB
 request made no progress for 300 seconds and latched without restarting the
 service. The service policy calculates one 1 GiB growth quantum or one 64 MiB
-reclaim quantum per converged decision, but automatic reclaim remains disabled
-because the live guest did not satisfy the "can shrink" condition.
+  reclaim quantum per converged decision. Automatic reclaim is now enabled by
+  default as a core product capability; the zero-progress outcome still
+  latches further actuation and remains explicit platform-qualification evidence.
 
 ## Open implementation work
 
-- Implement M10e's quantitative absolute desired target using fresh Windows
-  availability/commit counters, explicit fixed/base memory, configurable
-  reserves, rolling history, hysteresis, safe floors, bounds, and alignment.
+- Implement M10e's normative quantitative target contract from
+  `docs/target-controller.md`: separate physical and commit candidates,
+  fixed-visible-base validation, effective device maximum, distinct normal and
+  floor reserves, immediate growth, a fresh 10-minute reclaim window, 256 MiB
+  downward hysteresis, and a restart-safe bounded checkpoint.
 - Implement M10f's distinct `desired`/`requested`/`current` reconciler. It must
   allow validated upward cancellation of a pending shrink when pressure
   returns, while forbidding another lower target and continuing to account
-  from live `current`.
-- Complete M10g hermetic and live qualification, including +4 GiB growth that
+  from live `current`. Add write-before-command intent, fresh result
+  resolution, stale-telemetry freeze, and a durable ambiguity/stall latch.
+- Complete M10g controller and platform-reclaim qualification, including +4 GiB growth that
   later settles at +2 GiB demand, zero/partial shrink, renewed pressure,
   stale/replayed telemetry, ambiguous commands, cancellation, and restart.
-  Automatic reclaim remains disabled until this gate passes.
+  Automatic reclaim remains default-on; this gate determines qualification
+  status and must expose constrained or latched operation clearly.
 
 - Live-install the M10d Windows candidate and verify its protected ProgramData
   ACL. Atomic handoff/retention and durable restart-safe replay state are
@@ -152,7 +158,8 @@ because the live guest did not satisfy the "can shrink" condition.
   `requested == current` convergence at the time of each request.
 - Automatic Windows shrink is size-sensitive: one block and 64 MiB made no
   progress, while the paced 256 MiB ramp reclaimed 3,000 MiB before stalling.
-  Automatic reclaim is disabled. M10b's fixed retry/deadline profile remains
+  Automatic reclaim now defaults on but latches after ambiguity or a bounded
+  stalled operation. M10b's fixed retry/deadline profile remains
   diagnostic/recovery behavior and does not determine desired memory. Phase 2
   still supports only one active controller/device on this host until M11.
 - A hard QEMU/libvirt cgroup memory limit is recommended defense-in-depth for
