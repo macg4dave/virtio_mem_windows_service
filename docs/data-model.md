@@ -228,12 +228,12 @@ atomically replaced host checkpoint for qualified candidate history and
 durable desired/safe-floor values. It binds VM, alias, policy, and compatibility
 fingerprints and reserves an actuation-latch field. Missing, corrupt,
 oversized, incompatible, or future ordering state restarts reclaim warm-up;
-fresh demand may still grow immediately. M10f will add write-before-command
-intent and connect the durable latch to reconciler health. This remains a small
-state file rather than a database.
+fresh demand may still grow immediately. M10f adds write-before-command intent,
+the last operator latch-clear reason, and a durable latch connected to
+reconciler health. This remains a small state file rather than a database.
 
 The controller treats `virtio_mem_current_bytes` as authoritative. Ordinary
-resize is suppressed while requested and current differ; M10f adds only the
+resize is suppressed while requested and current differ; M10f implements only the
 validated upward-supersession exception defined in the target-controller
 contract.
 

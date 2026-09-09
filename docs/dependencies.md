@@ -201,10 +201,10 @@ Resize validation additionally requires:
 - Permission to inspect the domain XML and issue an explicitly approved live
   update.
 
-The current controller policy refuses another request while `requested` and
-`current` differ and clamps all targets to safe aligned limits. M10f will add
-the narrow validated exception for upward pressure supersession while still
-forbidding a second lower target. See
+The current controller policy refuses another ordinary request while
+`requested` and `current` differ and clamps all targets to safe aligned limits.
+M10f implements the narrow validated exception for upward pressure
+supersession while still forbidding a second lower target. See
 [`api-contract.md`](api-contract.md) and [`data-model.md`](data-model.md).
 
 ## QEMU and libvirt operational constraints

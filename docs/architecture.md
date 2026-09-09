@@ -236,7 +236,7 @@ accounting or hermetic global-pool simulation.
     product capability. A live 64 MiB request made no progress, so normal
     re-notification remains disabled and the controller latches rather than
     overlapping or blindly retrying. M10e implements the normative absolute
-    target, warmed-history floor, and atomic policy checkpoint. M10f-M10g add
-    durable desired/requested/current reconciliation, restart-safe command
-    intent, and separate controller/platform qualification defined in
+    target, warmed-history floor, and atomic policy checkpoint. M10f implements
+    durable desired/requested/current reconciliation and restart-safe command
+    intent. M10g adds the separate controller/platform qualification defined in
     [`target-controller.md`](target-controller.md).

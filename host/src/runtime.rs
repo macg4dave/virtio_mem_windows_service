@@ -2,10 +2,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use virtio_mem_core::{
-    plan_resize, MemoryControllerConfig, MemoryStats, ResizeDecision, ShrinkAction,
-    ShrinkObservation, ShrinkOperation, ShrinkPolicy, VirtioMemState,
+    plan_resize, reconcile, MemoryControllerConfig, MemoryStats, ReconcileAction,
+    ReconcileDirection, ReconcileInput, ResizeDecision, ShrinkAction, ShrinkObservation,
+    ShrinkOperation, ShrinkPolicy, VirtioMemState,
 };
 
 use crate::config::HostConfig;
@@ -41,7 +43,39 @@ pub trait GuestStatsSource {
 #[derive(Debug, PartialEq, Eq)]
 pub struct DemandDecision {
     pub decision: ResizeDecision,
+    pub desired_bytes: u64,
     pub safe_floor_bytes: u64,
+    pub effective_maximum_bytes: u64,
+    pub history_ready: bool,
+    pub telemetry_identity: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CommandIntent {
+    pub operation_id: String,
+    pub direction: virtio_mem_core::ReconcileDirection,
+    pub prior_requested_bytes: u64,
+    pub prior_current_bytes: u64,
+    pub target_bytes: u64,
+    pub telemetry_identity: String,
+    pub policy_fingerprint_sha256: String,
+    pub compatibility_fingerprint_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DurableControlState {
+    pub actuation_latched: bool,
+    pub intent: Option<CommandIntent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntentResolution {
+    None,
+    Accepted,
+    Converged,
+    NotAppliedLatched,
+    CommandUnknownLatched,
 }
 
 pub trait DemandSource {
@@ -50,6 +84,22 @@ pub trait DemandSource {
         state: VirtioMemState,
         config: &HostConfig,
     ) -> Result<DemandDecision, String>;
+
+    fn durable_control_state(&self) -> Result<DurableControlState, String> {
+        Ok(DurableControlState::default())
+    }
+
+    fn record_command_intent(&self, _intent: CommandIntent) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn resolve_command_intent(&self, _live: VirtioMemState) -> Result<IntentResolution, String> {
+        Ok(IntentResolution::None)
+    }
+
+    fn latch_actuation(&self, _reason: &str) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 pub struct GuestStatsDemandSource<T> {
@@ -69,6 +119,10 @@ impl<T: GuestStatsSource> DemandSource for GuestStatsDemandSource<T> {
         config: &HostConfig,
     ) -> Result<DemandDecision, String> {
         let decision = evaluate_memory_decision(&self.source.get_memory_stats()?, state, config)?;
+        let desired_bytes = match &decision {
+            ResizeDecision::Request { requested_bytes } => *requested_bytes,
+            ResizeDecision::NoChange | ResizeDecision::WaitForConvergence => state.current_bytes,
+        };
         let safe_floor_bytes = match decision {
             ResizeDecision::Request { requested_bytes }
                 if requested_bytes < state.current_bytes =>
@@ -79,7 +133,11 @@ impl<T: GuestStatsSource> DemandSource for GuestStatsDemandSource<T> {
         };
         Ok(DemandDecision {
             decision,
+            desired_bytes,
             safe_floor_bytes,
+            effective_maximum_bytes: config.max_memory_bytes.min(state.size_bytes),
+            history_ready: true,
+            telemetry_identity: None,
         })
     }
 }
@@ -108,6 +166,17 @@ pub trait ResizeSink {
     fn renotify_shrink(&self, _target_bytes: u64) -> Result<(), ResizeSinkError> {
         Err(ResizeSinkError::Rejected(
             "shrink re-notification is unsupported by this resize sink".to_owned(),
+        ))
+    }
+
+    fn supersede_shrink(
+        &self,
+        _prior_requested_bytes: u64,
+        _prior_current_bytes: u64,
+        _target_bytes: u64,
+    ) -> Result<(), ResizeSinkError> {
+        Err(ResizeSinkError::Rejected(
+            "pending-shrink supersession is unsupported by this resize sink".to_owned(),
         ))
     }
 }
@@ -211,6 +280,179 @@ where
                     continue;
                 }
                 return Err(HostRuntimeError::MemoryState(error.to_string()));
+            }
+            let mut durable = self
+                .demand_source
+                .durable_control_state()
+                .map_err(HostRuntimeError::Controller)?;
+            actuation_latched |= durable.actuation_latched;
+            if durable.intent.is_some() {
+                let resolution = self
+                    .demand_source
+                    .resolve_command_intent(state)
+                    .map_err(HostRuntimeError::Controller)?;
+                if matches!(
+                    resolution,
+                    IntentResolution::NotAppliedLatched | IntentResolution::CommandUnknownLatched
+                ) {
+                    actuation_latched = true;
+                }
+                durable = self
+                    .demand_source
+                    .durable_control_state()
+                    .map_err(HostRuntimeError::Controller)?;
+            }
+            let owned_durable_shrink = durable.intent.as_ref().is_some_and(|intent| {
+                matches!(
+                    intent.direction,
+                    ReconcileDirection::Shrink
+                        | ReconcileDirection::SupersedeShrink
+                        | ReconcileDirection::FreezeShrink
+                ) && intent.target_bytes == state.requested_bytes
+                    && state.requested_bytes < state.current_bytes
+            });
+            let owned_durable_growth = durable.intent.as_ref().is_some_and(|intent| {
+                intent.direction == ReconcileDirection::Grow
+                    && intent.target_bytes == state.requested_bytes
+                    && state.requested_bytes > state.current_bytes
+            });
+            if owned_durable_growth {
+                let started = pending_since.get_or_insert_with(Instant::now);
+                eprintln!(
+                    "virtio-mem-host: event=control_health health={} vm={} alias={} requested_bytes={} current_bytes={}",
+                    if started.elapsed() >= self.config.convergence_timeout {
+                        "constrained"
+                    } else {
+                        "growing"
+                    },
+                    self.config.vm_name,
+                    self.config.alias,
+                    state.requested_bytes,
+                    state.current_bytes
+                );
+                wait_interruptibly(stop, self.config.poll_interval);
+                continue;
+            }
+            if state.requested_bytes < state.current_bytes && owned_durable_shrink {
+                let demand = match self.demand_source.evaluate(state, &self.config) {
+                    Ok(demand) => demand,
+                    Err(error) => {
+                        let operation_id = next_operation_id(&mut operation_counter);
+                        let intent = CommandIntent {
+                            operation_id: operation_id.clone(),
+                            direction: ReconcileDirection::FreezeShrink,
+                            prior_requested_bytes: state.requested_bytes,
+                            prior_current_bytes: state.current_bytes,
+                            target_bytes: state.current_bytes,
+                            telemetry_identity: "stale-or-invalid".to_owned(),
+                            policy_fingerprint_sha256: String::new(),
+                            compatibility_fingerprint_sha256: String::new(),
+                        };
+                        self.demand_source
+                            .record_command_intent(intent)
+                            .map_err(HostRuntimeError::Controller)?;
+                        let command = self.resize_sink.supersede_shrink(
+                            state.requested_bytes,
+                            state.current_bytes,
+                            state.current_bytes,
+                        );
+                        let resolution =
+                            self.state_source.memory_state().ok().and_then(|live| {
+                                self.demand_source.resolve_command_intent(live).ok()
+                            });
+                        self.demand_source
+                            .latch_actuation(&format!(
+                                "telemetry failed during owned shrink: {error}"
+                            ))
+                            .map_err(HostRuntimeError::Controller)?;
+                        actuation_latched = true;
+                        eprintln!(
+                            "virtio-mem-host: event=shrink_frozen operation_id={operation_id} vm={} alias={} target_bytes={} command_result={command:?} resolution={resolution:?} reason={error}",
+                            self.config.vm_name, self.config.alias, state.current_bytes
+                        );
+                        wait_interruptibly(stop, self.config.poll_interval);
+                        continue;
+                    }
+                };
+                let elapsed = pending_since.get_or_insert_with(Instant::now).elapsed()
+                    >= self.config.convergence_timeout;
+                let reconciled = reconcile(ReconcileInput {
+                    desired_bytes: demand.desired_bytes,
+                    safe_floor_bytes: demand.safe_floor_bytes,
+                    effective_maximum_bytes: demand.effective_maximum_bytes,
+                    history_ready: demand.history_ready,
+                    telemetry_fresh: true,
+                    automatic_shrink: self.config.automatic_windows_shrink,
+                    actuation_latched,
+                    owns_pending_shrink: true,
+                    pending_constrained: elapsed,
+                    grow_step_bytes: self.config.grow_step_bytes,
+                    shrink_step_bytes: self.config.shrink_step_bytes,
+                    live: state,
+                })
+                .map_err(|error| HostRuntimeError::Controller(error.to_string()))?;
+                if let ReconcileAction::Request {
+                    target_bytes,
+                    direction: ReconcileDirection::SupersedeShrink,
+                    ..
+                } = reconciled.action
+                {
+                    let operation_id = next_operation_id(&mut operation_counter);
+                    self.demand_source
+                        .record_command_intent(CommandIntent {
+                            operation_id: operation_id.clone(),
+                            direction: ReconcileDirection::SupersedeShrink,
+                            prior_requested_bytes: state.requested_bytes,
+                            prior_current_bytes: state.current_bytes,
+                            target_bytes,
+                            telemetry_identity: demand
+                                .telemetry_identity
+                                .unwrap_or_else(|| "compatibility-source".to_owned()),
+                            policy_fingerprint_sha256: String::new(),
+                            compatibility_fingerprint_sha256: String::new(),
+                        })
+                        .map_err(HostRuntimeError::Controller)?;
+                    let command = self.resize_sink.supersede_shrink(
+                        state.requested_bytes,
+                        state.current_bytes,
+                        target_bytes,
+                    );
+                    let resolution = self
+                        .state_source
+                        .memory_state()
+                        .ok()
+                        .and_then(|live| self.demand_source.resolve_command_intent(live).ok());
+                    eprintln!(
+                        "virtio-mem-host: event=shrink_superseded operation_id={operation_id} vm={} alias={} prior_requested_bytes={} current_bytes={} target_bytes={target_bytes} command_result={command:?} resolution={resolution:?}",
+                        self.config.vm_name,
+                        self.config.alias,
+                        state.requested_bytes,
+                        state.current_bytes
+                    );
+                    if let Err(error) = command {
+                        self.demand_source
+                            .latch_actuation(&format!(
+                                "pending-shrink supersession failed: {error}"
+                            ))
+                            .map_err(HostRuntimeError::Controller)?;
+                        actuation_latched = true;
+                    }
+                } else if elapsed {
+                    self.demand_source
+                        .latch_actuation("owned shrink exceeded the convergence deadline")
+                        .map_err(HostRuntimeError::Controller)?;
+                    actuation_latched = true;
+                    eprintln!(
+                        "virtio-mem-host: event=allocation_constrained health=latched vm={} alias={} desired_bytes={} requested_bytes={} current_bytes={}",
+                        self.config.vm_name,
+                        self.config.alias,
+                        demand.desired_bytes,
+                        state.requested_bytes,
+                        state.current_bytes
+                    );
+                }
+                wait_interruptibly(stop, self.config.poll_interval);
+                continue;
             }
             if state.requested_bytes != state.current_bytes {
                 if let Some(operation) = shrink_operation.as_mut() {
@@ -362,12 +604,37 @@ where
                     }
                 }
                 let candidate_operation_id = if requested_bytes < state.current_bytes {
-                    operation_counter = operation_counter.saturating_add(1);
-                    Some(format!("{}-{operation_counter}", std::process::id()))
+                    Some(next_operation_id(&mut operation_counter))
                 } else {
                     None
                 };
+                if let Some(telemetry_identity) = demand.telemetry_identity.clone() {
+                    let operation_id = candidate_operation_id
+                        .clone()
+                        .unwrap_or_else(|| next_operation_id(&mut operation_counter));
+                    self.demand_source
+                        .record_command_intent(CommandIntent {
+                            operation_id,
+                            direction: if requested_bytes < state.current_bytes {
+                                ReconcileDirection::Shrink
+                            } else {
+                                ReconcileDirection::Grow
+                            },
+                            prior_requested_bytes: state.requested_bytes,
+                            prior_current_bytes: state.current_bytes,
+                            target_bytes: requested_bytes,
+                            telemetry_identity,
+                            policy_fingerprint_sha256: String::new(),
+                            compatibility_fingerprint_sha256: String::new(),
+                        })
+                        .map_err(HostRuntimeError::Controller)?;
+                }
                 if let Err(error) = self.resize_sink.request_resize(requested_bytes) {
+                    if demand.telemetry_identity.is_some() {
+                        if let Ok(live) = self.state_source.memory_state() {
+                            let _ = self.demand_source.resolve_command_intent(live);
+                        }
+                    }
                     if requested_bytes < state.current_bytes {
                         actuation_latched = true;
                         let event = match &error {
@@ -386,6 +653,23 @@ where
                         continue;
                     }
                     return Err(HostRuntimeError::Resize(error.to_string()));
+                }
+                if demand.telemetry_identity.is_some() {
+                    let live = self
+                        .state_source
+                        .memory_state()
+                        .map_err(HostRuntimeError::MemoryState)?;
+                    let resolution = self
+                        .demand_source
+                        .resolve_command_intent(live)
+                        .map_err(HostRuntimeError::Controller)?;
+                    if matches!(
+                        resolution,
+                        IntentResolution::NotAppliedLatched
+                            | IntentResolution::CommandUnknownLatched
+                    ) {
+                        actuation_latched = true;
+                    }
                 }
                 owned_request = true;
                 pending_since = Some(Instant::now());
@@ -428,6 +712,11 @@ where
         }
         Ok(())
     }
+}
+
+fn next_operation_id(counter: &mut u64) -> String {
+    *counter = counter.saturating_add(1);
+    format!("{}-{counter}", std::process::id())
 }
 
 fn wait_interruptibly(stop: &AtomicBool, duration: Duration) {
@@ -527,6 +816,10 @@ mod tests {
                     requested_bytes: 16 * GIB - 64 * MIB,
                 },
                 safe_floor_bytes: 16 * GIB - 64 * MIB,
+                desired_bytes: 16 * GIB - 64 * MIB,
+                effective_maximum_bytes: 32 * GIB,
+                history_ready: true,
+                telemetry_identity: None,
             }
         );
     }
@@ -558,6 +851,10 @@ mod tests {
                     requested_bytes: state.current_bytes - 64 * MIB,
                 },
                 safe_floor_bytes: state.current_bytes - 64 * MIB,
+                desired_bytes: state.current_bytes - 64 * MIB,
+                effective_maximum_bytes: 32 * GIB,
+                history_ready: true,
+                telemetry_identity: None,
             })
         }
     }
@@ -636,6 +933,10 @@ mod tests {
                     requested_bytes: self.target_bytes,
                 },
                 safe_floor_bytes: self.target_bytes,
+                desired_bytes: self.target_bytes,
+                effective_maximum_bytes: 32 * GIB,
+                history_ready: true,
+                telemetry_identity: None,
             })
         }
     }
@@ -684,6 +985,123 @@ mod tests {
         runtime_config.automatic_windows_shrink = true;
         runtime_config.poll_interval = Duration::from_millis(1);
         runtime_config
+    }
+
+    struct DurablePressureDemand {
+        control: RefCell<DurableControlState>,
+        events: std::rc::Rc<RefCell<Vec<String>>>,
+    }
+
+    impl DemandSource for &DurablePressureDemand {
+        fn evaluate(
+            &self,
+            _state: VirtioMemState,
+            _config: &HostConfig,
+        ) -> Result<DemandDecision, String> {
+            Ok(DemandDecision {
+                decision: ResizeDecision::NoChange,
+                desired_bytes: 7 * GIB,
+                safe_floor_bytes: 4 * GIB,
+                effective_maximum_bytes: 31 * GIB,
+                history_ready: true,
+                telemetry_identity: Some("session:2:20:2000".to_owned()),
+            })
+        }
+
+        fn durable_control_state(&self) -> Result<DurableControlState, String> {
+            Ok(self.control.borrow().clone())
+        }
+
+        fn record_command_intent(&self, intent: CommandIntent) -> Result<(), String> {
+            self.events
+                .borrow_mut()
+                .push(format!("intent:{}", intent.target_bytes));
+            self.control.borrow_mut().intent = Some(intent);
+            Ok(())
+        }
+
+        fn resolve_command_intent(
+            &self,
+            _live: VirtioMemState,
+        ) -> Result<IntentResolution, String> {
+            self.events.borrow_mut().push("resolve".to_owned());
+            Ok(IntentResolution::Accepted)
+        }
+    }
+
+    struct SupersessionSink(std::rc::Rc<RefCell<Vec<String>>>);
+
+    impl ResizeSink for &SupersessionSink {
+        fn request_resize(&self, _requested_bytes: u64) -> Result<(), ResizeSinkError> {
+            Err(ResizeSinkError::Rejected(
+                "ordinary resize must not be used".to_owned(),
+            ))
+        }
+
+        fn supersede_shrink(
+            &self,
+            prior_requested_bytes: u64,
+            prior_current_bytes: u64,
+            target_bytes: u64,
+        ) -> Result<(), ResizeSinkError> {
+            assert_eq!(prior_requested_bytes, 6 * GIB);
+            assert_eq!(prior_current_bytes, 8 * GIB);
+            self.0.borrow_mut().push(format!("command:{target_bytes}"));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn renewed_pressure_journals_before_upward_pending_shrink_supersession() {
+        let stop = AtomicBool::new(false);
+        let events = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let demand = DurablePressureDemand {
+            control: RefCell::new(DurableControlState {
+                actuation_latched: false,
+                intent: Some(CommandIntent {
+                    operation_id: "old".to_owned(),
+                    direction: ReconcileDirection::Shrink,
+                    prior_requested_bytes: 8 * GIB,
+                    prior_current_bytes: 8 * GIB,
+                    target_bytes: 6 * GIB,
+                    telemetry_identity: "session:1:10:1000".to_owned(),
+                    policy_fingerprint_sha256: String::new(),
+                    compatibility_fingerprint_sha256: String::new(),
+                }),
+            }),
+            events: std::rc::Rc::clone(&events),
+        };
+        let source = ScriptedState {
+            observations: RefCell::new(VecDeque::from([
+                Ok(state(6 * GIB, 8 * GIB)),
+                Ok(state(7 * GIB, 8 * GIB)),
+            ])),
+            stop: &stop,
+        };
+        let sink = SupersessionSink(std::rc::Rc::clone(&events));
+        let runtime = HostRuntime::new(
+            &demand,
+            &source,
+            &sink,
+            UnusedHostMemory,
+            automatic_shrink_config(),
+        );
+
+        runtime.run(&stop).expect("supersession is non-fatal");
+
+        let events = events.borrow();
+        let intent_position = events
+            .iter()
+            .position(|event| event == &format!("intent:{}", 7 * GIB))
+            .expect("new intent");
+        let command_position = events
+            .iter()
+            .position(|event| event == &format!("command:{}", 7 * GIB))
+            .expect("supersession command");
+        assert!(intent_position < command_position);
+        assert!(!events
+            .iter()
+            .any(|event| event == &format!("command:{}", 5 * GIB)));
     }
 
     #[test]

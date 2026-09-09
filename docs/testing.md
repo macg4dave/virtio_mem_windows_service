@@ -852,8 +852,8 @@ retired session reuse, incomplete final lines, records over 64 KiB, and files
    substitutes. Live-device geometry conflicts fail closed. Automatic shrink
    defaults enabled; explicit `false` pauses it, while same-target diagnostic
    re-notification defaults disabled. The M10e adapter retains the existing
-   1 GiB growth and 64 MiB reclaim actuation bounds while M10f adds the full
-   three-value reconciler; ambiguous or stalled shrink remains latched rather
+   1 GiB growth and 64 MiB reclaim actuation bounds, and M10f implements the
+   full three-value reconciler; ambiguous or stalled shrink remains latched rather
    than blindly replayed.
 
 M10e configuration requires `VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES` and
@@ -876,12 +876,37 @@ cargo test -p virtio-mem-host --all-features --locked target_policy
 They prove checked candidate arithmetic, base tolerance, effective maximum,
 alignment, explicit capacity limitation, history gaps/session restart,
 immediate growth, delayed reclaim, checkpoint matching, and the deterministic
-+4 GiB then +2 GiB target trace. M10f-M10g validation must continue to follow
-[`target-controller.md`](target-controller.md): prove the physical/commit
-formula, base tolerance, effective maximum, reserve ordering, history gaps,
-10-minute warm-up, 256 MiB downward hysteresis, safe-floor ordering, bounded
-quanta, upward-only supersession, stale-during-shrink freeze, command journal,
-durable latch, restart/no-replay, and separate controller/platform outcomes.
++4 GiB then +2 GiB target trace. M10f additionally proves bounded quanta,
+upward-only supersession, stale-during-shrink freeze, partial-progress health,
+write-before-command journaling, durable latch, restart/no-replay, and
+dry-run-default latch clearing. M10g must continue to follow
+[`target-controller.md`](target-controller.md) and report controller/platform
+outcomes separately.
+
+### M10f latch inspection and clearing
+
+After stopping the controller instance, resolving the cause of a latched
+command, and restoring the selected device to `requested == current`, preview
+the configured controller latch clear. The controller must remain stopped so
+its in-memory checkpoint cannot race the operator update:
+
+```bash
+target/release/virtio-mem-host clear-latch "OPERATOR_REASON"
+```
+
+This is a dry run. It loads the configured VM, alias, policy checkpoint, and
+compatibility attestation, recollects live compatibility evidence, and refuses
+divergent state. Success prints `mode=dry_run` and the exact converged byte
+values without changing the checkpoint. Apply only after reviewing that output:
+
+```bash
+target/release/virtio-mem-host clear-latch "OPERATOR_REASON" --apply
+```
+
+Success prints `mode=applied`; the checkpoint retains the operator-visible
+reason, clears the pending intent, and permits later fresh controller cycles to
+actuate. A missing/mismatched checkpoint, stale compatibility attestation,
+unlatched state, or `requested != current` fails without mutation.
 
 Run the M10c hermetic host gate from the repository root:
 

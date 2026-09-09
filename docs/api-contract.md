@@ -410,8 +410,9 @@ device limits, command ownership, convergence, or latching. Same-target
 
 M10e replaces the directional demand estimate with the quantitative formula,
 history, reserves, fixed-visible-base check, and effective maximum in
-[`target-controller.md`](target-controller.md). M10f replaces the three-result
-decision boundary above with a richer estimator/reconciler result while
+[`target-controller.md`](target-controller.md). M10f implements a richer
+estimator/reconciler result with explicit control health, durable command
+intent, and upward-only pending-shrink supersession while
 preserving the existing byte, alignment, authority, attestation, and command
 safety contracts. Any serialized calculated-report semantic change must bump
 `DEMAND_REPORT_VERSION`; the allocation-free M10d raw telemetry schema is

@@ -6,6 +6,7 @@ pub mod controller;
 pub mod demand;
 pub mod error;
 pub mod global_pool;
+pub mod reconciler;
 pub mod shrink_recovery;
 pub mod stats;
 pub mod target_controller;
@@ -30,6 +31,10 @@ pub use error::{MemoryStatsError, PollError, ServiceLoopError, VirtioMemError};
 pub use global_pool::{
     arbitrate_global_pool, GlobalPoolConfig, GlobalPoolDecision, GlobalPoolError, GlobalPoolPlan,
     HostPressureState, VmPoolInput,
+};
+pub use reconciler::{
+    reconcile, ControlHealth, ReconcileAction, ReconcileDecision, ReconcileDirection,
+    ReconcileError, ReconcileInput,
 };
 pub use shrink_recovery::{
     AbandonAction, AbandonToCurrent, ShrinkAction, ShrinkObservation, ShrinkOperation,

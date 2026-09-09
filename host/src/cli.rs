@@ -17,6 +17,7 @@ use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSo
 use crate::qga::VirshGuestAgent;
 use crate::resize_sink::VirshResizeSink;
 use crate::runtime::{evaluate_memory_decision, GuestStatsSource, MemoryStateSource, ResizeSink};
+use crate::target_policy::clear_actuation_latch;
 use crate::virsh::{Virsh, VirshCommand};
 use crate::xml_source::VirshXmlSource;
 
@@ -72,6 +73,11 @@ pub enum CliCommand {
         apply: bool,
         attestation_path: String,
     },
+    ClearLatch {
+        reason: String,
+        connection: String,
+        apply: bool,
+    },
 }
 
 pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
@@ -88,6 +94,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             | "resize"
             | "abandon-shrink"
             | "qualify-shrink"
+            | "clear-latch"
     ) {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
     }
@@ -106,6 +113,35 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             _ => return Err(usage().to_owned()),
         };
         return Ok(Some(CliCommand::Decision { connection }));
+    }
+    if mode == "clear-latch" {
+        if args.len() < 2 || args.len() > 5 || args[1].trim().is_empty() {
+            return Err(usage().to_owned());
+        }
+        let reason = args[1].clone();
+        let mut connection = DEFAULT_CONNECTION.to_owned();
+        let mut apply = false;
+        let mut index = 2;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--apply" if !apply => apply = true,
+                "--connect" => {
+                    index += 1;
+                    connection = args
+                        .get(index)
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| "--connect requires a libvirt URI".to_owned())?
+                        .clone();
+                }
+                _ => return Err(format!("unknown CLI option: {}\n{}", args[index], usage())),
+            }
+            index += 1;
+        }
+        return Ok(Some(CliCommand::ClearLatch {
+            reason,
+            connection,
+            apply,
+        }));
     }
     let (minimum, maximum) = match mode {
         "resize" => (8, 11),
@@ -261,7 +297,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host decision [--connect URI]\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]\n       virtio-mem-host qualify-shrink VM ALIAS TARGET_BYTES --attestation FILE [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE [--apply] [--connect URI]"
+    "Usage: virtio-mem-host decision [--connect URI]\n       virtio-mem-host clear-latch REASON [--apply] [--connect URI]\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES [--apply] [--connect URI]\n       virtio-mem-host qualify-shrink VM ALIAS TARGET_BYTES --attestation FILE [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -276,6 +312,36 @@ fn run_with<H: HostMemorySource, W: Write>(
 ) -> Result<(), String> {
     match command {
         CliCommand::Decision { connection } => run_configured_decision(&connection, output),
+        CliCommand::ClearLatch {
+            reason,
+            connection,
+            apply,
+        } => {
+            let config = HostConfig::from_env().map_err(|error| error.to_string())?;
+            let virsh = Virsh::with_connection(
+                config.virsh_binary.clone(),
+                config.command_timeout,
+                connection,
+            );
+            AttestedCompatibilitySource::new(
+                virsh.clone(),
+                config.vm_name.clone(),
+                config.alias.clone(),
+                config.compatibility_attestation_path.clone(),
+            )
+            .compatibility()?
+            .validate_for_resize()
+            .map_err(|error| error.to_string())?;
+            let live = VirshXmlSource::new(virsh, config.vm_name.clone(), config.alias.clone())
+                .memory_state()?;
+            let message = clear_actuation_latch(&config, live, &reason, apply)?;
+            writeln!(
+                output,
+                "mode={} {message}",
+                if apply { "applied" } else { "dry_run" }
+            )
+            .map_err(|error| error.to_string())
+        }
         CliCommand::Evidence { path } => {
             let json = std::fs::read_to_string(&path)
                 .map_err(|error| format!("failed to read evidence file {path}: {error}"))?;
@@ -890,6 +956,20 @@ mod tests {
 
     #[test]
     fn parses_snapshot_and_resize_modes() {
+        assert_eq!(
+            parse_args(&args(&[
+                "clear-latch",
+                "reviewed recovery",
+                "--connect",
+                "test:///default",
+            ]))
+            .expect("clear-latch"),
+            Some(CliCommand::ClearLatch {
+                reason: "reviewed recovery".to_owned(),
+                connection: "test:///default".to_owned(),
+                apply: false,
+            })
+        );
         assert_eq!(
             parse_args(&args(&["decision"])).expect("decision"),
             Some(CliCommand::Decision {

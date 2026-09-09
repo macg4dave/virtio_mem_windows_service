@@ -1,5 +1,25 @@
 # BACKLOG
 
+## 2026-09-09 M10f desired/requested/current reconciliation
+
+- Completed TASK-027 with a platform-neutral reconciler that keeps durable
+  desired, device requested, authoritative current, and control health
+  separate. Ordinary movement remains bounded to 1 GiB growth or 64 MiB
+  reclaim, pending growth is only observed, and an owned pending shrink can
+  only be superseded upward as far as current.
+- The host now atomically records command intent before raw-telemetry
+  actuation, immediately resolves command results against fresh live state,
+  resumes observation without replay after restart, freezes an owned shrink
+  when telemetry becomes invalid, and durably latches ambiguous, unapplied, or
+  stalled operations.
+- Added a dedicated resize-adapter precondition for upward pending-shrink
+  supersession plus a `clear-latch` CLI that is dry-run by default, recollects
+  compatibility evidence, refuses `requested != current`, and records the
+  operator-visible reason when applied.
+- Hermetic validation passes 62 shared-core and 65 host tests plus formatting
+  and warnings-as-errors Clippy. No Windows files changed; the latest native
+  Windows result remains 67 tests and was not rerun for TASK-027.
+
 ## 2026-09-09 M10e quantitative target estimator
 
 - Implemented the host-owned absolute target estimator with checked physical-
@@ -11,8 +31,8 @@
   deterministic +4 GiB then +2 GiB target trace.
 - Added required host configuration, a fingerprint-bound atomic policy
   checkpoint under the systemd state directory, and cold recovery for missing,
-  incompatible, corrupt, oversized, or future checkpoint state. M10f retains
-  command-journal, live control-health, and durable latch ownership.
+  incompatible, corrupt, oversized, or future checkpoint state. M10f now owns
+  command-journal, live control-health, and durable latch behavior.
 
 ## 2026-09-09 M10b operator-accepted closure
 
@@ -1056,8 +1076,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-027 | M10f desired/requested/current reconciler | Copilot | Ready | Large | TASK-022, TASK-026 |
-| TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | Ready after TASK-027 | Large | TASK-019, TASK-027 |
+| TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | Ready | Large | TASK-019, TASK-027 |
 
 ## In Progress
 
@@ -1227,6 +1246,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-027 | M10f desired/requested/current reconciler | Copilot | 2026-09-09 | Explicit control health, bounded movement, upward-only pending-shrink supersession, stale-input freeze, partial-progress accounting, atomic write-before-command intent, durable restart/no-replay resolution and latching, and dry-run-default `clear-latch` pass 62 core and 65 host tests. |
 | TASK-026 | M10e quantitative desired-allocation model | Copilot | 2026-09-09 | Absolute checked physical/commit targets, base/effective-maximum gates, normal/floor reserves, bounded warmed history, hysteresis, capacity-limited output, atomic fingerprint-bound checkpointing, conservative restart, and +4 GiB then +2 GiB traces pass 55 core and 60 host tests. |
 | TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | 2026-09-09 | Operator accepted closure from 47 core/58 host hermetic tests, installed candidate rejection/no-replay, bounded one-block retry and abandon-to-current recovery, and partial/no-progress live shrink evidence. The unexecuted clean reboot/refreshed-attestation batch remains optional and is not claimed as passed. |
 | TASK-021 | M10d demand envelope and bounded delivery | Copilot | 2026-09-08 | Version 2 identity/provenance, atomic current-record handoff, three-record retention, durable restart-safe replay acknowledgement, read bounds, and LocalService ProgramData ACL provisioning pass 45 core/48 host/67 native Windows tests; installed ACL verification remains operational evidence. |

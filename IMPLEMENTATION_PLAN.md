@@ -160,13 +160,13 @@ primitive:
    lower it only from a complete fresh 10-minute high-water window and a
    256 MiB downward deadband. Persist a bounded atomic checkpoint and require
    warm-up after missing, stale, incompatible, or cross-session history.
-3. **M10f — reconciliation:** model policy `desired`, device `requested`,
+3. **M10f — reconciliation (complete 2026-09-09):** model policy `desired`, device `requested`,
    authoritative `current`, and explicit controller health separately. Move
    toward desired by at most 1 GiB growth or 64 MiB reclaim. Permit only an
    upward target while shrink is pending, cancel to current before later
    growth, prohibit a second lower target, and retain partial reclaim as useful
    constrained progress.
-4. **M10f — intent and timing:** write command intent before actuation and
+4. **M10f — intent and timing (complete 2026-09-09):** write command intent before actuation and
    resolve every success, error, timeout, cancellation, and restart against a
    fresh live reread. Persist ambiguity/stall latches and never replay a
    recorded command. Freeze an owned shrink to current when guest telemetry

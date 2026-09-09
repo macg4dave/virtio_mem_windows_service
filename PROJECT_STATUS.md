@@ -27,6 +27,10 @@ single-VM qualification before global arbitration.
   candidates, base/effective-maximum validation, normal and floor reserves,
   immediate growth, bounded warmed history, downward hysteresis, explicit
   capacity limitation, and atomic fingerprint-bound checkpoint recovery.
+- M10f desired/requested/current reconciliation: explicit control health,
+  bounded movement, upward-only pending-shrink supersession, stale-input
+  freeze, partial-progress accounting, write-before-command intent, durable
+  restart-safe latch resolution, and dry-run-default `clear-latch`.
 - Architecture, API contracts, data model, engineering standards, testing
   strategy, roadmap, backlog, and QEMU Guest Agent setup documentation.
 - Shared byte-based memory policy with alignment, bounds, hysteresis,
@@ -156,11 +160,6 @@ and refreshed-attestation batch remains optional and is not claimed as passed.
 
 ## Open implementation work
 
-- Implement M10f's distinct `desired`/`requested`/`current` reconciler. It must
-  allow validated upward cancellation of a pending shrink when pressure
-  returns, while forbidding another lower target and continuing to account
-  from live `current`. Add write-before-command intent, fresh result
-  resolution, stale-telemetry freeze, and a durable ambiguity/stall latch.
 - Complete M10g controller and platform-reclaim qualification, including +4 GiB growth that
   later settles at +2 GiB demand, zero/partial shrink, renewed pressure,
   stale/replayed telemetry, ambiguous commands, cancellation, and restart.

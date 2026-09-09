@@ -94,8 +94,10 @@ syntax validation pass.
   product capability; freshness, safe floors, bounded 64 MiB requests,
   convergence, and ambiguity/stall latching prevent blind repeated reclaim.
 - M10e has replaced the production raw-telemetry pressure-step estimate with
-  an absolute desired target and restart-safe history. M10f-M10g add explicit
-  `desired`/`requested`/`current` reconciliation and qualification.
+  an absolute desired target and restart-safe history. M10f adds explicit
+  `desired`/`requested`/`current` reconciliation, durable command intent and
+  latching, and upward-only pending-shrink supersession. M10g qualification
+  remains.
   Fixed no-progress deadlines remain health and recovery bounds; they will not
   decide how much memory Windows needs.
 - Phase 2 supports one active controller for one explicitly named VM/device on

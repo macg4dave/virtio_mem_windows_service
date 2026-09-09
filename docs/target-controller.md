@@ -5,8 +5,9 @@
 This is the normative design contract for M10e, M10f, and M10g. M10e is
 implemented and replaces the production raw-telemetry directional demand
 estimate with an absolute per-VM target.
-M10f reconciles that target with asynchronous virtio-mem state. M10g qualifies
-the estimator and reconciler hermetically and on the trusted development VM.
+M10f is implemented and reconciles that target with asynchronous virtio-mem
+state. M10g qualifies the estimator and reconciler hermetically and on the
+trusted development VM.
 
 Automatic Windows shrink is a default-on product capability. A deployment may
 set `VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false` for diagnosis or a deliberate
