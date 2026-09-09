@@ -496,6 +496,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "virtio-mem-xtask"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "signal-hook",
+ "virtio-mem-core",
+ "wait-timeout",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -27,7 +27,8 @@ Rules:
 5. Do not commit secrets, credentials, tokens, private keys, or production data.
 6. Keep the fix minimal and update relevant contracts/docs and `BACKLOG.md`.
 
-Validate from `windows/` with tests, format check, Clippy, and release build when practical. Report findings and exact validation results.
+Run focused tests and `cargo xtask gate local`; run native Windows validation
+separately when applicable. Report findings and exact results.
 
 Shell safety:
 

@@ -50,7 +50,7 @@ requests remain a RHEL/libvirt responsibility.
 
 The supported RHEL workflow builds this crate natively in the Windows KVM
 guest. Configure an SSH alias and workspace path in the environment, then run
-the checked-in VS Code tasks or the Bash wrapper directly:
+the checked-in VS Code tasks or `cargo xtask windows all` directly:
 
 - `VIRTIO_MEM_WINDOWS_SSH` — required SSH config alias for the Windows guest.
 - `VIRTIO_MEM_WINDOWS_DIR` — optional remote path; defaults to
@@ -63,17 +63,16 @@ the checked-in VS Code tasks or the Bash wrapper directly:
 
 The one-time guest setup requires Rust MSVC, Visual Studio C++ Build Tools with
 the Windows SDK, Git, `tar.exe`, `certutil.exe`, and OpenSSH Server. The
-wrapper synchronizes Git-tracked and non-ignored working-tree files,
+Rust tool synchronizes Git-tracked and non-ignored working-tree files,
 initializes the MSVC environment, runs Cargo on Windows with the workspace
 lockfile, requires a successful release build before fetching, and verifies the
 fetched executable's SHA-256 checksum. The
 VS Code tasks prompt for the SSH alias; the environment variable is required
-only for direct wrapper use. It never installs or starts the Windows service
+only for direct tool use. It never installs or starts the Windows service
 and never changes libvirt state.
 
-For the two-run milestone check, use
-`scripts/complete-windows-build-milestone.sh` from the RHEL checkout as
-documented in `docs/testing.md`. It verifies a supplied ED25519 host
+For the two-run milestone check, use `cargo xtask windows milestone` from the
+RHEL checkout as documented in `docs/testing.md`. It verifies a supplied ED25519 host
 fingerprint without changing the operator's persistent SSH configuration.
 
 See [`../docs/testing.md`](../docs/testing.md) for the task sequence and the

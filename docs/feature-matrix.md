@@ -7,14 +7,14 @@
 | Validate virtio-mem state | Complete | Host | Ops | Rust | Live authoritative Rust CLI snapshot/validation passes for `ua-virtiomem0`, including canonical fully-unplugged state and wrong-alias rejection; actuation compatibility/workload evidence remains separately tracked by M9a |
 | RHEL virtio-mem controller | In Progress | Host | Service | Rust + systemd | Installed controller completed a guarded zero-to-1-GiB bootstrap on trusted development guest `win11_gpu`; M9d, M9e, M10b, M10e, and M10f are complete, while M10g qualification remains |
 | Windows service memory collection | Complete | Windows | Service | Rust | Interactive and SCM paths collect and validate `GlobalMemoryStatusEx`/`GetPerformanceInfo` telemetry; publication is tracked separately |
-| QEMU Guest Agent integration | Complete | Host | Health/identity validation | Bash + Rust | Repeated advertised QGA commands passed across restart/reboot; upstream QGA has no `guest-get-memory-stats`, and production Windows telemetry is independent |
+| QEMU Guest Agent integration | Complete | Host | Health/identity validation | Rust | Repeated advertised QGA commands passed across restart/reboot; `cargo xtask qga` owns the maintained explicit-scope probe, upstream QGA has no `guest-get-memory-stats`, and production Windows telemetry is independent |
 | Host memory-stat correctness and freshness | Complete | Host | Adapter/policy | Rust | Balloon `actual` is provenance only; required `unused`/`available` and bounded advancing `last-update` feed the same Rust decision path as the controller |
 | Service lifecycle hosting | Complete | Windows | Service | Rust | Elevated LocalService install/start/observe/stop/delete passed; raw Event Log transitions, clean exit, non-zero failure, and the first 5-second recovery restart were observed live |
 | Service configuration | In Progress | Windows | Service | Rust | ProgramData versioned JSON, schema/basic validation, defaults, startup loading, and recovery metadata are implemented; production ACLs, atomic updates, migration, and stronger account/path/duration bounds remain |
 | Logging and metrics | In Progress | Both | Both | Rust | Windows SCM lifecycle and failure records are live-verified in XML EventData; classic text descriptions need message-resource packaging and broader metrics remain |
 | Error handling and recovery | In Progress | Both | Both | Rust | Intentional Windows stop is live-verified at exit zero; invalid configuration exits one and triggered the configured 5-second recovery restart; host recovery remains |
-| Automation and scripts | In Progress | Both | Ops | Bash | Prerequisite, QGA probe, Rust validation, virtio-mem inspection, read-only decision preview, and guarded reversible live-resize test helpers added; live resize remains explicitly opt-in |
-| RHEL-controlled cross-platform developer gate | Complete | Both | Ops | Bash + VS Code tasks | Latest gates pass 55 core, 60 host, and 67 native Windows tests with release builds, formatting, and warnings-as-errors Clippy |
+| Build and test tooling | In Progress | Both | Ops | Rust + task-boundary Bash | BT-M1–BT-M5 consolidate maintained local/native-Windows gates, prerequisite/QGA probes, verified artifacts, and guarded live resize in `cargo xtask`; BT-M6/BT-M7 retain privileged-batch generation and fault-injected qualification |
+| RHEL-controlled cross-platform developer gate | Complete | Both | Ops | Rust + VS Code tasks | `cargo xtask gate all` keeps results separate; the current RHEL gate passes 62 core, 67 host, and 13 tooling tests, while the current native Windows gate passes 67 tests |
 | Native Windows memory telemetry | In Progress | Windows | Demand agent | Rust | `GlobalMemoryStatusEx` and `GetPerformanceInfo` collector implemented with checked byte conversion and deterministic validation tests; live workload evidence remains |
 | Versioned Windows demand report | In Progress | Windows | Demand agent | Rust | Version 2 raw telemetry carries VM/service/session identity, dual clocks, sequence, and explicit native-source/host-join provenance; the separate calculated report remains advisory |
 | Demand report output | In Progress | Windows | Demand agent | Rust | Production atomically replaces one allocation-free record with three retained copies; the host persists restart-safe replay acknowledgement and enforces identity plus size bounds; native ProgramData ACL installation remains to be verified |
@@ -24,7 +24,7 @@
 | Virtio-mem compatibility gate | Complete | Host | Adapter | Rust | Version-1 SHA-256 attestation binds backend, slot/mapping, balloon, incompatible-workload, topology, trust, driver, QEMU, and libvirt review to fresh live evidence |
 | Compatibility-attestation drift guard | Complete | Host | Safety | Rust | Every resize verifies attestation integrity, recollects alias-scoped live evidence, ignores only allocation progress, and fails closed on configuration or version drift |
 | Allocation-authority reconciliation | Complete | Host | Contract | Rust | Virtio 1.2 and pinned QEMU/libvirt/virtio-win sources establish requested/plugged semantics; live libvirt `current` is authoritative and driver trace is optional diagnostic evidence |
-| Installed-driver diagnostic tracing | Optional | Windows | Integration | Bash | Checksum/signature-verified bounded DbgView captures completed without driver restart, boot logging, or debug-filter changes; no matching informational record appeared during either no-resize qualification or the M10a3 one-block operation |
+| Installed-driver diagnostic tracing | Optional | Windows | Historical integration evidence | Task-boundary Bash | Checksum/signature-verified bounded DbgView captures completed without driver restart, boot logging, or debug-filter changes; this is not maintained tooling |
 | Correlated behavior evidence | Complete | Both | Contract/test boundary | Rust | Version 1 requires repeated operation/VM/device identity, explicit bytes, source identity, ordered clocks, converged host endpoints, Windows health, and controller state; driver trace is optional and never allocation authority |
 | Current-allocation/report join | Complete | Both | Contract | Rust | M10c publishes raw Windows telemetry and joins its validated VM/time envelope with alias-scoped live libvirt `current` on the host; Windows receives no host-control authority or allocation feed |
 | Report freshness and bounded delivery | In Progress | Both | Contract | Rust | Version 2 identity/provenance, atomic handoff/retention, durable replay state, partial/oversized rejection, and ProgramData ACL provisioning are implemented; installed ACL verification remains |
@@ -41,7 +41,8 @@
 - **Windows Service**: Windows 11 x64 technology preview; requires Rust 1.70+
 - **Validated guest**: fully trusted development/test KVM guest `win11_gpu`;
   no production or untrusted-guest support claim
-- **Host automation**: RHEL host with Bash tooling and libvirt validation;
+- **Host tooling**: RHEL host with Rust `cargo xtask`, task-boundary Bash, and
+  libvirt validation;
   hard QEMU/libvirt memory limit recommended for `win11_gpu` and mandatory for
   future untrusted/production guests
 

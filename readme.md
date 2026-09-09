@@ -54,10 +54,10 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest gates pass 55 shared-core, 60 host, and 67 native-Windows tests.
-These are separate supported-platform results, not one cross-platform
-workspace run. Release builds, formatting, Clippy warnings-as-errors, and Bash
-syntax validation pass.
+The current RHEL gate passes 62 shared-core, 67 host, and 13 build-tooling
+tests. The latest native-Windows gate passes 67 tests. These are separate
+supported-platform results, not one cross-platform workspace run. Release
+builds, formatting, Clippy warnings-as-errors, and diff validation pass.
 
 ### Important limitations
 
@@ -130,7 +130,7 @@ M10e-M10g policy.
 │    ├─ checks host headroom                                             │
 │    └─ issues one aligned request and waits for convergence             │
 │                                                                        │
-│  Temporary Bash wrappers: explicit inspection and guarded test flows     │
+│  Rust build/test tool: explicit gates, inspection, and guarded test flows │
 └────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -155,24 +155,22 @@ M10e-M10g policy.
 ### 1. Check prerequisites
 
 Review the [dependency matrix](docs/dependencies.md), then run the local
-environment check from a Bash-capable host:
+environment check from the RHEL development host:
 
 ```bash
-bash scripts/check-environment.sh
+cargo xtask doctor host
 ```
 
 ### 2. Run the local quality gate
 
 ```bash
-cargo fmt --all -- --check
-cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked
-cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
-cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings
-bash -n scripts/*.sh
+cargo xtask gate local
 ```
 
-These checks are hermetic and do not require a live VM. The Windows-only crate
-is compiled, tested, and linted by the native Windows gate below.
+This runs formatting, locked release build/tests, warnings-denied Clippy for
+the shared core, host controller, and tooling, plus a diff check. It is
+hermetic and does not require a live VM. The Windows-only crate is compiled,
+tested, and linted by the native Windows gate below.
 
 ### 3. Build the Windows service from this RHEL VS Code workspace
 
@@ -184,7 +182,7 @@ and stages a checksum-verified
 `.vscode-artifacts/windows/virtio-mem-service.exe` on RHEL.
 
 The VS Code task prompts for the SSH alias. For direct terminal use, run
-`VIRTIO_MEM_WINDOWS_SSH=ALIAS bash scripts/windows-remote-build.sh all`.
+`VIRTIO_MEM_WINDOWS_SSH=ALIAS cargo xtask windows all`.
 
 This task does not install or start the service and does not change libvirt,
 systemd, QEMU, or guest memory. See [`docs/testing.md`](docs/testing.md) and
@@ -195,7 +193,7 @@ systemd, QEMU, or guest memory. See [`docs/testing.md`](docs/testing.md) and
 On the approved RHEL/libvirt host, use an explicit VM name:
 
 ```bash
-bash scripts/validate-guest-agent.sh VM_NAME 3
+cargo xtask qga VM_NAME --attempts 3
 ```
 
 Read the [QEMU Guest Agent setup guide](docs/qemu-ga-setup.md) first. The
@@ -220,6 +218,7 @@ For a live resize, follow the approval and rollback procedure in
 | Document | Purpose |
 | --- | --- |
 | [`docs/roadmap.md`](docs/roadmap.md) | Milestones, gates, dependencies, and blockers |
+| [`docs/build-test-tooling-roadmap.md`](docs/build-test-tooling-roadmap.md) | BT-M/BT-T milestones, migration inventory, dependencies, and blockers for build/test tooling |
 | [`BACKLOG.md`](BACKLOG.md) | Execution source of truth and handoffs |
 | [`PROJECT_STATUS.md`](PROJECT_STATUS.md) | Current implementation snapshot |
 | [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) | Dependency-ordered implementation plan |
@@ -241,8 +240,8 @@ For a live resize, follow the approval and rollback procedure in
 crates/virtio-mem-core/   Shared byte-based policy and XML/state contracts
 windows/                  Windows service, telemetry, SCM, and QGA boundary
 host/                     RHEL host controller and bounded libvirt adapters
-scripts/                 Bash validation and guarded operational helpers
-docs/                    Architecture, contracts, testing, and roadmap
+tools/                    Rust build, test, and validation control-plane tooling
+docs/                     Architecture, contracts, testing, and roadmaps
 host/systemd/            Example host service configuration
 ```
 
@@ -255,8 +254,8 @@ host/systemd/            Example host service configuration
 3. **Clear authority:** Windows measures; the host controller acts.
 4. **Hermetic first:** prove policy and failure behavior locally before using a
    live VM.
-5. **Rust and Bash only:** Rust owns service logic; Bash owns validation and
-   operational helpers.
+5. **Rust and Bash only:** Rust owns service logic and maintained build/test
+   tooling; Bash is limited to exact task-specific process/elevation boundaries.
 
 ## Contributing
 

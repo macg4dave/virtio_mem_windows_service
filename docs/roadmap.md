@@ -52,7 +52,8 @@ technology preview.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Strong boundary separation:** guest Rust code does not invoke Linux commands;
-    host Bash validation stays explicit-scope and read-only by default.
+    Rust build/test tooling stays explicit-scope and live mutation remains
+    separately gated.
 - **Failure visibility:** parser, transport, startup, polling, resize, and
     worker failures return typed errors instead of silent fallback.
 - **Cancellation correctness:** stop wakes the polling wait rather than
@@ -169,15 +170,19 @@ technology preview.
     configured recovery restart 5.05 seconds after an invalid-config failure.
     Raw XML EventData is authoritative until message-resource packaging lands.
 
-## RHEL-controlled build and test plan
+## Historical RHEL-controlled build and test milestone
+
+This section preserves TASK-011 delivery evidence. The maintained tooling plan,
+current commands, BT-M/BT-T task board, dependencies, and blockers now live in
+[`build-test-tooling-roadmap.md`](build-test-tooling-roadmap.md).
 
 ### Goal and boundary
 
 Use the RHEL development host as the single control plane while executing each
 check on its supported platform:
 
-1. RHEL builds, tests, and lints `virtio-mem-core` and `virtio-mem-host`, then
-   validates Rust formatting and Bash syntax.
+1. RHEL builds, tests, and lints `virtio-mem-core`, `virtio-mem-host`, and the
+   Rust tooling, then validates Rust formatting and the working-tree diff.
 2. RHEL synchronizes Git-tracked and non-ignored working-tree files to one
    explicitly configured Windows SSH endpoint.
 3. Windows initializes the native MSVC environment and performs the locked
@@ -187,21 +192,19 @@ check on its supported platform:
    SHA-256 matches the checksum calculated on Windows.
 
 The aggregate entry points are the VS Code **Build: all non-mutating gates**
-task and `VIRTIO_MEM_WINDOWS_SSH=ALIAS make all-gates`. They do not install or
+task and `VIRTIO_MEM_WINDOWS_SSH=ALIAS cargo xtask gate all`. They do not install or
 start either service, modify libvirt or systemd, change guest memory, or claim
 live integration evidence.
 
 ### Delivery stages
 
-- [x] **Stage A — Native RHEL gate:** `scripts/build-rust.sh` uses the workspace
-  lockfile and validates the shared core and host controller without trying to
-  compile Windows SCM APIs for Linux. Current evidence is a release build, 29
-  shared-core tests, 35 host tests, rustfmt, warnings-as-errors Clippy, and
-  Bash syntax.
-- [x] **Stage B — RHEL orchestration:** `scripts/windows-remote-build.sh`,
-  `.vscode/tasks.json`, and the Makefile provide explicit endpoint checking,
-  one-sync native validation, verified artifact retrieval, and both editor and
-  terminal entry points.
+- [x] **Stage A — Native RHEL gate:** the former `scripts/build-rust.sh`
+  established the split-platform gate and is now replaced by
+  `cargo xtask gate local`.
+- [x] **Stage B — RHEL orchestration:** the former
+  `scripts/windows-remote-build.sh` established the remote flow and is now
+  replaced by `cargo xtask windows`; `.vscode/tasks.json` and the Makefile are
+  thin entry points to the Rust tool.
 - [x] **Stage C — Windows endpoint bootstrap:** the current Windows build login
     now has key-based OpenSSH access, Rust MSVC plus rustfmt/Clippy, Visual
     Studio C++ Build Tools and Windows SDK, `tar.exe`, and `certutil.exe`. The
@@ -228,8 +231,8 @@ live integration evidence.
 
 | ID | Status | Blocker | Impact | Resolution evidence |
 | --- | --- | --- | --- | --- |
-| BUILD-001 | Resolved | The configured Windows SSH/MSVC endpoint had not been checked from the RHEL control plane | Cross-host reachability and authentication were unproven | `windows-remote-build.sh check` passes through the explicit `virtio-mem-windows` SSH alias |
-| BUILD-002 | Resolved | The remote wrapper had not completed one end-to-end run | Command quoting, remote path handling, MSVC initialization, and checksum retrieval were unproven | `windows-remote-build.sh all` exits zero with 59 passing native tests and matching SHA-256 values |
+| BUILD-001 | Resolved | The configured Windows SSH/MSVC endpoint had not been checked from the RHEL control plane | Cross-host reachability and authentication were unproven | The former wrapper's `check` path passed; the maintained equivalent is `cargo xtask windows check` |
+| BUILD-002 | Resolved | The remote wrapper had not completed one end-to-end run | Command quoting, remote path handling, MSVC initialization, and checksum retrieval were unproven | The former wrapper's `all` path passed with 59 native tests and matching SHA-256 values; the maintained equivalent is `cargo xtask windows all` |
 | BUILD-003 | Resolved | Windows SCM validation required an elevated Windows session and service registration changes | Default build success could not establish install/start/stop/recovery behavior | M7 live lifecycle and 5-second recovery restart passed on `ice101.lan` with full rollback |
 | BUILD-004 | External release gate | Live QGA, systemd, libvirt, and virtio-mem convergence checks require named targets and explicit mutation approval | Default build success cannot establish live runtime or resize readiness | Separately approved M8–M10b procedures pass with rollback and convergence evidence |
 
@@ -246,7 +249,7 @@ this milestone and does not block ordinary developer builds.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
 - **Clear boundaries:** guest Rust code does not invoke Linux commands; host
-    Bash validation remains explicit-scope and read-only by default.
+    tooling remains explicit-scope and read-only by default.
 - **Failure visibility:** parser, transport, startup, polling, resize, and
     worker failures have typed/error-return paths instead of silent fallback.
 - **Cancellation correctness:** stop wakes the polling wait rather than

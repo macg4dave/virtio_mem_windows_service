@@ -3,25 +3,35 @@ agent: agent
 description: Start one virtio-mem Windows service backlog task safely
 ---
 
-Read `.github/copilot-instructions.md`, `BACKLOG.md`, `docs/architecture.md`, `docs/engineering-standards.md`, and `docs/testing.md`.
+Read `.github/copilot-instructions.md`, `BACKLOG.md`,
+`docs/build-test-tooling-roadmap.md`, `docs/architecture.md`,
+`docs/engineering-standards.md`, and `docs/testing.md`.
 
 Then:
 
-1. Identify the selected `Ready` backlog task or ask which task to claim if none was named.
+1. Identify the selected Ready product or BT tooling task on its owning board,
+   or ask which task to claim if none was named.
 2. Summarize the owning service, files to touch, docs to read, and validation commands.
 3. Check `git status --short`.
-4. Claim exactly one task by changing its status to `In Progress` before substantial edits.
+4. Claim exactly one task on its owning board by changing its status to
+   `In Progress` before substantial edits.
 5. Keep changes inside the task card scope.
 6. Update contracts/docs/tests together.
 7. Run the task's validation and report blockers exactly.
 
+For BT-M/BT-T build/test-tooling work, use
+`docs/build-test-tooling-roadmap.md` as the task board instead of claiming a
+product `TASK-*` code.
+
 Rust-specific requirements:
 
-- Keep service logic in Rust and automation in Bash only.
+- Keep service logic and maintained automation in Rust; use Bash only for a
+  generated or task-specific privileged boundary.
 - Add deterministic regression tests for changed behavior.
 - Prefer safe Rust with explicit `Result`/`Option` handling; avoid unjustified `unwrap()`, `expect()`, panics, and `unsafe`.
 - Preserve QEMU Guest Agent contracts and the Windows-service/host-automation boundary.
-- Run from `windows/`: `cargo fmt --all -- --check`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo build --release` when available.
+- Run focused tests and `cargo xtask gate local`; report the native Windows
+  gate separately when applicable.
 - Update affected contracts/docs and `BACKLOG.md` in the same task.
 
 Do not add speculative features. Do not use AI agreement as validation.

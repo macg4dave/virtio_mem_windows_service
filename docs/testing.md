@@ -9,11 +9,12 @@ All testing is performed locally. No CI pipeline is currently configured.
 The normal Rust validation path does not require root and should be run as the
 regular development user:
 
-- `cargo fmt --all -- --check`
-- `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
-- `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
-- `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
-- `bash -n scripts/*.sh`
+```bash
+cargo xtask gate local
+```
+
+The tool runs rustfmt, a locked release build, locked tests, warnings-denied
+Clippy for the RHEL-compatible crates and tooling, and `git diff --check`.
 
 Do not wrap these commands in `sudo`; doing so can create root-owned build
 artifacts and hides permission problems rather than fixing them.
@@ -40,20 +41,24 @@ multiple privileged RHEL commands. The agent creates a complete, task-specific
 script below the ignored `.vscode-artifacts/privileged-tasks/` directory for
 operator review, then runs that script through one outer `sudo bash` command.
 The operator enters the password directly once. The batch is scoped to that
-approved task and must not become a general privileged command runner.
+approved task and must not become a general privileged command runner. It must
+call `cargo xtask` or the product Rust CLI for reusable parsing, polling, and
+safety logic rather than copying those implementations into Bash.
 
 After that one-time setup, run read-only probes and the controller under the
-approved account or authorization context. If a particular test genuinely
-needs root, ask for approval first with the complete command, protected target,
-expected mutation, and rollback behavior. Once approved, run the entire test
-script once under `sudo` rather than adding `sudo` to individual subcommands.
+approved account or authorization context. If a task genuinely needs root,
+give the execution notice with the complete command, protected target,
+expected mutation, and rollback behavior, then run the entire task script once
+under `sudo` rather than adding `sudo` to individual subcommands.
 Never automate or collect the password; the operator types it directly into
 the terminal. Do not use `sudo -S`, modify sudoers, or weaken host permissions
 just to make a test pass.
 
-Any live resize, VM lifecycle operation, service installation/removal, or edit
-to a server-side file remains an explicit operator-approved action separate
-from the unprivileged test suite.
+A bounded reversible live resize, task-scoped service lifecycle, and candidate
+installation remain separate from the unprivileged suite but are authorized by
+the repository beta-validation rules after the required execution notice and
+safety gates. Reboots, non-reversible resize, deletion of pre-existing state,
+and persistent platform/security changes still require explicit approval.
 
 #### Layered Windows guest-health gate
 
@@ -106,8 +111,8 @@ guest prerequisite matrix.
 The repository includes `.vscode/tasks.json` so the normal non-mutating
 validation path can be run from VS Code without an administrator terminal:
 
-- **RHEL: full local gate** — format and Bash syntax checks plus native release
-  build, tests, and Clippy for the shared core and RHEL host controller. The
+- **RHEL: full local gate** — format, native release build, tests, Clippy, and
+  diff checks for the shared core, RHEL host controller, and Rust tooling. The
   Windows-only crate is intentionally validated by the native Windows gate.
 - **Windows: check remote toolchain** — verifies SSH, Rust MSVC, the linker,
   archive tooling, and checksum tooling on the Windows build guest.
@@ -125,41 +130,41 @@ validation path can be run from VS Code without an administrator terminal:
   tasks and fetches the verified Windows artifact.
 
 The VS Code tasks prompt for the `VIRTIO_MEM_WINDOWS_SSH` SSH config alias and
-default it to `virtio-mem-windows`. When invoking the wrapper directly, export
+default it to `virtio-mem-windows`. When invoking the tool directly, export
 that variable in the shell. Optionally set `VIRTIO_MEM_WINDOWS_DIR` and
 `VIRTIO_MEM_WINDOWS_ARTIFACTS`; the defaults are documented in
-`windows/README.md`. Prefer the aggregate task or the wrapper's `all` command
-for a complete gate so source is synchronized only once. The remote wrapper
+`windows/README.md`. Prefer the aggregate task or `cargo xtask windows all`
+for a complete gate so source is synchronized only once. The Rust tool
 initializes the Visual Studio MSVC environment using `vswhere.exe`, so the SSH
 account must be able to access the installed Build Tools.
 
-The wrapper resolves the active Cargo toolchain with `rustup which cargo` and
+The tool resolves the active Cargo toolchain with `rustup which cargo` and
 invokes its real executables. This is required on `ice101.lan` because its
 `.cargo\bin` rustup proxy symlinks fail through OpenSSH with Windows error 448
-even though the underlying MSVC toolchain is healthy. The wrapper also removes
+even though the underlying MSVC toolchain is healthy. The tool also removes
 the carriage return from `certutil.exe` output before parsing the remote
 SHA-256.
 
-The equivalent terminal entry point is `make all-gates`. It requires
-`VIRTIO_MEM_WINDOWS_SSH`; `make build`, `make test`, and `make lint` run only
-the RHEL-compatible portion.
+The authoritative terminal entry point is `cargo xtask gate all`. It requires
+`VIRTIO_MEM_WINDOWS_SSH`. The Make targets remain compatibility aliases and
+contain no independent gate policy.
 
-To collect TASK-011 milestone evidence, run the fingerprint-pinned helper from
-the RHEL checkout. It checks the endpoint first, executes `make all-gates`
+To collect TASK-011 milestone evidence, run the fingerprint-pinned Rust command
+from the RHEL checkout. It checks the endpoint first, executes the aggregate gate
 twice, and stores both logs and staged executable hashes under the ignored
 `.vscode-artifacts/windows/milestone-TIMESTAMP/` directory:
 
 ```bash
-bash scripts/complete-windows-build-milestone.sh \
+cargo xtask windows milestone \
   WINDOWS_SSH_ALIAS SHA256:EXPECTED_ED25519_HOST_FINGERPRINT \
   ~/.ssh/OPTIONAL_PRIVATE_KEY
 ```
 
 Omit the private-key argument when the alias or `ssh-agent` already selects the
-correct key. The helper uses a temporary known-hosts file, refuses a host-key
+correct key. The command uses a temporary known-hosts file, refuses a host-key
 mismatch, and does not modify `~/.ssh/config` or `~/.ssh/known_hosts`. Success
 requires both aggregate runs to exit zero and each fetched artifact to pass the
-wrapper's Windows/RHEL SHA-256 comparison.
+tool's Windows/RHEL SHA-256 comparison.
 
 The Windows tasks are deliberately not deployment tasks. They never install,
 start, stop, or remove the Windows service and never change RHEL systemd,
@@ -225,7 +230,7 @@ and deterministic source tests rather than across separate CLI invocations.
 
 #### Reversible live-resize test
 
-Use `scripts/live-resize-test.sh` for an operator-approved, reversible test of
+Use `cargo xtask live-resize` for an explicitly scoped, reversible test of
 one virtio-mem target. It validates the live alias, size, block alignment, and
 convergence state before doing anything. Without `--apply`, it is a dry run.
 With `--apply`, it issues one live request, records timestamped samples of
@@ -254,26 +259,32 @@ longer attempts a zero-memory rollback.
 Example dry run:
 
 ```bash
-bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152
+cargo xtask live-resize win11_gpu ua-virtiomem0 1073741824
 ```
 
 On hosts where the default `virsh` connection is `qemu:///session`, add
 `--connect qemu:///system` so the test uses the system libvirt instance:
 
 ```bash
-bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152 --connect qemu:///system
+cargo xtask live-resize win11_gpu ua-virtiomem0 1073741824 --connect qemu:///system
 ```
 
-Only after confirming the target and obtaining explicit operator approval for a
-live mutation should the apply form be used:
+Only after confirming the target and giving the required execution notice for
+the exact reversible live mutation should the apply form be used:
 
 ```bash
-sudo bash scripts/live-resize-test.sh win11_gpu ua-virtiomem0 2097152 --connect qemu:///system --apply --timeout 30 --log /tmp/win11_gpu-memory.csv
+sudo /home/dave/github/virtio_mem_windows_service/target/release/virtio-mem-xtask \
+  live-resize win11_gpu ua-virtiomem0 1073741824 \
+  --connect qemu:///system --apply --timeout 30 \
+  --log /tmp/win11_gpu-memory.csv
 ```
 
-The `sudo` form is only valid after explicit operator approval for that exact
-VM, alias, target, and reversible test. If sudo requests authentication, type
-the password directly in the terminal; the agent must not receive it.
+Build the tool as the regular user first (`cargo xtask gate build`) so `sudo`
+does not create root-owned Cargo artifacts. The privileged form is valid only
+for that exact VM, alias, target, and reversible test. `--keep-target` is
+non-reversible and still requires explicit approval. If sudo requests
+authentication, type the password directly in the terminal; the agent must
+not receive it.
 
 The earlier 20 GiB attempt demonstrated why the full-device guard is required:
 the VM already has 8 GiB of base RAM and the host has approximately 30 GiB of
@@ -283,11 +294,11 @@ by `virsh` at the KiB boundary and the VM remained unchanged, but the test is
 now blocked before any live command by the explicit full-device and host-headroom
 checks.
 
-The script accepts canonical byte targets but converts them to KiB for
+The Rust tool accepts canonical byte targets but converts them to KiB for
 `virsh --requested-size`, whose default unit is KiB. It rejects targets that
 cannot be represented as an exact KiB value and never rounds silently.
 
-The script never guesses a target, never runs two resize requests at once, and
+The tool never guesses a target, never runs two resize requests at once, and
 does not retain a target unless `--keep-target` is explicitly added. A timeout
 or interruption attempts to restore the original requested size. Review the
 CSV and console samples for convergence latency and QGA observations. The
@@ -318,7 +329,7 @@ resize adapter must retain its converged-state precondition.
 Run the native RHEL gate before installing the controller:
 
 ```bash
-bash scripts/build-rust.sh
+cargo xtask gate local
 ```
 
 Host tests are hermetic: cover environment configuration, restricted aliases,
@@ -392,9 +403,9 @@ valid deployment. Before every prepared resize the controller verifies the
 attestation SHA-256 and recollects its bounded live XML/QEMU/QMP/version inputs;
 any drift blocks actuation.
 
-#### Testing through the installed host service, not the standalone script
+#### Testing through the installed host service, not the standalone tool
 
-The standalone `scripts/live-resize-test.sh` script is a pre-installation
+The standalone `cargo xtask live-resize` command is a pre-installation
 safety probe and is not a substitute for exercising the actual
 `virtio-mem-host` systemd service end to end. Before declaring the host
 controller usable:
@@ -789,11 +800,14 @@ The former `scripts/virtio-mem-host.sh` implementation was removed in M9c, so
 that helper no longer duplicates the Rust XML, arithmetic, compatibility, or
 resize policy.
 
-### Bash validation helpers
+### Build/test tooling
 
-- Run focused shell validation scripts locally before use on a target host.
-- Check for required environment variables and host tooling early.
-- Prefer explicit error handling and exit codes over silent fallback behavior.
+- Put maintained build/test behavior in `tools/xtask` and add deterministic
+  Rust tests for parsing, scope, malformed output, boundaries, and errors.
+- Check required environment variables and host tooling before remote or live
+  work. Never infer an SSH endpoint, VM, device alias, or mutation target.
+- Keep Bash only for one generated or task-specific privileged process
+  boundary; delegate reusable validation to Rust.
 
 ## Validation Checklist
 
@@ -917,9 +931,10 @@ cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 The 2026-09-09 local M10e gate passes 55 shared-core and 60 host tests with zero
 failures. It covers the absolute estimator and checkpoint in addition to
 durable replay acknowledgement, atomic handoff, bounded retention, the shrink
-schedule, latched stalls, cancellation/restart, and one-shot recovery. Run the native
-Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
-scripts/windows-remote-build.sh all`; success includes the raw publisher and
+schedule, latched stalls, cancellation/restart, and one-shot recovery. Run the
+native Windows gate with
+`VIRTIO_MEM_WINDOWS_SSH=ALIAS cargo xtask windows all`;
+success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
 2026-09-08 native gate passed 67 tests and verified artifact SHA-256
 `d91e6ccd2a0fdbac1da8bcd96a4e05ecf77964834e20d973c844e44d77d1e9dd`.
@@ -998,7 +1013,7 @@ the upstream or forked `viomem` solution separately from the Rust workspace:
 
 The presence of `GUID_DEVINTERFACE_VIOMEM` is not sufficient evidence of a
 user-mode IOCTL API. Do not add kernel-driver build or installation steps to
-the normal Rust/Bash validation gate.
+the normal Rust build/test gate.
 
 Before live multi-VM work, validate the state model with hermetic simulations:
 

@@ -4,22 +4,22 @@
     {
       "label": "RHEL: full local gate",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/build-rust.sh"],
+      "command": "cargo",
+      "args": ["xtask", "gate", "local"],
       "problemMatcher": []
     },
     {
       "label": "RHEL: host environment check",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/check-environment.sh"],
+      "command": "cargo",
+      "args": ["xtask", "doctor", "host"],
       "problemMatcher": []
     },
     {
       "label": "Windows: check remote toolchain",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "check"],
+      "command": "cargo",
+      "args": ["xtask", "windows", "check"],
       "options": {
         "env": {
           "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
@@ -30,8 +30,8 @@
     {
       "label": "Windows: synchronize source",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "sync"],
+      "command": "cargo",
+      "args": ["xtask", "windows", "sync"],
       "options": {
         "env": {
           "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
@@ -42,8 +42,8 @@
     {
       "label": "Windows: native release build",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "build"],
+      "command": "cargo",
+      "args": ["xtask", "windows", "build"],
       "options": {
         "env": {
           "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
@@ -55,8 +55,8 @@
     {
       "label": "Windows: native tests",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "test"],
+      "command": "cargo",
+      "args": ["xtask", "windows", "test"],
       "options": {
         "env": {
           "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
@@ -68,8 +68,8 @@
     {
       "label": "Windows: native format and clippy",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "lint"],
+      "command": "cargo",
+      "args": ["xtask", "windows", "lint"],
       "options": {
         "env": {
           "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
@@ -81,8 +81,8 @@
     {
       "label": "Windows: fetch verified artifact",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "fetch"],
+      "command": "cargo",
+      "args": ["xtask", "windows", "fetch"],
       "options": {
         "env": {
           "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
@@ -93,8 +93,8 @@
     {
       "label": "Windows: full native gate",
       "type": "shell",
-      "command": "bash",
-      "args": ["${workspaceFolder}/scripts/windows-remote-build.sh", "all"],
+      "command": "cargo",
+      "args": ["xtask", "windows", "all"],
       "options": {
         "env": {
           "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"

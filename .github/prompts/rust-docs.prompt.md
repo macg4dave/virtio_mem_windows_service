@@ -3,7 +3,9 @@ name: rust-docs
 description: Update Rust API and repository documentation accurately
 ---
 
-Read `readme.md`, `docs/architecture.md`, `docs/engineering-standards.md`, `docs/testing.md`, and `BACKLOG.md`.
+Read `readme.md`, `docs/architecture.md`, `docs/engineering-standards.md`,
+`docs/testing.md`, and `BACKLOG.md`. Read
+`docs/build-test-tooling-roadmap.md` when commands or tooling change.
 
 Task:
 """
@@ -20,7 +22,8 @@ Rules:
 - If a code example changes, add or update a test or doctest when practical.
 - Avoid unrelated prose or formatting churn.
 
-Validate Rust examples with the appropriate `cargo test` command from `windows/`, then report exact results and any live-VM blocker.
+Validate Rust examples with focused tests and `cargo xtask gate local`, then
+report native Windows and live-VM results or blockers separately.
 
 Shell safety:
 

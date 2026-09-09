@@ -25,7 +25,9 @@ do not pause for a separate approval when the target and safe bounds are clear.
    `set -euo pipefail`.
 3. Put the entire task-scoped privileged sequence in that script. Use fixed
    command paths and quoted argument arrays where practical. Commands inside
-   the script must never invoke `sudo`, `su`, or `doas`.
+   the script must never invoke `sudo`, `su`, or `doas`. Invoke the already
+   built `target/release/virtio-mem-xtask` or product Rust CLI for reusable
+   parsing, validation, polling, and resize logic; do not copy it into Bash.
 4. Do not accept commands, shell fragments, VM names, unit names, or output
    paths from an untrusted file, standard input, or an open-ended loop. Embed
    the resolved task scope in the script so the operator can review exactly
@@ -55,7 +57,9 @@ do not pause for a separate approval when the target and safe bounds are clear.
      persistent security or attestation change, default that window to ten
      minutes unless the task documents why a shorter interval covers every
      delayed reboot/recovery mechanism in scope.
-7. Before execution, show the operator the script path and summarize every
+7. Build required Rust tooling as the regular user with
+   `cargo xtask gate build`. Before execution, show the operator the script
+   path and summarize every
    target, mutation, expected effect, timeout, output file, and rollback. This
    is an execution notice, not an approval request. Then invoke exactly:
 

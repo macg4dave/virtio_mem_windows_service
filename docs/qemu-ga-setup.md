@@ -165,14 +165,14 @@ Record the following for the project documentation:
 From the repository root on the RHEL host, run the prerequisite check first:
 
 ```bash
-bash scripts/check-environment.sh
+cargo xtask doctor host
 ```
 
 Then run the explicit-scope probe. The VM name is required; no VM is selected
 implicitly:
 
 ```bash
-bash scripts/validate-guest-agent.sh win11_gpu 3
+cargo xtask qga win11_gpu --attempts 3
 ```
 
 The helper validates `guest-info` once, probes the custom memory extension,
@@ -181,8 +181,8 @@ of attempts. When the extension is unavailable, it falls back to
 `virsh dommemstat` and requires numeric `actual`, `unused`, and `available`
 fields. The Rust host source additionally enforces recent, non-future, advancing
 `last-update` before using a sample for policy.
-It defaults to
-`qemu:///system`; set `VIRSH_CONNECT` to use another libvirt URI. It does not
+It defaults to `qemu:///system`; pass `--connect URI` to use another libvirt
+instance. It does not
 resize memory, restart the VM, or execute commands inside the guest.
 
 ## Troubleshooting
@@ -236,8 +236,8 @@ virsh qemu-agent-command "$VM_NAME" '{"execute":"guest-info"}' | jq .
 virsh qemu-agent-command "$VM_NAME" '{"execute":"guest-get-memory-stats"}' | jq .
 ```
 
-The helper scripts are intended to be executable files in the checkout. If the
-checkout does not preserve executable bits, run `chmod +x scripts/*.sh`.
+The helper is a Rust workspace tool and does not depend on checkout executable
+bits.
 
 ## Success Criteria
 

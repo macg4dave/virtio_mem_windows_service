@@ -25,14 +25,16 @@ Details:
 
 Rules:
 
-1. Make the smallest focused Rust change; use Bash only for automation.
+1. Make the smallest focused Rust change; put maintained automation in
+   `tools/xtask` and use Bash only for a task-specific privileged boundary.
 2. Preserve existing contracts and architecture. Do not add Go, Python, Node.js, PowerShell, OpenAPI, or unrelated framework artifacts.
 3. Prefer safe idiomatic Rust, explicit `Result`/`Option` handling, structured errors, and dependency-free solutions when practical.
 4. Avoid `unwrap()`, `expect()`, panics, global mutable state, and `unsafe` unless justified and covered by tests.
 5. Add regression tests for changed behavior, malformed input, error paths, and boundary conditions.
 6. Keep pure parsing and resize-policy logic independent from live Windows/QGA effects.
 7. Update affected docs and `BACKLOG.md` in the same change.
-8. Validate from `windows/` with format check, tests, Clippy, and release build when practical; report exact output and blockers.
+8. Run focused tests and `cargo xtask gate local`; run native Windows or live
+   gates separately when applicable and report exact output and blockers.
 
 Shell safety:
 

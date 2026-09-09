@@ -12,7 +12,8 @@ and untrusted-guest operation are outside the current support boundary.
 
 - **Windows Service (Rust)**: Guest-side native memory telemetry, advisory demand calculation/publication, cancellation, and service lifecycle hosting
 - **RHEL host controller (Rust/systemd)**: One explicitly configured VM and virtio-mem alias per unit instance; reads QGA and live libvirt state, then issues validated live resize requests
-- **Host validation / automation (Bash)**: Explicit preflight, diagnostic, and manual operational helpers; these do not run inside the controller
+- **Build/test control plane (Rust `cargo xtask`)**: Explicit local and native-Windows gates, preflight, artifact verification, diagnostics, and bounded reusable live-validation helpers; these do not run inside the controller
+- **Privileged task batch (Bash)**: Generated or one-off exact command sequence used only as an operator-reviewable outer elevation/process boundary
 - **QEMU / libvirt validation path**: Used to verify guest agent responses and live virtio-mem behavior
 
 ### Data Flow

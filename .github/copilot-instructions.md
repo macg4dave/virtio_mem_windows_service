@@ -9,7 +9,8 @@ This project is written primarily by AI coding agents. Follow the repository ope
 - ✅ Allowed: Rust, Bash
 - ❌ Forbidden: Go, C#, PowerShell, Python, Node.js, Java, or any other language
 - ✅ Rust for any required service or program logic
-- ✅ Bash for automation, validation, and helper scripts
+- ✅ Rust for maintained build, test, validation, and orchestration tooling
+- ✅ Bash only for generated or task-specific process/elevation boundaries
 
 ## Required Entry Point
 
@@ -20,6 +21,7 @@ Read the architecture and design docs first:
 - Execution board / dev runbook: [BACKLOG.md](../BACKLOG.md)
 - Validation and testing strategy: [docs/testing.md](../docs/testing.md)
 - Cross-cutting standards: [docs/engineering-standards.md](../docs/engineering-standards.md)
+- Build/test tooling roadmap: [docs/build-test-tooling-roadmap.md](../docs/build-test-tooling-roadmap.md)
 
 ## Prime Directives
 
@@ -53,17 +55,20 @@ state, compatibility checks, host headroom, and virtio-mem actuation. The
 Windows service must not open the QGA virtio-serial device because the
 installed QEMU Guest Agent process owns that channel.
 
-**Bash automation** owns:
+**Rust tooling (`cargo xtask`)** owns:
 
-- Local validation scripts
-- Build helper commands
-- Environment checks and operational setup
+- Local and native-Windows build/test gates
+- Environment and dependency checks
+- Remote build orchestration and artifact verification
+- Reusable parsing, polling, and bounded live-validation logic
 
-**Bash scripts** must not:
+**Task-specific Bash batches** own only the exact, reviewable process boundary
+needed for one privileged operation. They must not:
 
 - Introduce unreviewed privileged actions
 - Hide errors or skip `set -euo pipefail`
 - Depend on Go toolchains or Go build flows
+- Reimplement Rust XML/JSON parsing, unit conversion, policy, or reusable polling
 
 ## Shell and live-system safety
 
@@ -101,7 +106,8 @@ another approval for the operations listed below.
   privileged commands into one task-specific Bash script under the ignored
   `.vscode-artifacts/privileged-tasks/` directory and invoke it once with one
   outer `sudo`, following `.github/prompts/rhel-privileged-batch.prompt.md`.
-  Commands inside the script must not invoke `sudo`, `su`, or `doas`.
+  Commands inside the script must not invoke `sudo`, `su`, or `doas`. Use
+  `cargo xtask` or the product Rust CLIs for reusable validation logic.
 - Never ask the user to send a password, store credentials, or put a password
   in a script, environment file, command line, or repository. If the terminal
   prompts for authentication, the user types it directly; do not use `sudo -S`,
@@ -128,10 +134,15 @@ another approval for the operations listed below.
 
 ## Documentation Freshness
 
-[BACKLOG.md](../BACKLOG.md) is the execution source of truth. Keep it accurate after every session.
+[BACKLOG.md](../BACKLOG.md) is the product execution source of truth;
+[`docs/build-test-tooling-roadmap.md`](../docs/build-test-tooling-roadmap.md) is
+the build/test-tooling execution source. Keep the applicable board accurate
+after every session.
 
 - Documentation updates are mandatory, not optional follow-ups. Ship doc changes in the same session as the code they describe.
-- After completing any task, update the BACKLOG.md task card status, handoff notes, and Ready Queue row.
+- After completing a product task, update its BACKLOG.md task card status,
+  handoff notes, and Ready Queue row. For a BT task, update its BT roadmap row
+  and add a concise BACKLOG handoff note when repository-wide commands changed.
 - Update `docs/roadmap.md` when phase status changes or scope shifts.
 - Update `docs/feature-matrix.md` when features are added, completed, or changed.
 - Update `docs/issues.md` when a tracked bug is resolved, with status and fix reference.
@@ -139,14 +150,20 @@ another approval for the operations listed below.
   - Document exact commands needed to run tests locally.
   - Explain when to use `run` mode (local debugging) vs `install` mode (real service testing).
   - Include expected output and success criteria for each validation step.
+- Update `docs/build-test-tooling-roadmap.md` for BT-M/BT-T tooling scope,
+  dependencies, blockers, or status. Do not add BT tasks to the product
+  milestone namespace.
 - If a doc update cannot be completed, log the gap in the task card's handoff notes. Never skip silently.
 - See [BACKLOG.md](../BACKLOG.md) § "Documentation Freshness Rules" for the full checklist and triggers.
 
 ## Validation Rules
 
-- Rust changes: build and validate locally with `cargo build` and `cargo test` when available.
-- Run `cargo fmt --all -- --check` and `cargo clippy --all-targets --all-features -- -D warnings` for Rust changes when the toolchain supports them.
-- Bash changes: run the script or a focused validation command locally.
+- Rust changes: run `cargo xtask gate local`; use focused Cargo commands during
+  iteration when helpful, but do not substitute them for the final gate.
+- Build/test tooling changes: update the BT roadmap, add deterministic xtask
+  tests, and run `cargo xtask gate local`.
+- Task-specific Bash changes: run `bash -n PATH` and the applicable dry run;
+  these scripts are not maintained build/test entry points.
 - Windows service changes: build and validate locally before committing.
   - Test the `run` command (non-service mode) for worker logic and lifecycle changes.
   - Document any new CLI modes or command-line options in `docs/testing.md`.
@@ -175,8 +192,10 @@ Before declaring a Rust task complete:
 
 1. Read the relevant architecture, backlog, contract, data-model, and testing documentation.
 2. Make the smallest focused change and update tests in the same change.
-3. Run formatting, tests, Clippy, and a release build when practical.
-4. Update affected documentation and the `BACKLOG.md` task status/handoff notes.
+3. Run `cargo xtask gate local` and the separately applicable native Windows
+   or live gate when practical.
+4. Update affected documentation and the applicable product or BT task
+   status/handoff notes.
 5. Report exact validation results and any environment blocker; never claim a check passed without running it.
 
 ## Safety Rules

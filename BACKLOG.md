@@ -1,5 +1,28 @@
 # BACKLOG
 
+## 2026-09-10 Rust build/test tooling consolidation
+
+- Completed BT-T001 through BT-T006 in the separate
+  `docs/build-test-tooling-roadmap.md` namespace. Added the `tools/xtask`
+  workspace crate for local gates, host prerequisites, QGA/`dommemstat`
+  validation, remote native-Windows gates, checksum-verified artifacts,
+  two-run milestone evidence, and bounded dry-run-default live resize.
+- Removed all six tracked `scripts/` wrappers after migrating VS Code, Make,
+  current documentation, project instructions, and AI prompts to
+  `cargo xtask`.
+- Audited all ignored `.vscode-artifacts/privileged-tasks/*.sh` files. They
+  remain historical evidence or exact one-off privileged sequences, not
+  maintained tooling. BT-M6 tracks extraction of their repeated guest-health
+  and service-lifecycle boilerplate into typed Rust manifests/generation.
+- Product milestone status is unchanged. Build/test tooling uses BT-M/BT-T/BT-B
+  codes so it cannot be confused with main-project M/TASK work.
+- `cargo xtask gate local` passes: 62 shared-core, 67 host, and 13 tooling
+  tests, locked release builds, formatting, warnings-denied Clippy, and diff
+  checks. `cargo xtask doctor host` also passes. The ported native Windows gate
+  passes 67 tests and verifies artifact SHA-256
+  `607c2baed981e4807f082341aacb7d80ec846190c50d3b8f26728656aa55d899`.
+  No live mutation gate was run.
+
 ## 2026-09-09 M10g live audit and controller hardening
 
 - The current checkout passes 62 shared-core and 67 host tests after adding
@@ -996,6 +1019,8 @@ After completing any task:
 4. Update [docs/issues.md](docs/issues.md) if bugs were resolved
 5. Document any handoff notes or blockers in the task card
 6. Move completed tasks to the **Completed** section
+7. For build/test tooling, update `docs/build-test-tooling-roadmap.md` and use
+   BT-M/BT-T/BT-B codes instead of adding product milestone/task codes
 
 ### 2026-09-04 VS Code RHEL-to-Windows build workflow
 
@@ -1284,7 +1309,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | TASK-019 | M9d complete compatibility-attestation drift guard | Copilot | 2026-09-07 | Version-1 SHA-256 evidence binds the full reviewed live configuration and operator declarations; every resize recollects evidence and fails closed on tamper or drift, with allocation-neutral hermetic tests. |
 | TASK-001 | Rust service scaffolding | Copilot | 2026-09-04 | Service lifecycle, configuration, SCM adapter, native telemetry worker, legacy QGA adapter boundary, cancellation, error handling, and live SCM validation are complete; demand publication continues under TASK-009. |
 | TASK-002 | QEMU Guest Agent validation | Copilot + Operator | 2026-09-04 | Repeated live advertised-QGA and `dommemstat` probes passed across agent restart and guest reboot; later audit classified the QGA memory adapter as custom and moved `dommemstat` semantics/freshness to TASK-025. |
-| TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Added prerequisite, QGA probe, and Rust validation scripts. |
+| TASK-003 | Bash validation helpers | Copilot | 2026-08-17 | Historical initial helpers; superseded and removed by BT-M1–BT-M5 Rust tooling consolidation on 2026-09-10. |
 | TASK-004 | Windows memory polling policy | Copilot | 2026-08-18 | Parser, policy, adapter loop, wakeable polling, and service-hosting tests pass; production telemetry publication is tracked by TASK-009/TASK-020. |
 | TASK-005 | Safe QEMU Guest Agent response handling | Copilot | 2026-08-18 | Framing, response correlation, malformed input, bounded overlapped I/O, operation timeout, and cancellation are tested as an adapter boundary; Windows production telemetry does not open QGA. |
 | TASK-006 | Rust Copilot prompt set | Copilot | 2026-08-17 | Added repository-aware Rust project, API, test, refactor, security, docs, CI, and performance prompts; updated existing prompts and always-on instructions. |

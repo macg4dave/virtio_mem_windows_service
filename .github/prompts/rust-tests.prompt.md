@@ -25,7 +25,8 @@ Rules:
 - Avoid network, filesystem, timing, and platform-global dependencies unless the test explicitly isolates them.
 - Preserve public contracts and service boundaries.
 
-Validate from `windows/` with `cargo test`, `cargo fmt --all -- --check`, and Clippy when available. Report exact results.
+Run focused tests and `cargo xtask gate local`; run the native Windows gate
+separately when Windows code changed. Report exact results.
 
 Shell safety:
 

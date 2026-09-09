@@ -4,8 +4,8 @@
 
 This project is restricted to exactly two languages:
 
-- Rust for any required service or program logic
-- Bash for automation and scripting
+- Rust for service/program logic and maintained build/test tooling
+- Bash only for generated or task-specific process/elevation boundaries
 
 No additional languages are permitted in source code, scripts, build tooling, or infrastructure definitions.
 
@@ -28,6 +28,11 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - Shebang: `#!/bin/bash`
 - Error handling: `set -euo pipefail`
 - Target: Bash 4.0+
+- Maintained build, test, parsing, policy, polling, and remote orchestration
+  belong in `tools/xtask`, not in tracked Bash wrappers.
+- A privileged task batch may remain Bash so the exact command sequence is
+  reviewable and can run under one outer `sudo`; it must delegate reusable
+  behavior to Rust.
 
 ### Windows service lifecycle
 
@@ -92,10 +97,14 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - API changes must update [docs/api-contract.md](api-contract.md)
 - Data model changes must update [docs/data-model.md](data-model.md)
 - Every completed task updates [BACKLOG.md](../BACKLOG.md) status
+- Build/test tooling changes update
+  [build-test-tooling-roadmap.md](build-test-tooling-roadmap.md) using the
+  separate BT-M/BT-T/BT-B namespace
 
 ## Commit Standards
 
-- Messages must reference task ID from BACKLOG.md
+- Messages must reference the applicable product `TASK-*` ID from `BACKLOG.md`
+  or tooling `BT-T*` ID from `build-test-tooling-roadmap.md`
 - No secrets, credentials, or private keys
 - Keep commits atomic and focused
 - Update docs in the same commit as code changes
@@ -105,6 +114,6 @@ No additional languages are permitted in source code, scripts, build tooling, or
 Respect the [architecture.md](architecture.md) service boundaries:
 
 - Windows service does not invoke Linux commands
-- Host automation remains separate from guest runtime logic
+- Host build/test tooling remains separate from guest runtime logic
 - Windows demand delivery uses an explicitly versioned, freshness-checked
   report contract; QGA and libvirt remain host-owned interfaces

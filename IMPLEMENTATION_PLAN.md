@@ -223,18 +223,16 @@ After Phase 3 gates pass, implement recovery classification; estimator,
 history, desired/requested/current, capacity-limited, constrained, and durable-
 latch observability; metrics; restart/journal recovery; dry-run latch clearing;
 default-on upgrade and explicit-disable behavior; release packaging; rollback;
-and repeatable deployment procedures. Track this work in M12/M13 of
-`docs/roadmap.md` rather than creating a second task numbering scheme.
+and repeatable runtime deployment procedures. Track product work in M12/M13 of
+`docs/roadmap.md`; track build/test control-plane work separately under the
+BT-M/BT-T namespace in `docs/build-test-tooling-roadmap.md`.
 
 ## Validation gates
 
-The local gate is:
-
-- `cargo fmt --all -- --check`
-- `cargo build --workspace --all-features --release`
-- `cargo test --workspace --all-features`
-- `cargo clippy --workspace --all-targets --all-features -- -D warnings`
-- `bash -n scripts/*.sh`
+The local gate is `cargo xtask gate local`. It formats the workspace and runs
+the locked release build, tests, warnings-denied Clippy for the Linux-supported
+core/host/tooling packages, plus `git diff --check`. Native Windows validation
+remains a separate `VIRTIO_MEM_WINDOWS_SSH=ALIAS cargo xtask windows all` gate.
 
 Live host and guest operations are separate, explicit-scope validation. They
 must not be substituted with local test success, and protected mutations

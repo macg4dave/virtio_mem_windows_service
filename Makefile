@@ -4,17 +4,17 @@ help:
 	@echo "Virtual Memory Controller - Build Targets"
 	@echo ""
 	@echo "Windows Service:"
-	@echo "  make windows-build    - Build Rust service"
-	@echo "  make windows-test     - Run Rust tests"
+	@echo "  make windows-build    - Build Rust service on this Windows host"
+	@echo "  make windows-test     - Test Rust service on this Windows host"
 	@echo "  make host-build       - Build RHEL host controller"
 	@echo "  make host-test        - Run RHEL host-controller tests"
 	@echo ""
 	@echo "Automation:"
-	@echo "  make build            - Build RHEL-compatible crates"
-	@echo "  make test             - Test RHEL-compatible crates"
-	@echo "  make lint             - Lint RHEL-compatible crates"
-	@echo "  make windows-native   - Run the native Windows gate over SSH"
-	@echo "  make all-gates        - Run RHEL and native Windows gates"
+	@echo "  make build            - Compatibility alias for cargo xtask gate build"
+	@echo "  make test             - Compatibility alias for cargo xtask gate test"
+	@echo "  make lint             - Compatibility alias for cargo xtask gate lint"
+	@echo "  make windows-native   - Compatibility alias for cargo xtask windows all"
+	@echo "  make all-gates        - Compatibility alias for cargo xtask gate all"
 	@echo "  make fmt              - Format Rust code"
 	@echo "  make clean            - Clean Rust build artifacts"
 
@@ -31,23 +31,19 @@ host-test:
 	cargo test -p virtio-mem-host
 
 build:
-	cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked
-	@echo "✓ RHEL-compatible Rust crates built"
+	cargo xtask gate build
 
 test:
-	cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
-	@echo "✓ RHEL-compatible Rust crate tests passed"
+	cargo xtask gate test
 
 lint:
-	cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings
-	@echo "✓ Linting complete"
+	cargo xtask gate lint
 
 windows-native:
-	bash scripts/windows-remote-build.sh all
+	cargo xtask windows all
 
 all-gates:
-	bash scripts/build-rust.sh
-	bash scripts/windows-remote-build.sh all
+	cargo xtask gate all
 
 fmt:
 	cargo fmt --all

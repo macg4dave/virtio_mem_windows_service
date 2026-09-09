@@ -13,6 +13,7 @@ Review the current diff against:
 - `docs/api-contract.md` if QEMU Guest Agent or public Rust API behavior changed
 - `docs/data-model.md` if persistence changed
 - `docs/testing.md`
+- `docs/build-test-tooling-roadmap.md` when build/test tooling changed
 
 Lead with concrete findings only. For each finding, name:
 
@@ -25,12 +26,14 @@ Do not approve the change just because tests pass. Tests are evidence, not a sub
 
 Also check that:
 
-- only Rust and Bash were added or changed;
+- only Rust and task-boundary Bash were added or changed;
 - Windows service code does not invoke Linux commands or access host devices;
 - parsing validates malformed, missing, inconsistent, and overflowing values;
 - new public Rust items have appropriate documentation and tests;
 - `BACKLOG.md` and affected docs reflect the change;
 - no secrets, credentials, tokens, private keys, or production data were introduced.
+- maintained build/test behavior lives in `tools/xtask`, with no duplicate
+  tracked Bash implementation.
 
 Shell safety:
 

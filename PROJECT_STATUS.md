@@ -74,12 +74,9 @@ single-VM qualification before global arbitration.
 
 The latest native RHEL gate passed:
 
-- 55 shared-core and 60 host tests, with no failures.
-- `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
-- `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
-- `cargo fmt --all -- --check`
-- `cargo clippy -p virtio-mem-core -p virtio-mem-host --all-targets --all-features --locked -- -D warnings`
-- `bash -n scripts/*.sh`
+- 62 shared-core, 67 host, and 13 build-tooling tests, with no failures.
+- `cargo xtask gate local` (format, release build, tests, warnings-denied
+  Clippy for shared core/host/tooling, and diff checks)
 
 The latest M10d Windows-native gate passes 67 tests with warnings denied and
 produced a checksum-verified executable with SHA-256

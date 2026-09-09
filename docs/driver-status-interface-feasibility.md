@@ -184,8 +184,8 @@ must:
    support claim.
 
 Signing keys and certificates never enter this repository, scripts, logs, or
-command lines. Driver building and signing remain outside the normal Rust/Bash
-gate.
+command lines. Driver building and signing remain outside the normal Rust
+build/test gate.
 
 ## Test gate
 

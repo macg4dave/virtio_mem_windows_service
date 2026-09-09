@@ -20,7 +20,8 @@ Rules:
 6. Add tests that demonstrate the public contract, including invalid input and boundary behavior.
 7. Do not invent OpenAPI or other schema artifacts; use the repository's documented contracts.
 
-Validate from `windows/` with `cargo test`, format check, Clippy, and release build when practical. Report exact results.
+Run focused tests and `cargo xtask gate local`; when Windows code changed, run
+and report `cargo xtask windows all` separately. Report exact results.
 
 Shell safety:
 

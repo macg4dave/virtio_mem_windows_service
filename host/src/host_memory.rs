@@ -1,7 +1,7 @@
 //! Host-side (not guest-side) available-memory gate. Growing the virtio-mem
 //! device consumes RHEL host RAM; a grow request must never be sent unless
 //! the host itself has enough free memory left over after the reserved
-//! headroom, mirroring `scripts/live-resize-test.sh`'s `--host-reserve-bytes`
+//! headroom, shared with `cargo xtask live-resize --host-reserve-bytes`
 //! safety check.
 
 use std::fs;

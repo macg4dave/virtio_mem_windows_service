@@ -17,10 +17,13 @@ For the change:
 2. Update `docs/data-model.md` when state or persistence structures change.
 3. Keep public Rust APIs minimal and backward-compatible unless a breaking change is explicit.
 4. Add or update deterministic Rust validation tests, including malformed and boundary cases.
-5. Run focused tests and the local validation flow from `windows/`.
+5. Run focused tests, then `cargo xtask gate local`; run the native Windows
+   gate separately when Windows code changed.
 6. Update `BACKLOG.md` handoff notes with exact validation.
 
-Keep runtime logic in Rust, automation in Bash, and do not invent OpenAPI or generated-schema files that this repository does not use.
+Keep runtime and maintained tooling logic in Rust. Bash is limited to the
+task-specific privileged process boundary. Do not invent OpenAPI or
+generated-schema files that this repository does not use.
 
 Shell safety:
 

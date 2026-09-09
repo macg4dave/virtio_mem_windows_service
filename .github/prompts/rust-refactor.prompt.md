@@ -20,7 +20,8 @@ Rules:
 - Keep all existing tests and add tests for any behavior exposed by the refactor.
 - Update docs and `BACKLOG.md` if structure, ownership, or behavior changes.
 
-Validate from `windows/` with `cargo fmt --all -- --check`, `cargo test`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo build --release` when available.
+Run focused tests and `cargo xtask gate local`; run the native Windows gate
+separately when Windows code changed.
 
 Shell safety:
 

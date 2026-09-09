@@ -7,7 +7,8 @@ host validation environment.
 ## Scope and language requirements
 
 - Runtime and service logic: Rust, edition 2021.
-- Automation and validation: Bash 4.0+.
+- Maintained automation and validation: Rust through `cargo xtask`.
+- Privileged task boundary: Bash 4.0+ for generated or one-off reviewed batches.
 - Forbidden project languages and build flows: Go, C#, PowerShell, Python,
   Java, and other languages.
 - Do not commit credentials, private keys, tokens, production data, or VM
@@ -28,8 +29,8 @@ host validation environment.
 | Host OS | RHEL host with libvirt and QEMU | RHEL 10 expected by setup guide | Run VM and live virtio-mem checks |
 | Host controller | Rust 1.70+, `systemd`, and `virsh` | RHEL host | Run one Rust controller instance per configured VM/device alias |
 | Host CLI | `virsh` | From libvirt client | Query QGA and inspect/update VM state |
-| JSON validation | `jq` | Current distribution package | Validate QGA responses in Bash |
-| Host shell | Bash | 4.0+ | Run repository scripts |
+| Build/test tool | `cargo xtask` | Workspace Rust toolchain | Run gates, parse validation output, orchestrate remote builds, and verify artifacts |
+| Privileged batch shell | Bash | 4.0+ | Run one generated or task-specific reviewed elevation boundary |
 | Guest OS | Windows 11 x64 under QEMU/KVM | Technology-preview development/test target | Run the service and QEMU Guest Agent; `win11_gpu` is fully trusted, not a production support claim |
 | Guest agent | QEMU Guest Agent x64 | Installed and running; observed `110.0.2` on `win11_gpu` | Provide advertised upstream commands such as `guest-info`; `guest-get-memory-stats` is not an upstream QGA command |
 | Guest channel | Virtio-serial channel `org.qemu.guest_agent.0` | Required | Connect libvirt/QEMU to QGA |
@@ -41,8 +42,8 @@ host validation environment.
 The RHEL host is the VS Code control plane, not the Windows linker host. The
 Windows service must be built natively in the Windows KVM guest because the
 crate targets `x86_64-pc-windows-msvc` and uses Windows APIs. The supported
-workflow uses OpenSSH from RHEL to the guest and the checked-in
-`scripts/windows-remote-build.sh` wrapper.
+workflow uses OpenSSH from RHEL to the guest and the checked-in Rust
+`cargo xtask windows` control plane.
 
 The one-time Windows endpoint setup requires:
 
@@ -52,25 +53,25 @@ The one-time Windows endpoint setup requires:
 - Visual Studio C++ Build Tools with the MSVC x64 workload and Windows SDK;
 - Git, `tar.exe`, and `certutil.exe`.
 
-The wrapper requires `VIRTIO_MEM_WINDOWS_SSH`, an SSH config alias. It accepts
+The tool requires `VIRTIO_MEM_WINDOWS_SSH`, an SSH config alias. It accepts
 `VIRTIO_MEM_WINDOWS_DIR` for the remote workspace and
 `VIRTIO_MEM_WINDOWS_ARTIFACTS` for local artifact staging. Do not put private
 keys, passwords, or endpoint-specific credentials in the repository or task
-definitions. The wrapper transfers Git-tracked and non-ignored working-tree
+definitions. The tool transfers Git-tracked and non-ignored working-tree
 files, runs locked Cargo commands on Windows, and verifies the downloaded
 executable with SHA-256. It does not install the service, edit
 ProgramData, change SCM state, call `virsh update-memory-device`, or mutate
 the KVM guest.
 
-For pinned, non-interactive milestone runs, the wrapper also accepts
+For pinned, non-interactive milestone runs, the tool also accepts
 `VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE` and
-`VIRTIO_MEM_WINDOWS_IDENTITY_FILE`. The checked-in
-`scripts/complete-windows-build-milestone.sh` helper sets these from a verified
-temporary host-key file and an optional operator-owned private-key path; it
-does not copy either credential into the repository.
+`VIRTIO_MEM_WINDOWS_IDENTITY_FILE`. `cargo xtask windows milestone` sets these
+for its child gates from a verified temporary host-key file and an optional
+operator-owned private-key path; it does not copy either credential into the
+repository.
 
 On `ice101.lan`, rustup's `.cargo\bin` proxy symlinks return Windows error 448
-through OpenSSH. The wrapper avoids changing the guest toolchain by resolving
+through OpenSSH. The tool avoids changing the guest toolchain by resolving
 the active toolchain with `rustup which cargo` and invoking the real Cargo,
 rustc, rustdoc, rustfmt, and Clippy executables directly.
 
@@ -79,7 +80,9 @@ rustc, rustdoc, rustfmt, and Clippy executables directly.
 The authoritative workspace manifest is [`../Cargo.toml`](../Cargo.toml). The
 package manifests are [`../windows/Cargo.toml`](../windows/Cargo.toml),
 [`../host/Cargo.toml`](../host/Cargo.toml), and
-[`../crates/virtio-mem-core/Cargo.toml`](../crates/virtio-mem-core/Cargo.toml).
+[`../crates/virtio-mem-core/Cargo.toml`](../crates/virtio-mem-core/Cargo.toml),
+plus [`../tools/xtask/Cargo.toml`](../tools/xtask/Cargo.toml) for the build/test
+control plane.
 The workspace lockfile [`../Cargo.lock`](../Cargo.lock) records resolved
 versions and must be retained for reproducible builds.
 
@@ -119,16 +122,16 @@ rustup component list --installed
 From the repository root, validate the service with:
 
 ```bash
-bash scripts/build-rust.sh
+cargo xtask gate local
 ```
 
-The script runs:
+The Rust tool runs:
 
 1. `cargo fmt --all -- --check`;
 2. a locked release build of `virtio-mem-core` and `virtio-mem-host`;
 3. locked tests for those RHEL-compatible packages;
 4. warnings-as-errors Clippy for those packages; and
-5. Bash syntax validation for every repository script.
+5. `git diff --check`.
 
 The Windows service is intentionally excluded from this native RHEL command
 because its SCM adapter requires Windows APIs. The remote native Windows gate
@@ -140,10 +143,9 @@ The host must provide libvirt, QEMU, and the command-line clients used by the
 validation helpers. Verify the required commands with:
 
 ```bash
-bash scripts/check-environment.sh
+cargo xtask doctor host
 virsh version
 qemu-system-x86_64 --version
-jq --version
 ```
 
 On RHEL, the QEMU Guest Agent and VirtIO Windows media are normally obtained
@@ -172,10 +174,10 @@ The guest must have:
 Validate the guest-agent path from the RHEL host with an explicit VM name:
 
 ```bash
-bash scripts/validate-guest-agent.sh VM_NAME 3
+cargo xtask qga VM_NAME --attempts 3
 ```
 
-The helper checks `guest-info`, then probes the experimental
+The tool checks `guest-info`, then probes the experimental
 `guest-get-memory-stats` extension and falls back to validating `dommemstat`
 three times when it is absent. It does not resize memory, restart the VM, or
 execute commands inside the guest.
@@ -249,9 +251,9 @@ commands; live discovery remains outside the guest service boundary.
 The Rust host CLI requires `virsh` for explicitly scoped live XML/stat reads
 and approved updates. Its XML selection, telemetry freshness, unit conversion,
 compatibility checks, decision preview, and resize policy are implemented in
-Rust and do not require `xmllint`. The separate legacy
-`live-resize-test.sh` harness still requires the tools it checks at startup;
-it is not the authoritative host actuation interface.
+Rust and do not require `xmllint`. The separate `cargo xtask live-resize`
+harness reuses those contracts; it is not the authoritative unattended host
+actuation interface.
 
 ## RHEL host-controller deployment
 
@@ -262,7 +264,7 @@ virtio-mem alias; it does not discover domains broadly.
 Run the native RHEL gate before installation:
 
 ```bash
-bash scripts/build-rust.sh
+cargo xtask gate local
 ```
 
 Install the release binary at `/usr/local/libexec/virtio-mem-host`, the unit at
