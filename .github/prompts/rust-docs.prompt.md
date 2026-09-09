@@ -22,8 +22,10 @@ Rules:
 - If a code example changes, add or update a test or doctest when practical.
 - Avoid unrelated prose or formatting churn.
 
-Validate Rust examples with focused tests and `cargo xtask gate local`, then
-report native Windows and live-VM results or blockers separately.
+Validate Rust examples with focused direct Cargo tests, then run
+`cargo xtask gate local`. When the documentation changes a higher-level
+procedure, exercise its documented xtask command in the safest applicable mode.
+Report native Windows and live results or blockers separately.
 
 Shell safety:
 

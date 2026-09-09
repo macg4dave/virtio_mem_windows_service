@@ -1,8 +1,92 @@
 # Testing Strategy
 
+## Test selection model
+
+The repository uses cumulative validation layers. Higher-level tooling does
+not replace Rust unit, integration, regression, or doctests. A feature can
+require all of the layers below.
+
+| Behavior being validated | Required mechanism | Typical invocation |
+| --- | --- | --- |
+| One Rust function, module, parser, policy, state machine, or error path | Unit, crate integration, or doctest in the crate that owns the behavior | `cargo test -p PACKAGE --all-features --locked TEST_FILTER` |
+| The RHEL-compatible repository change set | Aggregate quality gate after focused tests | `cargo xtask gate local` |
+| Native Windows compilation and tests | Explicit native-Windows gate, reported separately | `VIRTIO_MEM_WINDOWS_SSH=ALIAS cargo xtask windows all` |
+| Environment or setup readiness | Read-only tooling prerequisite check | `cargo xtask doctor host` or `cargo xtask windows check` |
+| QGA, live resize, deployment, service/process lifecycle, feature, component-integration, or end-to-end behavior | A dedicated higher-level `cargo xtask` workflow plus its documented prerequisites and safety contract | `cargo xtask qga ...`, `cargo xtask live-resize ...`, or the documented workflow command |
+| One task-scoped privileged process boundary | Generated or task-specific Bash batch that invokes prebuilt Rust tooling | Follow `.github/prompts/rhel-privileged-batch.prompt.md` |
+
+Use direct Cargo tests first during implementation because they localize
+failures and remain deterministic. `cargo xtask gate local` deliberately runs
+a broad test stage as one part of the final repository gate, but that aggregate
+run is not a substitute for choosing, adding, and running the focused test that
+proves the changed behavior.
+
+Use the higher-level Rust tooling when the acceptance criterion crosses a
+process, service manager, component, machine, deployment, or live-system
+boundary; requires prerequisite discovery or evidence collection; or must be a
+repeatable development/debugging procedure. If the same useful workflow is
+being repeated manually or copied into a task script, move it into
+`tools/xtask`. Do not add an xtask command solely to wrap one normal Cargo test.
+
+### Organizing new tests and workflows
+
+- Put product code assertions in the owning crate: unit tests beside private
+  logic, crate integration tests under that crate's `tests/`, and doctests on
+  public examples where useful.
+- Keep `tools/xtask/src/main.rs` as thin CLI routing. Put reusable workflow
+  implementation in a capability-named module such as `windows`, `qga`, or
+  `live_resize`; do not name stable commands or modules after temporary product
+  milestones.
+- Reserve `cargo xtask gate ...` for non-mutating format/build/test/lint
+  aggregation. Give deployment, service lifecycle, and live mutation their own
+  explicit capability-named commands so a gate cannot unexpectedly mutate an
+  environment.
+- Give tooling parsers, command construction, prerequisite decisions, timeout,
+  result classification, and rollback decisions deterministic Rust tests.
+  Inject process/filesystem/time boundaries or use fixtures instead of making
+  unit tests depend on a live VM, SSH endpoint, service manager, or wall clock.
+- A feature or deployment workflow must document its prerequisites, explicit
+  target, read-only/dry-run/apply modes, expected effect, timeout, evidence,
+  cleanup, rollback, and success criteria. Compose existing tooling primitives
+  rather than copying their policy.
+- Keep stable integration fixtures under
+  `tools/xtask/tests/fixtures/<workflow>/` when the integration harness lands.
+  Do not commit endpoint-specific configuration, credentials, production data,
+  or mutable live output as fixtures.
+- Link a high-level workflow to the product task whose acceptance it proves,
+  but keep its CLI name stable and capability based. Track implementation of
+  the tooling itself with the separate BT-M/BT-T/BT-B namespace.
+
+Current commands are capability-oriented. The versioned privileged manifest,
+shared layered guest-health model, injectable fault matrix, and stable JSON
+result schema are still BT-T007 through BT-T011 work. Until those tasks land,
+an exact privileged batch may remain task-specific, but it must not become a
+second maintained implementation. A currently manual feature/deployment
+procedure is a migration gap, not a precedent for adding more manual scripts.
+
+### Normal development sequence
+
+1. Identify the changed behavior and add the smallest code-level Rust test.
+2. Run the focused direct Cargo test until the implementation passes.
+3. When acceptance crosses a runtime boundary, add or update the matching
+   xtask workflow and its deterministic tooling tests.
+4. Run `cargo xtask gate local` after focused tests pass.
+5. Run native Windows and higher-level workflows separately when applicable
+   and when their explicit prerequisites and safety gates are satisfied.
+6. Update this document for command/procedure changes, the product task for
+   feature acceptance, and the BT roadmap for tooling implementation.
+7. Report every applicable layer separately. For each command include pass,
+   fail, blocked, or not-run status. For live/deployment work also include the
+   resolved target, mode, evidence location, final state, and whether cleanup
+   or rollback ran. Include the failing stage and actionable error for a
+   failure; never collapse a Windows or live blocker into a passing local gate.
+
 ## Local Testing
 
-All testing is performed locally. No CI pipeline is currently configured.
+Validation is initiated from the development checkout; no hosted CI pipeline
+is currently configured. Some higher-level commands explicitly orchestrate a
+native Windows guest or a live RHEL/libvirt target, and their results remain
+separate from the local RHEL-compatible gate.
 
 ### Privilege and password policy
 
@@ -105,6 +189,11 @@ See [`dependencies.md`](dependencies.md) for the complete toolchain and host/
 guest prerequisite matrix.
 
 ### Rust Service Testing
+
+The Windows service's unit and crate-integration tests are normal Cargo tests,
+not xtask workflow tests. Add them with the Windows crate and run focused test
+filters on native Windows during development. The remote xtask Windows gate
+orchestrates their complete native run; it does not own their assertions.
 
 #### VS Code workflow
 
@@ -802,19 +891,20 @@ resize policy.
 
 ### Build/test tooling
 
-- Put maintained build/test behavior in `tools/xtask` and add deterministic
-  Rust tests for parsing, scope, malformed output, boundaries, and errors.
-- Check required environment variables and host tooling before remote or live
-  work. Never infer an SSH endpoint, VM, device alias, or mutation target.
-- Keep Bash only for one generated or task-specific privileged process
-  boundary; delegate reusable validation to Rust.
+Follow the test-selection and organization rules at the top of this document.
+The tooling is for repository gates and higher-level workflows; it is not a
+replacement for code-level Rust tests. Check required environment variables
+and host tooling before remote or live work. Never infer an SSH endpoint, VM,
+device alias, or mutation target.
 
 ## Validation Checklist
 
 Before committing:
 
-- [ ] All tests pass locally: `cd windows && cargo test`
-- [ ] Code is formatted and linted: `cargo fmt --all` and `cargo clippy`
+- [ ] Focused direct Cargo tests cover and pass for the changed Rust behavior
+- [ ] `cargo xtask gate local` passes after the focused tests
+- [ ] The native Windows gate is run separately when Windows code changed, or its exact blocker is reported
+- [ ] Applicable feature, deployment, service/process, integration, end-to-end, or live workflow passes separately, or is explicitly not run with a reason
 - [ ] Service boundaries are respected
 - [ ] Documentation (including `docs/testing.md`) is updated with new procedures
 - [ ] No credentials or secrets committed

@@ -22,6 +22,7 @@ Read the architecture and design docs first:
 - Validation and testing strategy: [docs/testing.md](../docs/testing.md)
 - Cross-cutting standards: [docs/engineering-standards.md](../docs/engineering-standards.md)
 - Build/test tooling roadmap: [docs/build-test-tooling-roadmap.md](../docs/build-test-tooling-roadmap.md)
+- Prompt selection index: [prompts/README.md](prompts/README.md)
 
 ## Prime Directives
 
@@ -57,10 +58,12 @@ installed QEMU Guest Agent process owns that channel.
 
 **Rust tooling (`cargo xtask`)** owns:
 
-- Local and native-Windows build/test gates
+- Repository quality gates and native-Windows build/test orchestration
 - Environment and dependency checks
 - Remote build orchestration and artifact verification
-- Reusable parsing, polling, and bounded live-validation logic
+- Higher-level feature, deployment, service/process, component-integration,
+  end-to-end, and bounded live-validation workflows
+- Reusable parsing, polling, evidence capture, timeout, and rollback logic
 
 **Task-specific Bash batches** own only the exact, reviewable process boundary
 needed for one privileged operation. They must not:
@@ -69,6 +72,43 @@ needed for one privileged operation. They must not:
 - Hide errors or skip `set -euo pipefail`
 - Depend on Go toolchains or Go build flows
 - Reimplement Rust XML/JSON parsing, unit conversion, policy, or reusable polling
+
+## Test and Tool Selection
+
+Testing is cumulative. Choose every layer required by the changed behavior;
+never use a higher layer as a substitute for a lower one.
+
+1. **Code-level Rust behavior:** add unit, crate integration, or doctests in the
+   affected product/tooling crate. Run the narrowest direct `cargo test`
+   command while developing. Parsing, policy, state machines, error paths, and
+   regressions belong here even when a live workflow also exercises them.
+2. **Repository quality gate:** after focused tests pass, run
+   `cargo xtask gate local`. It aggregates formatting, locked builds/tests,
+   warnings-denied Clippy, and diff checks for the RHEL-compatible workspace.
+   It verifies the change set; it does not replace writing or running focused
+   Rust tests.
+3. **Platform and workflow validation:** use the applicable `cargo xtask`
+   command when acceptance crosses a process, service manager, machine,
+   component, deployment, or live-system boundary. Native Windows evidence is
+   a separate gate. Live and mutating workflows remain separately scoped and
+   reported.
+4. **Privileged process boundary:** when one approved RHEL workflow needs
+   elevation, use the task-specific Bash batch procedure. Bash only establishes
+   the reviewable process boundary and invokes prebuilt Rust behavior.
+
+Add or extend `tools/xtask` when a workflow is repeatable, is part of feature
+acceptance, spans components/platforms/processes, or needs shared prerequisite,
+timeout, evidence, cleanup, or rollback behavior. Extend the existing command
+when its lifecycle and safety contract match; add a new stable workflow command
+when they differ materially. Do not add an xtask command merely to wrap one
+focused `cargo test`, and do not leave reusable workflow policy in prose or a
+one-off shell script. Reserve `gate` commands for non-mutating quality gates;
+deployment or live mutation must use an explicitly named workflow command.
+
+Follow [docs/testing.md](../docs/testing.md) for workflow organization,
+invocation, and result reporting. Use exactly one matching task prompt from
+[prompts/README.md](prompts/README.md) as the primary template; combine it with
+a domain prompt only when both scopes genuinely apply.
 
 ## Shell and live-system safety
 
@@ -158,18 +198,21 @@ after every session.
 
 ## Validation Rules
 
-- Rust changes: run `cargo xtask gate local`; use focused Cargo commands during
-  iteration when helpful, but do not substitute them for the final gate.
+- Rust changes: add and run focused direct Cargo tests for the changed behavior,
+  then run `cargo xtask gate local`. Neither step substitutes for the other.
 - Build/test tooling changes: update the BT roadmap, add deterministic xtask
-  tests, and run `cargo xtask gate local`.
+  unit/integration tests, run their focused Cargo target, and then run
+  `cargo xtask gate local`. Exercise the changed high-level workflow separately
+  when safe prerequisites are available.
 - Task-specific Bash changes: run `bash -n PATH` and the applicable dry run;
   these scripts are not maintained build/test entry points.
 - Windows service changes: build and validate locally before committing.
   - Test the `run` command (non-service mode) for worker logic and lifecycle changes.
   - Document any new CLI modes or command-line options in `docs/testing.md`.
   - Report the exact cargo test results in the commit or task notes.
-- Run all applicable local and live beta validation. Document exact results and
-  any environment or authorization blocker.
+- Run every applicable code-level, repository-gate, platform, and workflow
+  layer. Report each separately with the exact command, target/mode, outcome,
+  and any environment or authorization blocker.
 - Stack changes: validate that services can start and communicate correctly.
 - If a command cannot run locally, state the exact blocker.
 
@@ -191,12 +234,14 @@ after every session.
 Before declaring a Rust task complete:
 
 1. Read the relevant architecture, backlog, contract, data-model, and testing documentation.
-2. Make the smallest focused change and update tests in the same change.
-3. Run `cargo xtask gate local` and the separately applicable native Windows
-   or live gate when practical.
+2. Make the smallest focused change and add/update code-level Rust tests in the
+   same change.
+3. Run the focused direct Cargo tests, then `cargo xtask gate local`, then each
+   separately applicable native Windows or higher-level workflow gate.
 4. Update affected documentation and the applicable product or BT task
    status/handoff notes.
-5. Report exact validation results and any environment blocker; never claim a check passed without running it.
+5. Report exact results by validation layer and any environment blocker; never
+   claim a check passed without running it.
 
 ## Safety Rules
 

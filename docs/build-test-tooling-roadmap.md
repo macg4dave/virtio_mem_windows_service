@@ -23,6 +23,12 @@ native-Windows validation, artifact verification, and reusable bounded live
 probes. Rust owns parsing, validation, command construction, orchestration,
 and reusable safety policy.
 
+This control plane complements Cargo's normal unit, crate integration,
+regression, and doctest facilities; it does not replace them. Code behavior is
+proved first in the owning crate. Xtask then supplies aggregate repository
+gates and the higher-level workflows that cross processes, components,
+machines, service managers, deployments, or live state.
+
 Bash remains permitted only where its process-level form is itself a safety
 boundary: a generated, task-specific, operator-reviewable privileged batch
 under the ignored `.vscode-artifacts/privileged-tasks/` directory. Those
@@ -30,14 +36,18 @@ batches must call `cargo xtask` or installed Rust binaries for reusable logic;
 they must not grow a second XML, JSON, arithmetic, polling, or build system.
 
 Historical evidence and task scripts under `.vscode-artifacts/` are not source
-code and are not synchronized by default. They remain immutable evidence until
-their related main-project retention decision permits deletion.
+code and are not synchronized by default. They have no compatibility contract:
+after their useful invariants are represented in Rust or deliberately retired,
+they may be deleted when their related evidence-retention need ends.
 
 ## Current position
 
 BT-M0 through BT-M5 are implemented in the current migration. The tracked
 `scripts/` wrappers have been replaced by `tools/xtask`, Cargo/VS Code/Make
 entry points route to that tool, and current AI instructions use its commands.
+The prompt structure now separates code-level Rust testing, higher-level
+workflow validation, and implementation of the tooling itself; the canonical
+instructions define how those cumulative layers are selected and reported.
 BT-M6 and BT-M7 remain: task-batch generation and shared guest-health evidence
 need a typed model, followed by fault-injected end-to-end qualification and a
 stable machine-readable result schema.
@@ -58,7 +68,7 @@ No live mutation gate was run for BT-T001–BT-T006.
 | BT-M2 | Local developer gate | [x] | BT-M1 | Format, release build, test, Clippy, and diff checks run through `cargo xtask gate local` without compiling Windows-only APIs on Linux |
 | BT-M3 | Native Windows build gate | [x] | BT-M1 | Explicit SSH check/sync/build/test/lint/fetch/all and fingerprint-pinned two-run evidence are implemented with checksum verification |
 | BT-M4 | Host and live validation | [x] | BT-M1 | Host doctor, QGA/dommemstat fallback, and dry-run-default bounded resize reuse Rust JSON/XML/unit validation |
-| BT-M5 | Entrypoint and guidance migration | [x] | BT-M2, BT-M3, BT-M4 | Tracked shell wrappers are removed; VS Code, Make, docs, project instructions, and AI prompts point to `cargo xtask` |
+| BT-M5 | Entrypoint and guidance migration | [x] | BT-M2, BT-M3, BT-M4 | Tracked shell wrappers are removed; VS Code, Make, docs, project instructions, and routed AI prompts distinguish focused Cargo tests, repository gates, and higher-level xtask workflows |
 | BT-M6 | Privileged-batch consolidation | [ ] | BT-M4, M10g | A typed manifest and generator replace copied task boilerplate while retaining one outer reviewable Bash batch per privileged task |
 | BT-M7 | Toolchain qualification and stable output | [ ] | BT-M5, BT-M6 | Fault injection, cross-platform endpoint tests, result schema/versioning, artifact retention, and two consecutive aggregate gates pass |
 
@@ -74,6 +84,7 @@ No live mutation gate was run for BT-T001–BT-T006.
 | BT-T004 | BT-M3 | Port Windows SSH/MSVC orchestration and milestone evidence capture | Explicit endpoint, pinned-host option, one-sync gate, and cross-host SHA-256 comparison |
 | BT-T005 | BT-M4 | Port environment, QGA, and live-resize helpers | Rust parses QGA JSON and libvirt XML; live mutation stays opt-in, bounded, converged, and restored by default |
 | BT-T006 | BT-M5 | Migrate repository entry points and remove tracked wrappers | `.vscode/tasks.json`, Make compatibility aliases, project docs, instructions, and prompts use `cargo xtask` |
+| BT-T013 | BT-M5 | Separate AI guidance for code tests, workflow validation, and tooling development | Canonical selection rules, prompt index, dedicated `rust-tests`, `workflow-validation`, and `build-test-tooling` prompts, and layered reporting requirements |
 
 ### Ready queue
 
@@ -107,6 +118,16 @@ main-project milestone complete.
 | BT-B002 | Main-project dependency | Guest lifecycle/health semantics are still being qualified under M10g | Freeze a versioned tooling schema only after the required evidence fields and quiet-window rules stabilize |
 | BT-B003 | External environment | The complete native Windows gate requires the explicitly configured SSH/MSVC endpoint | Report native Windows separately; never substitute a Linux workspace result |
 
+## Design gaps found during prompt review
+
+| Gap | Why it matters | Tracked resolution |
+| --- | --- | --- |
+| Privileged feature/deployment workflows have no versioned scenario manifest | Task scripts can still repeat target, timeout, mutation, and rollback structure | BT-T007 and BT-T008 |
+| Guest readiness has no shared typed result | QGA success alone can be mistaken for Windows/application health | BT-T009 |
+| External effects are not fully injectable | Process, SSH, timeout, cancellation, cleanup, and rollback failures need deterministic regression coverage | BT-T010 |
+| Results are human-readable only | Agents need a stable schema to archive and compare per-platform/per-workflow evidence without conflating gates | BT-T011 |
+| Some installed-service and deployment procedures remain manual/task-specific | Repeatable feature acceptance should have a safe capability-named xtask workflow | Fold each procedure into BT-T007–BT-T010 when its product acceptance contract is next exercised |
+
 ## Existing script audit
 
 ### Tracked `scripts/` wrappers
@@ -126,9 +147,10 @@ or validation policy: its aggregate targets delegate to `cargo xtask`.
 ### Ignored `.vscode-artifacts/privileged-tasks/` scripts
 
 These are not maintained entry points. They embed historical task targets and
-capture evidence, so deleting or silently rewriting them would damage audit
-context. Their reusable portions are migration input for BT-M6; their specific
-mutation sequences remain separate.
+capture evidence. Their reusable portions are migration input for BT-M6; their
+specific mutation sequences remain separate until captured or retired. No
+script must be preserved for compatibility, and each may be removed once its
+useful behavior and evidence-retention need have both ended.
 
 | Scripts reviewed | Function and overlap | Decision |
 | --- | --- | --- |
@@ -147,15 +169,17 @@ tooling. They remain ignored and are not moved into `tools/`.
 
 The Rust toolchain migration is fully consolidated when:
 
-1. all maintained build/test/inspection entry points route through
+1. normal Rust code behavior remains covered by focused Cargo unit,
+   integration, regression, and doctests in the owning crate;
+2. all maintained repository-gate and higher-level workflow entry points route through
    `cargo xtask` or a product Rust binary;
-2. no tracked Bash file duplicates Rust parsing, policy, command construction,
+3. no tracked Bash file duplicates Rust parsing, policy, command construction,
    polling, checksums, or gate sequencing;
-3. privileged Bash is generated from a typed, explicit-scope manifest and is
+4. privileged Bash is generated from a typed, explicit-scope manifest and is
    used only as the one-process operator review/elevation boundary;
-4. local RHEL/core-host and native Windows results are labelled and archived
+5. local RHEL/core-host and native Windows results are labelled and archived
    independently;
-5. hermetic failure injection covers subprocess failure, timeout, malformed
+6. hermetic failure injection covers subprocess failure, timeout, malformed
    output, cancellation, ambiguous live mutation, rollback, and cleanup; and
-6. `cargo xtask gate all` passes twice against the pinned native-Windows
+7. `cargo xtask gate all` passes twice against the pinned native-Windows
    endpoint with identical verified artifacts, or reports BT-B003 exactly.

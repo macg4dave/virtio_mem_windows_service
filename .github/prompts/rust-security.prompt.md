@@ -27,8 +27,9 @@ Rules:
 5. Do not commit secrets, credentials, tokens, private keys, or production data.
 6. Keep the fix minimal and update relevant contracts/docs and `BACKLOG.md`.
 
-Run focused tests and `cargo xtask gate local`; run native Windows validation
-separately when applicable. Report findings and exact results.
+Run focused direct Cargo regression tests for each fix, then
+`cargo xtask gate local`. Run native Windows and security-relevant deployment
+or live workflows separately when applicable. Report findings and each result.
 
 Shell safety:
 

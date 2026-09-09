@@ -10,6 +10,11 @@
 - Removed all six tracked `scripts/` wrappers after migrating VS Code, Make,
   current documentation, project instructions, and AI prompts to
   `cargo xtask`.
+- Completed BT-T013 by separating AI guidance into code-level Rust testing,
+  higher-level workflow validation, and tooling implementation. The canonical
+  instructions now make those layers cumulative, and the prompt index routes
+  agents without treating `cargo xtask gate local` as a substitute for focused
+  Cargo tests.
 - Audited all ignored `.vscode-artifacts/privileged-tasks/*.sh` files. They
   remain historical evidence or exact one-off privileged sequences, not
   maintained tooling. BT-M6 tracks extraction of their repeated guest-health

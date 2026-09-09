@@ -163,6 +163,11 @@ cargo xtask doctor host
 
 ### 2. Run the local quality gate
 
+During implementation, add and run focused unit, crate-integration, or doctests
+with direct `cargo test` commands in the crate that owns the behavior. The
+aggregate command below is the final RHEL-compatible repository gate; it does
+not replace those focused code-level tests.
+
 ```bash
 cargo xtask gate local
 ```

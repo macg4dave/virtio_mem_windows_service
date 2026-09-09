@@ -33,8 +33,10 @@ Rules:
 5. Add regression tests for changed behavior, malformed input, error paths, and boundary conditions.
 6. Keep pure parsing and resize-policy logic independent from live Windows/QGA effects.
 7. Update affected docs and `BACKLOG.md` in the same change.
-8. Run focused tests and `cargo xtask gate local`; run native Windows or live
-   gates separately when applicable and report exact output and blockers.
+8. Run focused direct Cargo tests for changed code, then
+   `cargo xtask gate local`. Use `workflow-validation.prompt.md` when feature
+   acceptance crosses a component, process, platform, deployment, or live
+   boundary. Report each validation layer separately.
 
 Shell safety:
 

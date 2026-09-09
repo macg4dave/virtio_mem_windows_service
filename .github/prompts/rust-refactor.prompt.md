@@ -20,8 +20,9 @@ Rules:
 - Keep all existing tests and add tests for any behavior exposed by the refactor.
 - Update docs and `BACKLOG.md` if structure, ownership, or behavior changes.
 
-Run focused tests and `cargo xtask gate local`; run the native Windows gate
-separately when Windows code changed.
+Run focused direct Cargo tests for the refactored behavior, then
+`cargo xtask gate local`. Run native Windows and higher-level workflow gates
+separately when the affected boundary requires them.
 
 Shell safety:
 

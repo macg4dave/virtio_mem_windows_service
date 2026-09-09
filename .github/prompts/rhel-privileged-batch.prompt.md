@@ -3,8 +3,9 @@ name: rhel-privileged-batch
 description: Batch a task-scoped RHEL live-validation operation behind one sudo prompt
 ---
 
-Read `.github/copilot-instructions.md`, `docs/testing.md`, and `BACKLOG.md`
-before preparing the batch.
+Read `.github/copilot-instructions.md`,
+`.github/prompts/workflow-validation.prompt.md`, `docs/testing.md`, and
+`BACKLOG.md` before preparing the batch.
 
 Task:
 """
@@ -76,6 +77,10 @@ do not pause for a separate approval when the target and safe bounds are clear.
 10. Report the commands' results, final live state, and whether rollback ran.
    The script is valid only for the current task; do not reuse it for unrelated
    work.
+11. After the task, move repeated prerequisites, evidence capture, polling,
+    cleanup, or rollback behavior into `tools/xtask` under a BT task. Delete
+    the task script when its evidence-retention need ends; it has no
+    compatibility contract.
 
 For output that should be owned by the regular user, prefer writing command
 output to stdout and redirecting the single outer invocation from the user's

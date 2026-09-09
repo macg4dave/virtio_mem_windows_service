@@ -34,6 +34,12 @@ Also check that:
 - no secrets, credentials, tokens, private keys, or production data were introduced.
 - maintained build/test behavior lives in `tools/xtask`, with no duplicate
   tracked Bash implementation.
+- code-level behavior has focused Rust tests in its owning crate rather than
+  being tested only through xtask or a live workflow;
+- higher-level feature/deployment acceptance uses a repeatable xtask workflow
+  rather than a maintained manual script; and
+- focused Cargo, local aggregate, native Windows, and live/deployment evidence
+  are reported as separate layers without turning an unrun layer into a pass.
 
 Shell safety:
 

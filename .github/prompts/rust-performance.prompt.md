@@ -20,9 +20,10 @@ Rules:
 - Keep live QEMU Guest Agent and Windows service effects out of microbenchmarks.
 - Document the measured result and update `BACKLOG.md` if the task is completed.
 
-Run focused benchmarks/tests and `cargo xtask gate local`; run the native
-Windows gate separately when Windows code changed. Report measurements, exact
-commands, and blockers.
+Run focused direct Cargo benchmarks/tests, then `cargo xtask gate local`. Run
+the native Windows gate and any higher-level measurement workflow separately
+when applicable. Report measurements, exact commands, targets/modes, and
+blockers.
 
 Shell safety:
 

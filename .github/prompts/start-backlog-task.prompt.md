@@ -5,13 +5,15 @@ description: Start one virtio-mem Windows service backlog task safely
 
 Read `.github/copilot-instructions.md`, `BACKLOG.md`,
 `docs/build-test-tooling-roadmap.md`, `docs/architecture.md`,
-`docs/engineering-standards.md`, and `docs/testing.md`.
+`docs/engineering-standards.md`, `docs/testing.md`, and
+`.github/prompts/README.md`.
 
 Then:
 
 1. Identify the selected Ready product or BT tooling task on its owning board,
    or ask which task to claim if none was named.
-2. Summarize the owning service, files to touch, docs to read, and validation commands.
+2. Summarize the owning service, files to touch, docs to read, primary task
+   prompt, and required code-test/repository-gate/workflow validation layers.
 3. Check `git status --short`.
 4. Claim exactly one task on its owning board by changing its status to
    `In Progress` before substantial edits.
@@ -30,8 +32,8 @@ Rust-specific requirements:
 - Add deterministic regression tests for changed behavior.
 - Prefer safe Rust with explicit `Result`/`Option` handling; avoid unjustified `unwrap()`, `expect()`, panics, and `unsafe`.
 - Preserve QEMU Guest Agent contracts and the Windows-service/host-automation boundary.
-- Run focused tests and `cargo xtask gate local`; report the native Windows
-  gate separately when applicable.
+- Run focused direct Cargo tests and then `cargo xtask gate local`; report
+  native Windows and higher-level workflows separately when applicable.
 - Update affected contracts/docs and `BACKLOG.md` in the same task.
 
 Do not add speculative features. Do not use AI agreement as validation.
