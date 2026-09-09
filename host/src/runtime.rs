@@ -568,10 +568,17 @@ where
             shrink_operation = None;
             shrink_operation_id = None;
             unowned_divergence_reported = false;
-            let demand = self
-                .demand_source
-                .evaluate(state, &self.config)
-                .map_err(HostRuntimeError::DemandInput)?;
+            let demand = match self.demand_source.evaluate(state, &self.config) {
+                Ok(demand) => demand,
+                Err(error) => {
+                    eprintln!(
+                        "virtio-mem-host: event=demand_input_invalid vm={} alias={} reason={error}",
+                        self.config.vm_name, self.config.alias
+                    );
+                    wait_interruptibly(stop, self.config.poll_interval);
+                    continue;
+                }
+            };
             let decision = demand.decision;
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if actuation_latched {
@@ -828,6 +835,36 @@ mod tests {
     fn returns_immediately_for_a_cancelled_runtime() {
         let stop = AtomicBool::new(true);
         wait_interruptibly(&stop, Duration::from_secs(60));
+    }
+
+    struct StopWithInvalidDemand<'a>(&'a AtomicBool);
+
+    impl DemandSource for StopWithInvalidDemand<'_> {
+        fn evaluate(
+            &self,
+            _state: VirtioMemState,
+            _config: &HostConfig,
+        ) -> Result<DemandDecision, String> {
+            self.0.store(true, Ordering::Release);
+            Err("telemetry has not advanced".to_owned())
+        }
+    }
+
+    #[test]
+    fn converged_runtime_stays_alive_when_demand_input_is_temporarily_invalid() {
+        let stop = AtomicBool::new(false);
+        let sink = AmbiguousShrinkSink(Cell::new(0));
+        let runtime = HostRuntime::new(
+            StopWithInvalidDemand(&stop),
+            ConvergedState,
+            &sink,
+            UnusedHostMemory,
+            config(),
+        );
+
+        runtime
+            .run(&stop)
+            .expect("invalid demand fails closed without restarting the service");
     }
 
     struct RepeatedShrinkDemand<'a> {

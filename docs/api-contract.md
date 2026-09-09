@@ -172,10 +172,12 @@ libvirt VM and service names.
 The host reads the complete current record from its explicitly
 configured VM-scoped path and expected service identity. It rejects
 missing/malformed records, unsupported versions, missing provenance, wrong or
-empty identity, invalid counters, stale/future observations, replayed or
-non-increasing same-session ordering, invalid new-session sequence, reuse of
+empty identity, invalid counters, stale/future observations, non-increasing
+different same-session ordering, invalid new-session sequence, reuse of
 one of the last 16 retired sessions, a non-newline-terminated partial record,
-records over 64 KiB, and files over 1 MiB. It then reads and validates fresh
+records over 64 KiB, and files over 1 MiB. An unchanged still-fresh atomic
+current record is a no-new-sample wait, not a replay: it neither advances
+policy nor actuates. The host then reads and validates fresh
 alias-scoped live XML, suppresses policy while `requested != current`, and
 passes only the live `current` plus raw counters to the shared calculator. A
 target conflicting with live device geometry fails closed. Calculated shrink
@@ -184,8 +186,8 @@ remains advisory and is not actuated until M10b qualifies and enables it.
 The publisher flushes a same-directory temporary file, atomically replaces the
 current record, and retains at most three previous records. The host persists
 the accepted envelope and the last 16 retired session IDs in an atomically
-replaced acknowledgement file, so restart cannot accept the same record or a
-retired session again. Windows installation provisions a protected ProgramData
+replaced acknowledgement file, so restart cannot accept the same record as a
+fresh policy sample or accept a retired session again. Windows installation provisions a protected ProgramData
 DACL for SYSTEM, Administrators, and LocalService; live installation/ACL
 verification remains an operational M10d gate.
 

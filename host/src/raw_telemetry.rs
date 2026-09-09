@@ -11,12 +11,18 @@ pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
 pub const MAX_RAW_TELEMETRY_FILE_BYTES: u64 = 1024 * 1024;
 const RETIRED_SESSION_LIMIT: usize = 16;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RawTelemetryRead {
+    Fresh(RawTelemetryEnvelope),
+    Unchanged(RawTelemetryEnvelope),
+}
+
 pub trait RawTelemetrySource {
-    fn read(&self) -> Result<RawTelemetryEnvelope, String>;
+    fn read(&self) -> Result<RawTelemetryRead, String>;
 }
 
 impl RawTelemetrySource for Box<dyn RawTelemetrySource> {
-    fn read(&self) -> Result<RawTelemetryEnvelope, String> {
+    fn read(&self) -> Result<RawTelemetryRead, String> {
         (**self).read()
     }
 }
@@ -110,7 +116,7 @@ impl<T> FileRawTelemetrySource<T> {
 }
 
 impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
-    fn read(&self) -> Result<RawTelemetryEnvelope, String> {
+    fn read(&self) -> Result<RawTelemetryRead, String> {
         let metadata = std::fs::metadata(&self.path)
             .map_err(|error| format!("inspect raw telemetry {}: {error}", self.path.display()))?;
         if metadata.len() > MAX_RAW_TELEMETRY_FILE_BYTES {
@@ -180,6 +186,9 @@ impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
             ));
         }
         if let Some(previous) = &replay.last {
+            if &envelope == previous {
+                return Ok(RawTelemetryRead::Unchanged(envelope));
+            }
             envelope
                 .validate_successor(previous)
                 .map_err(|error| error.to_string())?;
@@ -193,7 +202,7 @@ impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
         }
         replay.last = Some(envelope.clone());
         persist_replay_state(&self.replay_state_path, &replay)?;
-        Ok(envelope)
+        Ok(RawTelemetryRead::Fresh(envelope))
     }
 }
 
@@ -322,7 +331,7 @@ mod tests {
             FixedClock(1_000_000),
         );
 
-        assert_eq!(source.read(), Ok(latest));
+        assert_eq!(source.read(), Ok(RawTelemetryRead::Fresh(latest)));
         std::fs::remove_file(path).expect("remove fixture");
     }
 
@@ -372,7 +381,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_replay_non_monotonic_and_retired_sessions() {
+    fn distinguishes_unchanged_snapshot_and_rejects_non_monotonic_or_retired_sessions() {
         let path = path("replay");
         let source = FileRawTelemetrySource::with_clock(
             &path,
@@ -388,10 +397,11 @@ mod tests {
             format!("{}\n", serde_json::to_string(&first).expect("encode first")),
         )
         .expect("write first");
-        assert_eq!(source.read(), Ok(first.clone()));
-        assert!(
-            source.read().is_err(),
-            "same record must be rejected as replay"
+        assert_eq!(source.read(), Ok(RawTelemetryRead::Fresh(first.clone())));
+        assert_eq!(
+            source.read(),
+            Ok(RawTelemetryRead::Unchanged(first)),
+            "an unchanged atomic snapshot is normal between producer updates"
         );
 
         let non_monotonic = envelope("session-a", 996_000, 10, 1);
@@ -414,7 +424,7 @@ mod tests {
             ),
         )
         .expect("write restart");
-        assert_eq!(source.read(), Ok(restarted));
+        assert_eq!(source.read(), Ok(RawTelemetryRead::Fresh(restarted)));
 
         let retired = envelope("session-a", 997_000, 20, 2);
         std::fs::write(
@@ -458,7 +468,7 @@ mod tests {
     }
 
     #[test]
-    fn durable_acknowledgement_rejects_replay_after_reader_restart() {
+    fn durable_acknowledgement_recognizes_unchanged_snapshot_after_reader_restart() {
         let path = path("durable-replay");
         let acknowledgement = PathBuf::from(format!("{}.ack", path.display()));
         let _ = std::fs::remove_file(&path);
@@ -479,7 +489,10 @@ mod tests {
             FixedClock(1_000_000),
         )
         .with_replay_state_path(&acknowledgement);
-        assert_eq!(first_reader.read(), Ok(first));
+        assert_eq!(
+            first_reader.read(),
+            Ok(RawTelemetryRead::Fresh(first.clone()))
+        );
 
         let restarted_reader = FileRawTelemetrySource::with_clock(
             &path,
@@ -490,7 +503,10 @@ mod tests {
             FixedClock(1_000_000),
         )
         .with_replay_state_path(&acknowledgement);
-        assert!(restarted_reader.read().is_err());
+        assert_eq!(
+            restarted_reader.read(),
+            Ok(RawTelemetryRead::Unchanged(first))
+        );
 
         std::fs::remove_file(path).expect("remove fixture");
         std::fs::remove_file(acknowledgement).expect("remove acknowledgement");

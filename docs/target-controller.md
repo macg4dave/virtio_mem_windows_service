@@ -142,21 +142,25 @@ the previous desired value. The reconciler, rather than the estimator, bounds
 how quickly allocation moves toward the new absolute target.
 
 `safe_floor` is the maximum `floor_now` in the same qualified window, clamped
-not to exceed durable `desired`. A missing, stale, replayed, cross-session, or
-over-gapped sample clears reclaim readiness. A new valid sample may still raise
-desired immediately.
+not to exceed durable `desired`. Re-reading the same still-fresh atomic current
+record is a normal no-new-sample state: it does not advance policy, actuate, or
+clear history. A missing, stale, non-increasing-but-different, retired-session,
+or over-gapped sample clears reclaim readiness. A new valid sample may still
+raise desired immediately.
 
 Without a qualified history checkpoint, initialize both durable desired and
 safe floor conservatively around live allocation: `desired = max(C,
 desired_now)` and `safe_floor = C`. This permits immediate growth and prohibits
 shrink until the complete warm-up window exists.
 
-The host stores a versioned, bounded, atomically replaced policy checkpoint
+The host stores a versioned, bounded, durably flushed and atomically replaced policy checkpoint
 containing the VM/alias, policy and compatibility fingerprints, desired,
 qualified candidate history, telemetry identity/order, and durable actuation
-latch. Missing, corrupt, mismatched, future, or stale state is never guessed:
-growth may resume from fresh input, but reclaim waits for a new complete warm-
-up window. A new Windows producer session also restarts reclaim warm-up.
+latch. Missing estimator state restarts cold. Malformed or oversized state
+fails closed because it could contain control state; an identity or fingerprint
+mismatch also fails closed when a latch or command intent is present. Safely
+mismatched estimator-only state restarts reclaim warm-up. A new Windows producer
+session also restarts reclaim warm-up.
 
 ## M10f reconciliation
 

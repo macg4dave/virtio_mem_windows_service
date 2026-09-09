@@ -326,9 +326,9 @@ readiness in the remaining host-side work.
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
 | M10aX | Conditional driver status-interface feasibility | [x] | Concrete unmet diagnostic need | The M10a3 no-progress and larger partial-progress stalls plus empty bounded captures justify a proposal for a cached read-only status IOCTL; security, ABI, tests, external build/signing/install, and rollback gates are specified, while implementation remains No-Go |
 | M10b | Single-VM failure, Windows shrink, and recovery matrix | [x] | M7, M9b, M9e, M10a2 | Hermetic interruption/restart/cancellation/ownership and typed command-failure paths pass; installed candidate rejection/no-replay, bounded retry/stall behavior, one-block abandon-to-current recovery, and partial/no-progress shrink evidence are accepted as closure evidence |
-| M10e | Quantitative desired-allocation model | [~] | M10c, M10d, M10a | Implement the normative estimator in `target-controller.md`: checked physical/commit candidates, fixed-visible-base validation, effective device maximum, normal/floor reserves, immediate growth, 10-minute high-water reclaim history, 256 MiB downward hysteresis, and restart-safe checkpoint produce absolute aligned desired and safe-floor targets |
+| M10e | Quantitative desired-allocation model | [x] | M10c, M10d, M10a | The normative estimator implements checked physical/commit candidates, fixed-visible-base validation, effective device maximum, normal/floor reserves, immediate growth, 10-minute high-water reclaim history, 256 MiB downward hysteresis, and a restart-safe checkpoint producing absolute aligned desired and safe-floor targets |
 | M10f | Desired/requested/current reconciler | [x] | M10e, M10b | Reconciles durable desired, device requested, authoritative current, and explicit health; bounds growth/reclaim to 1 GiB/64 MiB, permits only upward shrink supersession, freezes owned shrink on stale telemetry, accounts partial progress, and resolves journaled commands without replay |
-| M10g | Single-VM target-controller qualification | [ ] | M10f, M9d | Report controller correctness separately from platform reclaim capability using hermetic faults and a bounded committed/resident live workload; automatic shrink remains default-on, while failures expose constrained/latched health and preserve all safety gates |
+| M10g | Single-VM target-controller qualification | [~] | M10f, M9d | Hermetic logic and a 90-second candidate no-actuation/rejection/rollback run pass; production raw transport/install, refreshed attestation, and bounded committed/resident workload actuation remain |
 | M11 | Phase 3 global pool simulation | [ ] | M9e, M10d, M10a, M10f | Hermetic multi-VM simulation consumes absolute desired targets and models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states; live multi-target actuation additionally requires M9d and M10g |
 | M11a | Target-based controlled reclaim and convergence | [ ] | M10g, M11 | Trend-aware desired targets, bounded aligned actuation, safe upward supersession, constrained-current accounting, hysteresis, and stop-on-pressure behavior pass simulation tests |
 | M12 | Hardening and observability | [ ] | M11a | Estimator components, history readiness, desired/requested/current, constrained/capacity-limited/latched health, journal recovery, clear-latch audit, metrics, and bounded restart tests are observable |
@@ -948,12 +948,12 @@ The implementation is deliberately staged:
     `dommemstat` compatibility until native telemetry has live evidence.
 - [x] Add deterministic tests for invalid counters, ratio bounds, target
     limits, and alignment.
-- [~] **M10e:** implement the normative quantitative target contract using
+- [x] **M10e:** implement the normative quantitative target contract using
     fixed-visible-base validation, physical/commit reserves, effective device
     maximum, history, hysteresis, and a bounded checkpoint.
 - [x] **M10f:** reconcile desired, requested, and current state, including safe
     upward supersession of a pending shrink and constrained-current reporting.
-- [ ] **M10g:** report separate hermetic controller and bounded live platform-
+- [~] **M10g:** report separate hermetic controller and bounded live platform-
     reclaim qualification while automatic reclaim remains default-on.
 
 **Phase 2 gate:** The guest reports a complete demand snapshot locally, the

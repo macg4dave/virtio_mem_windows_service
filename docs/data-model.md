@@ -66,11 +66,13 @@ totals, and balloon `actual` are not allocation substitutes. The host rejects
 stale, future, wrong-VM, malformed, unsupported-version, invalid-counter, and
 live-device-conflicting inputs before policy.
 
-The host currently retains the accepted record and up to 16 retired session
-identifiers in memory. It rejects replayed/non-monotonic records, retired
-session reuse, files above 1 MiB, records above 64 KiB, and a final line without
-a newline. Durable restart-safe acknowledgement, rotation/retention, atomic
-reader handoff, and deployment ACLs remain M10d work.
+The host retains the accepted record and up to 16 retired session identifiers
+in memory and a bounded acknowledgement file. It treats the same still-fresh
+atomic current record as an unchanged wait, while rejecting non-monotonic
+different records, retired-session reuse, files above 1 MiB, records above
+64 KiB, and a final line without a newline. Rotation/retention, atomic reader
+handoff, durable acknowledgement, and ACL provisioning are implemented;
+installed ACL evidence remains M10d work.
 
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and
@@ -224,11 +226,12 @@ use them for allocation accounting.
 ### Persistence
 
 M10d replay acknowledgement is persistent. M10e adds a versioned, bounded,
-atomically replaced host checkpoint for qualified candidate history and
+file-and-directory-synced atomically replaced host checkpoint for qualified candidate history and
 durable desired/safe-floor values. It binds VM, alias, policy, and compatibility
-fingerprints and reserves an actuation-latch field. Missing, corrupt,
-oversized, incompatible, or future ordering state restarts reclaim warm-up;
-fresh demand may still grow immediately. M10f adds write-before-command intent,
+fingerprints and reserves an actuation-latch field. Missing or safely
+incompatible estimator-only state restarts reclaim warm-up; malformed or
+oversized state, or fingerprint drift with pending control state, fails closed.
+M10f adds write-before-command intent,
 the last operator latch-clear reason, and a durable latch connected to
 reconciler health. This remains a small state file rather than a database.
 

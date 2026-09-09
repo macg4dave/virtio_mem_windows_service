@@ -1,7 +1,7 @@
 //! Host-owned M10e estimator state, checkpointing, and raw-telemetry join.
 
-use std::fs;
-use std::io::Read;
+use std::fs::{self, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -14,7 +14,7 @@ use virtio_mem_core::{
 
 use crate::attestation::CompatibilityAttestation;
 use crate::config::HostConfig;
-use crate::raw_telemetry::RawTelemetrySource;
+use crate::raw_telemetry::{RawTelemetryRead, RawTelemetrySource};
 use crate::runtime::{
     CommandIntent, DemandDecision, DemandSource, DurableControlState, IntentResolution,
 };
@@ -127,7 +127,31 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
         _config: &HostConfig,
     ) -> Result<DemandDecision, String> {
         let envelope = match self.raw.read() {
-            Ok(envelope) => envelope,
+            Ok(RawTelemetryRead::Fresh(envelope)) => envelope,
+            Ok(RawTelemetryRead::Unchanged(_)) => {
+                let estimator = self
+                    .estimator
+                    .lock()
+                    .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
+                let desired_bytes = if estimator.state().desired_bytes == 0 {
+                    state.current_bytes
+                } else {
+                    estimator.state().desired_bytes
+                };
+                let safe_floor_bytes = if estimator.state().safe_floor_bytes == 0 {
+                    state.current_bytes.min(desired_bytes)
+                } else {
+                    estimator.state().safe_floor_bytes.min(desired_bytes)
+                };
+                return Ok(DemandDecision {
+                    decision: ResizeDecision::NoChange,
+                    desired_bytes,
+                    safe_floor_bytes,
+                    effective_maximum_bytes: desired_bytes.max(state.current_bytes),
+                    history_ready: false,
+                    telemetry_identity: None,
+                });
+            }
             Err(error) => {
                 let mut estimator = self
                     .estimator
@@ -437,19 +461,18 @@ fn load_matching_checkpoint(
         Err(error) => return Err(format!("inspect target policy checkpoint: {error}")),
     };
     if metadata.len() > MAX_POLICY_CHECKPOINT_BYTES {
-        eprintln!("target policy checkpoint is oversized; starting with cold reclaim history");
-        return Ok(None);
+        return Err(
+            "target policy checkpoint is oversized; refusing to discard possible control state"
+                .to_owned(),
+        );
     }
     let bytes =
         fs::read(path).map_err(|error| format!("read target policy checkpoint: {error}"))?;
     let checkpoint: PolicyCheckpoint = match serde_json::from_slice(&bytes) {
         Ok(checkpoint) => checkpoint,
-        Err(error) => {
-            eprintln!(
-                "target policy checkpoint is invalid; starting with cold reclaim history: {error}"
-            );
-            return Ok(None);
-        }
+        Err(error) => return Err(format!(
+            "target policy checkpoint is invalid; refusing to discard possible control state: {error}"
+        )),
     };
     if checkpoint.version != POLICY_CHECKPOINT_VERSION
         || checkpoint.estimator.version != virtio_mem_core::TARGET_ESTIMATOR_STATE_VERSION
@@ -458,6 +481,12 @@ fn load_matching_checkpoint(
         || checkpoint.policy_fingerprint_sha256 != policy_fingerprint
         || checkpoint.compatibility_fingerprint_sha256 != compatibility_fingerprint
     {
+        if checkpoint.actuation_latched || checkpoint.command_intent.is_some() {
+            return Err(
+                "target policy checkpoint identity or fingerprint changed while control state is pending"
+                    .to_owned(),
+            );
+        }
         return Ok(None);
     }
     if checkpoint.command_intent.as_ref().is_some_and(|intent| {
@@ -487,12 +516,30 @@ fn persist_checkpoint(path: &Path, checkpoint: &PolicyCheckpoint) -> Result<(), 
         return Err("target policy checkpoint exceeds size limit".to_owned());
     }
     let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
-    fs::write(&temporary, bytes)
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|error| format!("open target policy checkpoint: {error}"))?;
+    file.write_all(&bytes)
         .map_err(|error| format!("write target policy checkpoint: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("flush target policy checkpoint: {error}"))?;
+    drop(file);
     fs::rename(&temporary, path).map_err(|error| {
         let _ = fs::remove_file(&temporary);
         format!("publish target policy checkpoint: {error}")
-    })
+    })?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("flush target policy checkpoint directory: {error}"))?;
+    }
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -517,11 +564,25 @@ mod tests {
     struct OneEnvelope(Mutex<Option<RawTelemetryEnvelope>>);
 
     impl RawTelemetrySource for OneEnvelope {
-        fn read(&self) -> Result<RawTelemetryEnvelope, String> {
+        fn read(&self) -> Result<RawTelemetryRead, String> {
             self.0
                 .lock()
                 .map_err(|_| "fixture lock poisoned".to_owned())?
                 .take()
+                .map(RawTelemetryRead::Fresh)
+                .ok_or_else(|| "fixture exhausted".to_owned())
+        }
+    }
+
+    struct OneUnchangedEnvelope(Mutex<Option<RawTelemetryEnvelope>>);
+
+    impl RawTelemetrySource for OneUnchangedEnvelope {
+        fn read(&self) -> Result<RawTelemetryRead, String> {
+            self.0
+                .lock()
+                .map_err(|_| "fixture lock poisoned".to_owned())?
+                .take()
+                .map(RawTelemetryRead::Unchanged)
                 .ok_or_else(|| "fixture exhausted".to_owned())
         }
     }
@@ -636,7 +697,7 @@ mod tests {
                 &"b".repeat(64)
             )
             .expect("load checkpoint"),
-            Some(checkpoint)
+            Some(checkpoint.clone())
         );
         assert!(load_matching_checkpoint(
             &state_path,
@@ -647,11 +708,24 @@ mod tests {
         )
         .expect("mismatch is cold state")
         .is_none());
+
+        let mut latched = checkpoint;
+        latched.actuation_latched = true;
+        latched.actuation_latch_reason = Some("ambiguous command".to_owned());
+        persist_checkpoint(&state_path, &latched).expect("write latched checkpoint");
+        assert!(load_matching_checkpoint(
+            &state_path,
+            "guest",
+            "memory0",
+            &"a".repeat(64),
+            &"changed".repeat(9)
+        )
+        .is_err());
         fs::remove_file(state_path).expect("remove checkpoint");
     }
 
     #[test]
-    fn malformed_and_oversized_checkpoints_restart_cold() {
+    fn malformed_and_oversized_checkpoints_fail_closed() {
         let (state_path, _) = paths("invalid-checkpoint");
         fs::write(&state_path, b"{invalid").expect("write malformed checkpoint");
         assert!(load_matching_checkpoint(
@@ -661,8 +735,7 @@ mod tests {
             &"a".repeat(64),
             &"b".repeat(64)
         )
-        .expect("malformed checkpoint becomes cold state")
-        .is_none());
+        .is_err());
         fs::write(
             &state_path,
             vec![b'x'; MAX_POLICY_CHECKPOINT_BYTES as usize + 1],
@@ -675,8 +748,7 @@ mod tests {
             &"a".repeat(64),
             &"b".repeat(64)
         )
-        .expect("oversized checkpoint becomes cold state")
-        .is_none());
+        .is_err());
         fs::remove_file(state_path).expect("remove checkpoint");
     }
 
@@ -742,6 +814,52 @@ mod tests {
         );
         assert!(state_path.is_file());
         fs::remove_file(state_path).expect("remove checkpoint");
+    }
+
+    #[test]
+    fn unchanged_atomic_snapshot_waits_without_resetting_or_actuating() {
+        let (state_path, attestation) = paths("unchanged-raw-source");
+        let config = config(&state_path, &attestation);
+        let raw = OneUnchangedEnvelope(Mutex::new(Some(RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000_000,
+            10,
+            0,
+            MemoryTelemetrySnapshot {
+                physical_total_bytes: 16 * GIB,
+                physical_available_bytes: 8 * GIB,
+                memory_load_percent: 50,
+                commit_total_bytes: 16 * GIB,
+                commit_limit_bytes: 32 * GIB,
+                commit_peak_bytes: 16 * GIB,
+                system_cache_bytes: 0,
+                kernel_paged_bytes: 0,
+                kernel_nonpaged_bytes: 0,
+            },
+        ))));
+        let source =
+            TargetDemandSource::with_compatibility_fingerprint(raw, &config, "a".repeat(64))
+                .expect("construct target source");
+        let decision = source
+            .evaluate(
+                VirtioMemState {
+                    size_bytes: 24 * GIB,
+                    block_size_bytes: 2 * MIB,
+                    requested_bytes: 8 * GIB,
+                    current_bytes: 8 * GIB,
+                },
+                &config,
+            )
+            .expect("unchanged snapshot is a normal wait state");
+
+        assert_eq!(decision.decision, ResizeDecision::NoChange);
+        assert_eq!(decision.desired_bytes, 8 * GIB);
+        assert_eq!(decision.safe_floor_bytes, 8 * GIB);
+        assert!(!decision.history_ready);
+        assert!(decision.telemetry_identity.is_none());
+        assert!(!state_path.exists());
     }
 
     #[test]

@@ -1,5 +1,33 @@
 # BACKLOG
 
+## 2026-09-09 M10g live audit and controller hardening
+
+- The current checkout passes 62 shared-core and 67 host tests after adding
+  regressions for unchanged atomic telemetry, transient invalid-demand
+  observation, and fail-closed checkpoint control state. The native Windows
+  gate passes 67 tests and produced executable SHA-256
+  `607c2baed981e4807f082341aacb7d80ec846190c50d3b8f26728656aa55d899`.
+- A bounded interactive run of that Windows candidate published two complete
+  version-2 native snapshots 30 seconds apart with sequence `0` then `1`,
+  monotonic time `0` then `30016`, correct VM/service identity, and retained
+  the predecessor. Cleanup removed the task-created ProgramData directory.
+- The operator-run candidate host batch observed the current host binary for
+  90 seconds with `NRestarts=0`. It emitted exactly one fail-closed rejection
+  for the known stale `domain_xml` attestation, issued no resize or unknown-
+  command event, preserved QEMU/Windows/service continuity and
+  `requested=current=2105344 KiB`, then restored the original binary/unit and
+  removed its temporary configuration.
+- The reader now distinguishes a fresh record from the expected unchanged
+  atomic snapshot between producer writes. Unchanged input waits without
+  policy advancement, history invalidation, or actuation. Invalid demand while
+  converged is logged and observed instead of causing a systemd restart loop.
+- Target-policy checkpoint writes now sync the file and containing directory.
+  Malformed or oversized checkpoints fail closed, and identity/fingerprint
+  mismatch cannot silently discard a durable latch or pending command intent.
+- M10g remains in progress: the installed deployment still uses guest-stats
+  compatibility mode, production raw transport/current Windows installation
+  remain, and attestation must be refreshed before workload actuation.
+
 ## 2026-09-09 M10f desired/requested/current reconciliation
 
 - Completed TASK-027 with a platform-neutral reconciler that keeps durable
@@ -29,10 +57,11 @@
   movement, bounded 10-minute high-water history, gap/session invalidation,
   256 MiB downward hysteresis, conservative restart warm-up, and the
   deterministic +4 GiB then +2 GiB target trace.
-- Added required host configuration, a fingerprint-bound atomic policy
-  checkpoint under the systemd state directory, and cold recovery for missing,
-  incompatible, corrupt, oversized, or future checkpoint state. M10f now owns
-  command-journal, live control-health, and durable latch behavior.
+- Added required host configuration and a fingerprint-bound policy checkpoint
+  under the systemd state directory. Missing or safely incompatible estimator
+  state restarts reclaim warm-up; malformed/oversized state and fingerprint
+  drift with pending control state fail closed. M10f owns command-journal,
+  live control-health, and durable latch behavior.
 
 ## 2026-09-09 M10b operator-accepted closure
 
@@ -1076,12 +1105,12 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | Ready | Large | TASK-019, TASK-027 |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
+| TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | In Progress | Hermetic and candidate no-actuation gates pass. Production raw transport/install, refreshed attestation, and bounded committed/resident workload actuation remain. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
 
 ## Planned
