@@ -226,12 +226,14 @@ accounting or hermetic global-pool simulation.
 - When the connected QEMU Guest Agent does not implement the nonstandard
     `guest-get-memory-stats` extension, the host controller uses
     `virsh dommemstat`. Balloon `actual` remains provenance rather than an
-    allocation/total bound; required `last-update` must be recent, within the
+    allocation/total bound; required libvirt `last_update` must be recent, within the
     future-skew allowance, and advance between controller samples.
 - QEMU does not completely prevent guest access to unplugged memory. A hard
     QEMU/libvirt cgroup memory limit is recommended defense-in-depth for fully
     trusted development guest `win11_gpu` and mandatory for untrusted or
     production deployments.
-- Automatic Windows shrinking remains live-unqualified. M10b default-off
-    controls and bounded retry/re-notification/recovery pass hermetic tests;
-    live qualification remains before automated reclaim is supported.
+- Automatic Windows shrinking remains disabled after a live 64 MiB request
+    made no progress. M10b's bounded retry/re-notification/recovery is retained
+    as diagnostic and operator-recovery behavior. M10e-M10g must add and
+    qualify an absolute target plus desired/requested/current reconciliation
+    before automated reclaim is supported.

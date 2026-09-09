@@ -133,8 +133,15 @@ pub fn parse_dommemstat_at(
         let value: u64 = value
             .parse()
             .map_err(|_| format!("dommemstat field {name} has a non-numeric value: {value}"))?;
-        if fields.insert(name.to_owned(), value).is_some() {
-            return Err(format!("dommemstat response repeats field {name}"));
+        let canonical_name = if name == "last_update" {
+            "last-update"
+        } else {
+            name
+        };
+        if fields.insert(canonical_name.to_owned(), value).is_some() {
+            return Err(format!(
+                "dommemstat response repeats field {canonical_name}"
+            ));
         }
     }
 
@@ -243,6 +250,17 @@ mod tests {
         assert_eq!(snapshot.stats.free_bytes, 200 * KIB);
         assert_eq!(snapshot.stats.available_bytes, 300 * KIB);
         assert_eq!(snapshot.stats.total_bytes, 300 * KIB);
+    }
+
+    #[test]
+    fn accepts_libvirt_last_update_spelling_and_rejects_alias_duplicates() {
+        let snapshot = parse("actual 100\nunused 40\navailable 80\nlast_update 990\n")
+            .expect("live libvirt spelling is accepted");
+        assert_eq!(snapshot.last_update_unix_seconds, 990);
+        assert!(
+            parse("actual 100\nunused 40\navailable 80\nlast_update 990\nlast-update 990\n")
+                .is_err()
+        );
     }
 
     #[test]

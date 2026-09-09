@@ -71,12 +71,13 @@ No additional languages are permitted in source code, scripts, build tooling, or
 - Require a hard QEMU/libvirt memory limit for production or untrusted guests.
   It is recommended defense-in-depth for the fully trusted development/test
   `win11_gpu` exception.
-- Keep automatic Windows shrink disabled by default outside the explicitly
-  qualified trusted development guest. Its selected policy uses one 64 MiB
-  reclaim quantum only after convergence. Re-notification is a separate
-  default-off capability: only the immutable target may be repeated, at most
-  three times on the selected 30/60/120-second schedule, without extending the
-  300-second operation deadline or replaying after restart.
+- Keep automatic Windows shrink disabled until M10g target-controller
+  qualification passes. A 64 MiB request made no live progress. Treat 1 GiB
+  growth and 64 MiB reclaim as actuation bounds toward an M10e absolute target,
+  not as demand estimates. Re-notification remains a separate default-off
+  diagnostic capability: only the immutable target may be repeated, at most
+  three times on the 30/60/120-second profile, without extending the
+  300-second diagnostic deadline or replaying after restart.
 - Use `SIGTERM` and `SIGINT` for one wakeable cancellation path. Operational
   failures must produce contextual journal output and a non-zero process exit.
 - Configure an explicit non-login service account and verify its least-privilege

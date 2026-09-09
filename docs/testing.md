@@ -312,7 +312,8 @@ Windows balloon reports may expose `unused` and `available` above `actual`.
 The M9e parser retains `actual` only as balloon provenance, maps `unused` to
 free bytes, and maps required `available` to both available and the total-like
 legacy bound. It rejects only `unused > available`, overflow, malformed or
-duplicate fields, and missing/stale/future/non-advancing `last-update`.
+duplicate fields, and missing/stale/future/non-advancing `last_update`
+(`last-update` is retained as a compatibility spelling).
 `VIRTIO_MEM_STATS_MAX_AGE_SECONDS` and
 `VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS` are required positive bounds; the
 example uses 60 and 5 seconds. The configured balloon stats period must be
@@ -815,7 +816,7 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-The 2026-09-09 local M10 gate passes 46 shared-core and 49 host tests with zero
+The 2026-09-09 local M10 gate passes 46 shared-core and 50 host tests with zero
 failures. It covers durable restart-safe acknowledgement, atomic handoff,
 bounded retention, the shrink schedule, latched stalls, cancellation/restart,
 and one-shot recovery. Run the native

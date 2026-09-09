@@ -1,5 +1,24 @@
 # BACKLOG
 
+## 2026-09-09 target-controller milestone redesign
+
+- Added M10e to calculate an absolute desired virtio-mem allocation from fresh
+  Windows availability/commit demand, explicit fixed/base memory, configurable
+  reserves, rolling history, hysteresis, bounds, safe floors, and alignment.
+- Added M10f to separate durable `desired`, device `requested`, and actual
+  `current` state. Fresh pressure may safely raise or cancel a pending shrink;
+  another lower request remains prohibited while reclaim is in flight.
+- Added M10g to qualify the new controller hermetically and live, including
+  growth by 4 GiB followed by a stable 2 GiB-extra target, zero/partial shrink,
+  pressure interruption, stale input, command ambiguity, cancellation, and
+  restart.
+- Reclassified M10b's 30/60/120-second re-notification and 300-second deadline
+  as a bounded diagnostic/recovery profile. Timeouts remain valid for I/O,
+  freshness, and health reporting, but no timeout decides how much RAM Windows
+  needs.
+- Updated M11/M11a to consume absolute desired targets and constrained actual
+  allocation rather than reproducing the current per-poll decrement loop.
+
 ## 2026-09-08 asymmetric service-quanta policy
 
 - A controller-isolated live ramp grew `win11_gpu` from 1 GiB to 5 GiB in
@@ -17,7 +36,15 @@
   pre-M10d live instance. Raw Windows telemetry remains the production default;
   the compatibility mode does not synthesize an envelope and reuses the same
   directional policy and guarded resize sink.
-- Validation passes 46 shared-core, 49 host, and 67 native Windows tests plus
+- Corrected the freshness adapter to accept libvirt's live `last_update`
+  spelling while canonicalizing it with the documented `last-update` alias so
+  either spelling works and a mixed duplicate still fails closed.
+- Installed the candidate and observed its first exact 64 MiB automatic shrink
+  request. `current` made zero progress for 300 seconds; the state machine
+  latched with zero restarts. This guest therefore fails the selected "if it
+  can shrink" condition, so automatic reclaim is disabled while 1 GiB growth
+  remains enabled.
+- Validation passes 46 shared-core, 50 host, and 67 native Windows tests plus
   release, format, and warnings-as-errors gates. The native artifact SHA-256 is
   `d91e6ccd2a0fdbac1da8bcd96a4e05ecf77964834e20d973c844e44d77d1e9dd`.
 
@@ -909,6 +936,9 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
+| TASK-026 | M10e quantitative desired-allocation model | Copilot | Ready | Large | TASK-020, TASK-021 |
+| TASK-027 | M10f desired/requested/current reconciler | Copilot | Ready after TASK-026 | Large | TASK-022, TASK-026 |
+| TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | Ready after TASK-027 | Large | TASK-019, TASK-027 |
 
 ## In Progress
 
@@ -921,6 +951,8 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Milestone | Owner | Status | Depends on | Exit evidence |
 | --- | --- | --- | --- | --- | --- |
+| M11 | Global pool simulation using absolute targets | Copilot | Planned | M10f | Deterministic multi-VM accounting/arbitration tests pass |
+| M11a | Target-based controlled reclaim | Copilot + Operator | Planned | M10g, M11 | Simulation and bounded live gates prove supersession, constrained progress, and host reserve safety |
 
 ### 2026-08-18 live KVM handoff
 
@@ -1123,8 +1155,9 @@ does not authorize driver work or a protected-guest trial.
   enforces source freshness before policy evaluation.
 - Phase 2 permits one active controller/device on the development host. M11
   must provide atomic global reservation before multi-target actuation.
-- Windows automatic shrink must gain a default-off control and remain disabled
-  until M10b proves a bounded retry or recovery path.
+- Windows automatic shrink has a default-off control and remains disabled.
+  M10b proved bounded diagnosis/recovery behavior but not a production demand
+  algorithm; M10e-M10g now gate automatic reclaim.
 
 ### 2026-08-18 demand-agent and global-controller design review
 

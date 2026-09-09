@@ -12,6 +12,10 @@ The allocation-authority contract is established from Virtio and pinned
 implementation sources; optional driver tracing remains diagnostic.
 `win11_gpu` is a fully trusted development/test KVM
 guest; upstream Windows virtio-mem support remains technology preview.
+Live shrink evidence has exposed the next design boundary: directional steps
+and fixed no-progress deadlines cannot calculate durable guest demand.
+M10e-M10g now define a quantitative absolute-target model, three-state
+reconciliation, and single-VM qualification before global arbitration.
 
 ## Completed locally
 
@@ -55,7 +59,7 @@ guest; upstream Windows virtio-mem support remains technology preview.
 
 The latest native RHEL gate passed:
 
-- 46 shared-core and 49 host tests, with no failures.
+- 46 shared-core and 50 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -93,11 +97,25 @@ On 2026-09-08, the bounded one-block M10b qualification completed its three
 30/60/120-second re-notifications, latched at 300 seconds, and successfully
 recovered with abandon-to-current. A later paced 256 MiB ramp grew 1 GiB to
 5 GiB, reclaimed 3,000 MiB, and then stalled at a 2,120 MiB current allocation.
-That request was recovered to convergence. Based on this size-sensitive live
-behavior, the selected service policy is now one 1 GiB growth quantum or one
-64 MiB reclaim quantum per converged decision.
+That request was recovered to convergence. A subsequent automatic 64 MiB
+request made no progress for 300 seconds and latched without restarting the
+service. The service policy calculates one 1 GiB growth quantum or one 64 MiB
+reclaim quantum per converged decision, but automatic reclaim remains disabled
+because the live guest did not satisfy the "can shrink" condition.
 
 ## Open implementation work
+
+- Implement M10e's quantitative absolute desired target using fresh Windows
+  availability/commit counters, explicit fixed/base memory, configurable
+  reserves, rolling history, hysteresis, safe floors, bounds, and alignment.
+- Implement M10f's distinct `desired`/`requested`/`current` reconciler. It must
+  allow validated upward cancellation of a pending shrink when pressure
+  returns, while forbidding another lower target and continuing to account
+  from live `current`.
+- Complete M10g hermetic and live qualification, including +4 GiB growth that
+  later settles at +2 GiB demand, zero/partial shrink, renewed pressure,
+  stale/replayed telemetry, ambiguous commands, cancellation, and restart.
+  Automatic reclaim remains disabled until this gate passes.
 
 - Live-install the M10d Windows candidate and verify its protected ProgramData
   ACL. Atomic handoff/retention and durable restart-safe replay state are
@@ -132,10 +150,11 @@ behavior, the selected service policy is now one 1 GiB growth quantum or one
   `current` remains allocation authority.
 - Live resize remains gated by fresh XML validation and
   `requested == current` convergence at the time of each request.
-- Automatic Windows shrink is size-sensitive: one block made no progress, and
-  the paced 256 MiB ramp reclaimed 3,000 MiB before stalling. The trusted
-  development policy uses one 64 MiB quantum at a time; Phase 2 still supports
-  only one active controller/device on this host until M11.
+- Automatic Windows shrink is size-sensitive: one block and 64 MiB made no
+  progress, while the paced 256 MiB ramp reclaimed 3,000 MiB before stalling.
+  Automatic reclaim is disabled. M10b's fixed retry/deadline profile remains
+  diagnostic/recovery behavior and does not determine desired memory. Phase 2
+  still supports only one active controller/device on this host until M11.
 - A hard QEMU/libvirt cgroup memory limit is recommended defense-in-depth for
   trusted `win11_gpu`; it is mandatory for future untrusted or production
   deployments.

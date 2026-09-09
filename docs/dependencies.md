@@ -201,8 +201,10 @@ Resize validation additionally requires:
 - Permission to inspect the domain XML and issue an explicitly approved live
   update.
 
-The controller policy refuses another request while `requested` and `current`
-differ and clamps all targets to safe aligned limits. See
+The current controller policy refuses another request while `requested` and
+`current` differ and clamps all targets to safe aligned limits. M10f will add
+the narrow validated exception for upward pressure supersession while still
+forbidding a second lower target. See
 [`api-contract.md`](api-contract.md) and [`data-model.md`](data-model.md).
 
 ## QEMU and libvirt operational constraints
@@ -214,8 +216,9 @@ The official virtio-mem guidance adds several operational constraints that affec
 
 - The guest can fail to fulfill a shrink request if it cannot free or hotunplug
   memory reliably. The reviewed Windows driver exposes no obvious periodic
-  retry timer, so automatic shrink remains disabled-by-default planned work
-  until M10b proves bounded progress or recovery.
+  retry timer. M10b proved bounded diagnosis and abandon-to-current recovery,
+  but 64 MiB automatic reclaim made no progress; automatic shrink remains
+  disabled until the M10e-M10g target controller passes qualification.
 - QEMU does not currently provide the same protection for unplugged memory
   that virtio-balloon does. A hard QEMU/libvirt cgroup memory limit is
   recommended defense-in-depth for fully trusted development guest

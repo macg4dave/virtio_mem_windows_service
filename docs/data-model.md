@@ -97,9 +97,18 @@ multiple of the live device block size. Pressure severity affects arbitration,
 not the size of a single per-VM request.
 
 Automatic shrink is not yet a supported Windows production path. Separate
-automatic-shrink and same-target re-notification controls now default off.
-M10b's bounded retry and abandon-to-current models pass hermetic tests, but
-the controls must remain off until the live qualification matrix passes.
+automatic-shrink and same-target re-notification controls now default off. A
+live 64 MiB request made no progress, so the controls remain off until M10g.
+M10b's bounded retry and abandon-to-current models are diagnostic/recovery
+state; they do not calculate durable demand.
+
+M10e-M10f will add three separate controller values: `desired_bytes` is the
+absolute policy target calculated from fresh guest demand, `requested_bytes`
+is the target accepted by the device, and `current_bytes` is authoritative
+actual allocation. A pending shrink may be superseded only upward on fresh
+pressure. Partial or stalled reclaim leaves desired unchanged and is exposed
+as constrained current state; a no-progress deadline is health evidence, not
+a memory-sizing input.
 
 The host-only `ShrinkOperation` contains block size, immutable target, latest
 current, creation/progress times, immutable deadline, retry index, and terminal

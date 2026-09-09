@@ -25,8 +25,9 @@ The long-term goal is a system that can:
 - observe Windows memory pressure using native telemetry;
 - produce versioned, canonical-byte demand recommendations;
 - validate virtio-mem state and alignment before any change;
-- grow in 1 GiB quanta or reclaim in 64 MiB quanta, with each request bounded,
-  block-aligned, and convergence-gated; and
+- calculate a durable absolute target from fresh Windows demand and move
+  toward it with bounded, block-aligned 1 GiB growth or 64 MiB reclaim
+  actuation; and
 - coordinate multiple guests without allowing one guest to consume the host's
   safety reserve.
 
@@ -53,7 +54,7 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest gates pass 46 shared-core, 49 host, and 67 native-Windows tests.
+The latest gates pass 46 shared-core, 50 host, and 67 native-Windows tests.
 These are separate supported-platform results, not one cross-platform
 workspace run. Release builds, formatting, Clippy warnings-as-errors, and Bash
 syntax validation pass.
@@ -88,9 +89,14 @@ syntax validation pass.
   actuation.
 - Windows shrink behavior is size-sensitive: the live 256 MiB ramp reclaimed
   about 2.93 GiB before stalling, while a one-device-block request made no
-  progress. The controller therefore uses 64 MiB reclaim quanta, retains
-  bounded same-target retry and abandon-to-current recovery, and never issues
+  progress. A live 64 MiB request also made no progress for 300 seconds, so
+  automatic reclaim remains disabled. The controller calculates 64 MiB reclaim
+  quanta for future qualification, retains bounded recovery, and never issues
   another request until the prior target converges.
+- M10e-M10g will replace the per-poll directional-step policy with an absolute
+  desired target and explicit `desired`/`requested`/`current` reconciliation.
+  Fixed no-progress deadlines remain health and recovery bounds; they will not
+  decide how much memory Windows needs.
 - Phase 2 supports one active controller for one explicitly named VM/device on
   this development host. Multi-controller/device actuation waits for M11
   global arbitration.

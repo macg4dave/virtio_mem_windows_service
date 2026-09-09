@@ -9,17 +9,18 @@
 
 ## Current position
 
-The project is in **Phase 2: Core Functionality**. The parser, resize policy,
+The project is in **Phase 2: Core Functionality**. The parser, initial resize policy,
 QEMU Guest Agent client boundary, wakeable polling loop, portable service host,
 basic configuration model, startup validation path, and live Windows SCM
 lifecycle/recovery path are implemented and tested. The
 workspace contains an installed, active single-VM host controller with
-XML/state validation and a bounded runtime loop. The next unprivileged
-implementation priority is live qualification of the implemented M10d
-ProgramData ACL and M10b retry/recovery paths. M9d binds the expanded
+XML/state validation and a bounded runtime loop. The next implementation
+priority is M10e's quantitative desired-allocation model; installed M10d
+ProgramData ACL evidence and the remaining M10b diagnostic/recovery matrix
+continue in parallel. M9d binds the expanded
 compatibility attestation, and M9e now freshness-qualifies host telemetry. The
-existing one-VM host controller
-remains the only resize authority until Phase 3 global arbitration has been
+existing one-VM host controller remains the only resize authority until the
+M10e-M10g target-controller redesign and Phase 3 global arbitration have been
 validated. The Virtio specification and pinned QEMU/libvirt/virtio-win
 sources establish `requested`/`current` as the host allocation contract;
 optional driver tracing qualifies installed-binary behavior rather than
@@ -45,7 +46,7 @@ technology preview.
 ## Verified evidence
 
 - **Current platform gates:** the latest RHEL gate passes 46 shared-core and
-    49 host tests; the latest native-Windows gate passes 67 tests. Keep these
+    50 host tests; the latest native-Windows gate passes 67 tests. Keep these
     as separate supported-platform results rather than one workspace total.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -321,16 +322,20 @@ readiness in the remaining host-side work.
 | M10a3 | Optional bounded driver observation | [x] | M9b, M10a2 | One 2 MiB grow converged, but the predeclared 1 GiB recovery target remained 2 MiB above current for 60 samples/300 seconds; no matching driver record appeared, no overlapping request was issued, and graceful domain recreation restored convergence/controller state |
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
 | M10aX | Conditional driver status-interface feasibility | [x] | Concrete unmet diagnostic need | The M10a3 no-progress and larger partial-progress stalls plus empty bounded captures justify a proposal for a cached read-only status IOCTL; security, ABI, tests, external build/signing/install, and rollback gates are specified, while implementation remains No-Go |
-| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | One-block live retry/recovery passed; a 256 MiB paced ramp proved size-sensitive partial reclaim; one 1 GiB grow/64 MiB reclaim service policy is implemented while the remaining active-controller interruption/restart matrix remains |
-| M11 | Phase 3 global pool simulation | [ ] | M9e, M10d, M10a | Hermetic multi-VM simulation models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states; live multi-target actuation additionally requires M9d and M10b |
-| M11a | Controlled reclaim and convergence | [ ] | M11 | Trend-aware safe floors, bounded aligned reclaim, hysteresis, in-flight protection, convergence waits, and stop-on-pressure behavior pass simulation tests |
+| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | One-block live retry/recovery passed; a 256 MiB ramp partially reclaimed, but the installed 64 MiB automatic request made no progress for 300 seconds and latched cleanly; automatic reclaim is disabled while the remaining matrix stays open |
+| M10e | Quantitative desired-allocation model | [ ] | M10c, M10d, M10a | Fresh Windows demand, explicit fixed/base memory, commit and availability reserves, rolling history, hysteresis, and configured bounds produce one absolute block-aligned desired virtio-mem target; tests prove that a guest which once needed 4 GiB extra can later settle at 2 GiB extra without per-poll guessing |
+| M10f | Desired/requested/current reconciler | [ ] | M10e, M10b | The controller treats desired as durable policy intent, requested as the last device target, and current as actual allocation; it safely raises/cancels a pending shrink when pressure returns, never lowers an in-flight target, and reports partial/no-progress reclaim as constrained state rather than changing demand |
+| M10g | Single-VM target-controller qualification | [ ] | M10f, M9d | Hermetic and live tests cover growth, falling demand, zero/partial shrink, pressure during shrink, stale telemetry, command ambiguity, cancellation, and restart; automatic reclaim remains disabled until the trusted guest passes the declared workload and recovery gates |
+| M11 | Phase 3 global pool simulation | [ ] | M9e, M10d, M10a, M10f | Hermetic multi-VM simulation consumes absolute desired targets and models atomic host reserve, actual allocations, pool-free capacity, growth/reclaim priorities, stale reports, and all five pressure states; live multi-target actuation additionally requires M9d and M10g |
+| M11a | Target-based controlled reclaim and convergence | [ ] | M10g, M11 | Trend-aware desired targets, bounded aligned actuation, safe upward supersession, constrained-current accounting, hysteresis, and stop-on-pressure behavior pass simulation tests |
 | M12 | Hardening and observability | [ ] | M11a | Recovery, event logging, metrics, bounded timeout behavior, and restart tests pass for guest and global-controller paths |
 | M13 | Operational release readiness | [ ] | M12 | Documentation, health checks, monitoring, compatibility evidence, rollback, and repeatable host automation complete |
 
-### M10b selected bounded Windows-shrink policy
+### M10b bounded Windows-shrink qualification profile
 
-M10b will qualify one explicit host-side state machine. These values are the
-initial qualification profile, not workload-tuned production defaults:
+M10b qualifies one explicit host-side state machine. These values are a
+diagnostic and recovery profile, not workload-tuned production policy and not
+the calculation of how much memory Windows needs:
 
 1. Automatic Windows shrink and same-target re-notification are separate
    controls and both default to disabled. A shrink can start only from fresh,
@@ -388,8 +393,42 @@ Hermetic tests exercise the full state table with a fake clock. The one-block
 live qualification showed that same-target re-notification did not create
 progress, while abandon-to-current safely converged. A later paced 256 MiB
 ramp proved substantial but incomplete reclaim. The trusted development
-instance therefore uses 64 MiB convergence-gated reclaim quanta without
-increasing the retry budget; other deployments remain default-off.
+instance therefore keeps automatic reclaim disabled. M10e-M10g replace the
+per-poll directional-step policy with a durable absolute target and retain
+M10b only for bounded diagnosis, stall classification, and operator recovery.
+
+### M10e-M10g target-controller redesign
+
+The next single-VM controller work separates memory demand from device
+progress. It must not infer that Windows still needs all memory previously
+added, nor conclude that a timeout means the desired allocation changed.
+
+1. **M10e — calculate desired allocation.** Join fresh native Windows
+   physical-availability and commit counters with an explicit fixed/base guest
+   allocation, configured commit/availability reserves, rolling history, and
+   hysteresis. Produce one absolute desired virtio-mem target, clamp it to the
+   configured minimum/maximum and safe floor, then align growth upward and
+   reclaim downward to supported quanta. The current 1 GiB growth and 64 MiB
+   reclaim values are actuation granularity/caps, not estimates of demand.
+2. **M10f — reconcile three distinct values.** `desired` is durable policy
+   intent, `requested` is the device target most recently accepted by the
+   host, and `current` is authoritative actual allocation. A pending shrink
+   may be cancelled or superseded only upward when fresh pressure requires it;
+   another lower target remains forbidden until the current operation
+   converges or is explicitly abandoned. Partial reclaim remains useful and
+   is counted through `current`.
+3. **M10f — separate policy from health timing.** Finite subprocess/I/O
+   deadlines, telemetry freshness, and rate-limited no-progress alarms remain.
+   The old 300-second deadline must not rewrite the desired target or trigger
+   repeated decrements. Event-driven libvirt/QMP observation should be used
+   where the deployed stack exposes a reliable signal, with bounded periodic
+   polling as reconciliation fallback.
+4. **M10g — prove behavior before enabling reclaim.** Tests must include a
+   guest that grows by 4 GiB, later needs only 2 GiB extra, and settles on that
+   target; renewed pressure during a pending shrink; zero and partial progress;
+   stale/replayed evidence; ambiguous command results; cancellation; and
+   controller restart. Live execution must preserve attestation, host reserve,
+   explicit target, rollback/recovery, and evidence-correlation gates.
 
 ## Phase 1 — Foundation
 
@@ -684,7 +723,8 @@ or provenance-free demand input before evaluating policy.
 
 - [ ] Add independent growth and reclaim priorities for every VM.
 - [ ] Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY`
-    transitions with hysteresis and 1 GiB grow/64 MiB reclaim decisions.
+    transitions with hysteresis, absolute desired targets, and bounded 1 GiB
+    grow/64 MiB reclaim actuation.
 - [ ] Respect configured minimums, advisory safe floors, in-flight operations,
     stale reports, host reserve, and pool capacity.
 - [ ] Prove the policy deterministically before connecting live multi-VM
@@ -692,12 +732,15 @@ or provenance-free demand input before evaluating policy.
 
 ### G4. Controlled reclaim and actuation
 
-- [ ] Add rolling demand history and conservative, validated safe floors.
-- [x] Reclaim one aligned 64 MiB step at a time, wait for convergence, and stop on
-    pressure or incomplete evidence.
-- [ ] Reuse the M10b immutable-target, retry-budget, hard-deadline, latched
-    stall, and abandon-to-current rules; do not invent a separate global-pool
-    retry mechanism.
+- [ ] Reuse the M10e rolling demand history, quantitative reserves, and
+    conservative validated safe floors.
+- [~] Bound ordinary actuation to aligned 1 GiB growth and 64 MiB reclaim
+    quanta while moving toward the absolute desired target; the directional
+    quanta exist, but target-based reconciliation is M10f work.
+- [ ] Reuse the M10f desired/requested/current reconciler, including upward
+    pressure supersession and constrained-current accounting. Retain M10b's
+    immutable-target retries and hard deadline only as an explicitly selected
+    diagnostic/recovery profile.
 - [ ] Keep direct `viomem.sys` IOCTLs deferred unless a separate supported
     interface, security, signing, timeout, and rollback investigation passes.
 
@@ -713,10 +756,10 @@ reclaim passes before any automatic multi-VM live action.
 - [x] Add bounded in-flight shutdown handling.
 - [x] Verify non-zero failure exit behavior for SCM recovery.
 - [ ] Add regression tests for restart and recovery decisions.
-- [~] Use the selected M10b 30/60/120-second same-target schedule, maximum of
-    three re-notifications, and immutable 300-second deadline for Windows
-    shrink qualification; transport failures remain separately classified and
-    no resize may be retried blindly.
+- [~] Retain the M10b 30/60/120-second same-target schedule and immutable
+    300-second deadline for bounded qualification/diagnosis only. M10f must
+    separate operation health from desired-memory policy; transport failures
+    remain separately classified and no resize may be retried blindly.
 - [x] Verify intentional stop, startup failure, and unexpected worker exit have
     distinct exit/recovery behavior; system-shutdown live evidence remains part
     of the wider recovery matrix.
@@ -781,22 +824,23 @@ reclaim passes before any automatic multi-VM live action.
 
 ```text
 M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7
-              └──────────────→ M8 → M9 → M9a → M9b → M9d ─────────┐
-                                            └──────→ M9e ──────────┤
-M8 + M9a → M10a (contract) → M10a4 ────────────────────────────────┤
-M8 + M9a → M10a2 ───────────────→ M10b ────────────────────────────┼→ M11 → M11a → M12 → M13
-M10a1 (optional diagnostics) → M10a3 (optional observation)         │
-M4 + M6 → M10 ─────────────→ M10c → M10d ─────────────────────────┘
+              └──────────────→ M8 → M9 → M9a → M9b → M9d
+                                            └──────→ M9e
+M8 + M9a → M10a (contract) → M10a4
+M8 + M9a → M10a2 → M10b ──────────────────────────────┐
+M4 + M6 → M10 → M10c → M10d ─────────────────────────┼→ M10e → M10f → M10g → M11 → M11a → M12 → M13
+M10a ─────────────────────────────────────────────────┘
+M10a1 (optional diagnostics) → M10a3 (optional observation)
 Concrete unmet diagnostic need only → M10aX
 ```
 
 The live KVM path (`M8`) is external to the Windows build path. The Phase 2
 demand-agent work (`M10`) can be developed with deterministic native-API fakes.
 M10a2 is deliberately hermetic and does not wait for privileged M10a1 capture.
-Hermetic global-pool simulation can begin from the completed M10a allocation
-contract once M9e and M10d provide trustworthy inputs. Live multi-target
-actuation cannot pass until M9d guards compatibility drift and M10b records
-failure/recovery evidence. M10a1/M10a3 are optional diagnostics, and M10aX is
+The M10e desired-target calculation and M10f reconciler must pass single-VM
+hermetic tests before global-pool simulation adopts them. Live multi-target
+actuation cannot pass until M9d guards compatibility drift and M10g records
+target-controller failure/recovery evidence. M10a1/M10a3 are optional diagnostics, and M10aX is
 a conditional branch for a concrete unmet diagnostic need, not permission to
 begin driver work. M9c has removed the duplicate Bash host-control
 implementation before live resize automation is expanded.
@@ -809,7 +853,8 @@ implementation before live resize automation is expanded.
 | B14 | The protocol/source mapping is established, but installed-driver notification and branch behavior are not directly observable through a supported user-mode API | Does not block host accounting or simulation; reduces diagnosis when a Windows operation stalls | Use optional bounded tracing only when its diagnostic value justifies protected-guest mutation |
 | B15 | The signed Windows `viomem.sys` state message is kernel-debug output and informational debug prints may be filtered before capture | Optional DbgView evidence may be absent or ambiguous without persistent debug configuration changes | Qualify filtering and cleanup without boot logging, registry mutation, driver restart, or reboot; stop rather than escalate automatically |
 | B17 | M10d bounded handoff, retention, durable replay state, and ProgramData ACL provisioning are implemented, but the new installer ACL has not been exercised on the Windows guest | Blocks claiming installed least-privilege delivery evidence | Install the candidate and verify exact ProgramData ACLs under LocalService |
-| B19 | The selected bounded Windows-shrink state machine and one-block recovery pass live, but the full active-controller interruption/restart matrix is incomplete | Size-sensitive reclaim can still stall after partial progress | Deploy and observe the 1 GiB grow/64 MiB reclaim policy on the trusted development instance; retain latched recovery and default-off behavior elsewhere |
+| B19 | The bounded Windows-shrink state machine and one-block recovery pass live, but 64 MiB made no progress and larger requests can stall after partial progress | A step-and-timeout loop cannot determine Windows' durable memory need | Complete M10e-M10g; keep automatic reclaim disabled and retain M10b as diagnostic/operator recovery evidence |
+| B22 | The current resize sink rejects every new target while `requested != current` | Fresh pressure cannot safely cancel or raise a pending shrink | M10f must permit only validated upward supersession while preserving ownership, attestation, headroom, and ambiguity checks |
 | B21 | Phase 2 instances have no atomic global host reservation | Multiple active controllers/devices can race the same host headroom | Support one active development controller/device until M11 arbitration |
 
 Resolved blockers B4 (configuration location/format), B7 (unit boundaries),
@@ -876,21 +921,32 @@ The implementation is deliberately staged:
     `dommemstat` compatibility until native telemetry has live evidence.
 - [x] Add deterministic tests for invalid counters, ratio bounds, target
     limits, and alignment.
+- [ ] **M10e:** replace provisional per-poll steps with a quantitative absolute
+    desired allocation using fixed/base memory, reserves, history, and
+    hysteresis.
+- [ ] **M10f:** reconcile desired, requested, and current state, including safe
+    upward supersession of a pending shrink and constrained-current reporting.
+- [ ] **M10g:** pass hermetic and bounded live single-VM qualification before
+    enabling automatic reclaim.
 
-**Phase 2 gate:** The guest can report a complete demand snapshot locally, and
-the existing host controller remains the only resize authority.
+**Phase 2 gate:** The guest reports a complete demand snapshot locally, the
+host calculates a stable absolute target, and the single-VM reconciler passes
+M10g while remaining the only resize authority.
 
 ### Phase 3 global-controller milestones
 
 - [x] Establish allocation authority from Virtio and pinned implementation
     sources: alias-scoped live libvirt `current` is authoritative, while driver
     trace is optional diagnostic evidence.
+- [ ] Reuse the M10e/M10f absolute-target calculation and reconciliation
+    contract rather than implementing a second global demand algorithm.
 - [ ] Model total RAM, host reserve, VM capacity, and actual pool-free memory.
 - [ ] Add separate growth and reclaim priorities for each VM.
 - [ ] Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY`
     arbitration states before connecting live multi-VM actuation.
-- [ ] Add rolling history, conservative safe floors, bounded aligned reclaim,
-    convergence waits, and stop-on-pressure behavior.
+- [ ] Add global priority/arbitration around the reused rolling history,
+    conservative safe floors, bounded aligned reclaim, upward supersession,
+    and constrained-current behavior.
 - [ ] Treat direct viomem IOCTLs as deferred research until source, signing,
     permissions, and runtime behavior are proven.
 - [ ] Keep any viomem fork/build/signing/install work as a separate kernel

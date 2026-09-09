@@ -141,13 +141,40 @@ Use **M10aX** only for a concrete operational diagnostic need that host
 observation and bounded tracing cannot meet. It produces a separate signed-
 driver interface proposal and does not authorize implementation or install.
 
-### 9. Build hermetic global-pool simulation
+### 9. Replace directional polling with a quantitative target controller (M10e-M10g)
+
+The live shrink evidence shows that fixed steps and operation deadlines are
+useful bounds, but they do not answer how much memory Windows still needs.
+Complete this single-VM redesign before making its behavior a global-pool
+primitive:
+
+1. **M10e — desired target:** calculate one absolute virtio-mem target from
+   fresh native Windows availability/commit telemetry, explicit fixed/base
+   guest memory, configurable reserves, rolling history, hysteresis, safe
+   floors, and configured limits. Align the target to device geometry. Treat
+   1 GiB growth and 64 MiB reclaim as actuation bounds, not demand estimates.
+2. **M10f — reconciliation:** model `desired`, `requested`, and `current`
+   separately. Preserve `current` as accounting authority, allow fresh
+   pressure to raise or cancel a pending shrink, prohibit a second lower
+   target while reclaim is pending, and retain partial reclaim as useful
+   constrained progress.
+3. **M10f — timing:** retain finite transport/command deadlines and telemetry
+   freshness. Convert no-progress deadlines into health/diagnostic signals;
+   they must not calculate or rewrite desired memory. Prefer reliable device
+   events when available and reconcile with periodic polling.
+4. **M10g — qualification:** use deterministic clocks/fakes and then a bounded
+   live workload covering +4 GiB growth, settling at +2 GiB demand, renewed
+   pressure during shrink, zero/partial progress, stale input, ambiguity,
+   cancellation, and restart. Keep automatic reclaim disabled until this gate
+   passes.
+
+### 10. Build hermetic global-pool simulation
 
 Before simulation consumes live-shaped inputs, complete M9e host-stat
-correctness/freshness, M10c host-side allocation join, and M10d report
-delivery/freshness. Completed M9d compatibility-attestation drift protection
-and M10b failure/recovery evidence remain gates for live multi-target
-actuation, not for hermetic pool simulation.
+correctness/freshness, M10c host-side allocation join, M10d report
+delivery/freshness, and the M10e/M10f target model and reconciler. Completed
+M9d compatibility-attestation drift protection and M10g single-VM evidence
+remain gates for live multi-target actuation, not for hermetic pool simulation.
 
 - Model host reserve, actual VM allocations, pool-free capacity, stale reports,
    and in-flight operations.
@@ -155,15 +182,16 @@ actuation, not for hermetic pool simulation.
 - Simulate `NORMAL`, `CAUTION`, `PRESSURE`, `CRITICAL`, and `EMERGENCY` states.
 - Prove aligned, bounded reclaim and stop-on-pressure behavior.
 
-### 10. Add controlled reclaim and actuation
+### 11. Add target-based controlled reclaim and actuation
 
-- Add rolling demand history and conservative safe floors.
-- Grow one aligned 1 GiB quantum or reclaim one aligned 64 MiB quantum at a
-  time and wait for convergence.
-- Keep automatic Windows shrinking disabled by default outside the trusted
-  development deployment until M10b proves
-   autonomous retry, safe bounded same-target re-notification, or a controlled
-   failed-shrink recovery path.
+- Reuse the M10e rolling history, quantitative reserves, and safe floors.
+- Move toward each VM's absolute desired target using bounded aligned 1 GiB
+  growth or 64 MiB reclaim actuation.
+- Reuse M10f upward supersession and constrained-current accounting; never
+  issue a second lower target while a shrink remains pending.
+- Keep automatic Windows shrinking disabled until M10g proves target-controller
+  behavior and controlled failed-shrink recovery on the trusted development
+  guest; other deployments remain default-off.
 - Fail closed on stale or inconsistent evidence.
 - Keep direct driver IOCTL work deferred unless a separate signed-driver track
    proves a supported interface.
