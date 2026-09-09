@@ -55,6 +55,47 @@ Any live resize, VM lifecycle operation, service installation/removal, or edit
 to a server-side file remains an explicit operator-approved action separate
 from the unprivileged test suite.
 
+#### Layered Windows guest-health gate
+
+A running libvirt domain and a successful `guest-ping` prove only that QEMU and
+QGA respond; they do not prove that Windows, its service manager, or the test
+application is stable. Every guest lifecycle batch must capture the domain
+UUID/ID and QEMU PID/start time, then verify QGA plus an independent
+authenticated Windows command and each named service/application endpoint.
+Inspect pending-reboot/installer state before mutation and stop if unrelated
+work can reboot the guest inside the test window.
+
+For a planned guest-only reboot, retain the same QEMU process/domain identity,
+observe exactly one Windows boot-marker transition, and correlate Windows
+System events. Event IDs 41 (Kernel-Power), 6008 (unexpected shutdown), and
+1001 (BugCheck) fail the run. Event 1074 must name the expected initiator; an
+additional initiator or second boot also fails the run. Do not perform a later
+resize, attestation replacement, or other persistent mutation after any such
+failure.
+
+After Windows first becomes reachable, use at least three repeated end-to-end
+checks across a bounded quiet window rather than accepting the first QGA
+reply. Use a ten-minute default when lifecycle validation precedes a security
+or attestation change, unless a shorter bound is justified against all delayed
+reboot mechanisms in scope. A typical read-only probe includes:
+
+```bash
+virsh -c qemu:///system domstate win11_gpu --reason
+virsh -c qemu:///system domid win11_gpu
+virsh -c qemu:///system domuuid win11_gpu
+virsh -c qemu:///system qemu-agent-command win11_gpu \
+  '{"execute":"guest-ping"}'
+ssh -F /home/dave/.ssh/config -o BatchMode=yes virtio-mem-windows \
+  'cmd.exe /d /s /c "ver & sc.exe query qemu-ga"'
+ssh -F /home/dave/.ssh/config -o BatchMode=yes virtio-mem-windows \
+  'wevtutil qe System "/q:*[System[(EventID=41 or EventID=6008 or EventID=1001 or EventID=1074)]]" /c:20 /rd:true /f:text' \
+  | tr -d '\000'
+```
+
+The task script must bound each network command, record the pre-operation event
+baseline and boot marker, and select the exact guest services/applications for
+the workload under test.
+
 See [`dependencies.md`](dependencies.md) for the complete toolchain and host/
 guest prerequisite matrix.
 
@@ -827,7 +868,7 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-The 2026-09-09 local M10 gate passes 46 shared-core and 52 host tests with zero
+The 2026-09-09 local M10 gate passes 47 shared-core and 58 host tests with zero
 failures. It covers durable restart-safe acknowledgement, atomic handoff,
 bounded retention, the shrink schedule, latched stalls, cancellation/restart,
 and one-shot recovery. Run the native
@@ -1077,6 +1118,23 @@ controller with `NRestarts=0`.
 
 ### M10b bounded retry/recovery qualification
 
+Run the deterministic recovery matrix before any live operation:
+
+```bash
+cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
+cargo clippy -p virtio-mem-core -p virtio-mem-host \
+  --all-targets --all-features --locked -- -D warnings
+```
+
+The matrix must prove that live-state interruption and an external target
+change latch an owned shrink without a fatal worker exit, cancellation emits
+no replay, a restarted process only observes unowned divergence, and a
+pre-command rejection is distinguishable from an invoked command with an
+unknown result. Allocation-only changes to `requested`, `current`, and
+libvirt's derived top-level `currentMemory` must leave the M9d domain
+fingerprint unchanged. The current gate passes 47 shared-core and 58 host
+tests.
+
 The next live shrink work is two separately approved, controller-isolated
 operations after the hermetic state-machine suite passes:
 
@@ -1124,3 +1182,36 @@ seconds apart, immediately rereads before apply, sends one request to observed
 because sudo required interactive host authentication; it made no mutation,
 and read-only rechecks confirmed `requested=current=1 GiB` and the controller
 still active.
+
+The 2026-09-09 M10b candidate service batch likewise timed out at the
+interactive sudo prompt before the script began and was not retried
+piecemeal. Its read-only post-check confirmed the previous installed binary
+remained in place, the service was active with `NRestarts=31`, and
+`win11_gpu/ua-virtiomem0` remained converged at
+`requested=current=2105344 KiB`. Run the prepared task-scoped batch only from
+an interactive terminal where the operator can answer sudo directly:
+
+```bash
+sudo bash /home/dave/github/virtio_mem_windows_service/.vscode-artifacts/privileged-tasks/m10b-service-recovery-validation.sh
+```
+
+The first operator invocation failed its converged-state assertion at line 66
+because the XML extractor greedily removed the requested/current contents.
+This happened before the intended mutation, but prematurely armed rollback
+still performed a clean stop/start and retained the previous binary. The unit
+returned active with `NRestarts=0` and unchanged convergence. The corrected
+batch parses the values explicitly, arms rollback only after creating the
+backup, uses an SELinux-restored staged file and atomic rename, verifies the
+installed SHA-256 before start, and prints a failed line/status on error.
+Treat only its explicit `rollback=not_needed` result plus matching
+installed/candidate hashes as successful candidate evidence.
+
+The corrected invocation passed on 2026-09-09. Candidate and installed SHA-256
+both matched
+`a1c431e67b49ba0373091fb32760cecea38a7e311bdc04a8972a9a44bf2a607c`,
+the installed file retained `system_u:object_r:usr_t:s0`, and the service
+remained active with `NRestarts=0`. The controller emitted exactly one
+operation-correlated `shrink_request_rejected` event for the intentionally
+unchanged old attestation. It emitted no `shrink_requested` or
+`shrink_command_unknown` event, the VM remained converged at
+`requested=current=2105344 KiB`, and no staged or backup file remained.

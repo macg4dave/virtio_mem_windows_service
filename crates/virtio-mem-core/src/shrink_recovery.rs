@@ -276,13 +276,22 @@ impl ShrinkOperation {
         self.latch("resize command outcome is ambiguous")
     }
 
-    fn latch(&mut self, reason: &str) -> ShrinkAction {
-        self.state = ShrinkState::RecoveryRequired {
-            reason: reason.to_owned(),
-        };
-        ShrinkAction::Latch {
-            reason: reason.to_owned(),
+    /// Stops an owned operation when its live observation can no longer be
+    /// trusted. The operation remains observable but cannot notify or replay.
+    pub fn require_recovery(&mut self, reason: impl Into<String>) -> ShrinkAction {
+        if self.state == ShrinkState::Observing {
+            self.latch(reason)
+        } else {
+            ShrinkAction::Observe
         }
+    }
+
+    fn latch(&mut self, reason: impl Into<String>) -> ShrinkAction {
+        let reason = reason.into();
+        self.state = ShrinkState::RecoveryRequired {
+            reason: reason.clone(),
+        };
+        ShrinkAction::Latch { reason }
     }
 }
 
@@ -436,6 +445,32 @@ mod tests {
         assert!(matches!(
             ShrinkOperation::recovery_required("restart").state(),
             ShrinkState::RecoveryRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn interrupted_observation_requires_recovery_and_never_retries() {
+        let mut operation = operation();
+        assert!(matches!(
+            operation.require_recovery("live state unavailable"),
+            ShrinkAction::Latch { .. }
+        ));
+        assert!(matches!(
+            operation.state(),
+            ShrinkState::RecoveryRequired { reason } if reason == "live state unavailable"
+        ));
+        assert_eq!(
+            operation.observe(observation(31_000, 12 * MIB)),
+            ShrinkAction::Observe
+        );
+        assert_eq!(operation.retry_count(), 0);
+        assert_eq!(
+            operation.require_recovery("a later observation failure"),
+            ShrinkAction::Observe
+        );
+        assert!(matches!(
+            operation.state(),
+            ShrinkState::RecoveryRequired { reason } if reason == "live state unavailable"
         ));
     }
 

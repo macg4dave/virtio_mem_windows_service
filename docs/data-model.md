@@ -175,6 +175,10 @@ and `review`; it is verified before live evidence is compared. Allocation
 progress alone does not change the fingerprint, but backend/page/NUMA, device,
 slot/VFIO, balloon, topology, identity, property, trust, workload, driver, QEMU,
 or libvirt changes revoke authorization.
+Allocation normalization covers the selected device's `requested` and
+`current` contents plus the live top-level `currentMemory` content that
+libvirt derives from base memory and the virtio-mem allocation. Element
+attributes and similarly prefixed element names remain fingerprinted.
 Review and complete-attestation documents are UTF-8 JSON limited to 65,536
 bytes and reject unknown fields.
 

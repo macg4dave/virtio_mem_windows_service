@@ -249,6 +249,10 @@ fresh live configuration evidence. Allocation-neutral hashes of full domain
 XML and native QEMU argv cover backend page/sparse/reserve/preallocation/
 sharing/core-dump properties, NUMA placement, devices, machine, and topology;
 QMP and libvirt evidence bind deployed stack versions and required properties.
+The live XML hash excludes the alias-scoped `requested` and `current` element
+contents and libvirt's derived top-level `currentMemory` content. All three
+change as the selected virtio-mem allocation changes; attributes and every
+other XML element remain fingerprint inputs.
 
 This is a key operational difference from a DIMM or balloon model: virtio-mem is not a simple single-step memory resize, and guest cooperation is required to unplug or plug memory blocks safely.
 
@@ -451,6 +455,15 @@ decide convergence. The controller never replays a resize request after a
 process restart. The future M10b same-target re-notification operation is the
 only planned exception to the ordinary `requested == current` precondition and
 must not reuse the general resize entry point.
+
+Resize-sink failures distinguish a pre-command rejection from an unknown
+update-command outcome. XML, compatibility, convergence, alignment, or unit
+failure during preparation is a rejection and proves that
+`update-memory-device` was not invoked. Any error after invoking the update is
+reported as command-unknown and is never replayed. During an owned shrink,
+either class latches notification; live-state loss, invalid state, ownership
+conflict, cancellation, and deadline expiry likewise enter non-fatal
+recovery-required observation.
 
 The same Rust adapters back explicit CLI operations:
 

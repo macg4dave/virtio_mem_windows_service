@@ -138,11 +138,22 @@ impl GuestStatsSource for Box<dyn GuestStatsSource> {
 pub trait MemoryStateSource {
     fn memory_state(&self) -> Result<VirtioMemState, String>;
 }
-pub trait ResizeSink {
-    fn request_resize(&self, requested_bytes: u64) -> Result<(), String>;
 
-    fn renotify_shrink(&self, _target_bytes: u64) -> Result<(), String> {
-        Err("shrink re-notification is unsupported by this resize sink".to_owned())
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ResizeSinkError {
+    #[error("resize rejected before command execution: {0}")]
+    Rejected(String),
+    #[error("resize command outcome is unknown: {0}")]
+    CommandUnknown(String),
+}
+
+pub trait ResizeSink {
+    fn request_resize(&self, requested_bytes: u64) -> Result<(), ResizeSinkError>;
+
+    fn renotify_shrink(&self, _target_bytes: u64) -> Result<(), ResizeSinkError> {
+        Err(ResizeSinkError::Rejected(
+            "shrink re-notification is unsupported by this resize sink".to_owned(),
+        ))
     }
 }
 
@@ -198,15 +209,54 @@ where
         let runtime_started = Instant::now();
         let mut owned_request = false;
         let mut shrink_operation: Option<ShrinkOperation> = None;
+        let mut shrink_operation_id: Option<String> = None;
+        let mut operation_counter = 0_u64;
         let mut actuation_latched = false;
+        let mut unowned_divergence_reported = false;
         while !stop.load(Ordering::Acquire) {
-            let state = self
-                .state_source
-                .memory_state()
-                .map_err(HostRuntimeError::MemoryState)?;
-            state
-                .validate()
-                .map_err(|error| HostRuntimeError::MemoryState(error.to_string()))?;
+            let state = match self.state_source.memory_state() {
+                Ok(state) => state,
+                Err(error) => {
+                    if let Some(operation) = shrink_operation.as_mut() {
+                        let reason = format!("live state unavailable during owned shrink: {error}");
+                        if matches!(
+                            operation.require_recovery(reason.clone()),
+                            ShrinkAction::Latch { .. }
+                        ) {
+                            actuation_latched = true;
+                            eprintln!(
+                                "virtio-mem-host: event=shrink_observation_failed operation_id={} vm={} alias={} reason={reason}",
+                                shrink_operation_id.as_deref().unwrap_or("unknown"),
+                                self.config.vm_name,
+                                self.config.alias
+                            );
+                        }
+                        wait_interruptibly(stop, self.config.poll_interval);
+                        continue;
+                    }
+                    return Err(HostRuntimeError::MemoryState(error));
+                }
+            };
+            if let Err(error) = state.validate() {
+                if let Some(operation) = shrink_operation.as_mut() {
+                    let reason = format!("invalid live state during owned shrink: {error}");
+                    if matches!(
+                        operation.require_recovery(reason.clone()),
+                        ShrinkAction::Latch { .. }
+                    ) {
+                        actuation_latched = true;
+                        eprintln!(
+                            "virtio-mem-host: event=shrink_observation_failed operation_id={} vm={} alias={} reason={reason}",
+                            shrink_operation_id.as_deref().unwrap_or("unknown"),
+                            self.config.vm_name,
+                            self.config.alias
+                        );
+                    }
+                    wait_interruptibly(stop, self.config.poll_interval);
+                    continue;
+                }
+                return Err(HostRuntimeError::MemoryState(error.to_string()));
+            }
             if state.requested_bytes != state.current_bytes {
                 if let Some(operation) = shrink_operation.as_mut() {
                     let now_millis =
@@ -218,18 +268,75 @@ where
                         fresh: true,
                         guest_running: true,
                     }) {
-                        ShrinkAction::Renotify { target_bytes, .. }
-                            if self.config.shrink_renotification =>
-                        {
-                            if let Err(error) = self.resize_sink.renotify_shrink(target_bytes) {
-                                let _ = operation.uncertain_command_result();
-                                eprintln!(
-                                    "virtio-mem-host: shrink re-notification outcome is ambiguous; actuation latched off: {error}"
-                                );
+                        ShrinkAction::Renotify {
+                            target_bytes,
+                            retry_index,
+                        } if self.config.shrink_renotification => {
+                            match self.resize_sink.renotify_shrink(target_bytes) {
+                                Ok(()) => eprintln!(
+                                    "virtio-mem-host: event=shrink_renotified operation_id={} vm={} alias={} target_bytes={target_bytes} requested_bytes={} current_bytes={} retry_index={retry_index} elapsed_millis={now_millis} deadline_millis=300000",
+                                    shrink_operation_id.as_deref().unwrap_or("unknown"),
+                                    self.config.vm_name,
+                                    self.config.alias,
+                                    state.requested_bytes,
+                                    state.current_bytes
+                                ),
+                                Err(error) => {
+                                    let event = match &error {
+                                        ResizeSinkError::Rejected(_) => "shrink_renotification_rejected",
+                                        ResizeSinkError::CommandUnknown(_) => "shrink_command_unknown",
+                                    };
+                                    let _ = match &error {
+                                        ResizeSinkError::Rejected(_) => {
+                                            operation.require_recovery(error.to_string())
+                                        }
+                                        ResizeSinkError::CommandUnknown(_) => {
+                                            operation.uncertain_command_result()
+                                        }
+                                    };
+                                    actuation_latched = true;
+                                    eprintln!(
+                                        "virtio-mem-host: event={event} operation_id={} vm={} alias={} target_bytes={target_bytes} retry_index={retry_index} reason={error}",
+                                        shrink_operation_id.as_deref().unwrap_or("unknown"),
+                                        self.config.vm_name,
+                                        self.config.alias
+                                    );
+                                }
                             }
                         }
+                        ShrinkAction::Progress { blocks_reclaimed } => {
+                            eprintln!(
+                                "virtio-mem-host: event=shrink_progress operation_id={} vm={} alias={} target_bytes={} requested_bytes={} current_bytes={} blocks_reclaimed={blocks_reclaimed} elapsed_millis={now_millis} deadline_millis=300000",
+                                shrink_operation_id.as_deref().unwrap_or("unknown"),
+                                self.config.vm_name,
+                                self.config.alias,
+                                state.requested_bytes,
+                                state.requested_bytes,
+                                state.current_bytes
+                            );
+                        }
+                        ShrinkAction::Converged => {
+                            eprintln!(
+                                "virtio-mem-host: event=shrink_converged operation_id={} vm={} alias={} target_bytes={} requested_bytes={} current_bytes={} elapsed_millis={now_millis}",
+                                shrink_operation_id.as_deref().unwrap_or("unknown"),
+                                self.config.vm_name,
+                                self.config.alias,
+                                state.requested_bytes,
+                                state.requested_bytes,
+                                state.current_bytes
+                            );
+                        }
                         ShrinkAction::Latch { reason } => {
-                            eprintln!("virtio-mem-host: shrink actuation latched off: {reason}");
+                            actuation_latched = true;
+                            eprintln!(
+                                "virtio-mem-host: event=shrink_latched operation_id={} vm={} alias={} target_bytes={} requested_bytes={} current_bytes={} elapsed_millis={now_millis} deadline_millis=300000 reason={reason}",
+                                shrink_operation_id.as_deref().unwrap_or("unknown"),
+                                self.config.vm_name,
+                                self.config.alias,
+                                state.requested_bytes,
+                                state.requested_bytes,
+                                state.current_bytes
+                            );
                         }
                         _ => {}
                     }
@@ -237,9 +344,16 @@ where
                     continue;
                 }
                 if !owned_request {
-                    eprintln!(
-                        "virtio-mem-host: observing unowned divergent requested/current state; recovery is required and replay is suppressed"
-                    );
+                    if !unowned_divergence_reported {
+                        eprintln!(
+                            "virtio-mem-host: event=ownership_conflict vm={} alias={} requested_bytes={} current_bytes={} reason=unowned_divergence_replay_suppressed",
+                            self.config.vm_name,
+                            self.config.alias,
+                            state.requested_bytes,
+                            state.current_bytes
+                        );
+                        unowned_divergence_reported = true;
+                    }
                     wait_interruptibly(stop, self.config.poll_interval);
                     continue;
                 }
@@ -255,6 +369,8 @@ where
             pending_since = None;
             owned_request = false;
             shrink_operation = None;
+            shrink_operation_id = None;
+            unowned_divergence_reported = false;
             let demand = self
                 .demand_source
                 .evaluate(state, &self.config)
@@ -262,9 +378,6 @@ where
             let decision = demand.decision;
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if actuation_latched {
-                    eprintln!(
-                        "virtio-mem-host: automatic actuation remains latched off after an ambiguous command outcome"
-                    );
                     wait_interruptibly(stop, self.config.poll_interval);
                     continue;
                 }
@@ -293,16 +406,31 @@ where
                         continue;
                     }
                 }
+                let candidate_operation_id = if requested_bytes < state.current_bytes {
+                    operation_counter = operation_counter.saturating_add(1);
+                    Some(format!("{}-{operation_counter}", std::process::id()))
+                } else {
+                    None
+                };
                 if let Err(error) = self.resize_sink.request_resize(requested_bytes) {
                     if requested_bytes < state.current_bytes {
                         actuation_latched = true;
+                        let event = match &error {
+                            ResizeSinkError::Rejected(_) => "shrink_request_rejected",
+                            ResizeSinkError::CommandUnknown(_) => "shrink_command_unknown",
+                        };
                         eprintln!(
-                            "virtio-mem-host: initial shrink outcome is ambiguous; replay suppressed pending a fresh state read: {error}"
+                            "virtio-mem-host: event={event} operation_id={} vm={} alias={} target_bytes={requested_bytes} requested_bytes={} current_bytes={} reason={error}",
+                            candidate_operation_id.as_deref().unwrap_or("unknown"),
+                            self.config.vm_name,
+                            self.config.alias,
+                            state.requested_bytes,
+                            state.current_bytes
                         );
                         wait_interruptibly(stop, self.config.poll_interval);
                         continue;
                     }
-                    return Err(HostRuntimeError::Resize(error));
+                    return Err(HostRuntimeError::Resize(error.to_string()));
                 }
                 owned_request = true;
                 pending_since = Some(Instant::now());
@@ -319,9 +447,29 @@ where
                         )
                         .map_err(HostRuntimeError::Controller)?,
                     );
+                    shrink_operation_id = candidate_operation_id;
+                    eprintln!(
+                        "virtio-mem-host: event=shrink_requested operation_id={} vm={} alias={} target_bytes={requested_bytes} requested_bytes={} current_bytes={} retry_index=0 elapsed_millis={now_millis} deadline_millis=300000",
+                        shrink_operation_id.as_deref().unwrap_or("unknown"),
+                        self.config.vm_name,
+                        self.config.alias,
+                        state.requested_bytes,
+                        state.current_bytes
+                    );
                 }
             }
             wait_interruptibly(stop, self.config.poll_interval);
+        }
+        if let Some(operation) = shrink_operation.as_mut() {
+            if matches!(operation.state(), virtio_mem_core::ShrinkState::Observing) {
+                let _ = operation.cancel();
+                eprintln!(
+                    "virtio-mem-host: event=shrink_cancelled operation_id={} vm={} alias={} reason=controller_stop_replay_suppressed",
+                    shrink_operation_id.as_deref().unwrap_or("unknown"),
+                    self.config.vm_name,
+                    self.config.alias
+                );
+            }
         }
         Ok(())
     }
@@ -340,7 +488,8 @@ fn wait_interruptibly(stop: &AtomicBool, duration: Duration) {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
 
     use super::*;
 
@@ -520,9 +669,11 @@ mod tests {
     struct AmbiguousShrinkSink(Cell<u32>);
 
     impl ResizeSink for &AmbiguousShrinkSink {
-        fn request_resize(&self, _requested_bytes: u64) -> Result<(), String> {
+        fn request_resize(&self, _requested_bytes: u64) -> Result<(), ResizeSinkError> {
             self.0.set(self.0.get().saturating_add(1));
-            Err("command timed out".to_owned())
+            Err(ResizeSinkError::CommandUnknown(
+                "command timed out".to_owned(),
+            ))
         }
     }
 
@@ -556,5 +707,221 @@ mod tests {
         runtime.run(&stop).expect("latched ambiguity is non-fatal");
 
         assert_eq!(sink.0.get(), 1);
+    }
+
+    struct FixedShrinkDemand {
+        evaluations: Cell<u32>,
+        target_bytes: u64,
+    }
+
+    impl DemandSource for &FixedShrinkDemand {
+        fn evaluate(
+            &self,
+            _state: VirtioMemState,
+            _config: &HostConfig,
+        ) -> Result<DemandDecision, String> {
+            self.evaluations
+                .set(self.evaluations.get().saturating_add(1));
+            Ok(DemandDecision {
+                decision: ResizeDecision::Request {
+                    requested_bytes: self.target_bytes,
+                },
+                safe_floor_bytes: self.target_bytes,
+            })
+        }
+    }
+
+    struct ScriptedState<'a> {
+        observations: RefCell<VecDeque<Result<VirtioMemState, String>>>,
+        stop: &'a AtomicBool,
+    }
+
+    impl MemoryStateSource for &ScriptedState<'_> {
+        fn memory_state(&self) -> Result<VirtioMemState, String> {
+            let observation = self
+                .observations
+                .borrow_mut()
+                .pop_front()
+                .ok_or_else(|| "state script exhausted".to_owned())?;
+            if self.observations.borrow().is_empty() {
+                self.stop.store(true, Ordering::Release);
+            }
+            observation
+        }
+    }
+
+    struct RecordingShrinkSink {
+        requests: RefCell<Vec<u64>>,
+    }
+
+    impl ResizeSink for &RecordingShrinkSink {
+        fn request_resize(&self, requested_bytes: u64) -> Result<(), ResizeSinkError> {
+            self.requests.borrow_mut().push(requested_bytes);
+            Ok(())
+        }
+    }
+
+    fn state(requested_bytes: u64, current_bytes: u64) -> VirtioMemState {
+        VirtioMemState {
+            size_bytes: 40 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes,
+            current_bytes,
+        }
+    }
+
+    fn automatic_shrink_config() -> HostConfig {
+        let mut runtime_config = config();
+        runtime_config.automatic_windows_shrink = true;
+        runtime_config.poll_interval = Duration::from_millis(1);
+        runtime_config
+    }
+
+    #[test]
+    fn restart_observes_unowned_divergence_without_replaying_a_command() {
+        let stop = AtomicBool::new(false);
+        let source = ScriptedState {
+            observations: RefCell::new(VecDeque::from([Ok(state(16 * GIB - 64 * MIB, 16 * GIB))])),
+            stop: &stop,
+        };
+        let demand = FixedShrinkDemand {
+            evaluations: Cell::new(0),
+            target_bytes: 16 * GIB - 128 * MIB,
+        };
+        let sink = RecordingShrinkSink {
+            requests: RefCell::new(Vec::new()),
+        };
+        let runtime = HostRuntime::new(
+            &demand,
+            &source,
+            &sink,
+            UnusedHostMemory,
+            automatic_shrink_config(),
+        );
+
+        runtime
+            .run(&stop)
+            .expect("recovery observation is non-fatal");
+
+        assert_eq!(demand.evaluations.get(), 0);
+        assert!(sink.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn state_interruption_during_owned_shrink_latches_without_restart_or_replay() {
+        let stop = AtomicBool::new(false);
+        let target = 16 * GIB - 64 * MIB;
+        let source = ScriptedState {
+            observations: RefCell::new(VecDeque::from([
+                Ok(state(16 * GIB, 16 * GIB)),
+                Err("guest is transitioning".to_owned()),
+                Ok(state(target, 16 * GIB)),
+            ])),
+            stop: &stop,
+        };
+        let demand = FixedShrinkDemand {
+            evaluations: Cell::new(0),
+            target_bytes: target,
+        };
+        let sink = RecordingShrinkSink {
+            requests: RefCell::new(Vec::new()),
+        };
+        let runtime = HostRuntime::new(
+            &demand,
+            &source,
+            &sink,
+            UnusedHostMemory,
+            automatic_shrink_config(),
+        );
+
+        runtime
+            .run(&stop)
+            .expect("owned interruption becomes recovery-required observation");
+
+        assert_eq!(demand.evaluations.get(), 1);
+        assert_eq!(sink.requests.borrow().as_slice(), &[target]);
+    }
+
+    #[test]
+    fn external_target_change_latches_after_later_convergence() {
+        let stop = AtomicBool::new(false);
+        let target = 16 * GIB - 64 * MIB;
+        let external_target = target - 2 * MIB;
+        let source = ScriptedState {
+            observations: RefCell::new(VecDeque::from([
+                Ok(state(16 * GIB, 16 * GIB)),
+                Ok(state(external_target, 16 * GIB)),
+                Ok(state(16 * GIB, 16 * GIB)),
+            ])),
+            stop: &stop,
+        };
+        let demand = FixedShrinkDemand {
+            evaluations: Cell::new(0),
+            target_bytes: target,
+        };
+        let sink = RecordingShrinkSink {
+            requests: RefCell::new(Vec::new()),
+        };
+        let runtime = HostRuntime::new(
+            &demand,
+            &source,
+            &sink,
+            UnusedHostMemory,
+            automatic_shrink_config(),
+        );
+
+        runtime
+            .run(&stop)
+            .expect("ownership conflict is a non-fatal latch");
+
+        assert_eq!(demand.evaluations.get(), 2);
+        assert_eq!(sink.requests.borrow().as_slice(), &[target]);
+    }
+
+    #[test]
+    fn cancellation_of_owned_shrink_does_not_replay_after_restart() {
+        let target = 16 * GIB - 64 * MIB;
+        let first_stop = AtomicBool::new(false);
+        let first_source = ScriptedState {
+            observations: RefCell::new(VecDeque::from([
+                Ok(state(16 * GIB, 16 * GIB)),
+                Ok(state(target, 16 * GIB)),
+            ])),
+            stop: &first_stop,
+        };
+        let demand = FixedShrinkDemand {
+            evaluations: Cell::new(0),
+            target_bytes: target,
+        };
+        let sink = RecordingShrinkSink {
+            requests: RefCell::new(Vec::new()),
+        };
+        HostRuntime::new(
+            &demand,
+            &first_source,
+            &sink,
+            UnusedHostMemory,
+            automatic_shrink_config(),
+        )
+        .run(&first_stop)
+        .expect("cancellation is a clean stop");
+
+        let restart_stop = AtomicBool::new(false);
+        let restart_source = ScriptedState {
+            observations: RefCell::new(VecDeque::from([Ok(state(target, 16 * GIB))])),
+            stop: &restart_stop,
+        };
+        HostRuntime::new(
+            &demand,
+            &restart_source,
+            &sink,
+            UnusedHostMemory,
+            automatic_shrink_config(),
+        )
+        .run(&restart_stop)
+        .expect("restart observes but does not replay divergence");
+
+        assert_eq!(demand.evaluations.get(), 1);
+        assert_eq!(sink.requests.borrow().as_slice(), &[target]);
     }
 }

@@ -6,8 +6,10 @@
 actuation are live validated. The host-side demand join is complete with
 native Windows and hermetic host evidence. Bounded delivery and M10b recovery
 logic are implemented and the one-block live recovery gate passed; installed
-ACL verification and the wider interruption matrix remain. Host-stat freshness and the complete compatibility
-attestation is implemented and awaits a separately approved live installation.
+ACL verification and the wider interruption matrix remain. Host-stat freshness
+and the complete compatibility attestation are implemented and installed; the
+corrected allocation-neutral hash requires deliberate attestation regeneration
+before the candidate controller can actuate.
 The allocation-authority contract is established from Virtio and pinned
 implementation sources; optional driver tracing remains diagnostic.
 `win11_gpu` is a fully trusted development/test KVM
@@ -55,12 +57,15 @@ single-VM qualification before global arbitration.
 - Default-on automatic shrink, default-off re-notification, a fake-clock-tested
   30/60/120-second retry state machine, non-fatal latched stalls, and bounded
   `qualify-shrink`/`abandon-shrink` operator paths.
+- Typed pre-command rejection versus unknown-command outcomes, operation-
+  correlated shrink events, interruption/cancellation latching, rate-limited
+  unowned-divergence observation, and deterministic restart/no-replay tests.
 
 ## Current evidence
 
 The latest native RHEL gate passed:
 
-- 46 shared-core and 52 host tests, with no failures.
+- 47 shared-core and 58 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -105,6 +110,38 @@ service. The service policy calculates one 1 GiB growth quantum or one 64 MiB
   default as a core product capability; the zero-progress outcome still
   latches further actuation and remains explicit platform-qualification evidence.
 
+The 2026-09-09 M10b follow-up found the live device converged at 2,120 MiB and
+the installed controller active after 31 systemd restarts. The old binary was
+repeatedly rejecting legitimate allocation change as `domain_xml` drift
+because libvirt's derived live `currentMemory` was still fingerprinted; it
+later restarted on non-advancing `dommemstat`. The candidate fixes the false
+drift input and recovery classifications locally. Its task-scoped service
+rollout timed out at sudo authentication before execution and made no change.
+The subsequent operator invocation failed a faulty XML-extraction precondition
+before intended mutation. Prematurely armed rollback nevertheless performed a
+clean stop/start, retained the prior installed hash and live allocation, and
+returned the unit active with `NRestarts=0`. Extraction and rollback ordering
+are corrected in the local batch.
+The corrected batch then installed the candidate with matching SHA-256
+`a1c431e67b49ba0373091fb32760cecea38a7e311bdc04a8972a9a44bf2a607c`
+and the expected SELinux context. The unit stayed active with `NRestarts=0`,
+emitted one typed pre-command attestation rejection without replay, and left
+`requested=current=2105344 KiB` unchanged.
+
+The subsequent active-controller reboot run was not valid qualification
+evidence. QGA initiated the expected planned reboot at 13:43:55, but Windows
+Installer initiated a second planned reboot at 13:50:31 to finish configuring
+Sunshine. QEMU PID 379778 remained alive from September 7, ruling out a KVM
+process crash; the latest Kernel-Power 41/6008 events predate this run and the
+latest BugCheck 1001 is from August 18. Windows recovered with QGA, SSH, and
+`qemu-ga` healthy, and the device remained converged at 2155872256 bytes. The
+controller restarted seven times while reboot-time `dommemstat` omitted
+`unused`, then returned active.
+The privileged lifecycle prompt now requires hypervisor continuity,
+independent Windows/service probes, pending-reboot and installer checks,
+crash/reboot-event correlation, exactly one expected boot transition, and a
+quiet stabilization window before attestation or other persistent work.
+
 ## Open implementation work
 
 - Implement M10e's normative quantitative target contract from
@@ -126,8 +163,8 @@ service. The service policy calculates one 1 GiB growth quantum or one 64 MiB
 - Live-install the M10d Windows candidate and verify its protected ProgramData
   ACL. Atomic handoff/retention and durable restart-safe replay state are
   complete in code and tests; the current guest ProgramData directory is absent.
-- Install a freshly reviewed M9d attestation with read-only service-account
-  access before deploying this build. The implemented version-1 SHA-256 guard
+- Regenerate and review the installed M9d attestation after deploying the
+  allocation-normalization fix. The implemented version-1 SHA-256 guard
   binds backend, memory-slot, VFIO, incompatible-workload, balloon, topology,
   trust, driver, QEMU, and libvirt evidence and rejects drift before resize.
 - Provision ProgramData/configuration ACLs and package a classic Event Log
@@ -142,9 +179,8 @@ service. The service policy calculates one 1 GiB growth quantum or one 64 MiB
   notifications after 30/60/120 seconds without progress, at most three
   notifications, an immutable 300-second deadline, a non-fatal latched stall,
   and separately qualified one-shot abandon-to-current recovery. Automatic
-  shrink remains default-off generally; the trusted development instance uses
-  the selected 64 MiB quantum after deployment. Re-notification remains a
-  separate control.
+  shrink defaults on with the selected 64 MiB quantum; re-notification remains
+  a separate default-off diagnostic control.
 
 ## External blockers
 

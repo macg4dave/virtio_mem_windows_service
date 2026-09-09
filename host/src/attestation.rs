@@ -404,7 +404,10 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn scrub_allocation_state(xml: &str) -> String {
     let mut scrubbed = xml.to_owned();
-    for element in ["requested", "current"] {
+    // Libvirt derives the live top-level currentMemory value from base memory
+    // plus the virtio-mem allocation. It therefore changes alongside the
+    // alias-scoped requested/current fields and is not configuration drift.
+    for element in ["currentMemory", "requested", "current"] {
         let mut offset = 0;
         while let Some(start) = scrubbed[offset..].find(&format!("<{element}")) {
             let start = offset + start;
@@ -593,7 +596,7 @@ mod tests {
     #[test]
     fn allocation_progress_does_not_change_domain_fingerprint() {
         let before = "<domain><currentMemory>8</currentMemory><memory><target><requested unit='MiB'>2</requested><current unit='MiB'>0</current></target></memory></domain>";
-        let after = "<domain><currentMemory>8</currentMemory><memory><target><requested unit='MiB'>4</requested><current unit='MiB'>4</current></target></memory></domain>";
+        let after = "<domain><currentMemory>12</currentMemory><memory><target><requested unit='MiB'>4</requested><current unit='MiB'>4</current></target></memory></domain>";
         assert_eq!(
             sha256_hex(scrub_allocation_state(before).as_bytes()),
             sha256_hex(scrub_allocation_state(after).as_bytes())
@@ -616,9 +619,20 @@ mod tests {
                 .as_bytes()
             )
         );
+        assert_eq!(
+            scrub_allocation_state(before),
+            scrub_allocation_state(after)
+        );
+    }
+
+    #[test]
+    fn similarly_prefixed_xml_elements_remain_fingerprint_inputs() {
+        let before = "<domain><currentMemorySlots>8</currentMemorySlots></domain>";
+        let after = "<domain><currentMemorySlots>16</currentMemorySlots></domain>";
+
         assert_ne!(
             scrub_allocation_state(before),
-            scrub_allocation_state(&after.replace("<currentMemory>8", "<currentMemory>16"))
+            scrub_allocation_state(after)
         );
     }
 

@@ -45,8 +45,8 @@ technology preview.
 
 ## Verified evidence
 
-- **Current platform gates:** the latest RHEL gate passes 46 shared-core and
-    52 host tests; the latest native-Windows gate passes 67 tests. Keep these
+- **Current platform gates:** the latest RHEL gate passes 47 shared-core and
+    58 host tests; the latest native-Windows gate passes 67 tests. Keep these
     as separate supported-platform results rather than one workspace total.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -323,7 +323,7 @@ readiness in the remaining host-side work.
 | M10a3 | Optional bounded driver observation | [x] | M9b, M10a2 | One 2 MiB grow converged, but the predeclared 1 GiB recovery target remained 2 MiB above current for 60 samples/300 seconds; no matching driver record appeared, no overlapping request was issued, and graceful domain recreation restored convergence/controller state |
 | M10a4 | State-contract adoption | [x] | M10a | Architecture, API, data model, and testing docs make live libvirt `current` authoritative while distinguishing requested, converging, stalled, and Windows diagnostic evidence |
 | M10aX | Conditional driver status-interface feasibility | [x] | Concrete unmet diagnostic need | The M10a3 no-progress and larger partial-progress stalls plus empty bounded captures justify a proposal for a cached read-only status IOCTL; security, ABI, tests, external build/signing/install, and rollback gates are specified, while implementation remains No-Go |
-| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | One-block live retry/recovery passed; a 256 MiB ramp partially reclaimed, and the installed 64 MiB automatic request made no progress for 300 seconds and latched cleanly; automatic shrink now defaults on while the bounded diagnostic matrix stays open |
+| M10b | Single-VM failure, Windows shrink, and recovery matrix | [~] | M7, M9b, M9e, M10a2 | Hermetic interruption/restart/cancellation/ownership and typed command-failure paths plus installed candidate rejection/no-replay pass; one-block recovery and partial/no-progress shrink evidence pass; reviewed attestation regeneration and active-controller reboot/interruption remain |
 | M10e | Quantitative desired-allocation model | [~] | M10c, M10d, M10a | Implement the normative estimator in `target-controller.md`: checked physical/commit candidates, fixed-visible-base validation, effective device maximum, normal/floor reserves, immediate growth, 10-minute high-water reclaim history, 256 MiB downward hysteresis, and restart-safe checkpoint produce absolute aligned desired and safe-floor targets |
 | M10f | Desired/requested/current reconciler | [ ] | M10e, M10b | Reconcile durable desired, device requested, authoritative current, and explicit health; bound growth/reclaim to 1 GiB/64 MiB, permit only upward shrink supersession, freeze owned shrink on stale telemetry, account partial progress, and resolve journaled commands without replay |
 | M10g | Single-VM target-controller qualification | [ ] | M10f, M9d | Report controller correctness separately from platform reclaim capability using hermetic faults and a bounded committed/resident live workload; automatic shrink remains default-on, while failures expose constrained/latched health and preserve all safety gates |
@@ -399,6 +399,12 @@ instance therefore remains negative platform-reclaim evidence even though
 automatic reclaim now defaults enabled and latches safely. M10e-M10g replace the
 per-poll directional-step policy with a durable absolute target and retain
 M10b only for bounded diagnosis, stall classification, and operator recovery.
+The runtime matrix additionally proves that a state-read interruption during
+an owned shrink becomes recovery-required without a worker restart, a later
+convergence cannot clear the actuation latch, cancellation plus process
+restart does not replay the request, and unowned divergence is reported once
+while observation continues. Preparation rejection and an invoked command
+with unknown outcome are separate error classes.
 
 ### M10e-M10g target-controller redesign
 

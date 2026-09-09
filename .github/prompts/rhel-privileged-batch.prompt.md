@@ -34,7 +34,28 @@ do not pause for a separate approval when the target and safe bounds are clear.
    waits/timeouts, convergence checks, and a concrete rollback to captured
    initial state. Do not bypass repository safety gates or combine unrelated
    mutations merely to reduce password prompts.
-6. Before execution, show the operator the script path and summarize every
+6. For a VM or guest lifecycle task, add a layered guest-health gate; QGA
+   availability alone is not proof that Windows is usable:
+   - Before mutation, capture the domain UUID/ID and the QEMU process identity
+     and start time, then require `domstate` running, QGA ping, an independent
+     authenticated Windows command, and the named Windows services or
+     application endpoint needed by the test.
+   - Inspect pending-reboot indicators and active installer/update activity.
+     Stop before mutation if an unrelated reboot can overlap the bounded test.
+   - Capture a Windows boot marker and a bounded System event-log baseline.
+     For a guest-only reboot, require the QEMU process and domain identity to
+     remain continuous, the boot marker to change exactly once, and the
+     expected planned-reboot event to identify the requested initiator.
+   - Treat Kernel-Power 41, unexpected-shutdown 6008, BugCheck 1001, an
+     unexpected 1074 initiator, a second boot transition, or loss of the QEMU
+     process as a failed run. Do not continue into resize, attestation, install,
+     or other persistent steps after such a signal.
+   - After recovery, require at least three successful end-to-end probes across
+     an explicitly bounded quiet window. For a lifecycle test that precedes a
+     persistent security or attestation change, default that window to ten
+     minutes unless the task documents why a shorter interval covers every
+     delayed reboot/recovery mechanism in scope.
+7. Before execution, show the operator the script path and summarize every
    target, mutation, expected effect, timeout, output file, and rollback. This
    is an execution notice, not an approval request. Then invoke exactly:
 
@@ -42,13 +63,13 @@ do not pause for a separate approval when the target and safe bounds are clear.
    sudo bash /absolute/workspace/.vscode-artifacts/privileged-tasks/TASK.sh
    ```
 
-7. Invoke that command once in an interactive terminal. The operator types the
+8. Invoke that command once in an interactive terminal. The operator types the
    sudo password directly if prompted; never request, read, echo,
    transmit, cache, or automate it.
-8. If authorization or any command fails, stop and report the failure. Do not
+9. If authorization or any command fails, stop and report the failure. Do not
    split the batch into individual sudo calls, retry it piecemeal, or depend on
    sudo timestamp caching.
-9. Report the commands' results, final live state, and whether rollback ran.
+10. Report the commands' results, final live state, and whether rollback ran.
    The script is valid only for the current task; do not reuse it for unrelated
    work.
 

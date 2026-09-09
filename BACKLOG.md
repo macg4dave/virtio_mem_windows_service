@@ -1,5 +1,66 @@
 # BACKLOG
 
+## 2026-09-09 M10b runtime recovery hardening
+
+- Corrected the allocation-neutral M9d domain fingerprint to normalize
+  libvirt's derived live `currentMemory` content as well as the selected
+  virtio-mem `requested` and `current` contents. Similarly prefixed elements
+  and all non-allocation configuration remain bound.
+- Added explicit resize-sink error classes for preparation rejection versus an
+  invoked update with unknown outcome. Owned-shrink observation failure,
+  invalid state, external target change, re-notification failure, deadline,
+  and cancellation now latch or stop without blind replay.
+- Added operation-correlated request, progress, re-notification, convergence,
+  ownership, stall, cancellation, and recovery-required journal events;
+  unchanged unowned divergence is reported once rather than every poll.
+- Deterministic cancellation/restart, state interruption, external ownership,
+  preflight rejection, unknown-command, and no-replay regressions pass. The
+  local gate now passes 47 shared-core and 58 host tests plus rustfmt, Clippy
+  with warnings denied, the release build, Bash syntax, and diff checks.
+- Read-only live inspection found `win11_gpu/ua-virtiomem0` converged at
+  `requested=current=2105344 KiB`, but the installed controller had restarted
+  30 times and was repeatedly reporting false `domain_xml` drift. Candidate
+  service validation was subsequently completed; the active-controller
+  reboot/interruption cases remain before TASK-022 can close.
+- The single candidate-install/service-recovery batch timed out at the host's
+  interactive sudo prompt before its script began, so it made no mutation and
+  was not retried piecemeal. The read-only post-check found the old installed
+  binary SHA-256 `3db1924d3cc131754be889ae3a2541e8cd866b1e4281a96ebc00017dbfd95039`,
+  the service active after restart 31, and the allocation still converged at
+  `2105344 KiB`.
+- The operator then invoked the exact batch through sudo. Its XML extractor
+  greedily removed the requested/current values and failed the converged-state
+  assertion at line 66 before the intended mutation. Because rollback was
+  armed too early, that error still caused an unnecessary clean service
+  stop/start; it retained the old binary, reset `NRestarts=0`, and left the
+  allocation unchanged. The extractor and rollback ordering are corrected.
+  The batch now also stages the executable in `/usr/local/libexec`, restores
+  its SELinux context, atomically renames it, verifies the installed hash
+  before start, and reports the failed line/status on error.
+- The corrected batch installed candidate SHA-256
+  `a1c431e67b49ba0373091fb32760cecea38a7e311bdc04a8972a9a44bf2a607c`
+  with `system_u:object_r:usr_t:s0`, restarted the unit, and observed it with
+  `NRestarts=0`. It emitted exactly one `shrink_request_rejected` event for the
+  known stale attestation, issued no shrink request or unknown-command event,
+  retained `requested=current=2105344 KiB`, and removed both staged and backup
+  files. This completes the candidate service/rejection/no-replay gate.
+- The approved active-controller lifecycle batch requested one planned QGA
+  reboot at 13:43:55. Windows became reachable, but `msiexec.exe` initiated an
+  unrelated second planned reboot at 13:50:31 to finish configuring Sunshine.
+  QEMU PID 379778 remained continuous from September 7, so this was not a KVM
+  process crash. No current Kernel-Power 41, unexpected-shutdown 6008, or
+  BugCheck 1001 record exists. During the two boot windows `dommemstat` omitted
+  `unused` and the controller accumulated seven systemd restarts; it then
+  recovered active, QGA and authenticated Windows SSH passed, and allocation
+  remained converged at 2155872256 bytes. Old-attestation drift rejection after
+  the final boot confirms refreshed attestation was not active, so this run
+  does not close the reboot/interruption or attestation gates.
+- Hardened the canonical privileged-batch prompt and project testing rules:
+  guest lifecycle now requires hypervisor continuity, an independent Windows
+  command and named service/application checks, pending reboot/installer
+  inspection, correlated crash/reboot events, exactly one expected boot, and
+  repeated end-to-end health over a quiet window before any persistent step.
+
 ## 2026-09-09 target-controller milestone redesign
 
 - Added M10e to calculate an absolute desired virtio-mem allocation from fresh
@@ -45,7 +106,7 @@
   initial state and recovery. Automatic shrink stays default-on; zero/partial
   driver progress must become explicit constrained/latched health rather than
   silently changing the product to growth-only operation.
-- Current local validation passes 46 shared-core and 52 host tests, formatting,
+- Current local validation passes 47 shared-core and 58 host tests, formatting,
   warnings-as-errors Clippy, the core/host release build, Bash syntax, and diff
   checks. The Windows crate was not changed; its latest native gate remains 67
   tests.
@@ -976,7 +1037,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 | --- | --- | --- | --- | --- |
 | TASK-026 | M10e quantitative desired-allocation model | Copilot | In Progress | Target-estimator, history, reserve, safe-floor, base-calibration, effective-maximum, and M10f/M10g handoff contracts are being made deterministic. Automatic shrink is now an explicit default-on product capability with bounded fail-closed latching rather than a post-M10g opt-in. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
-| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | In Progress | One-block live retry/recovery passed; a paced 256 MiB ramp reclaimed 3,000 MiB before stalling; the 1 GiB grow/64 MiB reclaim policy is implemented. The remaining active-controller interruption/restart matrix is open. |
+| TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | In Progress | Hermetic restart/interruption/cancellation/ownership and typed command-failure tests pass (47 core/58 host). Candidate service rejection/no-replay, one-block recovery, and partial/no-progress evidence pass. The first active-controller reboot run was invalidated by a second planned Sunshine/MSI reboot; layered Windows health and quiet-window gates are now mandatory. Reviewed attestation regeneration and a clean reboot/interruption run remain. |
 
 ## Planned
 

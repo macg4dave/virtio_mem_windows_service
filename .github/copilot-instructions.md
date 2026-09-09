@@ -88,6 +88,15 @@ another approval for the operations listed below.
   expected effect, timeout, and rollback. This is an execution notice, not an
   approval request; continue with the operation unless the scope is ambiguous
   or a required safety precondition fails.
+- For guest lifecycle testing, `virsh domstate` or one QGA reply is not a
+  sufficient health check. Before and after the mutation, record hypervisor
+  continuity, prove the guest OS can execute an independent authenticated
+  command, check the named guest services/application, and inspect bounded OS
+  crash/reboot evidence. Refuse to start while an unrelated installer, update,
+  or pending reboot can overlap the test. After an expected reboot, require a
+  quiet stabilization window with repeated end-to-end checks and no unexpected
+  second boot before proceeding to resize, attestation, or other persistent
+  work.
 - Privileged task-scoped validation is also allowed by default. Batch related
   privileged commands into one task-specific Bash script under the ignored
   `.vscode-artifacts/privileged-tasks/` directory and invoke it once with one

@@ -1,7 +1,7 @@
 use virtio_mem_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility};
 
 use crate::compatibility_source::{CompatibilitySource, FixedCompatibilitySource};
-use crate::runtime::ResizeSink;
+use crate::runtime::{ResizeSink, ResizeSinkError};
 use crate::virsh::VirshCommand;
 
 pub struct VirshResizeSink<C, E = FixedCompatibilitySource> {
@@ -61,14 +61,20 @@ impl<C, E> VirshResizeSink<C, E> {
 }
 
 impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, E> {
-    fn request_resize(&self, requested_bytes: u64) -> Result<(), String> {
-        let prepared = self.prepare_resize(requested_bytes)?;
+    fn request_resize(&self, requested_bytes: u64) -> Result<(), ResizeSinkError> {
+        let prepared = self
+            .prepare_resize(requested_bytes)
+            .map_err(ResizeSinkError::Rejected)?;
         self.apply_prepared(prepared)
+            .map_err(ResizeSinkError::CommandUnknown)
     }
 
-    fn renotify_shrink(&self, target_bytes: u64) -> Result<(), String> {
-        let prepared = self.prepare_shrink_renotification(target_bytes)?;
+    fn renotify_shrink(&self, target_bytes: u64) -> Result<(), ResizeSinkError> {
+        let prepared = self
+            .prepare_shrink_renotification(target_bytes)
+            .map_err(ResizeSinkError::Rejected)?;
         self.apply_prepared(prepared)
+            .map_err(ResizeSinkError::CommandUnknown)
     }
 }
 
@@ -242,6 +248,21 @@ mod tests {
         }
     }
 
+    struct FailedUpdateFake {
+        calls: Rc<RefCell<Vec<Vec<String>>>>,
+    }
+
+    impl VirshCommand for FailedUpdateFake {
+        fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
+            self.calls.borrow_mut().push(arguments.to_vec());
+            if arguments[0] == "dumpxml" {
+                Ok(CONVERGED_XML.to_owned())
+            } else {
+                Err(VirshError::Timeout(std::time::Duration::from_secs(10)))
+            }
+        }
+    }
+
     #[test]
     fn refreshes_state_before_sending_one_validated_resize() {
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -287,6 +308,26 @@ mod tests {
 
         assert!(sink.request_resize(6 * 1024 * 1024).is_err());
         assert_eq!(calls.take().len(), 1);
+    }
+
+    #[test]
+    fn distinguishes_preflight_rejection_from_an_unknown_command_outcome() {
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sink = VirshResizeSink::new(
+            FailedUpdateFake {
+                calls: Rc::clone(&calls),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+
+        let error = sink
+            .request_resize(6 * 1024 * 1024)
+            .expect_err("timed-out update has an unknown outcome");
+
+        assert!(matches!(error, ResizeSinkError::CommandUnknown(_)));
+        assert_eq!(calls.borrow().len(), 2);
     }
 
     #[test]
@@ -355,7 +396,9 @@ mod tests {
         let error = sink
             .request_resize(6 * 1024 * 1024)
             .expect_err("unknown compatibility must fail closed");
-        assert!(error.contains("dynamic-memslots"));
+        assert!(
+            matches!(error, ResizeSinkError::Rejected(message) if message.contains("dynamic-memslots"))
+        );
         assert_eq!(calls.take().len(), 1);
     }
 
@@ -375,7 +418,9 @@ mod tests {
         let error = sink
             .request_resize(6 * 1024 * 1024)
             .expect_err("drift must fail before actuation");
-        assert!(error.contains("drifted: domain_xml"));
+        assert!(
+            matches!(error, ResizeSinkError::Rejected(message) if message.contains("drifted: domain_xml"))
+        );
         assert_eq!(
             calls.take(),
             vec![vec!["dumpxml".to_owned(), "guest".to_owned()]]

@@ -53,6 +53,37 @@ defaults enabled while same-target re-notification remains disabled. M10e-M10g r
 and safe three-value reconciliation with explicit control health; M10b remains
 diagnostic/recovery behavior.
 
+The 2026-09-09 active-controller check found 30 systemd restarts and repeated
+false `domain_xml` drift after legitimate allocation changes. Live libvirt
+had changed top-level `currentMemory` with the converged virtio-mem allocation,
+while the allocation-neutral M9d hash scrubbed only the selected device's
+`requested` and `current` contents. The implementation now normalizes all
+three allocation-derived contents, distinguishes preparation rejection from
+an invoked command with unknown outcome, latches observation/ownership faults,
+rate-limits unowned-divergence reporting, and emits operation-correlated
+shrink events. Hermetic restart, interruption, cancellation, external-target,
+and no-replay tests pass; candidate installed-service evidence remains part of
+the open live matrix.
+The prepared candidate rollout timed out before the privileged script began;
+the unchanged installed controller then reached `NRestarts=31` while the live
+allocation remained converged. No candidate binary, attestation, service
+configuration, VM definition, or memory state was changed by that attempt.
+The following operator invocation failed its line-66 convergence assertion
+before intended mutation because the XML extractor erased both numeric values.
+Rollback had been armed too early and therefore performed an unnecessary clean
+controller stop/start; `NRestarts` reset to zero, the prior binary remained,
+and allocation stayed converged. The corrected batch fixes extraction, arms
+rollback only after backup, and uses a hash-verified atomic SELinux-restored
+staged install. This is deployment-script failure evidence, not candidate
+runtime evidence.
+The corrected invocation then passed: installed and candidate hashes matched
+`a1c431e67b49ba0373091fb32760cecea38a7e311bdc04a8972a9a44bf2a607c`,
+the service remained active at `NRestarts=0`, and exactly one typed pre-command
+rejection was emitted. No resize/unknown-command event appeared, allocation
+remained converged at `2105344 KiB`, and temporary install files were removed.
+The remaining attestation regeneration and active-controller interruption
+matrix are separate gates.
+
 ## Resolved Issues
 
 | ID | Description | Status | Fix Reference | Date Resolved |
