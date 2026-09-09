@@ -223,11 +223,14 @@ use them for allocation accounting.
 
 ### Persistence
 
-M10d replay acknowledgement is persistent. The legacy directional policy and
-M10b operation ownership remain process-local. M10e-M10f add a versioned,
-bounded, atomically replaced host checkpoint for qualified target history,
-durable desired, fingerprints, command intent, and the actuation latch. This is
-a small state file rather than a database.
+M10d replay acknowledgement is persistent. M10e adds a versioned, bounded,
+atomically replaced host checkpoint for qualified candidate history and
+durable desired/safe-floor values. It binds VM, alias, policy, and compatibility
+fingerprints and reserves an actuation-latch field. Missing, corrupt,
+oversized, incompatible, or future ordering state restarts reclaim warm-up;
+fresh demand may still grow immediately. M10f will add write-before-command
+intent and connect the durable latch to reconciler health. This remains a small
+state file rather than a database.
 
 The controller treats `virtio_mem_current_bytes` as authoritative. Ordinary
 resize is suppressed while requested and current differ; M10f adds only the

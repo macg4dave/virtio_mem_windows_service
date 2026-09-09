@@ -235,8 +235,8 @@ accounting or hermetic global-pool simulation.
 - Automatic Windows shrinking defaults enabled because reclaim is a core
     product capability. A live 64 MiB request made no progress, so normal
     re-notification remains disabled and the controller latches rather than
-    overlapping or blindly retrying. M10e-M10g add the normative absolute
-    target, warmed-history floor, durable desired/requested/current
-    reconciliation, restart-safe command intent, and separate controller/
-    platform qualification defined in
+    overlapping or blindly retrying. M10e implements the normative absolute
+    target, warmed-history floor, and atomic policy checkpoint. M10f-M10g add
+    durable desired/requested/current reconciliation, restart-safe command
+    intent, and separate controller/platform qualification defined in
     [`target-controller.md`](target-controller.md).

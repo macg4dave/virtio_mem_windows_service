@@ -137,13 +137,14 @@ are converted with checked multiplication using the reported Windows page
 size. The native collector returns an explicit error for failed Windows APIs,
 zero denominators, impossible counters, and arithmetic overflow.
 
-`DemandCalculator` clamps recommendations to configured byte limits and aligns
-every target to the configured block size. It produces a one-block conservative
-safe-floor recommendation, but neither that floor nor the desired target is a
-resize command. The calculator and its data types are platform-neutral shared
-Rust code. Production invokes them on the host only after the M10c join; the
-Windows service remains measurement-only and the host controller remains the
-only Phase 2 actuation authority.
+The Windows-side `DemandCalculator` remains a provisional advisory/test
+boundary. Production raw telemetry is joined on the host and passed to the
+M10e `TargetEstimator`, which calculates separate checked physical-use and
+commit-headroom candidates, clamps and aligns them to the effective device
+maximum, and retains an absolute desired target plus a warmed-history safe
+floor. Neither value is a resize command. The policy types are platform-neutral
+shared Rust code; the Windows service remains measurement-only and the host
+controller remains the only Phase 2 actuation authority.
 
 `DemandAgent` provides the runtime boundary for one caller-selected poll cycle:
 it collects a snapshot, calculates a report using the observed current

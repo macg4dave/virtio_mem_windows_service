@@ -1,5 +1,19 @@
 # BACKLOG
 
+## 2026-09-09 M10e quantitative target estimator
+
+- Implemented the host-owned absolute target estimator with checked physical-
+  use and commit-headroom candidates, fixed-visible-base drift validation, the
+  aligned effective maximum and explicit capacity-limited output.
+- Added distinct normal and safe-floor reserves, immediate upward desired
+  movement, bounded 10-minute high-water history, gap/session invalidation,
+  256 MiB downward hysteresis, conservative restart warm-up, and the
+  deterministic +4 GiB then +2 GiB target trace.
+- Added required host configuration, a fingerprint-bound atomic policy
+  checkpoint under the systemd state directory, and cold recovery for missing,
+  incompatible, corrupt, oversized, or future checkpoint state. M10f retains
+  command-journal, live control-health, and durable latch ownership.
+
 ## 2026-09-09 M10b operator-accepted closure
 
 - Closed M10b/TASK-022 at operator direction using the completed hermetic
@@ -119,7 +133,7 @@
   initial state and recovery. Automatic shrink stays default-on; zero/partial
   driver progress must become explicit constrained/latched health rather than
   silently changing the product to growth-only operation.
-- Current local validation passes 47 shared-core and 58 host tests, formatting,
+- Current local validation passes 55 shared-core and 60 host tests, formatting,
   warnings-as-errors Clippy, the core/host release build, Bash syntax, and diff
   checks. The Windows crate was not changed; its latest native gate remains 67
   tests.
@@ -1042,14 +1056,13 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Effort | Dependencies |
 | --- | --- | --- | --- | --- | --- |
-| TASK-027 | M10f desired/requested/current reconciler | Copilot | Ready after TASK-026 | Large | TASK-022, TASK-026 |
+| TASK-027 | M10f desired/requested/current reconciler | Copilot | Ready | Large | TASK-022, TASK-026 |
 | TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | Ready after TASK-027 | Large | TASK-019, TASK-027 |
 
 ## In Progress
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-026 | M10e quantitative desired-allocation model | Copilot | In Progress | Target-estimator, history, reserve, safe-floor, base-calibration, effective-maximum, and M10f/M10g handoff contracts are being made deterministic. Automatic shrink is now an explicit default-on product capability with bounded fail-closed latching rather than a post-M10g opt-in. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
 
 ## Planned
@@ -1214,6 +1227,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Completed | Notes |
 | --- | --- | --- | --- | --- |
+| TASK-026 | M10e quantitative desired-allocation model | Copilot | 2026-09-09 | Absolute checked physical/commit targets, base/effective-maximum gates, normal/floor reserves, bounded warmed history, hysteresis, capacity-limited output, atomic fingerprint-bound checkpointing, conservative restart, and +4 GiB then +2 GiB traces pass 55 core and 60 host tests. |
 | TASK-022 | M10b single-VM failure, Windows shrink, and recovery matrix | Copilot + Operator | 2026-09-09 | Operator accepted closure from 47 core/58 host hermetic tests, installed candidate rejection/no-replay, bounded one-block retry and abandon-to-current recovery, and partial/no-progress live shrink evidence. The unexecuted clean reboot/refreshed-attestation batch remains optional and is not claimed as passed. |
 | TASK-021 | M10d demand envelope and bounded delivery | Copilot | 2026-09-08 | Version 2 identity/provenance, atomic current-record handoff, three-record retention, durable restart-safe replay acknowledgement, read bounds, and LocalService ProgramData ACL provisioning pass 45 core/48 host/67 native Windows tests; installed ACL verification remains operational evidence. |
 | TASK-020 | M10c host-side current-allocation join | Copilot | 2026-09-08 | Windows publishes VM/time-scoped raw telemetry without allocation input; the host rejects invalid/stale/wrong-VM records, joins fresh alias-scoped live `current`, and calculates through shared policy. 31 core, 40 host, and 66 native Windows tests pass. |

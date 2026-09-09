@@ -4,14 +4,12 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use virtio_mem_core::{
-    plan_resize, DemandCalculator, DemandPolicyConfig, DemandReport, MemoryControllerConfig,
-    MemoryStats, RawTelemetryEnvelope, ResizeDecision, ShrinkAction, ShrinkObservation,
-    ShrinkOperation, ShrinkPolicy, VirtioMemState,
+    plan_resize, MemoryControllerConfig, MemoryStats, ResizeDecision, ShrinkAction,
+    ShrinkObservation, ShrinkOperation, ShrinkPolicy, VirtioMemState,
 };
 
 use crate::config::HostConfig;
 use crate::host_memory::{validate_grow_headroom, HostMemorySource};
-use crate::raw_telemetry::RawTelemetrySource;
 
 pub fn evaluate_memory_decision(
     stats: &MemoryStats,
@@ -36,28 +34,6 @@ pub fn evaluate_memory_decision(
     .map_err(|error| error.to_string())
 }
 
-pub fn evaluate_demand_join(
-    envelope: RawTelemetryEnvelope,
-    state: VirtioMemState,
-    config: &HostConfig,
-) -> Result<DemandReport, String> {
-    let calculator = DemandCalculator::new(DemandPolicyConfig {
-        configured_minimum_bytes: config.min_memory_bytes,
-        configured_maximum_bytes: config.max_memory_bytes,
-        block_size_bytes: state.block_size_bytes,
-        grow_step_bytes: config.grow_step_bytes,
-        shrink_step_bytes: config.shrink_step_bytes,
-    })
-    .map_err(|error| error.to_string())?;
-    let report = calculator
-        .calculate(envelope.memory, state.current_bytes)
-        .map_err(|error| error.to_string())?;
-    state
-        .validate_target(report.demand.desired_target_bytes)
-        .map_err(|error| error.to_string())?;
-    Ok(report)
-}
-
 pub trait GuestStatsSource {
     fn get_memory_stats(&self) -> Result<MemoryStats, String>;
 }
@@ -74,27 +50,6 @@ pub trait DemandSource {
         state: VirtioMemState,
         config: &HostConfig,
     ) -> Result<DemandDecision, String>;
-}
-
-impl<T: RawTelemetrySource> DemandSource for T {
-    fn evaluate(
-        &self,
-        state: VirtioMemState,
-        config: &HostConfig,
-    ) -> Result<DemandDecision, String> {
-        let report = evaluate_demand_join(self.read()?, state, config)?;
-        let decision = if report.demand.desired_target_bytes == state.current_bytes {
-            ResizeDecision::NoChange
-        } else {
-            ResizeDecision::Request {
-                requested_bytes: report.demand.desired_target_bytes,
-            }
-        };
-        Ok(DemandDecision {
-            decision,
-            safe_floor_bytes: report.demand.safe_floor_bytes,
-        })
-    }
 }
 
 pub struct GuestStatsDemandSource<T> {
@@ -506,6 +461,15 @@ mod tests {
             upper_threshold_bytes: 3 * GIB,
             grow_step_bytes: GIB,
             shrink_step_bytes: 64 * MIB,
+            fixed_visible_base_bytes: 8 * GIB,
+            physical_reserve_bytes: 2 * GIB,
+            commit_reserve_bytes: 2 * GIB,
+            safe_floor_physical_reserve_bytes: GIB,
+            safe_floor_commit_reserve_bytes: GIB,
+            reclaim_history: Duration::from_secs(600),
+            reclaim_max_gap: Duration::from_secs(60),
+            downward_hysteresis_bytes: 256 * MIB,
+            policy_state_path: "state.json".to_owned(),
             poll_interval: Duration::from_secs(30),
             command_timeout: Duration::from_secs(10),
             convergence_timeout: Duration::from_secs(300),
@@ -523,61 +487,6 @@ mod tests {
             automatic_windows_shrink: false,
             shrink_renotification: false,
         }
-    }
-
-    fn critical_envelope() -> RawTelemetryEnvelope {
-        RawTelemetryEnvelope::new(
-            "guest",
-            "VirtioMemService",
-            "session-a",
-            1_000_000,
-            10,
-            0,
-            virtio_mem_core::MemoryTelemetrySnapshot {
-                physical_total_bytes: 16 * GIB,
-                physical_available_bytes: 2 * GIB,
-                memory_load_percent: 88,
-                commit_total_bytes: 15 * GIB,
-                commit_limit_bytes: 16 * GIB,
-                commit_peak_bytes: 15 * GIB,
-                system_cache_bytes: 0,
-                kernel_paged_bytes: 0,
-                kernel_nonpaged_bytes: 0,
-            },
-        )
-    }
-
-    #[test]
-    fn demand_join_uses_alias_scoped_live_current_for_host_calculation() {
-        let report = evaluate_demand_join(
-            critical_envelope(),
-            VirtioMemState {
-                size_bytes: 40 * GIB,
-                block_size_bytes: 2 * MIB,
-                requested_bytes: 16 * GIB,
-                current_bytes: 16 * GIB,
-            },
-            &config(),
-        )
-        .expect("join should pass");
-
-        assert_eq!(report.demand.desired_target_bytes, 17 * GIB);
-        assert_eq!(report.memory.physical_total_bytes, 16 * GIB);
-    }
-
-    #[test]
-    fn demand_join_rejects_target_conflicting_with_live_device_size() {
-        assert!(evaluate_demand_join(
-            critical_envelope(),
-            VirtioMemState {
-                size_bytes: 16 * GIB,
-                block_size_bytes: 2 * MIB,
-                requested_bytes: 16 * GIB,
-                current_bytes: 16 * GIB,
-            },
-            &config(),
-        )
-        .is_err());
     }
 
     struct FixedGuestStats(MemoryStats);

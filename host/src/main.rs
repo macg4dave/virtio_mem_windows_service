@@ -11,6 +11,7 @@ use virtio_mem_host::qga::VirshGuestAgent;
 use virtio_mem_host::raw_telemetry::FileRawTelemetrySource;
 use virtio_mem_host::resize_sink::VirshResizeSink;
 use virtio_mem_host::runtime::{DemandSource, GuestStatsDemandSource, HostRuntime};
+use virtio_mem_host::target_policy::TargetDemandSource;
 use virtio_mem_host::virsh::Virsh;
 use virtio_mem_host::xml_source::VirshXmlSource;
 
@@ -47,17 +48,22 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     match config.demand_source {
-        DemandSourceMode::Raw => run_controller(
-            FileRawTelemetrySource::new(
+        DemandSourceMode::Raw => {
+            let raw = FileRawTelemetrySource::new(
                 &config.raw_telemetry_path,
                 &config.vm_name,
                 &config.raw_telemetry_service_name,
                 config.raw_telemetry_max_age,
                 config.raw_telemetry_future_tolerance,
-            ),
-            config,
-            &stop,
-        ),
+            );
+            match TargetDemandSource::new(raw, &config) {
+                Ok(source) => run_controller(source, config, &stop),
+                Err(error) => {
+                    eprintln!("virtio-mem-host target policy error: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         DemandSourceMode::GuestStats => {
             let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
             match config.stats_source {

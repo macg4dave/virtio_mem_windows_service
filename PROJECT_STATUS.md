@@ -23,6 +23,10 @@ single-VM qualification before global arbitration.
 
 ## Completed locally
 
+- M10e absolute desired-allocation estimation: checked physical and commit
+  candidates, base/effective-maximum validation, normal and floor reserves,
+  immediate growth, bounded warmed history, downward hysteresis, explicit
+  capacity limitation, and atomic fingerprint-bound checkpoint recovery.
 - Architecture, API contracts, data model, engineering standards, testing
   strategy, roadmap, backlog, and QEMU Guest Agent setup documentation.
 - Shared byte-based memory policy with alignment, bounds, hysteresis,
@@ -66,7 +70,7 @@ single-VM qualification before global arbitration.
 
 The latest native RHEL gate passed:
 
-- 47 shared-core and 58 host tests, with no failures.
+- 55 shared-core and 60 host tests, with no failures.
 - `cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked`
 - `cargo build -p virtio-mem-core -p virtio-mem-host --all-features --release --locked`
 - `cargo fmt --all -- --check`
@@ -152,11 +156,6 @@ and refreshed-attestation batch remains optional and is not claimed as passed.
 
 ## Open implementation work
 
-- Implement M10e's normative quantitative target contract from
-  `docs/target-controller.md`: separate physical and commit candidates,
-  fixed-visible-base validation, effective device maximum, distinct normal and
-  floor reserves, immediate growth, a fresh 10-minute reclaim window, 256 MiB
-  downward hysteresis, and a restart-safe bounded checkpoint.
 - Implement M10f's distinct `desired`/`requested`/`current` reconciler. It must
   allow validated upward cancellation of a pending shrink when pressure
   returns, while forbidding another lower target and continuing to account

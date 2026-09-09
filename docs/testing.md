@@ -846,16 +846,37 @@ The host requires `VIRTIO_MEM_RAW_TELEMETRY_PATH`,
 clock and verify the latest complete record is accepted only for the expected
 VM/service and freshness window. They reject replayed/non-monotonic ordering,
 retired session reuse, incomplete final lines, records over 64 KiB, and files
-over 1 MiB. The host then obtains alias-scoped live XML and
-calculates through the shared `DemandCalculator`; configured minimum,
-aggregate physical memory, QGA total, and balloon `actual` are never allocation
-substitutes. Live-device geometry conflicts fail closed. Automatic shrink
-defaults enabled; explicit `false` pauses it, while same-target diagnostic
-re-notification defaults disabled. Until M10e-M10f land, the implemented
-directional path still enforces a single bounded request and latches an
-ambiguous or stalled shrink rather than blindly replaying it.
+   over 1 MiB. The host then obtains alias-scoped live XML and calculates
+   through the M10e `TargetEstimator`; configured minimum,
+   aggregate physical memory, QGA total, and balloon `actual` are never allocation
+   substitutes. Live-device geometry conflicts fail closed. Automatic shrink
+   defaults enabled; explicit `false` pauses it, while same-target diagnostic
+   re-notification defaults disabled. The M10e adapter retains the existing
+   1 GiB growth and 64 MiB reclaim actuation bounds while M10f adds the full
+   three-value reconciler; ambiguous or stalled shrink remains latched rather
+   than blindly replayed.
 
-M10e-M10g validation must follow
+M10e configuration requires `VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES` and
+`VIRTIO_MEM_POLICY_STATE_PATH`. Normal physical/commit reserves default to
+2 GiB, safe-floor reserves to 1 GiB, history to 600 seconds, the maximum gap to
+twice the materialized poll interval, and downward hysteresis to 256 MiB. The
+systemd unit provisions `/var/lib/virtio-mem-host` mode 0700 for the atomic
+checkpoint. Success requires the checkpoint to remain VM/alias, policy, and
+compatibility-fingerprint matched; a missing, invalid, oversized, mismatched,
+or future checkpoint must restart reclaim warm-up without blocking fresh
+growth.
+
+Run the M10e focused tests with:
+
+```bash
+cargo test -p virtio-mem-core --all-features --locked target_controller
+cargo test -p virtio-mem-host --all-features --locked target_policy
+```
+
+They prove checked candidate arithmetic, base tolerance, effective maximum,
+alignment, explicit capacity limitation, history gaps/session restart,
+immediate growth, delayed reclaim, checkpoint matching, and the deterministic
++4 GiB then +2 GiB target trace. M10f-M10g validation must continue to follow
 [`target-controller.md`](target-controller.md): prove the physical/commit
 formula, base tolerance, effective maximum, reserve ordering, history gaps,
 10-minute warm-up, 256 MiB downward hysteresis, safe-floor ordering, bounded
@@ -868,10 +889,10 @@ Run the M10c hermetic host gate from the repository root:
 cargo test -p virtio-mem-core -p virtio-mem-host --all-features --locked
 ```
 
-The 2026-09-09 local M10 gate passes 47 shared-core and 58 host tests with zero
-failures. It covers durable restart-safe acknowledgement, atomic handoff,
-bounded retention, the shrink schedule, latched stalls, cancellation/restart,
-and one-shot recovery. Run the native
+The 2026-09-09 local M10e gate passes 55 shared-core and 60 host tests with zero
+failures. It covers the absolute estimator and checkpoint in addition to
+durable replay acknowledgement, atomic handoff, bounded retention, the shrink
+schedule, latched stalls, cancellation/restart, and one-shot recovery. Run the native
 Windows gate with `VIRTIO_MEM_WINDOWS_SSH=ALIAS bash
 scripts/windows-remote-build.sh all`; success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
@@ -1137,7 +1158,7 @@ no replay, a restarted process only observes unowned divergence, and a
 pre-command rejection is distinguishable from an invoked command with an
 unknown result. Allocation-only changes to `requested`, `current`, and
 libvirt's derived top-level `currentMemory` must leave the M9d domain
-fingerprint unchanged. The current gate passes 47 shared-core and 58 host
+fingerprint unchanged. The current gate passes 55 shared-core and 60 host
 tests.
 
 The next live shrink work is two separately approved, controller-isolated

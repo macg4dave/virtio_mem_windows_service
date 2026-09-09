@@ -14,6 +14,23 @@ VIRTIO_MEM_UPPER_THRESHOLD_BYTES=4294967296
 VIRTIO_MEM_GROW_STEP_BYTES=1073741824
 VIRTIO_MEM_SHRINK_STEP_BYTES=67108864
 
+# Required M10e calibration: Windows physical total when this virtio-mem
+# device contributes zero allocation. Replace this marker from recorded
+# baseline evidence; the service intentionally rejects the placeholder.
+VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES=REPLACE_WITH_CALIBRATED_BYTES
+# Absolute-target reserves. Omitted values use 2 GiB normal reserves and 1 GiB
+# safe-floor reserves. All byte values must align to the live device block.
+VIRTIO_MEM_PHYSICAL_RESERVE_BYTES=2147483648
+VIRTIO_MEM_COMMIT_RESERVE_BYTES=2147483648
+VIRTIO_MEM_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES=1073741824
+VIRTIO_MEM_SAFE_FLOOR_COMMIT_RESERVE_BYTES=1073741824
+VIRTIO_MEM_RECLAIM_HISTORY_SECONDS=600
+# The default is materialized as twice the configured poll interval.
+VIRTIO_MEM_RECLAIM_MAX_GAP_SECONDS=60
+VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES=268435456
+# Required protected, host-local atomic checkpoint path.
+VIRTIO_MEM_POLICY_STATE_PATH=/var/lib/virtio-mem-host/win11_gpu.policy.json
+
 # Every external command is bounded. TimeoutStopSec must exceed this value.
 VIRTIO_MEM_POLL_INTERVAL_SECONDS=30
 VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS=10

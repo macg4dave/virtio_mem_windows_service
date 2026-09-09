@@ -46,8 +46,8 @@ technology preview.
 
 ## Verified evidence
 
-- **Current platform gates:** the latest RHEL gate passes 47 shared-core and
-    58 host tests; the latest native-Windows gate passes 67 tests. Keep these
+- **Current platform gates:** the latest RHEL gate passes 55 shared-core and
+    60 host tests; the latest native-Windows gate passes 67 tests. Keep these
     as separate supported-platform results rather than one workspace total.
 - **Safe policy core:** resize decisions are aligned, bounded by configured
     limits, hysteresis-aware, and blocked while `requested != current`.
@@ -424,12 +424,14 @@ added, nor conclude that a timeout means the desired allocation changed.
 The normative formulas, defaults, transitions, persistence rules, and gates are
 in [`target-controller.md`](target-controller.md).
 
-1. **M10e — calculate and retain desired allocation.** Use separate checked
+1. **M10e — calculate and retain desired allocation — complete 2026-09-09.** Use separate checked
    physical-use and commit-headroom candidates; validate the fixed visible base
    and effective device maximum; calculate distinct desired and safe-floor
    targets. Grow desired immediately, but require a complete fresh 10-minute
    high-water window plus 256 MiB deadband before lowering it. Persist bounded
-   policy history and restart conservatively when it cannot be trusted.
+   policy history and restart conservatively when it cannot be trusted. The
+   production raw-telemetry path now uses this estimator and persists its
+   fingerprint-bound checkpoint atomically.
 2. **M10f — reconcile values and control state.** Keep `desired`, `requested`,
    and authoritative `current` distinct from `growing`, `shrinking`,
    `constrained`, `command_unknown`, and `recovery_required` health. Bound

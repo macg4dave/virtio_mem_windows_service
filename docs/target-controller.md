@@ -2,8 +2,9 @@
 
 ## Status and scope
 
-This is the normative design contract for M10e, M10f, and M10g. M10e replaces
-the provisional directional demand estimate with an absolute per-VM target.
+This is the normative design contract for M10e, M10f, and M10g. M10e is
+implemented and replaces the production raw-telemetry directional demand
+estimate with an absolute per-VM target.
 M10f reconciles that target with asynchronous virtio-mem state. M10g qualifies
 the estimator and reconciler hermetically and on the trusted development VM.
 

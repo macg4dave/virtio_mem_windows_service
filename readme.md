@@ -54,7 +54,7 @@ The following capabilities are implemented and locally tested:
 - Rust host controller with bounded `virsh` adapters, XML validation,
   `dommemstat` fallback, and host/device headroom gates.
 
-The latest gates pass 47 shared-core, 58 host, and 67 native-Windows tests.
+The latest gates pass 55 shared-core, 60 host, and 67 native-Windows tests.
 These are separate supported-platform results, not one cross-platform
 workspace run. Release builds, formatting, Clippy warnings-as-errors, and Bash
 syntax validation pass.
@@ -93,8 +93,9 @@ syntax validation pass.
   latched cleanly. Automatic reclaim now defaults enabled because it is a core
   product capability; freshness, safe floors, bounded 64 MiB requests,
   convergence, and ambiguity/stall latching prevent blind repeated reclaim.
-- M10e-M10g will replace the per-poll directional-step policy with an absolute
-  desired target and explicit `desired`/`requested`/`current` reconciliation.
+- M10e has replaced the production raw-telemetry pressure-step estimate with
+  an absolute desired target and restart-safe history. M10f-M10g add explicit
+  `desired`/`requested`/`current` reconciliation and qualification.
   Fixed no-progress deadlines remain health and recovery bounds; they will not
   decide how much memory Windows needs.
 - Phase 2 supports one active controller for one explicitly named VM/device on

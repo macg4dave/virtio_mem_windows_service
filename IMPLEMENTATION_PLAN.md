@@ -148,14 +148,14 @@ useful bounds, but they do not answer how much memory Windows still needs.
 Complete this single-VM redesign before making its behavior a global-pool
 primitive:
 
-1. **M10e — instantaneous estimate:** implement the checked formula and
+1. **M10e — instantaneous estimate (complete 2026-09-09):** implement the checked formula and
    invariants in [`docs/target-controller.md`](docs/target-controller.md).
    Calculate separate physical-availability and commit-headroom candidates,
    take their maximum, validate configured fixed visible base memory against
    `physical_total - current`, and clamp to the aligned effective maximum that
    includes the device's 1 GiB safety headroom. Do not size RAM from pressure
    ratios or the since-boot commit peak.
-2. **M10e — stable target:** calculate normal desired and conservative safe-
+2. **M10e — stable target (complete 2026-09-09):** calculate normal desired and conservative safe-
    floor candidates with distinct byte reserves. Grow desired immediately;
    lower it only from a complete fresh 10-minute high-water window and a
    256 MiB downward deadband. Persist a bounded atomic checkpoint and require

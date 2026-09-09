@@ -8,6 +8,7 @@ pub mod error;
 pub mod global_pool;
 pub mod shrink_recovery;
 pub mod stats;
+pub mod target_controller;
 pub mod units;
 pub mod virtio_mem;
 pub mod virtio_mem_xml;
@@ -35,6 +36,11 @@ pub use shrink_recovery::{
     ShrinkPolicy, ShrinkState,
 };
 pub use stats::{parse_memory_stats, parse_memory_stats_with_id, MemoryStats};
+pub use target_controller::{
+    calculate_instantaneous, CandidateHistoryEntry, InstantaneousTarget, TargetEstimate,
+    TargetEstimator, TargetEstimatorError, TargetEstimatorState, TargetGeometry,
+    TargetPolicyConfig, TargetSample, MAX_TARGET_HISTORY_ENTRIES, TARGET_ESTIMATOR_STATE_VERSION,
+};
 pub use units::{bytes_to_kibibytes, kibibytes_to_bytes, BYTES_PER_KIB};
 pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES, MIN_HEADROOM_BYTES};
 pub use virtio_mem_xml::{
