@@ -1,5 +1,20 @@
 # BACKLOG
 
+## 2026-09-10 leave-it-running QA roadmap
+
+- Added `docs/QA-roadmap.md` with stable `QA-T001` through `QA-T024` tasks and
+  five ordered gates covering safe baseline, coherent production deployment,
+  bounded automatic resize, fault/recovery qualification, 24-hour repeated
+  cycles, a 72-hour unattended soak, and the final development GO/NO-GO.
+- The roadmap keeps the target limited to trusted single-VM `win11_gpu` use and
+  preserves Windows measurement-only, host actuation authority, convergence,
+  attestation, freshness, headroom, journaling, latching, and no-replay rules.
+- Current status remains NO-GO: installed artifacts are stale, production raw
+  telemetry transport/ACLs are absent, attestation has drifted, the installed
+  host unit is restarting, and applied M10g plus endurance evidence remain.
+- `BACKLOG.md` remains the product execution source of truth; QA task results
+  must update their owning product/tooling task and affected status documents.
+
 ## 2026-09-10 BT-T014 unattended workload/resize qualification foundation
 
 - Added `cargo xtask qualification start|status|review` with dry-run-default

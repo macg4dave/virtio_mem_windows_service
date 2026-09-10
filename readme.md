@@ -224,6 +224,7 @@ For a live resize, follow the approval and rollback procedure in
 | --- | --- |
 | [`docs/roadmap.md`](docs/roadmap.md) | Milestones, gates, dependencies, and blockers |
 | [`docs/build-test-tooling-roadmap.md`](docs/build-test-tooling-roadmap.md) | BT-M/BT-T milestones, migration inventory, dependencies, and blockers for build/test tooling |
+| [`docs/QA-roadmap.md`](docs/QA-roadmap.md) | Ordered implementation, recovery, and endurance gates for the single-KVM "leave it running" decision |
 | [`BACKLOG.md`](BACKLOG.md) | Execution source of truth and handoffs |
 | [`PROJECT_STATUS.md`](PROJECT_STATUS.md) | Current implementation snapshot |
 | [`IMPLEMENTATION_PLAN.md`](IMPLEMENTATION_PLAN.md) | Dependency-ordered implementation plan |
