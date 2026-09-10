@@ -54,9 +54,9 @@ stable machine-readable result schema.
 
 Current local evidence is 62 shared-core, 67 host, and 13 tooling tests plus
 locked release builds, formatting, warnings-denied Clippy, diff validation,
-and a passing host doctor. The native Windows gate passes 67 tests and verifies
+and a passing host doctor. The native Windows gate passes 74 tests and verifies
 artifact SHA-256
-`607c2baed981e4807f082341aacb7d80ec846190c50d3b8f26728656aa55d899`.
+`cbc8a81aa87ba0a3c2c34ad030d85cb5cd0c7f5c3eeed683708daf8a4a154404`.
 No live mutation gate was run for BT-T001–BT-T006.
 
 ## Milestone map

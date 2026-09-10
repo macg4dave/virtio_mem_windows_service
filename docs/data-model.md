@@ -74,6 +74,25 @@ different records, retired-session reuse, files above 1 MiB, records above
 handoff, durable acknowledgement, and ACL provisioning are implemented;
 installed ACL evidence remains M10d work.
 
+### M10g workload evidence
+
+The separate Windows-only `virtio-mem-workload` qualification binary emits one
+flushed JSON-lines record at each `baseline`, `peak`, `settled`, `renewed`, and
+`complete` phase. Version 1 records contain the operator-supplied
+`workload_id`, `committed` or `resident` mode, Unix and process-monotonic
+milliseconds, `committed_bytes`, and `touched_bytes`. Resident mode writes one
+byte per Windows page and refreshes those pages during each bounded hold;
+committed mode leaves the committed pages untouched. These are declared
+workload actions, not measurements of exact working-set residency and not
+controller or allocation authority.
+
+The peak is capped at 8 GiB. The retained allocation must be positive and
+strictly smaller than the peak, and all three holds must be 1 through 3,600
+seconds. Allocation objects own their mappings and release them on normal exit
+or error unwinding. Process termination also lets Windows reclaim the process
+mappings, but a complete qualification must still correlate helper phases with
+Windows telemetry and host `desired`/`requested`/`current` evidence.
+
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and
 must be converted explicitly before entering the Rust policy layer. Internal

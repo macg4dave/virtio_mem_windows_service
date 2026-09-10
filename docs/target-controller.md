@@ -246,6 +246,11 @@ telemetry, controller actions, host headroom, and workload identity. The run
 must restore the captured initial requested allocation or use the documented
 operator recovery path if Windows cannot converge.
 
+The separate Windows `virtio-mem-workload` helper implements the bounded guest
+demand phases and versioned workload evidence. Its native build/tests pass;
+that does not qualify the platform until a production-controller run supplies
+the correlated host, guest-health, actuation, and recovery evidence above.
+
 Controller qualification may pass when a zero- or partial-progress shrink is
 handled correctly. Platform reclaim qualification requires a predeclared set
 of repeated representative shrink operations to converge without unsafe

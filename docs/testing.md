@@ -1026,8 +1026,43 @@ native Windows gate with
 `VIRTIO_MEM_WINDOWS_SSH=ALIAS cargo xtask windows all`;
 success includes the raw publisher and
 worker tests, formatting, warnings-as-errors Clippy, and a release build. The
-2026-09-08 native gate passed 67 tests and verified artifact SHA-256
-`d91e6ccd2a0fdbac1da8bcd96a4e05ecf77964834e20d973c844e44d77d1e9dd`.
+2026-09-10 native gate passed 74 tests and verified service artifact SHA-256
+`cbc8a81aa87ba0a3c2c34ad030d85cb5cd0c7f5c3eeed683708daf8a4a154404`.
+
+### M10g bounded workload helper
+
+Build and test the separate Windows workload binary through the native gate:
+
+```bash
+VIRTIO_MEM_WINDOWS_SSH=ALIAS cargo xtask windows all
+```
+
+The helper is a demand generator, not an orchestrator or a service mode. Its
+canonical resident command is:
+
+```text
+target\release\virtio-mem-workload.exe --workload-id m10g-resident-01 --mode resident --peak-bytes 4294967296 --retained-bytes 2147483648 --peak-hold-seconds 600 --settled-hold-seconds 900 --renewed-hold-seconds 600
+```
+
+Run the same shape with `--mode committed` for committed-but-untouched memory.
+The `peak` phase represents +4 GiB demand, `settled` releases 2 GiB while
+retaining 2 GiB, and `renewed` adds the released 2 GiB again so fresh pressure
+can be correlated with an owned pending shrink. Resident mode touches and
+refreshes one byte per system page; committed mode does not touch its mappings.
+Each JSON-lines record is flushed and includes schema version, workload
+identity, mode, phase, wall/monotonic milliseconds, committed bytes, and bytes
+the helper attempted to keep page-touched.
+
+Before a live run, capture the exact VM/alias, initial `requested` and
+`current`, QEMU PID, independent authenticated Windows command, service and
+application health, installer/pending-reboot state, controller configuration,
+fresh compatibility attestation, host headroom, and the rollback target. Use a
+task-scoped bounded workflow to correlate every helper phase with raw Windows
+telemetry, controller `desired`/`requested`/`current`, commands, latches, and
+host headroom. Restore the captured initial requested allocation at the end or
+use the documented abandon-to-current recovery if Windows cannot converge.
+The helper by itself does not satisfy M10g platform qualification, and no live
+workload run was performed when it was introduced.
 
 M10d's implementation now provisions the LocalService ProgramData DACL and
 implements deterministic publisher retention/rotation, durable

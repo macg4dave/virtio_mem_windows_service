@@ -55,7 +55,7 @@ The following capabilities are implemented and locally tested:
   `dommemstat` fallback, and host/device headroom gates.
 
 The current RHEL gate passes 62 shared-core, 67 host, and 13 build-tooling
-tests. The latest native-Windows gate passes 67 tests. These are separate
+tests. The latest native-Windows gate passes 74 tests. These are separate
 supported-platform results, not one cross-platform workspace run. Release
 builds, formatting, Clippy warnings-as-errors, and diff validation pass.
 

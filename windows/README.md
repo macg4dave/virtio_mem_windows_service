@@ -84,6 +84,26 @@ separate approval gate for deployment.
 cargo test
 ```
 
+## M10g bounded workload helper
+
+`virtio-mem-workload.exe` is a separate qualification binary; it is never
+installed as the service and has no QGA, libvirt, or resize interface. The
+canonical M10g trace commits 4 GiB, retains 2 GiB after the first hold, renews
+the released 2 GiB after the second hold, and cleans up after the final hold:
+
+```text
+target\release\virtio-mem-workload.exe --workload-id m10g-resident-01 --mode resident --peak-bytes 4294967296 --retained-bytes 2147483648 --peak-hold-seconds 600 --settled-hold-seconds 900 --renewed-hold-seconds 600
+```
+
+Use `--mode committed` for the committed-but-untouched case. Resident mode
+touches and periodically refreshes one byte per system page. The helper emits
+flushed version-1 JSON-lines phase evidence on stdout; redirect it to a
+task-specific evidence file when the full M10g workflow is run. Each hold is
+limited to 3,600 seconds and peak allocation is capped at 8 GiB. The live run
+must use the initial-state, guest-health, controller, attestation, convergence,
+and recovery procedure in `docs/testing.md`; invoking this binary alone is not
+platform qualification.
+
 ## Lint
 
 ```bash

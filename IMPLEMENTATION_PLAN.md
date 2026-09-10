@@ -176,11 +176,13 @@ primitive:
    generation, fakes, and fault injection to prove formulas, history, restart
    warm-up, alignment, bounded actuation, supersession, stale-input freeze,
    constrained progress, journal resolution, and no replay.
-6. **M10g — platform qualification:** run a bounded Rust workload covering
-   committed-only and resident demand, +4 GiB growth settling at +2 GiB,
-   renewed pressure during shrink, zero/partial/full progress, ambiguity,
-   cancellation, and restart. Report controller correctness separately from
-   the selected stack's ability to reclaim reliably.
+6. **M10g — platform qualification:** the bounded Windows Rust workload helper
+   is implemented and native-gated for committed-only and resident demand,
+   +4 GiB peak, +2 GiB retained demand, and renewed pressure. Run it with the
+   production raw-telemetry controller to record zero/partial/full progress,
+   ambiguity, cancellation, restart, initial-state recovery, and correlated
+   health evidence. Report controller correctness separately from the selected
+   stack's ability to reclaim reliably.
 
 Automatic shrink is a default-on product capability from M10e onward and is
 already the host configuration default. Qualification does not turn the

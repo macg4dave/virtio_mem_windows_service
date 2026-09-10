@@ -1,5 +1,25 @@
 # BACKLOG
 
+## 2026-09-10 M10g bounded Windows workload foundation
+
+- Added the separate Windows-only `virtio-mem-workload` Rust binary for the
+  M10g committed-only and resident-demand scenarios. It allocates a bounded
+  peak, releases down to a retained allocation, renews the released demand,
+  and then cleans up without adding libvirt, QGA, or resize authority to the
+  guest.
+- The helper requires an explicit workload identity, mode, byte counts, and
+  three positive bounded hold times. Peak allocation is capped at 8 GiB and
+  every phase emits a flushed version-1 JSON-lines evidence record with wall,
+  monotonic, committed, and page-touched values.
+- The native Windows gate passes 74 tests, including seven workload argument,
+  bound, identity, mode, and evidence regressions, plus the release build,
+  formatting, and warnings-denied Clippy. The fetched service artifact SHA-256
+  is `cbc8a81aa87ba0a3c2c34ad030d85cb5cd0c7f5c3eeed683708daf8a4a154404`.
+- TASK-028 remains in progress. The helper has not been executed against the
+  installed production raw-telemetry controller, and refreshed attestation,
+  initial-state capture, controller/guest health evidence, bounded live
+  actuation, and recovery/restore evidence remain required.
+
 ## 2026-09-10 Rust build/test tooling consolidation
 
 - Completed BT-T001 through BT-T006 in the separate
@@ -1140,7 +1160,7 @@ Tasks ready to start (Phase 2 - Core Functionality):
 
 | ID | Title | Owner | Status | Handoff Notes |
 | --- | --- | --- | --- | --- |
-| TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | In Progress | Hermetic and candidate no-actuation gates pass. Production raw transport/install, refreshed attestation, and bounded committed/resident workload actuation remain. |
+| TASK-028 | M10g single-VM target-controller qualification | Copilot + Operator | In Progress | Hermetic and candidate no-actuation gates pass. A bounded committed/resident Windows workload helper now passes its native gate; production raw transport/install, refreshed attestation, and bounded live actuation/recovery evidence remain. |
 | TASK-009 | Windows native demand-agent foundation | Copilot | In Progress | Native telemetry, advisory calculation, raw production publication, M10c join, and M10d bounded delivery are implemented. Installed ProgramData ACL verification and live workload tuning remain. |
 
 ## Planned

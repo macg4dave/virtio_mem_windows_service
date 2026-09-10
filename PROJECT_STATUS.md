@@ -78,9 +78,9 @@ The latest native RHEL gate passed:
 - `cargo xtask gate local` (format, release build, tests, warnings-denied
   Clippy for shared core/host/tooling, and diff checks)
 
-The latest M10d Windows-native gate passes 67 tests with warnings denied and
+The latest Windows-native gate passes 74 tests with warnings denied and
 produced a checksum-verified executable with SHA-256
-`d91e6ccd2a0fdbac1da8bcd96a4e05ecf77964834e20d973c844e44d77d1e9dd`.
+`cbc8a81aa87ba0a3c2c34ad030d85cb5cd0c7f5c3eeed683708daf8a4a154404`.
 
 Live M7 validation on `ice101.lan` passed the LocalService
 install/start/observe/stop/delete sequence. Event IDs 1000–1003 were observed
@@ -160,6 +160,9 @@ and refreshed-attestation batch remains optional and is not claimed as passed.
 - Complete M10g controller and platform-reclaim qualification, including +4 GiB growth that
   later settles at +2 GiB demand, zero/partial shrink, renewed pressure,
   stale/replayed telemetry, ambiguous commands, cancellation, and restart.
+  The bounded Windows committed-only/page-touched workload helper and its
+  versioned phase evidence are implemented and native-gated; correlated live
+  execution and restore evidence remain.
   Automatic reclaim remains default-on; this gate determines qualification
   status and must expose constrained or latched operation clearly.
 
