@@ -69,12 +69,15 @@ single-VM qualification before global arbitration.
 - Typed pre-command rejection versus unknown-command outcomes, operation-
   correlated shrink events, interruption/cancellation latching, rate-limited
   unowned-divergence observation, and deterministic restart/no-replay tests.
+- Detached multi-minute xtask workload/automatic-resize qualification with
+  explicit guest identity, layered preflight, versioned per-run evidence,
+  status/review commands, and explicit growth/reclaim acceptance thresholds.
 
 ## Current evidence
 
 The latest native RHEL gate passed:
 
-- 62 shared-core, 67 host, and 13 build-tooling tests, with no failures.
+- 62 shared-core, 67 host, and 19 build-tooling tests, with no failures.
 - `cargo xtask gate local` (format, release build, tests, warnings-denied
   Clippy for shared core/host/tooling, and diff checks)
 

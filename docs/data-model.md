@@ -93,6 +93,17 @@ or error unwinding. Process termination also lets Windows reclaim the process
 mappings, but a complete qualification must still correlate helper phases with
 Windows telemetry and host `desired`/`requested`/`current` evidence.
 
+The xtask qualification evidence schema is version 1. Every run has a unique
+`qualification-UNIX_MILLIS-PID` identity and a separate artifact directory.
+The immutable configuration records exact host, guest, device, workload,
+duration, sampling, telemetry, controller, and acceptance inputs. Atomic
+status/summary files describe lifecycle and final pass/fail, while append-only
+event, workload, and host-metric JSON-lines files preserve partial evidence if
+the supervisor, endpoint, or workload fails. Host samples retain canonical
+device and host byte counts, explicitly label `dommemstat` values as KiB, and
+embed only a complete parseable raw Windows telemetry record. Observed
+requested-target changes are events, not new resize authority.
+
 All memory quantities in the controller and host contract are unsigned 64-bit
 byte counts. Human-readable GB/MiB values are presentation values only and
 must be converted explicitly before entering the Rust policy layer. Internal

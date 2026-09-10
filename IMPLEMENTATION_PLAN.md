@@ -178,11 +178,14 @@ primitive:
    constrained progress, journal resolution, and no replay.
 6. **M10g — platform qualification:** the bounded Windows Rust workload helper
    is implemented and native-gated for committed-only and resident demand,
-   +4 GiB peak, +2 GiB retained demand, and renewed pressure. Run it with the
-   production raw-telemetry controller to record zero/partial/full progress,
-   ambiguity, cancellation, restart, initial-state recovery, and correlated
-   health evidence. Report controller correctness separately from the selected
-   stack's ability to reclaim reliably.
+   +4 GiB peak, +2 GiB retained demand, and renewed pressure. The unattended
+   xtask correlation harness now records per-run configuration, workload
+   phases, raw telemetry, host/device metrics, observed requested-target
+   changes, controller journal, health, and explicit growth/reclaim results.
+   Run both profiles with the production raw-telemetry controller to record
+   zero/partial/full progress, ambiguity, cancellation, restart, initial-state
+   recovery, and correlated health evidence. Report controller correctness
+   separately from the selected stack's ability to reclaim reliably.
 
 Automatic shrink is a default-on product capability from M10e onward and is
 already the host configuration default. Qualification does not turn the

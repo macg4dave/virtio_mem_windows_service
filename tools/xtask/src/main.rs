@@ -38,6 +38,7 @@ Qualification options:
   --expect-reclaim-bytes N   Minimum observed reclaim; default 64 MiB.
   --remote-workload PATH     Windows workload executable path.
   --controller-unit UNIT     Host systemd unit to archive.
+  --guest-service NAME       Required Windows service; default VirtioMemService.
   --telemetry-path PATH      Optional host-side raw Windows telemetry file.
   --connect URI              Libvirt URI; default qemu:///system.
   --output-root PATH         Default .vscode-artifacts/qualification.

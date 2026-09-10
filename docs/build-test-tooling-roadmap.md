@@ -48,11 +48,13 @@ entry points route to that tool, and current AI instructions use its commands.
 The prompt structure now separates code-level Rust testing, higher-level
 workflow validation, and implementation of the tooling itself; the canonical
 instructions define how those cumulative layers are selected and reported.
-BT-M6 and BT-M7 remain: task-batch generation and shared guest-health evidence
-need a typed model, followed by fault-injected end-to-end qualification and a
-stable machine-readable result schema.
+BT-M6 and BT-M7 remain. A versioned unattended workload/resize qualification
+foundation now supplies per-run artifacts, status, review, layered preflight,
+and derived growth/reclaim results. General task-batch generation, reusable
+guest-health evidence, injected end-to-end faults, and a common schema across
+all xtask gates remain.
 
-Current local evidence is 62 shared-core, 67 host, and 13 tooling tests plus
+Current local evidence is 62 shared-core, 67 host, and 19 tooling tests plus
 locked release builds, formatting, warnings-denied Clippy, diff validation,
 and a passing host doctor. The native Windows gate passes 74 tests and verifies
 artifact SHA-256
@@ -85,6 +87,12 @@ No live mutation gate was run for BT-T001–BT-T006.
 | BT-T005 | BT-M4 | Port environment, QGA, and live-resize helpers | Rust parses QGA JSON and libvirt XML; live mutation stays opt-in, bounded, converged, and restored by default |
 | BT-T006 | BT-M5 | Migrate repository entry points and remove tracked wrappers | `.vscode/tasks.json`, Make compatibility aliases, project docs, instructions, and prompts use `cargo xtask` |
 | BT-T013 | BT-M5 | Separate AI guidance for code tests, workflow validation, and tooling development | Canonical selection rules, prompt index, dedicated `rust-tests`, `workflow-validation`, and `build-test-tooling` prompts, and layered reporting requirements |
+
+### In progress
+
+| Task | Milestone | Description | Current evidence |
+| --- | --- | --- | --- |
+| BT-T014 | BT-M7 | Add unattended multi-minute Windows workload and automatic-resize qualification with durable per-run evidence | Start/status/review, bounded M10g profiles, layered preflight, structured samples/events/results, and 19 tooling tests pass locally; native/live execution remains |
 
 ### Ready queue
 

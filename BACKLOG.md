@@ -1,5 +1,26 @@
 # BACKLOG
 
+## 2026-09-10 BT-T014 unattended workload/resize qualification foundation
+
+- Added `cargo xtask qualification start|status|review` with dry-run-default
+  M10g resident/committed profiles and an explicit Windows SSH endpoint.
+- Applied runs use a detached Rust supervisor and unique directory under
+  `.vscode-artifacts/qualification/`. Versioned atomic status/summary/results,
+  append-only events, workload output, host/device/guest metrics, controller
+  journal, and supervisor logs remain available for later AI analysis.
+- Pre/postflight checks the active host controller, VM/virtio-mem alias, QGA,
+  authenticated Windows execution, the named guest service, Windows Installer,
+  and pending-reboot markers. Acceptance requires all workload phases plus
+  explicit observed growth/reclaim thresholds; requested-target transitions
+  are recorded as structured resize events.
+- The harness observes the installed automatic controller and does not create
+  a second resize authority. Workload mappings are released and final state is
+  recorded, but forced baseline restoration remains a design question needing
+  an explicit controller-quiesce/rollback contract.
+- Focused xtask tests and warnings-denied Clippy pass with 19 tests. Native
+  Windows and live apply modes have not yet run; M10g/TASK-028 stays in
+  progress.
+
 ## 2026-09-10 M10g bounded Windows workload foundation
 
 - Added the separate Windows-only `virtio-mem-workload` Rust binary for the

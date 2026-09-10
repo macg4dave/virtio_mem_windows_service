@@ -1064,6 +1064,69 @@ use the documented abandon-to-current recovery if Windows cannot converge.
 The helper by itself does not satisfy M10g platform qualification, and no live
 workload run was performed when it was introduced.
 
+### Unattended M10g workload and resize qualification
+
+Use the `qualification` workflow to run the helper for multiple minutes while
+observing the installed automatic controller. First validate the exact
+configuration without starting a workload:
+
+```bash
+cargo xtask qualification start win11_gpu ua-virtiomem0 \
+  --ssh-target WINDOWS_SSH_ALIAS \
+  --profile m10g-resident \
+  --telemetry-path /run/virtio-mem-host/win11_gpu.telemetry.jsonl
+```
+
+The default resident profile allocates 4 GiB, releases to 2 GiB, renews to
+4 GiB, and holds those phases for 600, 900, and 600 seconds. It requires at
+least 1 GiB of observed growth and 64 MiB of subsequent reclaim. Use
+`m10g-committed` for committed-but-untouched memory, or override the byte,
+hold, observation, and expected-delta options shown by `cargo xtask help`.
+Start only after reviewing the dry-run configuration:
+
+```bash
+cargo xtask qualification start win11_gpu ua-virtiomem0 \
+  --ssh-target WINDOWS_SSH_ALIAS \
+  --profile m10g-resident \
+  --telemetry-path /run/virtio-mem-host/win11_gpu.telemetry.jsonl \
+  --apply
+```
+
+`start` prints a unique `run_id` and returns after launching a detached
+supervisor. The run does not depend on the initiating terminal or chat
+remaining open. Query it later with:
+
+```bash
+cargo xtask qualification status RUN_ID
+cargo xtask qualification review RUN_ID
+```
+
+Each run is stored under `.vscode-artifacts/qualification/RUN_ID/` by default.
+`config.json`, `status.json`, `summary.json`, and `result.json` are versioned
+point-in-time records. `events.jsonl` records lifecycle, workload phases,
+observed resize requests, warnings, and failures. `host-metrics.jsonl` records
+Unix milliseconds, workload phase, VM state, alias-scoped device values, host
+`MemAvailable`, `dommemstat` values in KiB, and the latest complete raw Windows
+telemetry record when `--telemetry-path` is supplied. `workload.jsonl`,
+`controller.log`, and `supervisor.log` preserve component diagnostics. Files
+are flushed as the run progresses; status and summary are atomically replaced.
+
+Before and after the workload, the supervisor requires an active named controller,
+live alias-scoped memory state, QGA `guest-ping`, authenticated Windows SSH, a
+running `VirtioMemService` (override with `--guest-service`), no running
+`msiexec.exe`, and no standard pending-reboot registry marker. A pass requires
+all five workload phases, a successful helper exit, continued VM health, and
+the configured minimum growth and reclaim deltas. Missing native telemetry is
+an explicit warning rather than fabricated guest evidence.
+
+This workflow observes the production automatic controller and never issues a
+second resize command. The helper releases all memory, and the supervisor
+observes the configured post-workload window, but it does not force the device
+to its initial target. A forced baseline restore would require a separately
+reviewed controller-quiesce and rollback contract; until that exists, inspect
+the final requested/current values and treat unexpected retained growth as
+qualification evidence requiring investigation.
+
 M10d's implementation now provisions the LocalService ProgramData DACL and
 implements deterministic publisher retention/rotation, durable
 acknowledgement, restart-safe replay state, and atomic reader handoff. Native

@@ -12,6 +12,9 @@ cargo xtask gate local
 cargo xtask windows all
 cargo xtask qga VM_NAME --attempts 3
 cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES
+cargo xtask qualification start VM_NAME ALIAS --ssh-target WINDOWS_SSH --profile m10g-resident
+cargo xtask qualification status RUN_ID
+cargo xtask qualification review RUN_ID
 ```
 
 The tool is intentionally a workspace member. Its parsing and safety checks
@@ -29,6 +32,21 @@ present, rejects unsafe or divergent state, bounds forward convergence to 30
 seconds, and restores the captured allocation unless `--keep-target` is
 explicitly supplied. `--keep-target` is non-reversible and requires explicit
 approval under the repository safety rules.
+
+`qualification start` owns unattended, multi-minute Windows workload and
+automatic-controller observation runs. It is also dry-run by default. With
+`--apply`, it creates a unique directory under
+`.vscode-artifacts/qualification/`, launches a detached Rust supervisor, and
+returns the run ID immediately. The supervisor retains the SSH workload
+session, samples host and guest memory plus alias-scoped requested/current
+state, records observed resize requests, and archives the controller journal.
+Use `status` while it runs and `review` after it finishes. The versioned JSON
+and JSON-lines files are the durable interface for later human or AI analysis.
+
+The qualification harness observes the installed automatic controller; it
+does not issue competing resize commands. The Windows workload releases every
+mapping on completion, after which the supervisor observes a bounded reclaim
+window. It records, but does not force, the final device allocation.
 
 See [`../docs/build-test-tooling-roadmap.md`](../docs/build-test-tooling-roadmap.md)
 for the migration inventory, task namespace, dependencies, and remaining
