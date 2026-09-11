@@ -231,12 +231,42 @@ fn install(
     unit: &Path,
     before: &BTreeMap<String, Vec<String>>,
 ) -> Result<String, String> {
+    install_directory(
+        "/var/lib/virtio-mem-host",
+        "root",
+        "root",
+        "0755",
+        repo,
+        command.timeout,
+    )?;
+    install_directory(
+        "/var/lib/virtio-mem-host/deployment-backups",
+        "root",
+        "root",
+        "0700",
+        repo,
+        command.timeout,
+    )?;
+    install_directory(
+        "/var/lib/virtio-mem-host/state",
+        "virtio-mem-host",
+        "virtio-mem-host",
+        "0700",
+        repo,
+        command.timeout,
+    )?;
     let backup = PathBuf::from(format!(
         "/var/lib/virtio-mem-host/deployment-backups/{}",
         now_millis()?
     ));
     std::fs::create_dir_all(&backup)
         .map_err(|error| format!("create host deployment backup: {error}"))?;
+    process::bounded_text(
+        "chmod",
+        &[process::os("0700"), backup.as_os_str().to_owned()],
+        repo,
+        command.timeout,
+    )?;
     let target_config = PathBuf::from(format!("/etc/virtio-mem-host/{}.conf", command.instance));
     let target_attestation = PathBuf::from(format!(
         "/etc/virtio-mem-host/{}.attestation.json",
@@ -353,6 +383,33 @@ fn install_file(
             process::os(mode),
             process::os("--"),
             source.as_os_str().to_owned(),
+            process::os(target),
+        ],
+        repo,
+        timeout,
+    )
+    .map(|_| ())
+}
+
+fn install_directory(
+    target: &str,
+    owner: &str,
+    group: &str,
+    mode: &str,
+    repo: &Path,
+    timeout: Duration,
+) -> Result<(), String> {
+    process::bounded_text(
+        "install",
+        &[
+            process::os("-d"),
+            process::os("-o"),
+            process::os(owner),
+            process::os("-g"),
+            process::os(group),
+            process::os("-m"),
+            process::os(mode),
+            process::os("--"),
             process::os(target),
         ],
         repo,
@@ -484,18 +541,40 @@ fn run_elevated(command: &Command, repo: &Path) -> Result<String, String> {
         .stderr(Stdio::inherit())
         .spawn()
         .map_err(|error| format!("start sudo host deployment: {error}"))?;
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "capture elevated host deployment".to_owned())?;
-    let status = child
-        .wait_timeout(command.timeout)
+    let reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut bytes = Vec::new();
+        stdout
+            .read_to_end(&mut bytes)
+            .map(|_| bytes)
+            .map_err(|error| format!("read elevated host deployment: {error}"))
+    });
+    let workflow_timeout = command
+        .timeout
+        .checked_mul(16)
+        .ok_or_else(|| "elevated host deployment timeout overflowed".to_owned())?;
+    let status = if let Some(status) = child
+        .wait_timeout(workflow_timeout)
         .map_err(|error| format!("wait for elevated host deployment: {error}"))?
-        .ok_or_else(|| "elevated host deployment timed out".to_owned())?;
-    let mut bytes = Vec::new();
-    stdout
-        .read_to_end(&mut bytes)
-        .map_err(|error| format!("read elevated host deployment: {error}"))?;
+    {
+        status
+    } else {
+        child
+            .kill()
+            .map_err(|error| format!("terminate timed-out elevated host deployment: {error}"))?;
+        let _ = child.wait();
+        let _ = reader.join();
+        return Err(format!(
+            "elevated host deployment timed out after {workflow_timeout:?}"
+        ));
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| "elevated host deployment stdout reader panicked".to_owned())??;
     if !status.success() {
         return Err(format!("elevated host deployment failed with {status}"));
     }

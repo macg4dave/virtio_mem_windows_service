@@ -4,6 +4,7 @@ mod deployment;
 mod host_deploy;
 mod live_resize;
 mod local;
+mod preflight;
 mod process;
 mod qga;
 mod qualification;
@@ -21,6 +22,7 @@ Usage:
   cargo xtask calibration VM_NAME ALIAS [OPTIONS]
   cargo xtask attestation VM_NAME ALIAS REVIEW --output PATH [OPTIONS]
   cargo xtask host-deploy INSTANCE --config PATH --attestation PATH [OPTIONS]
+  cargo xtask preflight VM_NAME ALIAS [OPTIONS]
   cargo xtask windows <check|sync|build|test|lint|fetch|all>
   cargo xtask windows deploy MANIFEST --output PATH [--apply]
   cargo xtask windows service-cycle SERVICE --output PATH [--apply]
@@ -58,6 +60,24 @@ Host deployment options:
   --command-timeout-seconds N   Required external-command bound.
   --apply                       Install; otherwise validate only.
   --elevate                     Invoke this prebuilt xtask once through sudo.
+
+No-actuation preflight options:
+  --unit UNIT                   Required disabled/inactive controller unit.
+  --telemetry-path PATH         Required protected Windows telemetry path.
+  --service SERVICE             Required Windows telemetry service identity.
+  --attestation PATH            Required reviewed attestation.
+  --host-deployment-evidence PATH  Required applied host deployment evidence.
+  --ack-path PATH               Required new host replay-state evidence path.
+  --windows-evidence PATH       Required Windows restart evidence path.
+  --output PATH                 Required structured result path.
+  --host-headroom-bytes N       Required minimum MemAvailable.
+  --sample-interval-seconds N   Required poll interval.
+  --telemetry-max-age-seconds N Required telemetry freshness bound.
+  --future-tolerance-seconds N  Required future-clock tolerance.
+  --preflight-timeout-seconds N Required overall new-session bound.
+  --command-timeout-seconds N   Required external-command bound.
+  --connect URI                 Libvirt URI; default qemu:///system.
+  --apply-service-restart       Restart only the named Windows service.
 
 Qualification commands:
   start VM ALIAS --ssh-target TARGET --mode resident|committed [--apply] [OPTIONS]
@@ -141,6 +161,7 @@ fn execute(arguments: &[String]) -> Result<(), String> {
         Some("calibration") => calibration::run(&calibration::parse(&arguments[1..])?, &repo),
         Some("attestation") => attestation::run(&attestation::parse(&arguments[1..])?, &repo),
         Some("host-deploy") => host_deploy::run(&host_deploy::parse(&arguments[1..])?, &repo),
+        Some("preflight") => preflight::run(&preflight::parse(&arguments[1..])?, &repo),
         Some("windows") => windows::run(windows::parse(&arguments[1..])?, &repo),
         Some("qga") => qga::run(&qga::parse(&arguments[1..])?, &repo),
         Some("live-resize") => live_resize::run(&live_resize::parse(&arguments[1..])?, &repo),

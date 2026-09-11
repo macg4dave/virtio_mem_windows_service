@@ -19,7 +19,7 @@ Restart=no
 # test-derived deadline in the repository unit.
 RuntimeDirectory=virtio-mem-host
 RuntimeDirectoryMode=0700
-StateDirectory=virtio-mem-host
+StateDirectory=virtio-mem-host/state
 StateDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
