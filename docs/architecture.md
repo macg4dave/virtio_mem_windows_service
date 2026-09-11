@@ -1,243 +1,108 @@
 # Architecture
 
-## System Overview
+## Supported scope
 
-This system manages dynamic memory allocation for a Windows 11 guest running under QEMU using virtio-mem. The repository is intentionally scoped to Rust and Bash only; any runtime service will be implemented as a Rust program rather than a Go controller.
+The current system coordinates one explicitly configured trusted Windows guest
+and one virtio-mem device from one RHEL host controller. Multi-VM arbitration,
+untrusted guests, and production support require the future global-controller
+architecture.
 
-The validated `win11_gpu` instance is a fully trusted development/test KVM
-guest. Upstream Windows virtio-mem support is technology preview; production
-and untrusted-guest operation are outside the current support boundary.
+## Ownership
 
-### Components
+### Windows service
 
-- **Windows Service (Rust)**: Guest-side native memory telemetry, advisory demand calculation/publication, cancellation, and service lifecycle hosting
-- **RHEL host controller (Rust/systemd)**: One explicitly configured VM and virtio-mem alias per unit instance; reads QGA and live libvirt state, then issues validated live resize requests
-- **Build/test control plane (Rust `cargo xtask`)**: Explicit local and native-Windows gates, preflight, artifact verification, diagnostics, and bounded reusable live-validation helpers; these do not run inside the controller
-- **Privileged task batch (Bash)**: Generated or one-off exact command sequence used only as an operator-reviewable outer elevation/process boundary
-- **QEMU / libvirt validation path**: Used to verify guest agent responses and live virtio-mem behavior
+The Windows Rust service owns native memory measurement, versioned atomic raw
+telemetry publication, local configuration and ACLs, SCM lifecycle, and Windows
+observability. It never receives host allocation, calculates a host resize, or
+invokes QGA/libvirt/Linux commands. The installed QEMU Guest Agent owns the QGA
+virtio-serial channel.
 
-### Data Flow
+### Host controller
+
+The host Rust service owns raw-telemetry validation and replay protection,
+alias-scoped live XML/QMP state, compatibility attestation, host headroom,
+absolute target calculation, desired/requested/current reconciliation, intent
+journaling, actuation, convergence, latching, and recovery.
+
+Live libvirt `current` is allocation authority. `requested` is device intent;
+Windows counters are demand evidence only.
+
+### Shared core
+
+The shared crate owns checked byte units, virtio-mem XML parsing and geometry,
+memory policy, target estimation, reconciliation, recovery state machines, and
+versioned evidence types. Pure logic remains independent of live systems.
+
+### Build and validation control plane
+
+`cargo xtask` owns aggregate repository gates, remote native-Windows
+orchestration, artifact verification, environment checks, QGA readiness,
+reversible live-resize orchestration, and unattended qualification. It does not
+replace focused Cargo tests or become a second product controller.
+
+Editor and Make entrypoints delegate to `xtask`. Bash is limited to one exact
+task-specific privileged boundary and invokes prebuilt Rust behavior.
+
+## Data flow
 
 ```text
-Windows demand agent ── future raw telemetry envelope ─────► Host policy
-QEMU Guest Agent ── virtio-serial/libvirt ─────────────────► Host health adapter
-Live libvirt/QEMU state ───────────────────────────────────► Host controller
-Host controller ── validated aligned request ──────────────► virtio-mem device
+Windows native counters
+    -> versioned allocation-free telemetry record
+    -> least-privilege transport
+    -> host identity/freshness/replay validation
+    + alias-scoped live libvirt current
+    -> absolute desired target
+    -> desired/requested/current reconciliation
+    -> compatibility and headroom gates
+    -> journaled libvirt request
+    -> convergence, constrained state, or durable latch
 ```
 
-### Phase 2 and Phase 3 ownership
+The host acknowledges accepted telemetry durably. Missing, stale, malformed,
+replayed, cross-VM, or incomplete records cannot authorize reclaim.
 
-Phase 2 is a transition architecture. The Windows service measures guest
-memory and will publish a fresh raw telemetry envelope. The one-VM RHEL host
-joins that envelope with alias-scoped live libvirt `current`, calculates the
-recommendation, and remains the allocation and actuation authority. The
-Windows service does not invoke Linux commands, modify libvirt, receive a host
-allocation feed, or directly control `viomem.sys`.
+## Configuration
 
-The Phase 3 target separates the system into three cooperating layers:
+Deployment supplies explicit VM/device identity, service identity, paths,
+memory policy inputs, timing, source selection, and safety reserves. Device
+size, block geometry, requested, and current are derived from fresh live state.
+No component infers a deployment from a historical test VM.
 
-1. **Windows demand agent:** collects and publishes fresh, versioned native
-    Windows telemetry and may classify guest-local pressure.
-2. **Per-VM QEMU/libvirt adapter:** validates an aligned target, changes
-    virtio-mem `requested`, and observes asynchronous `current` convergence.
-3. **Linux global controller:** owns host reserve, VM pool accounting, and
-    multi-VM growth/reclaim arbitration.
+The Windows versioned configuration file is required. The host instance file
+is validated before service startup. Configuration changes that affect
+compatibility require a fresh reviewed attestation.
 
-See [`future-architecture.md`](future-architecture.md) for the target design.
-Multi-VM arbitration and global pool ownership are not implemented by the
-current Phase 2 controller.
+## Actuation safety
 
-Although upstream QEMU/libvirt can model multiple virtio-mem devices, Phase 2
-supports only one active controller managing one explicitly named VM/device on
-this development host. Separate per-instance host-reserve checks do not
-provide global reservation atomicity. Multi-controller/device actuation is
-unsupported until M11 owns the host pool.
+- Only the host issues resize requests.
+- Targets are checked byte counts aligned to the current device block.
+- An ordinary request is prohibited while requested and current differ.
+- Every request uses fresh compatibility, headroom, telemetry, and live-state
+  evidence and is journaled before command execution.
+- Ambiguous command outcome is resolved by live reread; unknowable or stalled
+  state latches durably rather than retrying blindly.
+- Automatic reclaim remains default-on with a deliberate pause override.
+- Normative target, quantum, history, hysteresis, notification, and recovery
+  constants are defined only in `target-controller.md` and owning Rust code.
 
-## RHEL host controller lifecycle and boundaries
+## Lifecycle and deployment
 
-The RHEL controller is a Rust process supervised by a templated systemd unit.
-Each unit instance owns one explicitly configured VM name and virtio-mem alias;
-it must not enumerate domains or manage multiple VMs through an implicit
-configuration. Its only host integration is bounded, argument-safe `virsh`
-subprocess calls for QGA statistics, live XML snapshots, live QMP compatibility
-properties, and approved live resize requests. It never invokes a shell or
-administers Windows processes.
+The Windows service uses wakeable cancellation and configured operation,
+polling, and shutdown bounds. Unexpected worker failure remains non-zero and
+observable.
 
-The controller uses the same byte-based state and resize policy as the Windows
-service. Before a resize, it validates the selected live XML state and target,
-reads `dynamic-memslots` and `unplugged-inaccessible` from the selected live
-QOM device, and validates a separately recorded version-1 JSON attestation.
-Its SHA-256 fingerprint binds review declarations to fresh alias-scoped domain
-XML, native QEMU arguments, QMP properties/QEMU version, and libvirt version.
-Those live inputs cover the selected backend, NUMA/page properties, slot/VFIO
-topology, balloon, and incompatible device configuration; only changing
-virtio-mem `requested`/`current` values are scrubbed. Bound declarations record
-slot and VFIO budgets, trusted-development classification, Windows driver
-version, and vDPA/RDMA/VFIO-NVMe/`mlock`/secure-virtualization/vhost-user/
-balloon exclusions. The service account reads but must not modify this file.
-Every resize fails closed on missing, malformed, tampered, unsupported-version,
-or drifted evidence.
-After a request, it waits for `requested` and `current` to converge and never
-sends a follow-up request while they differ. Invalid configuration, failed QGA
-calls, malformed XML, failed resize commands, and convergence timeouts are
-actionable failures; a bounded systemd restart must reread live state rather
-than replay a previous request.
+The checked-in host unit is fail-stop. Deployment monitoring decides whether
+and when a reviewed restart is appropriate; repository defaults do not encode
+a retry loop learned from testing.
 
-### Measurement, policy, and actuation
+Candidate build/test and hash verification run through `cargo xtask`. Product
+service installation uses the product CLI under the target platform's required
+privilege. Any RHEL elevation is a single task-specific reviewed Bash process.
+Repeatable deployment validation belongs in Rust tooling.
 
-These concerns are intentionally separate:
+## Validation
 
-- **Measurement** observes Windows and host state.
-- **Policy** produces a recommendation or global allocation decision.
-- **Actuation** changes virtio-mem and reports whether the guest converged.
-
-The Phase 2 Windows service owns guest measurement only. The host owns the
-M10c join, recommendation, allocation decision, and resize request. A
-future global Linux controller will own cross-VM policy.
-
-## Service Boundaries
-
-See [copilot-instructions.md](../.github/copilot-instructions.md) for detailed ownership and constraints.
-
-## Windows service lifecycle and operations
-
-The Rust runtime must treat the Windows Service Control Manager (SCM) as a
-lifecycle coordinator, not as the worker loop itself. SCM callbacks should do
-only bounded setup or shutdown coordination and return promptly; native Windows
-telemetry belongs to the stoppable background runtime. QEMU Guest Agent
-requests are owned by the RHEL/libvirt host controller because the QGA process
-owns the Windows virtio-serial device.
-
-The SCM adapter must make lifecycle transitions observable and deterministic:
-
-- report start-pending before initialization, then running only after the
-    worker is ready;
-- honor stop and system-shutdown requests by signaling cancellation, stopping
-    new polls, and waiting for the worker to exit cleanly;
-- report stop-pending when shutdown may exceed the immediate callback window,
-    then stopped on successful completion;
-- distinguish an expected cancellation or operator stop from an unexpected
-    worker failure; and
-- return a non-zero process result for unexpected terminal failures so SCM
-    recovery actions can operate, while normal stops remain successful.
-
-Startup configuration must be small, documented, validated, and safe to
-override. Persistent settings belong in the service's configuration mechanism
-rather than undocumented command-line arguments. The service registration
-must define a stable service name, display name, description, executable path,
-startup mode, and an explicitly chosen account. Use the least-privileged
-account that can collect native telemetry, publish to approved ProgramData
-paths, and emit Event Log records; do not default to LocalSystem without a
-documented requirement.
-
-Installation, recovery configuration, start/stop verification, event-log
-inspection, and removal are operational procedures and must be reproducible
-from the repository documentation. Recovery actions should be configured only
-after distinguishing crash/failure exits from intentional stops, and should
-use bounded restart delays to avoid a tight restart loop.
-
-These rules are adapted from [Microsoft's Windows service walkthrough](https://learn.microsoft.com/en-us/dotnet/framework/windows-services/walkthrough-creating-a-windows-service-application-in-the-component-designer)
-and its [current Windows service guidance](https://learn.microsoft.com/en-us/dotnet/core/extensions/windows-service); the implementation remains Rust-only.
-
-The current Rust implementation provides `ServiceHost`, `StopSignal`, a
-wakeable raw-telemetry publication loop, validated `ServiceConfig` defaults, a
-native SCM callback/registration adapter, installation/start/stop/removal
-commands, the pure Rust `VirtioMemState` byte/alignment validator, a versioned
-JSON configuration loader, and a generic `DemandServiceWorker` that publishes
-advisory reports through an injected JSON-lines sink. The SCM path emits
-bounded lifecycle and failure records to the Windows Application Event Log
-with stable event IDs; raw XML EventData and recovery behavior are verified
-live. Production runs `RawTelemetryWorker`, which publishes VM-scoped,
-wall-clock-stamped raw counters without allocation input. The host validates
-freshness and VM identity, joins the record with alias-scoped live libvirt
-`current`, and calculates the target through shared policy. M10d has added
-version-2 producer identity, bounded atomic handoff/retention, durable
-restart-safe replay validation, and ProgramData ACL provisioning. Installed
-ACL verification remains. No Windows production resize sink is permitted. The QGA named-pipe client is
-retained as an explicit adapter/test boundary, but the SCM worker does not
-open the QGA virtio-serial device; the host controller owns QGA requests.
-Interactive and SCM startup use the same native telemetry worker boundary and
-preserve stage-specific runtime-wiring context for configuration validation,
-worker construction/initialization, and service-host failures. No guest-side
-resize sink is constructed by this path.
-
-## RPC & Interfaces
-
-- QEMU Guest Agent protocol accessed through libvirt / `virsh`
-- libvirt virtio-mem XML inspection for validation and live adjustment checks
-- Future runtime logic will remain in Rust, never in Go
-
-## Windows virtio-mem driver boundary
-
-The upstream `viomem.sys` driver owns block-level memory mechanics. Its source
-maintains a block bitmap, distinguishes `requested_size` from `plugged_size`,
-supports `VIRTIO_MEM_F_ACPI_PXM` and
-`VIRTIO_MEM_F_UNPLUGGED_INACCESSIBLE`, adds memory with
-`MmAddPhysicalMemory`, and uses `MmAllocateNodePagesForMdlEx` with
-`MM_ALLOCATE_AND_HOT_REMOVE` for removal.
-
-The Windows service must not duplicate page selection or assume that it can
-unplug arbitrary memory. A supported user-mode IOCTL/status API has not been
-established, so direct driver communication is deferred. The Virtio 1.2
-device contract and the pinned QEMU/libvirt and virtio-win sources establish
-that driver `requested_size`/`plugged_size` are the device-side forms of the
-requested and plugged allocation represented by host `requested`/`current`.
-The host contract therefore uses alias-scoped live libvirt `current` as its
-allocation authority; it does not consume a duplicate guest-side state feed.
-
-The upstream driver is built as a KMDF/Visual Studio solution with separate
-VirtIO/WDF library dependencies and Win10/Win11 architecture configurations.
-This repository does not build, install, sign, or modify that kernel driver.
-Any driver fork or added status interface requires its own signing, security,
-installation, rollback, and live-validation plan. The completed M10aX
-[feasibility proposal](driver-status-interface-feasibility.md) defines those
-gates for a cached read-only diagnostic snapshot while leaving implementation
-deferred.
-
-Read-only inspection of the signed `100.102.104.29400` driver confirms that
-PnP properties, registry parameters, Event Log channels, and registered trace
-providers do not expose `requested_size` or `plugged_size`. The matching
-upstream source formats both values only for kernel debug output: its WPP build
-switch is disabled and it defines no I/O queue/device-control callback. A
-kernel-debug capture is therefore an operational mutation of the protected
-guest, not a normal service API, and requires its own approval and rollback
-procedure. Such capture is optional diagnostic evidence for the installed
-binary and becomes important when explaining notification timing, branch
-selection, or a no-progress shrink. Its absence does not block host allocation
-accounting or hermetic global-pool simulation.
-
-## Safety policy
-
-- Keep validation conservative and explicit.
-- Confirm QEMU Guest Agent responses before enabling automated changes.
-- Avoid speculative memory changes without a successful behavior check.
-- Preserve a clear separation between guest-side logic and host-side automation.
-- A resize target may never leave less than `MIN_HEADROOM_BYTES` (1 GiB) of a
-    virtio-mem device's declared size unplugged; this is enforced in the
-    shared `VirtioMemState::validate_target` contract, not only by operator
-    configuration.
-- The RHEL host controller must confirm host-side `MemAvailable` covers a grow
-    request plus a configured reserve (`VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES`)
-    before sending it; insufficient headroom blocks the request for that
-    poll cycle instead of failing the service.
-- Per-VM actuation is asymmetric: growth advances by at most 1 GiB per
-    converged request, while reclaim advances by at most 64 MiB. Both quanta
-    are block-aligned, clamped to configured limits, and suppressed while
-    `requested != current`.
-- When the connected QEMU Guest Agent does not implement the nonstandard
-    `guest-get-memory-stats` extension, the host controller uses
-    `virsh dommemstat`. Balloon `actual` remains provenance rather than an
-    allocation/total bound; required libvirt `last_update` must be recent, within the
-    future-skew allowance, and advance between controller samples.
-- QEMU does not completely prevent guest access to unplugged memory. A hard
-    QEMU/libvirt cgroup memory limit is recommended defense-in-depth for fully
-    trusted development guest `win11_gpu` and mandatory for untrusted or
-    production deployments.
-- Automatic Windows shrinking defaults enabled because reclaim is a core
-    product capability. A live 64 MiB request made no progress, so normal
-    re-notification remains disabled and the controller latches rather than
-    overlapping or blindly retrying. M10e implements the normative absolute
-    target, warmed-history floor, and atomic policy checkpoint. M10f implements
-    durable desired/requested/current reconciliation and restart-safe command
-    intent. M10g adds the separate controller/platform qualification defined in
-    [`target-controller.md`](target-controller.md).
+Focused Rust tests prove deterministic behavior. Local, native Windows,
+deployment, and live workflows remain separate result layers. Live tests use
+explicit targets and run-specific bounds, capture initial and final state, and
+define cleanup/rollback before mutation. See `testing.md`.

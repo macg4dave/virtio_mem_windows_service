@@ -6,13 +6,12 @@ use serde_json::Value;
 
 use crate::process;
 
-const VIRSH_TIMEOUT: Duration = Duration::from_secs(30);
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct Options {
     pub vm: String,
     pub attempts: u32,
     pub connect: String,
+    pub command_timeout_seconds: u64,
 }
 
 pub fn parse(args: &[String]) -> Result<Options, String> {
@@ -23,20 +22,32 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         .ok_or_else(|| {
             "qga requires a non-empty VM name that does not begin with '-'".to_owned()
         })?;
-    let mut attempts = 3_u32;
+    let mut attempts = None;
     let mut connect = "qemu:///system".to_owned();
+    let mut command_timeout_seconds = None;
     let mut index = 1;
     while index < args.len() {
         match args[index].as_str() {
             "--attempts" => {
-                attempts = value(args, &mut index, "--attempts")?
+                let parsed = value(args, &mut index, "--attempts")?
                     .parse::<u32>()
                     .map_err(|_| "--attempts requires a positive integer".to_owned())?;
-                if attempts == 0 {
+                if parsed == 0 {
                     return Err("--attempts requires a positive integer".to_owned());
                 }
+                attempts = Some(parsed);
             }
             "--connect" => connect = value(args, &mut index, "--connect")?,
+            "--command-timeout-seconds" => {
+                let parsed = value(args, &mut index, "--command-timeout-seconds")?
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|value| *value > 0)
+                    .ok_or_else(|| {
+                        "--command-timeout-seconds requires a positive integer".to_owned()
+                    })?;
+                command_timeout_seconds = Some(parsed);
+            }
             option => return Err(format!("unknown qga option: {option}")),
         }
         index += 1;
@@ -46,8 +57,10 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
     }
     Ok(Options {
         vm,
-        attempts,
+        attempts: attempts.ok_or_else(|| "--attempts is required".to_owned())?,
         connect,
+        command_timeout_seconds: command_timeout_seconds
+            .ok_or_else(|| "--command-timeout-seconds is required".to_owned())?,
     })
 }
 
@@ -111,7 +124,12 @@ fn qga_command(options: &Options, repo: &Path, request: &str) -> Result<String, 
 fn virsh(options: &Options, repo: &Path, command: &[String]) -> Result<String, String> {
     let mut args = vec![OsString::from("-c"), OsString::from(&options.connect)];
     args.extend(command.iter().map(OsString::from));
-    process::bounded_text("virsh", &args, repo, VIRSH_TIMEOUT)
+    process::bounded_text(
+        "virsh",
+        &args,
+        repo,
+        Duration::from_secs(options.command_timeout_seconds),
+    )
 }
 
 fn validate_memory_stats(input: &str) -> Result<(), String> {
@@ -188,6 +206,8 @@ mod tests {
                 "guest",
                 "--attempts",
                 "4",
+                "--command-timeout-seconds",
+                "9",
                 "--connect",
                 "qemu:///session"
             ])),
@@ -195,6 +215,7 @@ mod tests {
                 vm: "guest".to_owned(),
                 attempts: 4,
                 connect: "qemu:///session".to_owned(),
+                command_timeout_seconds: 9,
             })
         );
     }
@@ -203,8 +224,23 @@ mod tests {
     fn rejects_unsafe_or_incomplete_scope() {
         assert!(parse(&strings(&[])).is_err());
         assert!(parse(&strings(&["--guest"])).is_err());
-        assert!(parse(&strings(&["guest", "--attempts", "0"])).is_err());
-        assert!(parse(&strings(&["guest", "--connect"])).is_err());
+        assert!(parse(&strings(&[
+            "guest",
+            "--attempts",
+            "0",
+            "--command-timeout-seconds",
+            "9"
+        ]))
+        .is_err());
+        assert!(parse(&strings(&[
+            "guest",
+            "--attempts",
+            "1",
+            "--command-timeout-seconds",
+            "9",
+            "--connect"
+        ]))
+        .is_err());
     }
 
     #[test]

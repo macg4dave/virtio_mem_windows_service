@@ -6,17 +6,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use serde_json::Value;
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
-use virtio_mem_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemState};
+use virtio_mem_core::{parse_virtio_mem_xml_for_alias, VirtioMemState};
 
 use crate::process;
-
-const DEFAULT_MAX_TARGET_BYTES: u64 = 8 << 30;
-const DEFAULT_HOST_RESERVE_BYTES: u64 = 4 << 30;
-const MINIMUM_RETAINED_BYTES: u64 = 1 << 30;
-const VIRSH_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Options {
@@ -25,12 +19,15 @@ pub struct Options {
     target_bytes: u64,
     apply: bool,
     keep_target: bool,
-    timeout_seconds: u64,
+    forward_timeout_seconds: u64,
     rollback_timeout_seconds: u64,
     interval_seconds: u64,
+    command_timeout_seconds: u64,
     connect: String,
-    max_target_bytes: u64,
+    minimum_target_bytes: u64,
     host_reserve_bytes: u64,
+    attestation_path: PathBuf,
+    host_cli: PathBuf,
     log_path: Option<PathBuf>,
 }
 
@@ -62,12 +59,15 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         target_bytes,
         apply: false,
         keep_target: false,
-        timeout_seconds: 30,
-        rollback_timeout_seconds: 300,
-        interval_seconds: 5,
+        forward_timeout_seconds: 0,
+        rollback_timeout_seconds: 0,
+        interval_seconds: 0,
+        command_timeout_seconds: 0,
         connect: "qemu:///system".to_owned(),
-        max_target_bytes: DEFAULT_MAX_TARGET_BYTES,
-        host_reserve_bytes: DEFAULT_HOST_RESERVE_BYTES,
+        minimum_target_bytes: 0,
+        host_reserve_bytes: 0,
+        attestation_path: PathBuf::new(),
+        host_cli: PathBuf::new(),
         log_path: None,
     };
     let mut index = 3;
@@ -75,26 +75,37 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         match args[index].as_str() {
             "--apply" => options.apply = true,
             "--keep-target" => options.keep_target = true,
-            "--timeout" => {
-                options.timeout_seconds = positive_value(args, &mut index, "--timeout")?;
-                if options.timeout_seconds > 30 {
-                    return Err("--timeout may not exceed 30 seconds".to_owned());
-                }
+            "--forward-timeout-seconds" => {
+                options.forward_timeout_seconds =
+                    positive_value(args, &mut index, "--forward-timeout-seconds")?;
             }
-            "--rollback-timeout" => {
+            "--rollback-timeout-seconds" => {
                 options.rollback_timeout_seconds =
-                    positive_value(args, &mut index, "--rollback-timeout")?;
+                    positive_value(args, &mut index, "--rollback-timeout-seconds")?;
             }
-            "--interval" => {
-                options.interval_seconds = positive_value(args, &mut index, "--interval")?;
+            "--sample-interval-seconds" => {
+                options.interval_seconds =
+                    positive_value(args, &mut index, "--sample-interval-seconds")?;
+            }
+            "--command-timeout-seconds" => {
+                options.command_timeout_seconds =
+                    positive_value(args, &mut index, "--command-timeout-seconds")?;
             }
             "--connect" => options.connect = string_value(args, &mut index, "--connect")?,
-            "--max-target-bytes" => {
-                options.max_target_bytes = positive_value(args, &mut index, "--max-target-bytes")?;
+            "--minimum-target-bytes" => {
+                options.minimum_target_bytes =
+                    positive_value(args, &mut index, "--minimum-target-bytes")?;
             }
-            "--host-reserve-bytes" => {
+            "--host-min-headroom-bytes" => {
                 options.host_reserve_bytes =
-                    positive_value(args, &mut index, "--host-reserve-bytes")?;
+                    positive_value(args, &mut index, "--host-min-headroom-bytes")?;
+            }
+            "--attestation" => {
+                options.attestation_path =
+                    PathBuf::from(string_value(args, &mut index, "--attestation")?);
+            }
+            "--host-cli" => {
+                options.host_cli = PathBuf::from(string_value(args, &mut index, "--host-cli")?);
             }
             "--log" => {
                 options.log_path = Some(PathBuf::from(string_value(args, &mut index, "--log")?));
@@ -109,6 +120,22 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
     if !valid_scope(&options.connect) {
         return Err("--connect must be non-empty and contain no control characters".to_owned());
     }
+    if options.forward_timeout_seconds == 0
+        || options.rollback_timeout_seconds == 0
+        || options.interval_seconds == 0
+        || options.command_timeout_seconds == 0
+        || options.minimum_target_bytes == 0
+        || options.host_reserve_bytes == 0
+        || options.attestation_path.as_os_str().is_empty()
+        || options.host_cli.as_os_str().is_empty()
+    {
+        return Err("live-resize requires explicit forward/rollback/command timeouts, sample interval, minimum target, host headroom, attestation, and host CLI".to_owned());
+    }
+    if options.interval_seconds > options.forward_timeout_seconds
+        || options.interval_seconds > options.rollback_timeout_seconds
+    {
+        return Err("sample interval must not exceed either convergence timeout".to_owned());
+    }
     Ok(options)
 }
 
@@ -116,8 +143,11 @@ pub fn run(options: &Options, repo: &Path) -> Result<(), String> {
     if !process::command_exists("virsh") {
         return Err("missing required host command: virsh".to_owned());
     }
-    if options.target_bytes < MINIMUM_RETAINED_BYTES {
-        return Err("BLOCKED: target must retain at least 1 GiB".to_owned());
+    if options.target_bytes < options.minimum_target_bytes {
+        return Err(format!(
+            "BLOCKED: target {} is below configured minimum {}",
+            options.target_bytes, options.minimum_target_bytes
+        ));
     }
     prepare_log(options.log_path.as_deref())?;
     let stop = Arc::new(AtomicBool::new(false));
@@ -138,7 +168,7 @@ pub fn run(options: &Options, repo: &Path) -> Result<(), String> {
         }
     }
     println!(
-        "baseline vm={} alias={} requested={} current={} size={} block={} target={} max_target={} host_available={} host_reserve={}",
+        "baseline vm={} alias={} requested={} current={} size={} block={} target={} minimum_target={} host_available={} host_reserve={}",
         options.vm,
         options.alias,
         initial.state.requested_bytes,
@@ -146,7 +176,7 @@ pub fn run(options: &Options, repo: &Path) -> Result<(), String> {
         initial.state.size_bytes,
         initial.state.block_size_bytes,
         options.target_bytes,
-        options.max_target_bytes,
+        options.minimum_target_bytes,
         host_available,
         options.host_reserve_bytes
     );
@@ -154,24 +184,21 @@ pub fn run(options: &Options, repo: &Path) -> Result<(), String> {
         println!("NO CHANGE: target equals current memory.");
         return Ok(());
     }
+    invoke_host_resize(options, repo, options.target_bytes, options.apply)?;
     if !options.apply {
-        println!("DRY RUN: target is valid, but --apply was not supplied.");
+        println!("DRY RUN: product resize validation passed; --apply was not supplied.");
         return Ok(());
     }
-
-    let target_kib = bytes_to_kibibytes(options.target_bytes)
-        .ok_or_else(|| "target must be an exact integer number of KiB".to_owned())?;
     println!(
         "APPLY: requesting target {} bytes (forward timeout {}s).",
-        options.target_bytes, options.timeout_seconds
+        options.target_bytes, options.forward_timeout_seconds
     );
-    update(options, repo, target_kib)?;
 
     let forward_result = wait_for_target(
         options,
         repo,
         options.target_bytes,
-        options.timeout_seconds,
+        options.forward_timeout_seconds,
         &stop,
     );
     if forward_result.is_ok() {
@@ -182,11 +209,9 @@ pub fn run(options: &Options, repo: &Path) -> Result<(), String> {
         println!("KEEP: target retained by explicit --keep-target.");
         Ok(())
     } else {
-        let rollback_target = initial.state.current_bytes.max(MINIMUM_RETAINED_BYTES);
+        let rollback_target = initial.state.current_bytes;
         println!("ROLLBACK: requesting original size {rollback_target} bytes.");
-        let rollback_kib = bytes_to_kibibytes(rollback_target)
-            .ok_or_else(|| "rollback target must be an exact integer number of KiB".to_owned())?;
-        update(options, repo, rollback_kib).and_then(|()| {
+        invoke_host_resize(options, repo, rollback_target, true).and_then(|()| {
             wait_for_target(
                 options,
                 repo,
@@ -210,12 +235,6 @@ fn validate_target(options: &Options, state: VirtioMemState) -> Result<(), Strin
     state
         .validate_target(options.target_bytes)
         .map_err(|error| format!("BLOCKED: invalid target: {error}"))?;
-    if options.target_bytes > options.max_target_bytes {
-        return Err(format!(
-            "BLOCKED: target {} exceeds safety cap {} bytes",
-            options.target_bytes, options.max_target_bytes
-        ));
-    }
     if state.requested_bytes != state.current_bytes {
         return Err(format!(
             "BLOCKED: existing request has not converged (requested={} current={})",
@@ -250,7 +269,8 @@ fn wait_for_target(
                 "expected requested=current={expected} within {timeout_seconds} seconds after {samples} samples"
             ));
         }
-        std::thread::sleep(Duration::from_secs(options.interval_seconds));
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        std::thread::sleep(Duration::from_secs(options.interval_seconds).min(remaining));
     }
 }
 
@@ -259,66 +279,71 @@ fn read_sample(options: &Options, repo: &Path) -> Result<Sample, String> {
     let snapshot = parse_virtio_mem_xml_for_alias(&xml, &options.alias)
         .map_err(|error| format!("failed to parse live virtio-mem state: {error}"))?;
     let domstate = virsh(options, repo, &["domstate", &options.vm])?;
-    let (qga_free, qga_total) = qga_memory(options, repo).unwrap_or((None, None));
+    virsh(
+        options,
+        repo,
+        &[
+            "qemu-agent-command",
+            &options.vm,
+            r#"{"execute":"guest-ping"}"#,
+        ],
+    )?;
     append_sample(
         options.log_path.as_deref(),
         domstate.trim(),
         snapshot.memory,
-        qga_free,
-        qga_total,
     )?;
     Ok(Sample {
         state: snapshot.memory,
     })
 }
 
-fn update(options: &Options, repo: &Path, requested_kib: u64) -> Result<(), String> {
-    virsh(
-        options,
+fn invoke_host_resize(
+    options: &Options,
+    repo: &Path,
+    target_bytes: u64,
+    apply: bool,
+) -> Result<(), String> {
+    let program = options
+        .host_cli
+        .to_str()
+        .ok_or_else(|| "--host-cli path is not valid UTF-8".to_owned())?;
+    let mut args = vec![
+        OsString::from("resize"),
+        OsString::from(&options.vm),
+        OsString::from(&options.alias),
+        OsString::from(target_bytes.to_string()),
+        OsString::from("--attestation"),
+        options.attestation_path.as_os_str().to_owned(),
+        OsString::from("--host-min-headroom-bytes"),
+        OsString::from(options.host_reserve_bytes.to_string()),
+        OsString::from("--command-timeout-seconds"),
+        OsString::from(options.command_timeout_seconds.to_string()),
+        OsString::from("--connect"),
+        OsString::from(&options.connect),
+    ];
+    if apply {
+        args.push(OsString::from("--apply"));
+    }
+    let output = process::bounded_text(
+        program,
+        &args,
         repo,
-        &[
-            "update-memory-device",
-            &options.vm,
-            "--alias",
-            &options.alias,
-            "--requested-size",
-            &requested_kib.to_string(),
-            "--live",
-        ],
+        Duration::from_secs(options.command_timeout_seconds),
     )?;
+    print!("{output}");
     Ok(())
 }
 
 fn virsh(options: &Options, repo: &Path, command: &[&str]) -> Result<String, String> {
     let mut args = vec![OsString::from("-c"), OsString::from(&options.connect)];
     args.extend(command.iter().map(OsString::from));
-    process::bounded_text("virsh", &args, repo, VIRSH_TIMEOUT)
-}
-
-fn qga_memory(options: &Options, repo: &Path) -> Result<(Option<u64>, Option<u64>), String> {
-    let output = virsh(
-        options,
+    process::bounded_text(
+        "virsh",
+        &args,
         repo,
-        &[
-            "qemu-agent-command",
-            &options.vm,
-            r#"{"execute":"guest-get-memory-stats"}"#,
-        ],
-    )?;
-    let value: Value = serde_json::from_str(&output)
-        .map_err(|error| format!("invalid QGA memory JSON: {error}"))?;
-    let values = value
-        .get("return")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "QGA memory return must be an array".to_owned())?;
-    let stat = |name: &str| {
-        values.iter().find_map(|entry| {
-            (entry.get("stat").and_then(Value::as_str) == Some(name))
-                .then(|| entry.get("value").and_then(Value::as_u64))
-                .flatten()
-        })
-    };
-    Ok((stat("stat-free"), stat("stat-total")))
+        Duration::from_secs(options.command_timeout_seconds),
+    )
 }
 
 fn prepare_log(path: Option<&Path>) -> Result<(), String> {
@@ -330,7 +355,7 @@ fn prepare_log(path: Option<&Path>) -> Result<(), String> {
             .map_err(|error| format!("failed to open sample log {}: {error}", path.display()))?;
         writeln!(
             file,
-            "unix_seconds,domstate,requested_bytes,current_bytes,size_bytes,block_bytes,qga_free_bytes,qga_total_bytes"
+            "unix_seconds,domstate,requested_bytes,current_bytes,size_bytes,block_bytes,qga_healthy"
         )
         .map_err(|error| format!("failed to write sample log {}: {error}", path.display()))?;
     }
@@ -341,8 +366,6 @@ fn append_sample(
     path: Option<&Path>,
     domstate: &str,
     state: VirtioMemState,
-    qga_free: Option<u64>,
-    qga_total: Option<u64>,
 ) -> Result<(), String> {
     let Some(path) = path else {
         return Ok(());
@@ -352,21 +375,17 @@ fn append_sample(
         .map_err(|error| format!("system clock is before Unix epoch: {error}"))?
         .as_secs();
     let clean_state = domstate.replace([',', '\r', '\n'], " ");
-    let display =
-        |value: Option<u64>| value.map_or_else(|| "-".to_owned(), |value| value.to_string());
     let mut file = OpenOptions::new()
         .append(true)
         .open(path)
         .map_err(|error| format!("failed to open sample log {}: {error}", path.display()))?;
     writeln!(
         file,
-        "{timestamp},{clean_state},{},{},{},{},{},{}",
+        "{timestamp},{clean_state},{},{},{},{},true",
         state.requested_bytes,
         state.current_bytes,
         state.size_bytes,
-        state.block_size_bytes,
-        display(qga_free),
-        display(qga_total)
+        state.block_size_bytes
     )
     .map_err(|error| format!("failed to write sample log {}: {error}", path.display()))
 }
@@ -416,14 +435,38 @@ mod tests {
         values.iter().map(|value| (*value).to_owned()).collect()
     }
 
+    fn valid_arguments() -> Vec<String> {
+        strings(&[
+            "guest",
+            "memory0",
+            "6442450944",
+            "--forward-timeout-seconds",
+            "12",
+            "--rollback-timeout-seconds",
+            "24",
+            "--sample-interval-seconds",
+            "3",
+            "--command-timeout-seconds",
+            "6",
+            "--minimum-target-bytes",
+            "1073741824",
+            "--host-min-headroom-bytes",
+            "2147483648",
+            "--attestation",
+            "reviewed.json",
+            "--host-cli",
+            "/opt/virtio-mem-host",
+        ])
+    }
+
     #[test]
-    fn defaults_to_dry_run_and_bounded_rollback() {
-        let options = parse(&strings(&["guest", "memory0", "1073741824"]))
-            .expect("valid live-resize arguments");
+    fn requires_explicit_bounds_and_defaults_only_to_dry_run() {
+        let options = parse(&valid_arguments()).expect("valid live-resize arguments");
         assert!(!options.apply);
         assert!(!options.keep_target);
-        assert_eq!(options.timeout_seconds, 30);
-        assert_eq!(options.rollback_timeout_seconds, 300);
+        assert_eq!(options.forward_timeout_seconds, 12);
+        assert_eq!(options.rollback_timeout_seconds, 24);
+        assert!(parse(&strings(&["guest", "memory0", "1073741824"])).is_err());
     }
 
     #[test]
@@ -431,27 +474,21 @@ mod tests {
         assert!(parse(&strings(&["-guest", "memory0", "1073741824"])).is_err());
         assert!(parse(&strings(&["guest", "bad alias", "1073741824"])).is_err());
         assert!(parse(&strings(&["guest", "memory0", "0"])).is_err());
-        assert!(parse(&strings(&[
-            "guest",
-            "memory0",
-            "1073741824",
-            "--timeout",
-            "31"
-        ]))
-        .is_err());
-        assert!(parse(&strings(&[
-            "guest",
-            "memory0",
-            "1073741824",
-            "--keep-target"
-        ]))
-        .is_err());
+        let mut keep = valid_arguments();
+        keep.push("--keep-target".to_owned());
+        assert!(parse(&keep).is_err());
+        let mut interval = valid_arguments();
+        let position = interval
+            .iter()
+            .position(|value| value == "--sample-interval-seconds")
+            .expect("interval option");
+        interval[position + 1] = "25".to_owned();
+        assert!(parse(&interval).is_err());
     }
 
     #[test]
     fn reuses_shared_target_validation() {
-        let options =
-            parse(&strings(&["guest", "memory0", "6442450944"])).expect("valid arguments");
+        let options = parse(&valid_arguments()).expect("valid arguments");
         let state = VirtioMemState {
             size_bytes: 8 << 30,
             block_size_bytes: 2 << 20,

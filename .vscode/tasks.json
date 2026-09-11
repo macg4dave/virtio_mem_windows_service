@@ -2,102 +2,24 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "RHEL: full local gate",
+      "label": "RHEL: local gate",
       "type": "shell",
       "command": "cargo",
       "args": ["xtask", "gate", "local"],
       "problemMatcher": []
     },
     {
-      "label": "RHEL: host environment check",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "doctor", "host"],
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: check remote toolchain",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "windows", "check"],
-      "options": {
-        "env": {
-          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
-        }
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: synchronize source",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "windows", "sync"],
-      "options": {
-        "env": {
-          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
-        }
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: native release build",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "windows", "build"],
-      "options": {
-        "env": {
-          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
-        }
-      },
-      "dependsOn": "Windows: synchronize source",
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: native tests",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "windows", "test"],
-      "options": {
-        "env": {
-          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
-        }
-      },
-      "dependsOn": "Windows: synchronize source",
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: native format and clippy",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "windows", "lint"],
-      "options": {
-        "env": {
-          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
-        }
-      },
-      "dependsOn": "Windows: synchronize source",
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: fetch verified artifact",
-      "type": "shell",
-      "command": "cargo",
-      "args": ["xtask", "windows", "fetch"],
-      "options": {
-        "env": {
-          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
-        }
-      },
-      "problemMatcher": []
-    },
-    {
-      "label": "Windows: full native gate",
+      "label": "Windows: native gate",
       "type": "shell",
       "command": "cargo",
       "args": ["xtask", "windows", "all"],
       "options": {
         "env": {
-          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshAlias}"
+          "VIRTIO_MEM_WINDOWS_SSH": "${input:windowsSshTarget}",
+          "VIRTIO_MEM_WINDOWS_DIR": "${input:windowsWorkspace}",
+          "VIRTIO_MEM_WINDOWS_ARTIFACTS": "${input:windowsArtifacts}",
+          "VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS": "${input:windowsConnectTimeout}",
+          "VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS": "${input:windowsOperationTimeout}"
         }
       },
       "problemMatcher": []
@@ -105,19 +27,35 @@
     {
       "label": "Build: all non-mutating gates",
       "dependsOrder": "sequence",
-      "dependsOn": [
-        "RHEL: full local gate",
-        "Windows: full native gate"
-      ],
+      "dependsOn": ["RHEL: local gate", "Windows: native gate"],
       "problemMatcher": []
     }
   ],
   "inputs": [
     {
-      "id": "windowsSshAlias",
+      "id": "windowsSshTarget",
       "type": "promptString",
-      "description": "SSH config alias for the Windows build guest",
-      "default": "virtio-mem-windows"
+      "description": "Configured SSH target for the Windows build guest"
+    },
+    {
+      "id": "windowsWorkspace",
+      "type": "promptString",
+      "description": "Absolute Windows workspace path"
+    },
+    {
+      "id": "windowsArtifacts",
+      "type": "promptString",
+      "description": "Local directory for verified Windows artifacts"
+    },
+    {
+      "id": "windowsConnectTimeout",
+      "type": "promptString",
+      "description": "SSH connection timeout in seconds"
+    },
+    {
+      "id": "windowsOperationTimeout",
+      "type": "promptString",
+      "description": "Per-operation timeout in seconds"
     }
   ]
 }

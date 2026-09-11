@@ -13,14 +13,7 @@ use virtio_mem_core::parse_virtio_mem_xml_for_alias;
 
 use crate::process;
 
-const SCHEMA_VERSION: u32 = 1;
-const DEFAULT_PEAK_BYTES: u64 = 4 << 30;
-const DEFAULT_RETAINED_BYTES: u64 = 2 << 30;
-const DEFAULT_GROWTH_BYTES: u64 = 1 << 30;
-const DEFAULT_RECLAIM_BYTES: u64 = 64 << 20;
-const MAX_HOLD_SECONDS: u64 = 3_600;
-const MAX_RUN_SECONDS: u64 = 4 * 3_600;
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -40,15 +33,18 @@ struct Config {
     controller_unit: String,
     guest_service: String,
     remote_workload: String,
-    telemetry_path: Option<PathBuf>,
+    telemetry_path: PathBuf,
     mode: WorkloadMode,
     peak_bytes: u64,
     retained_bytes: u64,
+    max_allocation_bytes: u64,
     peak_hold_seconds: u64,
     settled_hold_seconds: u64,
     renewed_hold_seconds: u64,
+    resident_refresh_seconds: u64,
     post_hold_seconds: u64,
     interval_seconds: u64,
+    command_timeout_seconds: u64,
     expect_growth_bytes: u64,
     expect_reclaim_bytes: u64,
 }
@@ -103,20 +99,22 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let vm_name = scope(&args[0], "VM_NAME")?;
     let device_alias = identifier(&args[1], "ALIAS")?;
     let mut ssh_target = None;
-    let mut mode = WorkloadMode::Resident;
-    let mut peak_bytes = DEFAULT_PEAK_BYTES;
-    let mut retained_bytes = DEFAULT_RETAINED_BYTES;
-    let mut peak_hold_seconds = 600;
-    let mut settled_hold_seconds = 900;
-    let mut renewed_hold_seconds = 600;
-    let mut post_hold_seconds = 60;
-    let mut interval_seconds = 5;
-    let mut expect_growth_bytes = DEFAULT_GROWTH_BYTES;
-    let mut expect_reclaim_bytes = DEFAULT_RECLAIM_BYTES;
-    let mut remote_workload =
-        r"C:\Users\Public\virtio-mem-build\target\release\virtio-mem-workload.exe".to_owned();
-    let mut controller_unit = format!("virtio-mem-host@{vm_name}.service");
-    let mut guest_service = "VirtioMemService".to_owned();
+    let mut mode = None;
+    let mut peak_bytes = None;
+    let mut retained_bytes = None;
+    let mut max_allocation_bytes = None;
+    let mut peak_hold_seconds = None;
+    let mut settled_hold_seconds = None;
+    let mut renewed_hold_seconds = None;
+    let mut resident_refresh_seconds = None;
+    let mut post_hold_seconds = None;
+    let mut interval_seconds = None;
+    let mut command_timeout_seconds = None;
+    let mut expect_growth_bytes = None;
+    let mut expect_reclaim_bytes = None;
+    let mut remote_workload = None;
+    let mut controller_unit = None;
+    let mut guest_service = None;
     let mut telemetry_path = None;
     let mut connect_uri = "qemu:///system".to_owned();
     let mut output_root = repo.join(".vscode-artifacts/qualification");
@@ -126,39 +124,59 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
         match args[index].as_str() {
             "--apply" => apply = true,
             "--ssh-target" => ssh_target = Some(value(args, &mut index, "--ssh-target")?),
-            "--profile" => {
-                mode = match value(args, &mut index, "--profile")?.as_str() {
-                    "m10g-resident" => WorkloadMode::Resident,
-                    "m10g-committed" => WorkloadMode::Committed,
-                    _ => return Err("--profile must be m10g-resident or m10g-committed".to_owned()),
-                }
+            "--mode" => {
+                mode = Some(match value(args, &mut index, "--mode")?.as_str() {
+                    "resident" => WorkloadMode::Resident,
+                    "committed" => WorkloadMode::Committed,
+                    _ => return Err("--mode must be resident or committed".to_owned()),
+                })
             }
-            "--peak-bytes" => peak_bytes = number(args, &mut index, "--peak-bytes")?,
-            "--retained-bytes" => retained_bytes = number(args, &mut index, "--retained-bytes")?,
+            "--peak-bytes" => peak_bytes = Some(number(args, &mut index, "--peak-bytes")?),
+            "--retained-bytes" => {
+                retained_bytes = Some(number(args, &mut index, "--retained-bytes")?)
+            }
+            "--max-allocation-bytes" => {
+                max_allocation_bytes =
+                    Some(number(args, &mut index, "--max-allocation-bytes")?)
+            }
             "--peak-hold-seconds" => {
-                peak_hold_seconds = number(args, &mut index, "--peak-hold-seconds")?
+                peak_hold_seconds = Some(number(args, &mut index, "--peak-hold-seconds")?)
             }
             "--settled-hold-seconds" => {
-                settled_hold_seconds = number(args, &mut index, "--settled-hold-seconds")?
+                settled_hold_seconds = Some(number(args, &mut index, "--settled-hold-seconds")?)
             }
             "--renewed-hold-seconds" => {
-                renewed_hold_seconds = number(args, &mut index, "--renewed-hold-seconds")?
+                renewed_hold_seconds = Some(number(args, &mut index, "--renewed-hold-seconds")?)
+            }
+            "--resident-refresh-seconds" => {
+                resident_refresh_seconds =
+                    Some(number(args, &mut index, "--resident-refresh-seconds")?)
             }
             "--post-hold-seconds" => {
-                post_hold_seconds = number(args, &mut index, "--post-hold-seconds")?
+                post_hold_seconds = Some(number(args, &mut index, "--post-hold-seconds")?)
             }
             "--interval-seconds" => {
-                interval_seconds = number(args, &mut index, "--interval-seconds")?
+                interval_seconds = Some(number(args, &mut index, "--interval-seconds")?)
+            }
+            "--command-timeout-seconds" => {
+                command_timeout_seconds =
+                    Some(number(args, &mut index, "--command-timeout-seconds")?)
             }
             "--expect-growth-bytes" => {
-                expect_growth_bytes = number(args, &mut index, "--expect-growth-bytes")?
+                expect_growth_bytes = Some(number(args, &mut index, "--expect-growth-bytes")?)
             }
             "--expect-reclaim-bytes" => {
-                expect_reclaim_bytes = number(args, &mut index, "--expect-reclaim-bytes")?
+                expect_reclaim_bytes = Some(number(args, &mut index, "--expect-reclaim-bytes")?)
             }
-            "--remote-workload" => remote_workload = value(args, &mut index, "--remote-workload")?,
-            "--controller-unit" => controller_unit = value(args, &mut index, "--controller-unit")?,
-            "--guest-service" => guest_service = value(args, &mut index, "--guest-service")?,
+            "--remote-workload" => {
+                remote_workload = Some(value(args, &mut index, "--remote-workload")?)
+            }
+            "--controller-unit" => {
+                controller_unit = Some(value(args, &mut index, "--controller-unit")?)
+            }
+            "--guest-service" => {
+                guest_service = Some(value(args, &mut index, "--guest-service")?)
+            }
             "--telemetry-path" => {
                 telemetry_path = Some(PathBuf::from(value(args, &mut index, "--telemetry-path")?))
             }
@@ -176,6 +194,29 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
         })?,
         "--ssh-target",
     )?;
+    let mode = required(mode, "--mode")?;
+    let peak_bytes = required(peak_bytes, "--peak-bytes")?;
+    let retained_bytes = required(retained_bytes, "--retained-bytes")?;
+    let max_allocation_bytes = required(max_allocation_bytes, "--max-allocation-bytes")?;
+    let peak_hold_seconds = required(peak_hold_seconds, "--peak-hold-seconds")?;
+    let settled_hold_seconds = required(settled_hold_seconds, "--settled-hold-seconds")?;
+    let renewed_hold_seconds = required(renewed_hold_seconds, "--renewed-hold-seconds")?;
+    let resident_refresh_seconds = required(
+        resident_refresh_seconds,
+        "--resident-refresh-seconds",
+    )?;
+    let post_hold_seconds = required(post_hold_seconds, "--post-hold-seconds")?;
+    let interval_seconds = required(interval_seconds, "--interval-seconds")?;
+    let command_timeout_seconds = required(
+        command_timeout_seconds,
+        "--command-timeout-seconds",
+    )?;
+    let expect_growth_bytes = required(expect_growth_bytes, "--expect-growth-bytes")?;
+    let expect_reclaim_bytes = required(expect_reclaim_bytes, "--expect-reclaim-bytes")?;
+    let remote_workload = required(remote_workload, "--remote-workload")?;
+    let controller_unit = required(controller_unit, "--controller-unit")?;
+    let guest_service = required(guest_service, "--guest-service")?;
+    let telemetry_path = required(telemetry_path, "--telemetry-path")?;
     if remote_workload.is_empty()
         || remote_workload.chars().any(char::is_control)
         || remote_workload.chars().any(|c| "&|<>^%!\"".contains(c))
@@ -185,41 +226,37 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     scope(&connect_uri, "--connect")?;
     identifier(&controller_unit, "--controller-unit")?;
     identifier(&guest_service, "--guest-service")?;
-    if peak_bytes == 0
+    if max_allocation_bytes == 0
+        || peak_bytes == 0
+        || peak_bytes > max_allocation_bytes
         || retained_bytes == 0
         || retained_bytes >= peak_bytes
-        || peak_bytes > 8 << 30
     {
-        return Err("workload bytes require 0 < retained < peak <= 8 GiB".to_owned());
+        return Err(
+            "workload bytes require 0 < retained < peak <= max allocation".to_owned(),
+        );
     }
     for (name, seconds) in [
         ("peak", peak_hold_seconds),
         ("settled", settled_hold_seconds),
         ("renewed", renewed_hold_seconds),
     ] {
-        if seconds == 0 || seconds > MAX_HOLD_SECONDS {
-            return Err(format!(
-                "{name} hold must be 1..={MAX_HOLD_SECONDS} seconds"
-            ));
+        if seconds == 0 {
+            return Err(format!("{name} hold must be positive"));
         }
     }
-    if interval_seconds == 0
-        || interval_seconds > 60
-        || post_hold_seconds > MAX_HOLD_SECONDS
-        || peak_hold_seconds + settled_hold_seconds + renewed_hold_seconds + post_hold_seconds
-            > MAX_RUN_SECONDS
-    {
-        return Err(
-            "sampling interval must be 1..=60 seconds, post hold at most one hour, and total run at most four hours".to_owned(),
-        );
+    if resident_refresh_seconds == 0 || interval_seconds == 0 || command_timeout_seconds == 0 {
+        return Err("refresh, sampling, and command timeout values must be positive".to_owned());
     }
-    if expect_growth_bytes == 0
-        || expect_reclaim_bytes == 0
-        || expect_growth_bytes > 8 << 30
-        || expect_reclaim_bytes > 8 << 30
-    {
-        return Err("resize expectations must be between 1 byte and 8 GiB".to_owned());
+    if expect_growth_bytes == 0 || expect_reclaim_bytes == 0 {
+        return Err("resize expectations must be positive".to_owned());
     }
+    peak_hold_seconds
+        .checked_add(settled_hold_seconds)
+        .and_then(|value| value.checked_add(renewed_hold_seconds))
+        .and_then(|value| value.checked_add(post_hold_seconds))
+        .and_then(|value| value.checked_add(command_timeout_seconds))
+        .ok_or_else(|| "configured qualification duration overflows".to_owned())?;
     let run_id = new_run_id()?;
     Ok(StartOptions {
         config: Config {
@@ -236,11 +273,14 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             mode,
             peak_bytes,
             retained_bytes,
+            max_allocation_bytes,
             peak_hold_seconds,
             settled_hold_seconds,
             renewed_hold_seconds,
+            resident_refresh_seconds,
             post_hold_seconds,
             interval_seconds,
+            command_timeout_seconds,
             expect_growth_bytes,
             expect_reclaim_bytes,
         },
@@ -314,7 +354,11 @@ fn run_internal(args: &[String], repo: &Path) -> Result<(), String> {
     let run_dir = PathBuf::from(&args[1]);
     let config: Config = serde_json::from_str(&process::read_file(&run_dir.join("config.json"))?)
         .map_err(|e| format!("parse qualification config: {e}"))?;
-    wait_for_launcher_status(&run_dir.join("status.json"))?;
+    wait_for_launcher_status(
+        &run_dir.join("status.json"),
+        Duration::from_secs(config.command_timeout_seconds),
+        Duration::from_secs(config.interval_seconds),
+    )?;
     let started = now_millis()?;
     let mut status = Status {
         version: SCHEMA_VERSION,
@@ -371,14 +415,6 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
         }
     }
     preflight_health(config, run_dir, repo, "before_workload")?;
-    if config.telemetry_path.is_none() {
-        event(
-            run_dir,
-            "warning",
-            "windows_telemetry_not_configured",
-            json!({"message": "use --telemetry-path to correlate native Windows raw telemetry"}),
-        )?;
-    }
     let mut observations = Observations::default();
     sample_host(config, run_dir, repo, "baseline", &mut observations)?;
     let remote = workload_command(config);
@@ -388,16 +424,13 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
         "workload_start",
         json!({"ssh_target": config.ssh_target, "command": remote}),
     )?;
+    let connect_timeout = format!("ConnectTimeout={}", config.command_timeout_seconds);
     let mut child = ProcessCommand::new("ssh")
         .args([
             "-o",
             "BatchMode=yes",
             "-o",
-            "ConnectTimeout=10",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=4",
+            &connect_timeout,
             "--",
             &config.ssh_target,
             &remote,
@@ -420,13 +453,13 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
     spawn_reader(stdout, false, sender.clone());
     spawn_reader(stderr, true, sender);
     let started = Instant::now();
-    let max_duration = Duration::from_secs(
-        config.peak_hold_seconds
-            + config.settled_hold_seconds
-            + config.renewed_hold_seconds
-            + config.post_hold_seconds
-            + 120,
-    );
+    let max_duration_seconds = config
+        .peak_hold_seconds
+        .checked_add(config.settled_hold_seconds)
+        .and_then(|value| value.checked_add(config.renewed_hold_seconds))
+        .and_then(|value| value.checked_add(config.command_timeout_seconds))
+        .ok_or_else(|| "configured workload deadline overflows".to_owned())?;
+    let max_duration = Duration::from_secs(max_duration_seconds);
     let interval = Duration::from_secs(config.interval_seconds);
     let mut next_sample = Instant::now() + interval;
     let mut phase = "baseline".to_owned();
@@ -477,9 +510,31 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
             }
             next_sample = Instant::now() + interval;
         }
-        thread::sleep(Duration::from_millis(200));
+        let wait = next_sample.saturating_duration_since(Instant::now());
+        if let Ok((is_error, line)) = receiver.recv_timeout(wait) {
+            if is_error {
+                observations.warnings += 1;
+                event(
+                    run_dir,
+                    "warning",
+                    "workload_stderr",
+                    json!({"message": line}),
+                )?;
+            } else {
+                append_line(&run_dir.join("workload.jsonl"), &line)?;
+                let parsed: Value = serde_json::from_str(&line)
+                    .map_err(|e| format!("workload emitted invalid JSON: {e}: {line}"))?;
+                phase = parsed
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "workload record has no phase".to_owned())?
+                    .to_owned();
+                observations.workload_phases.push(phase.clone());
+                event(run_dir, "info", "workload_phase", parsed)?;
+            }
+        }
     }
-    while let Ok((is_error, line)) = receiver.recv_timeout(Duration::from_millis(100)) {
+    while let Ok((is_error, line)) = receiver.try_recv() {
         if is_error {
             observations.warnings += 1;
             event(
@@ -551,23 +606,18 @@ fn sample_host(
     let host = process::read_file(Path::new("/proc/meminfo"))?;
     let host_available_bytes = meminfo_value(&host, "MemAvailable:");
     let guest_stats = whitespace_pairs(&dommemstat);
-    let telemetry = match config.telemetry_path.as_deref() {
-        Some(path) => {
-            let line = last_complete_line(path).ok_or_else(|| {
-                format!(
-                    "configured Windows telemetry {} has no complete record",
-                    path.display()
-                )
-            })?;
-            Some(serde_json::from_str::<Value>(&line).map_err(|error| {
-                format!(
-                    "configured Windows telemetry {} is invalid JSON: {error}",
-                    path.display()
-                )
-            })?)
-        }
-        None => None,
-    };
+    let line = last_complete_line(&config.telemetry_path).ok_or_else(|| {
+        format!(
+            "configured Windows telemetry {} has no complete record",
+            config.telemetry_path.display()
+        )
+    })?;
+    let telemetry = serde_json::from_str::<Value>(&line).map_err(|error| {
+        format!(
+            "configured Windows telemetry {} is invalid JSON: {error}",
+            config.telemetry_path.display()
+        )
+    })?;
     let sample = json!({"version": SCHEMA_VERSION, "run_id": config.run_id, "unix_millis": now_millis()?, "workload_phase": phase, "vm_state": domstate.trim(), "requested_bytes": memory.requested_bytes, "current_bytes": memory.current_bytes, "device_size_bytes": memory.size_bytes, "block_size_bytes": memory.block_size_bytes, "host_mem_available_bytes": host_available_bytes, "guest_dommemstat_kib": guest_stats, "windows_raw_telemetry": telemetry});
     append_json(&run_dir.join("host-metrics.jsonl"), &sample)?;
     if let Some(previous) = observations.last_requested {
@@ -613,6 +663,7 @@ fn preflight_health(
     repo: &Path,
     stage: &str,
 ) -> Result<(), String> {
+    let timeout = Duration::from_secs(config.command_timeout_seconds);
     let controller = process::bounded_text(
         "systemctl",
         &[
@@ -620,7 +671,7 @@ fn preflight_health(
             OsString::from(&config.controller_unit),
         ],
         repo,
-        COMMAND_TIMEOUT,
+        timeout,
     )?;
     let ping = virsh(
         config,
@@ -672,19 +723,20 @@ fn preflight_health(
 }
 
 fn remote_text(config: &Config, repo: &Path, command: &str) -> Result<String, String> {
+    let connect_timeout = format!("ConnectTimeout={}", config.command_timeout_seconds);
     process::bounded_text(
         "ssh",
         &[
             OsString::from("-o"),
             OsString::from("BatchMode=yes"),
             OsString::from("-o"),
-            OsString::from("ConnectTimeout=10"),
+            OsString::from(connect_timeout),
             OsString::from("--"),
             OsString::from(&config.ssh_target),
             OsString::from(command),
         ],
         repo,
-        COMMAND_TIMEOUT,
+        Duration::from_secs(config.command_timeout_seconds),
     )
 }
 
@@ -726,7 +778,7 @@ fn workload_command(config: &Config) -> String {
         WorkloadMode::Committed => "committed",
         WorkloadMode::Resident => "resident",
     };
-    format!("\"{}\" --workload-id {} --mode {mode} --peak-bytes {} --retained-bytes {} --peak-hold-seconds {} --settled-hold-seconds {} --renewed-hold-seconds {}", config.remote_workload, config.run_id, config.peak_bytes, config.retained_bytes, config.peak_hold_seconds, config.settled_hold_seconds, config.renewed_hold_seconds)
+    format!("\"{}\" --workload-id {} --mode {mode} --peak-bytes {} --retained-bytes {} --max-allocation-bytes {} --peak-hold-seconds {} --settled-hold-seconds {} --renewed-hold-seconds {} --refresh-interval-seconds {}", config.remote_workload, config.run_id, config.peak_bytes, config.retained_bytes, config.max_allocation_bytes, config.peak_hold_seconds, config.settled_hold_seconds, config.renewed_hold_seconds, config.resident_refresh_seconds)
 }
 
 fn archive_controller_log(config: &Config, run_dir: &Path, repo: &Path) {
@@ -745,9 +797,14 @@ fn archive_controller_log(config: &Config, run_dir: &Path, repo: &Path) {
         OsString::from("--since"),
         OsString::from(since),
     ];
-    match process::checked_output("journalctl", &args, repo) {
-        Ok(bytes) => {
-            let _ = std::fs::write(run_dir.join("controller.log"), bytes);
+    match process::bounded_text(
+        "journalctl",
+        &args,
+        repo,
+        Duration::from_secs(config.command_timeout_seconds),
+    ) {
+        Ok(value) => {
+            let _ = std::fs::write(run_dir.join("controller.log"), value);
         }
         Err(error) => {
             let _ = event(
@@ -816,7 +873,12 @@ fn locate_run(args: &[String], repo: &Path) -> Result<PathBuf, String> {
 fn virsh(config: &Config, repo: &Path, args: &[&str]) -> Result<String, String> {
     let mut values = vec![OsString::from("-c"), OsString::from(&config.connect_uri)];
     values.extend(args.iter().map(OsString::from));
-    process::bounded_text("virsh", &values, repo, COMMAND_TIMEOUT)
+    process::bounded_text(
+        "virsh",
+        &values,
+        repo,
+        Duration::from_secs(config.command_timeout_seconds),
+    )
 }
 
 fn spawn_reader(
@@ -889,6 +951,9 @@ fn number(args: &[String], index: &mut usize, option: &str) -> Result<u64, Strin
     value(args, index, option)?
         .parse()
         .map_err(|_| format!("{option} requires an unsigned integer"))
+}
+fn required<T>(value: Option<T>, option: &str) -> Result<T, String> {
+    value.ok_or_else(|| format!("{option} is required"))
 }
 fn scope(value: &str, name: &str) -> Result<String, String> {
     if value.is_empty() || value.starts_with('-') || value.chars().any(char::is_control) {
@@ -963,8 +1028,10 @@ fn available_artifacts(run_dir: &Path) -> Vec<&'static str> {
     names
 }
 
-fn wait_for_launcher_status(path: &Path) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+fn wait_for_launcher_status(path: &Path, timeout: Duration, interval: Duration) -> Result<(), String> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "launcher timeout exceeds the platform clock range".to_owned())?;
     loop {
         if process::read_file(path)
             .ok()
@@ -977,7 +1044,7 @@ fn wait_for_launcher_status(path: &Path) -> Result<(), String> {
         if Instant::now() >= deadline {
             return Err("launcher did not publish the detached supervisor PID".to_owned());
         }
-        thread::sleep(Duration::from_millis(25));
+        thread::sleep(interval.min(deadline.saturating_duration_since(Instant::now())));
     }
 }
 
@@ -989,63 +1056,75 @@ mod tests {
         values.iter().map(|v| (*v).to_owned()).collect()
     }
 
-    #[test]
-    fn canonical_profile_is_bounded_and_requires_apply() {
-        let repo = Path::new("/repo");
-        let parsed = parse_start(
-            &strings(&[
-                "vm",
-                "memory0",
-                "--ssh-target",
-                "guest",
-                "--profile",
-                "m10g-resident",
-            ]),
-            repo,
-        )
-        .expect("profile");
-        assert!(!parsed.apply);
-        assert_eq!(parsed.config.mode, WorkloadMode::Resident);
-        assert_eq!(parsed.config.peak_bytes, 4 << 30);
-        assert_eq!(parsed.config.expect_reclaim_bytes, 64 << 20);
+    fn valid_start_arguments() -> Vec<String> {
+        strings(&[
+            "vm",
+            "memory0",
+            "--ssh-target",
+            "guest",
+            "--mode",
+            "resident",
+            "--peak-bytes",
+            "8192",
+            "--retained-bytes",
+            "4096",
+            "--max-allocation-bytes",
+            "16384",
+            "--peak-hold-seconds",
+            "2",
+            "--settled-hold-seconds",
+            "3",
+            "--renewed-hold-seconds",
+            "2",
+            "--resident-refresh-seconds",
+            "1",
+            "--post-hold-seconds",
+            "1",
+            "--interval-seconds",
+            "1",
+            "--command-timeout-seconds",
+            "4",
+            "--expect-growth-bytes",
+            "2048",
+            "--expect-reclaim-bytes",
+            "1024",
+            "--remote-workload",
+            r"C:\qualification\virtio-mem-workload.exe",
+            "--controller-unit",
+            "virtio-mem-host@vm.service",
+            "--guest-service",
+            "ConfiguredService",
+            "--telemetry-path",
+            "/run/qualification/telemetry.jsonl",
+        ])
     }
 
     #[test]
-    fn rejects_implicit_endpoint_and_unbounded_workload() {
+    fn explicit_configuration_is_dry_run_until_apply() {
+        let repo = Path::new("/repo");
+        let parsed = parse_start(&valid_start_arguments(), repo).expect("configuration");
+        assert!(!parsed.apply);
+        assert_eq!(parsed.config.mode, WorkloadMode::Resident);
+        assert_eq!(parsed.config.peak_bytes, 8192);
+        assert_eq!(parsed.config.expect_reclaim_bytes, 1024);
+    }
+
+    #[test]
+    fn rejects_implicit_or_zero_operational_settings() {
         assert!(parse_start(&strings(&["vm", "memory0"]), Path::new("/repo")).is_err());
-        assert!(parse_start(
-            &strings(&[
-                "vm",
-                "memory0",
-                "--ssh-target",
-                "guest",
-                "--peak-hold-seconds",
-                "3601"
-            ]),
-            Path::new("/repo")
-        )
-        .is_err());
-        assert!(parse_start(
-            &strings(&[
-                "vm",
-                "memory0",
-                "--ssh-target",
-                "guest",
-                "--expect-growth-bytes",
-                "0"
-            ]),
-            Path::new("/repo")
-        )
-        .is_err());
+        let mut invalid = valid_start_arguments();
+        let position = invalid
+            .iter()
+            .position(|value| value == "--command-timeout-seconds")
+            .expect("timeout option");
+        invalid[position + 1] = "0".to_owned();
+        assert!(parse_start(&invalid, Path::new("/repo")).is_err());
     }
 
     #[test]
     fn result_requires_all_phases_and_resize_thresholds() {
-        let mut options = parse_start(
-            &strings(&["vm", "memory0", "--ssh-target", "guest"]),
-            Path::new("/repo"),
-        )
-        .expect("options");
+        let mut options =
+            parse_start(&valid_start_arguments(), Path::new("/repo")).expect("options");
         options.config.expect_growth_bytes = 100;
         options.config.expect_reclaim_bytes = 50;
         let observations = Observations {
@@ -1077,23 +1156,19 @@ mod tests {
     }
 
     #[test]
-    fn workload_command_preserves_profile_and_run_identity() {
-        let options = parse_start(
-            &strings(&[
-                "vm",
-                "memory0",
-                "--ssh-target",
-                "guest",
-                "--profile",
-                "m10g-committed",
-            ]),
-            Path::new("/repo"),
-        )
-        .expect("options");
+    fn workload_command_preserves_mode_bounds_and_run_identity() {
+        let mut arguments = valid_start_arguments();
+        let position = arguments
+            .iter()
+            .position(|value| value == "--mode")
+            .expect("mode option");
+        arguments[position + 1] = "committed".to_owned();
+        let options = parse_start(&arguments, Path::new("/repo")).expect("options");
         let command = workload_command(&options.config);
         assert!(command.contains("--mode committed"));
         assert!(command.contains(&format!("--workload-id {}", options.config.run_id)));
-        assert!(command.contains("--peak-hold-seconds 600"));
+        assert!(command.contains("--max-allocation-bytes 16384"));
+        assert!(command.contains("--refresh-interval-seconds 1"));
     }
 
     #[test]

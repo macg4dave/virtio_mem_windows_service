@@ -1,193 +1,68 @@
-# Build and Test Tooling Roadmap
+# Build and test tooling roadmap
 
-This roadmap is the execution source of truth for repository build and test
-tooling. Product/runtime work remains in [`../BACKLOG.md`](../BACKLOG.md) and
-[`roadmap.md`](roadmap.md).
+This is the execution board for repository build, test, deployment-validation,
+and live-workflow tooling. Product work remains in `../BACKLOG.md`.
 
-Tooling uses the visually distinct namespaces **BT-Mx** for milestones,
-**BT-Txxx** for tasks, and **BT-Bxxx** for blockers. Main-project `M*` and
-`TASK-*` codes must never be reused here.
+## Target architecture
 
-## Status legend
+`cargo xtask` is the single maintained control plane for repository gates,
+native-Windows orchestration, artifact verification, environment checks, and
+repeatable cross-process/live workflows. Normal Rust tests remain in their
+owning crates. Editor and Make entrypoints are thin delegates.
 
-- `[ ]` Not started
-- `[~]` In progress or partially complete
-- `[x]` Complete with local evidence and documentation
-- `[!]` Blocked by an external dependency
+Operational targets, paths, sizes, timings, retry counts, and acceptance
+thresholds are explicit validated inputs or are derived from authoritative
+current state. No stable command or profile is named after a milestone or VM.
 
-## Goal and boundary
+Bash is allowed only for one generated or task-specific reviewable privileged
+process. It calls prebuilt Rust behavior and has no compatibility contract.
 
-The repository will have one Rust control-plane tool, invoked as
-`cargo xtask`, for reproducible builds, tests, environment checks, remote
-native-Windows validation, artifact verification, and reusable bounded live
-probes. Rust owns parsing, validation, command construction, orchestration,
-and reusable safety policy.
+## Milestones
 
-This control plane complements Cargo's normal unit, crate integration,
-regression, and doctest facilities; it does not replace them. Code behavior is
-proved first in the owning crate. Xtask then supplies aggregate repository
-gates and the higher-level workflows that cross processes, components,
-machines, service managers, deployments, or live state.
-
-Bash remains permitted only where its process-level form is itself a safety
-boundary: a generated, task-specific, operator-reviewable privileged batch
-under the ignored `.vscode-artifacts/privileged-tasks/` directory. Those
-batches must call `cargo xtask` or installed Rust binaries for reusable logic;
-they must not grow a second XML, JSON, arithmetic, polling, or build system.
-
-Historical evidence and task scripts under `.vscode-artifacts/` are not source
-code and are not synchronized by default. They have no compatibility contract:
-after their useful invariants are represented in Rust or deliberately retired,
-they may be deleted when their related evidence-retention need ends.
-
-## Current position
-
-BT-M0 through BT-M5 are implemented in the current migration. The tracked
-`scripts/` wrappers have been replaced by `tools/xtask`, Cargo/VS Code/Make
-entry points route to that tool, and current AI instructions use its commands.
-The prompt structure now separates code-level Rust testing, higher-level
-workflow validation, and implementation of the tooling itself; the canonical
-instructions define how those cumulative layers are selected and reported.
-BT-M6 and BT-M7 remain. A versioned unattended workload/resize qualification
-foundation now supplies per-run artifacts, status, review, layered preflight,
-and derived growth/reclaim results. General task-batch generation, reusable
-guest-health evidence, injected end-to-end faults, and a common schema across
-all xtask gates remain.
-
-Current local evidence is 62 shared-core, 67 host, and 19 tooling tests plus
-locked release builds, formatting, warnings-denied Clippy, diff validation,
-and a passing host doctor. The native Windows gate passes 74 tests and verifies
-artifact SHA-256
-`cbc8a81aa87ba0a3c2c34ad030d85cb5cd0c7f5c3eeed683708daf8a4a154404`.
-No live mutation gate was run for BT-T001–BT-T006.
-
-## Milestone map
-
-| Milestone | Title | Status | Depends on | Exit evidence |
-| --- | --- | --- | --- | --- |
-| BT-M0 | Inventory and ownership boundary | [x] | — | Every tracked and ignored script is classified; duplicate logic and retained one-off evidence are documented |
-| BT-M1 | Rust tooling foundation | [x] | BT-M0 | `tools/xtask` is a workspace member, `cargo xtask help` works, and argument/parser tests pass |
-| BT-M2 | Local developer gate | [x] | BT-M1 | Format, release build, test, Clippy, and diff checks run through `cargo xtask gate local` without compiling Windows-only APIs on Linux |
-| BT-M3 | Native Windows build gate | [x] | BT-M1 | Explicit SSH check/sync/build/test/lint/fetch/all and fingerprint-pinned two-run evidence are implemented with checksum verification |
-| BT-M4 | Host and live validation | [x] | BT-M1 | Host doctor, QGA/dommemstat fallback, and dry-run-default bounded resize reuse Rust JSON/XML/unit validation |
-| BT-M5 | Entrypoint and guidance migration | [x] | BT-M2, BT-M3, BT-M4 | Tracked shell wrappers are removed; VS Code, Make, docs, project instructions, and routed AI prompts distinguish focused Cargo tests, repository gates, and higher-level xtask workflows |
-| BT-M6 | Privileged-batch consolidation | [ ] | BT-M4, M10g | A typed manifest and generator replace copied task boilerplate while retaining one outer reviewable Bash batch per privileged task |
-| BT-M7 | Toolchain qualification and stable output | [ ] | BT-M5, BT-M6 | Fault injection, cross-platform endpoint tests, result schema/versioning, artifact retention, and two consecutive aggregate gates pass |
-
-## Task board
-
-### Completed
-
-| Task | Milestone | Description | Evidence |
-| --- | --- | --- | --- |
-| BT-T001 | BT-M0 | Audit tracked scripts, ignored privileged task scripts, editor tasks, Make targets, docs, and AI prompts | Inventory and disposition tables below |
-| BT-T002 | BT-M1 | Add the workspace `virtio-mem-xtask` crate and Cargo alias | Hermetic parser/safety tests and `cargo xtask help` |
-| BT-T003 | BT-M2 | Consolidate the Linux-supported quality gate | One command preserves format, locked release build/test/Clippy, and diff checks |
-| BT-T004 | BT-M3 | Port Windows SSH/MSVC orchestration and milestone evidence capture | Explicit endpoint, pinned-host option, one-sync gate, and cross-host SHA-256 comparison |
-| BT-T005 | BT-M4 | Port environment, QGA, and live-resize helpers | Rust parses QGA JSON and libvirt XML; live mutation stays opt-in, bounded, converged, and restored by default |
-| BT-T006 | BT-M5 | Migrate repository entry points and remove tracked wrappers | `.vscode/tasks.json`, Make compatibility aliases, project docs, instructions, and prompts use `cargo xtask` |
-| BT-T013 | BT-M5 | Separate AI guidance for code tests, workflow validation, and tooling development | Canonical selection rules, prompt index, dedicated `rust-tests`, `workflow-validation`, and `build-test-tooling` prompts, and layered reporting requirements |
-
-### In progress
-
-| Task | Milestone | Description | Current evidence |
-| --- | --- | --- | --- |
-| BT-T014 | BT-M7 | Add unattended multi-minute Windows workload and automatic-resize qualification with durable per-run evidence | Start/status/review, bounded M10g profiles, layered preflight, structured samples/events/results, and 19 tooling tests pass locally; native/live execution remains |
-
-### Ready queue
-
-| Task | Milestone | Description | Depends on | Blockers | Exit evidence |
-| --- | --- | --- | --- | --- | --- |
-| BT-T007 | BT-M6 | Define a versioned task manifest for exact VM, service, guest-health, timeout, output, mutation, and rollback scope | BT-T005 | BT-B002 | Schema rejects implicit targets, unbounded waits, nested privilege elevation, and missing rollback |
-| BT-T008 | BT-M6 | Generate minimal reviewable privileged Bash batches from a validated manifest | BT-T007 | BT-B001 | Generated batch contains fixed arguments, one outer execution boundary, and no duplicated parsers/policy |
-| BT-T009 | BT-M6 | Add reusable layered Windows guest-health capture and quiet-window evaluation | BT-T007, M10g | BT-B002 | Deterministic fixtures cover reboot identity, services, installer/pending-reboot checks, and event IDs 41/6008/1001/1074 |
-| BT-T010 | BT-M7 | Add injectable process, filesystem, SSH, checksum, timeout, cancellation, and rollback integration tests | BT-T003–BT-T009 | — | Failure matrix proves non-zero propagation, no implicit endpoint, cleanup, ambiguous-command reporting, and rollback attempts |
-| BT-T011 | BT-M7 | Define versioned JSON plus human-readable summaries for gate evidence | BT-T010 | — | RHEL and Windows results stay separate and are reproducibly archived |
-| BT-T012 | BT-M7 | Run two consecutive aggregate gates and one bounded dry-run/live-fixture qualification | BT-T011 | BT-B003 | Exact logs, hashes, test counts, platform labels, and any live blocker are recorded |
-
-## Dependency path
-
-```text
-BT-M0 → BT-M1 ─┬→ BT-M2 ─┐
-               ├→ BT-M3 ─┼→ BT-M5 → BT-M7
-               └→ BT-M4 ─┘          ▲
-                         └→ BT-M6 ────┘
-```
-
-BT-M6 may consume live-health requirements from main-project M10g, but tooling
-task/status codes remain independent. Completing a BT milestone never marks a
-main-project milestone complete.
-
-## Blockers and decisions
-
-| Blocker | Status | Impact | Resolution |
-| --- | --- | --- | --- |
-| BT-B001 | Design constraint | Privileged work must remain one exact, operator-reviewable process under one outer `sudo`; a long-running generic privileged daemon is out of scope | Generate a minimal Bash batch from a typed manifest and keep reusable behavior in Rust |
-| BT-B002 | Main-project dependency | Guest lifecycle/health semantics are still being qualified under M10g | Freeze a versioned tooling schema only after the required evidence fields and quiet-window rules stabilize |
-| BT-B003 | External environment | The complete native Windows gate requires the explicitly configured SSH/MSVC endpoint | Report native Windows separately; never substitute a Linux workspace result |
-
-## Design gaps found during prompt review
-
-| Gap | Why it matters | Tracked resolution |
+| Milestone | Outcome | Status |
 | --- | --- | --- |
-| Privileged feature/deployment workflows have no versioned scenario manifest | Task scripts can still repeat target, timeout, mutation, and rollback structure | BT-T007 and BT-T008 |
-| Guest readiness has no shared typed result | QGA success alone can be mistaken for Windows/application health | BT-T009 |
-| External effects are not fully injectable | Process, SSH, timeout, cancellation, cleanup, and rollback failures need deterministic regression coverage | BT-T010 |
-| Results are human-readable only | Agents need a stable schema to archive and compare per-platform/per-workflow evidence without conflating gates | BT-T011 |
-| Some installed-service and deployment procedures remain manual/task-specific | Repeatable feature acceptance should have a safe capability-named xtask workflow | Fold each procedure into BT-T007–BT-T010 when its product acceptance contract is next exercised |
+| BT-M1 | Rust `xtask` workspace foundation | Complete |
+| BT-M2 | Local RHEL-compatible repository gate | Complete |
+| BT-M3 | Explicit remote native-Windows gate and artifact verification | Complete |
+| BT-M4 | Host readiness, QGA, and reversible live-resize workflows | Complete |
+| BT-M5 | Editor, Make, docs, and AI guidance route to current tooling | Complete |
+| BT-M6 | Typed deployment/privileged-task manifest and generated boundary | Ready |
+| BT-M7 | Injectable external-effect tests and common result schema | Ready |
 
-## Existing script audit
+## Completed tasks
 
-### Tracked `scripts/` wrappers
+| Task | Outcome |
+| --- | --- |
+| BT-T001–BT-T006 | Replaced maintained shell wrappers with capability-named Rust commands and routed repository entrypoints to them |
+| BT-T013 | Separated code-level tests, tooling development, and higher-level workflow prompts |
+| BT-T014 | Added detached resident/committed automatic-controller qualification with durable JSON/JSONL evidence |
+| BT-T015 | Removed experiment-derived workflow defaults, milestone/VM-specific command profiles, obsolete editor/debug artifacts, duplicated AI instructions, and historical test procedures; live mutation now delegates to the attestation-aware product CLI |
 
-| Former file | Overlap found | Disposition |
+## Ready queue
+
+| Task | Outcome required | Depends on |
 | --- | --- | --- |
-| `scripts/build-rust.sh` | Duplicated Make targets, VS Code tasks, prompt commands, and documentation | Replaced by `cargo xtask gate local`; removed |
-| `scripts/check-environment.sh` | Command-presence loop duplicated by several live helpers | Replaced by `cargo xtask doctor host`; removed |
-| `scripts/windows-remote-build.sh` | Duplicated VS Code Windows stages and milestone runner orchestration | Merged into `cargo xtask windows check|sync|build|test|lint|fetch|all`; removed |
-| `scripts/complete-windows-build-milestone.sh` | Wrapped the Windows helper plus `make all-gates`, repeated SSH and hashing logic | Merged into `cargo xtask windows milestone`; removed |
-| `scripts/validate-guest-agent.sh` | QGA/`dommemstat` parsing overlaps M8 read-only evidence and host adapters | Replaced by `cargo xtask qga`; Rust now parses JSON and numeric fallback fields; removed |
-| `scripts/live-resize-test.sh` | Reimplemented XML selection, units, target checks, headroom, polling, and rollback already represented in Rust contracts | Replaced by `cargo xtask live-resize`; shared core parsing and validation are authoritative; removed |
+| BT-T007 | Versioned deployment/task manifest with explicit identity, inputs, time bounds, effects, evidence, cleanup, and rollback | BT-M4 |
+| BT-T008 | Minimal privileged Bash generation from the validated manifest | BT-T007 |
+| BT-T009 | Reusable typed guest-health and lifecycle evidence | BT-T007 |
+| BT-T010 | Injectable process, filesystem, SSH, timeout, cancellation, cleanup, and rollback fault matrix | BT-T007–BT-T009 |
+| BT-T011 | Common versioned JSON plus human result model for every higher-level workflow | BT-T010 |
+| BT-T012 | Repeatability qualification using an explicitly selected run count and current endpoint configuration | BT-T011 |
 
-The Makefile remains only as a human compatibility shim. It contains no build
-or validation policy: its aggregate targets delegate to `cargo xtask`.
+## Current gaps
 
-### Ignored `.vscode-artifacts/privileged-tasks/` scripts
-
-These are not maintained entry points. They embed historical task targets and
-capture evidence. Their reusable portions are migration input for BT-M6; their
-specific mutation sequences remain separate until captured or retired. No
-script must be preserved for compatibility, and each may be removed once its
-useful behavior and evidence-retention need have both ended.
-
-| Scripts reviewed | Function and overlap | Decision |
-| --- | --- | --- |
-| `m8-win11-gpu-read-only.sh`, `m9-win11-gpu-read-only.sh`, `m9a-win11-gpu-discovery.sh`, `m9a-win11-gpu-validate.sh` | Repeated QGA, XML snapshot/hash, alias validation, and non-mutation checks | Obsolete as reusable tooling; retain as historical evidence. Use `cargo xtask qga` and the Rust host CLI/tooling now |
-| `m8-win11-gpu-lifecycle.sh`, `m10b-guest-maintenance-settle.sh`, `m10b-interruption-attestation-validation.sh` | Repeated QGA availability, SSH Windows-service health, boot identity, event-log, installer, quiet-window, and reboot checks | Keep task sequences separate; merge reusable health capture/evaluation under BT-T009 |
-| `m9b-win11_gpu.sh`, `deploy-memory-quanta-policy.sh`, `m10b-service-recovery-validation.sh`, `m10ef-candidate-service-live.sh` | Repeated service stop/stage/start/observe/restore and controller-state parsing | Keep exact deployment evidence; replace boilerplate with BT-T007/BT-T008 manifests and generated batches |
-| `m10a1-qualify-dbgview.sh`, `m10a1-unload-dbgv-recovery.sh` | Signed diagnostic staging, hashing, Windows driver-service cleanup, and evidence capture | Diagnostic-only and no longer a normal gate; retain until M10a evidence retention expires, then remove as obsolete |
-| `m10a3-one-block-observation.sh`, `m10a3-domain-restart-restore-controller.sh`, `m10a3-post-host-reboot-recover-retry.sh`, `m10a3-reboot-clean-retry.sh` | One-off driver observation and progressively corrected recovery/reboot procedures; duplicates state polling and guest checks | Historical only; do not generalize the obsolete driver-capture path. Migrate health/state primitives, not the scenarios |
-| `m10b-256m-ramp.sh`, `m10b-grow-2g-shrink-1g-probe.sh`, `m10b-one-block-qualification.sh`, `recover-failed-64m-shrink.sh` | Repeated resize, convergence, service isolation, logging, and recovery | Historical M10 evidence; new ordinary reversible tests use `cargo xtask live-resize`. Complex recovery stays task-specific until BT-M6 |
-
-Non-script files under `.vscode-artifacts/`—logs, hashes, binaries, captured
-configuration, and diagnostic packages—are evidence or generated output, not
-tooling. They remain ignored and are not moved into `tools/`.
+- Candidate deployment still crosses platform privilege boundaries. Until the
+  typed manifest/generator exists, one exact task-specific Bash boundary may
+  invoke the product CLIs; no maintained manual deployment script is allowed.
+- Guest lifecycle evidence is captured by current qualification preflight but
+  is not yet a reusable typed command.
+- Some external effects remain covered only at parser/unit boundaries rather
+  than through injected end-to-end fixtures.
 
 ## Definition of done
 
-The Rust toolchain migration is fully consolidated when:
-
-1. normal Rust code behavior remains covered by focused Cargo unit,
-   integration, regression, and doctests in the owning crate;
-2. all maintained repository-gate and higher-level workflow entry points route through
-   `cargo xtask` or a product Rust binary;
-3. no tracked Bash file duplicates Rust parsing, policy, command construction,
-   polling, checksums, or gate sequencing;
-4. privileged Bash is generated from a typed, explicit-scope manifest and is
-   used only as the one-process operator review/elevation boundary;
-5. local RHEL/core-host and native Windows results are labelled and archived
-   independently;
-6. hermetic failure injection covers subprocess failure, timeout, malformed
-   output, cancellation, ambiguous live mutation, rollback, and cleanup; and
-7. `cargo xtask gate all` passes twice against the pinned native-Windows
-   endpoint with identical verified artifacts, or reports BT-B003 exactly.
+The control plane is complete when every repeatable repository, native,
+deployment, service, and live workflow has one capability-named Rust entrypoint
+with explicit inputs, deterministic failure tests, versioned evidence, and
+defined cleanup/rollback; privileged Bash is generated from a typed manifest;
+and unavailable platform layers remain distinct from passing results.

@@ -1,177 +1,52 @@
-# Windows Service
+# Windows service
 
-Rust service that collects native Windows memory telemetry and will publish
-advisory demand reports. It does not own host actuation or the QGA channel.
+This Rust crate collects native Windows memory telemetry and publishes
+versioned allocation-free records. It does not own libvirt, QGA, host policy,
+or resize actuation.
 
-The validated `win11_gpu` target is a fully trusted development/test KVM guest.
-Upstream Windows virtio-mem is technology preview; this crate does not claim
-production or untrusted-guest support.
+## Build and test
 
-## Project Rules
-
-This service must use Rust only. No C# or PowerShell code is allowed in this repository.
-
-## Structure
-
-```text
-windows/
-├── Cargo.toml
-├── src/
-│   ├── main.rs
-│   ├── controller.rs
-│   ├── config.rs
-│   ├── demand.rs
-│   ├── error.rs
-│   ├── qga.rs
-│   ├── runtime.rs
-│   ├── service_host.rs
-│   ├── service_loop.rs
-│   ├── stats.rs
-│   └── lib.rs
-└── README.md
-```
-
-## Build
+Build locally on a configured native Windows toolchain with Cargo. From the
+RHEL development checkout, use the authoritative remote gate:
 
 ```bash
-cargo build --release
+cargo xtask windows all
 ```
 
-Build this crate on Windows (or a host with an installed Windows Rust target
-and compatible linker). The RHEL development host does not currently contain
-the Windows target standard library or a Windows linker, so it cannot produce
-the service executable. The `guest-get-memory-stats` client remains an
-experimental custom/downstream adapter boundary—not an upstream QGA API—
-but the Windows service does not open the QGA virtio-serial device because
-`QEMU-GA` owns it. Service startup uses native Windows telemetry; host-side QGA
-requests remain a RHEL/libvirt responsibility.
+The endpoint, remote workspace, local artifact directory, connection timeout,
+and operation timeout are required environment inputs; see
+`../docs/testing.md`. The gate synchronizes source, initializes MSVC, runs the
+native build/tests/format/Clippy, fetches the executable, and verifies its
+hash. It never installs the service or changes guest memory.
 
-### Build from VS Code on RHEL
+## Configuration and service lifecycle
 
-The supported RHEL workflow builds this crate natively in the Windows KVM
-guest. Configure an SSH alias and workspace path in the environment, then run
-the checked-in VS Code tasks or `cargo xtask windows all` directly:
+Production and interactive startup require the versioned JSON configuration at
+`C:\ProgramData\VirtioMemService\config.json`. Missing, malformed, unsupported,
+or incomplete configuration fails closed. The file explicitly supplies VM and
+service identity, display metadata, adapter path, telemetry path, service
+account, polling interval, adapter-operation timeout, and shutdown timeout.
 
-- `VIRTIO_MEM_WINDOWS_SSH` — required SSH config alias for the Windows guest.
-- `VIRTIO_MEM_WINDOWS_DIR` — optional remote path; defaults to
-  `C:\Users\Public\virtio-mem-build`.
-- `VIRTIO_MEM_WINDOWS_ARTIFACTS` — optional local staging path; defaults to
-  `.vscode-artifacts/windows`.
-- `VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE` — optional pinned SSH host-key file.
-- `VIRTIO_MEM_WINDOWS_IDENTITY_FILE` — optional private-key path for
-  non-interactive authentication.
+The executable supports `install`, `start`, `run`, `stop`, `remove`, and
+`help`. Service-manager operations require the privileges of the configured
+deployment. Installation provisions the configured ProgramData paths and
+least-privilege ACL, registers recovery metadata, and records the configured
+identity. The SCM dispatcher rejects an identity mismatch.
 
-The one-time guest setup requires Rust MSVC, Visual Studio C++ Build Tools with
-the Windows SDK, Git, `tar.exe`, `certutil.exe`, and OpenSSH Server. The
-Rust tool synchronizes Git-tracked and non-ignored working-tree files,
-initializes the MSVC environment, runs Cargo on Windows with the workspace
-lockfile, requires a successful release build before fetching, and verifies the
-fetched executable's SHA-256 checksum. The
-VS Code tasks prompt for the SSH alias; the environment variable is required
-only for direct tool use. It never installs or starts the Windows service
-and never changes libvirt state.
+Validate candidate hash, SCM configuration, ACLs, telemetry advancement,
+events, start/stop behavior, and final state as a separate deployment layer.
+Do not combine service lifecycle testing with a live resize.
 
-For the two-run milestone check, use `cargo xtask windows milestone` from the
-RHEL checkout as documented in `docs/testing.md`. It verifies a supplied ED25519 host
-fingerprint without changing the operator's persistent SSH configuration.
+## Workload qualification binary
 
-See [`../docs/testing.md`](../docs/testing.md) for the task sequence and the
-separate approval gate for deployment.
+`virtio-mem-workload.exe` is a separate test binary. It is never installed as
+the service and has no QGA, libvirt, or resize interface. Every allocation
+size, safety cap, hold duration, and resident refresh interval is a required
+argument. It emits flushed versioned JSON-line phase evidence.
 
-## Test
+Invoke it through `cargo xtask qualification` for correlated host, telemetry,
+controller, and guest-health evidence. Direct invocation alone is not platform
+qualification.
 
-```bash
-cargo test
-```
-
-## M10g bounded workload helper
-
-`virtio-mem-workload.exe` is a separate qualification binary; it is never
-installed as the service and has no QGA, libvirt, or resize interface. The
-canonical M10g trace commits 4 GiB, retains 2 GiB after the first hold, renews
-the released 2 GiB after the second hold, and cleans up after the final hold:
-
-```text
-target\release\virtio-mem-workload.exe --workload-id m10g-resident-01 --mode resident --peak-bytes 4294967296 --retained-bytes 2147483648 --peak-hold-seconds 600 --settled-hold-seconds 900 --renewed-hold-seconds 600
-```
-
-Use `--mode committed` for the committed-but-untouched case. Resident mode
-touches and periodically refreshes one byte per system page. The helper emits
-flushed version-1 JSON-lines phase evidence on stdout; redirect it to a
-task-specific evidence file when the full M10g workflow is run. Each hold is
-limited to 3,600 seconds and peak allocation is capped at 8 GiB. The live run
-must use the initial-state, guest-health, controller, attestation, convergence,
-and recovery procedure in `docs/testing.md`; invoking this binary alone is not
-platform qualification.
-
-## Lint
-
-```bash
-cargo clippy
-cargo fmt --check
-```
-
-## Development
-
-See [`../docs/dependencies.md`](../docs/dependencies.md) for the complete
-toolchain, crate, host, guest, and validation requirements. The minimum local
-runtime requirements are:
-
-- Rust 1.70+
-- Windows 11; QEMU Guest Agent is required for host-side health operations,
-  not for native service telemetry
-- Windows service APIs available in the target environment
-
-The current runtime foundation includes a configurable QEMU Guest Agent client
-boundary for explicit adapter/testing use, a mockable memory poller, and an
-adapter-based single poll iteration. The Windows SCM and interactive workers
-use native `GlobalMemoryStatusEx`/`GetPerformanceInfo` telemetry rather than
-opening the QGA virtio-serial device, which is owned by the QEMU Guest Agent
-service. It also includes a stoppable polling scheduler, portable
-`ServiceHost` lifecycle wrapper, and a native SCM dispatcher that shares the
-same cancellation signal as the worker. `ServiceConfig` supplies validated
-service identity, legacy adapter endpoint, timing, least-privilege defaults, and
-version-3 JSON
-loading from `C:\ProgramData\VirtioMemService\config.json`; ACL provisioning
-and live KVM channel validation are not implemented yet. The demand
-agent foundation additionally collects native Windows memory counters through
-`GlobalMemoryStatusEx` and `GetPerformanceInfo`, validates canonical-byte
-snapshots. The interactive and SCM entry points publish version-1 raw
-telemetry envelopes containing the configured VM name, Unix observation time,
-and counters to `demand_report_path`; they never accept an allocation or emit a
-resize. `DemandAgent` remains a local calculator test boundary. SCM lifecycle
-and failure events are separately emitted to the
-Windows Application Event Log with stable IDs and bounded messages. The
-generic `DemandServiceWorker` and report publisher remain available for tests;
-production runs `RawTelemetryWorker`. The host rejects stale or wrong-VM raw
-records, joins one with alias-scoped live libvirt `current`, and calculates the
-target. Windows receives no host allocation feed. M10d now supplies session/
-sequence/provenance identity, bounded atomic handoff/retention, and ProgramData
-ACL provisioning; native installed-ACL verification remains.
-
-## Service hosting rules
-
-The SCM adapter keeps service callbacks bounded and delegates polling to the
-stoppable runtime. It must report lifecycle transitions in the
-order **start-pending → running → stop-pending → stopped**, distinguish normal
-cancellation from failure, and preserve unexpected worker failures as
-non-zero process exits so SCM recovery can act. Service registration must use a
-stable identity, documented configuration, and a least-privileged account
-that can call the required native telemetry and Event Log APIs and write only
-to its approved ProgramData paths.
-
-A worker exit without a stop/shutdown request is also treated as an unexpected
-non-zero failure. Only successful completion after cancellation is reported as
-a normal stop. The elevated lifecycle and first 5-second recovery restart are
-live-verified. Query XML `EventData` for the bounded insertion strings; classic
-formatted descriptions remain pending message-resource packaging.
-
-The required operational verification sequence is **install → start → inspect
-logs → stop → remove**. The executable exposes matching `install`, `start`,
-`stop`, and `remove` commands; each requires an elevated terminal when SCM
-permissions require it. See [`../docs/architecture.md`](../docs/architecture.md)
-and [`../docs/testing.md`](../docs/testing.md) for the lifecycle contract and
-test matrix.
-
-See [../BACKLOG.md](../BACKLOG.md) for task assignments and
-[../docs/architecture.md](../docs/architecture.md) for design details.
+See `../docs/testing.md` for supported commands and
+`../docs/architecture.md` for component ownership.

@@ -4,14 +4,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::ConfigurationError;
 
-pub const DEFAULT_SERVICE_NAME: &str = "VirtioMemService";
-pub const DEFAULT_DISPLAY_NAME: &str = "Virtio-mem Windows Service";
-pub const DEFAULT_DESCRIPTION: &str = "Monitors Windows guest memory for virtio-mem coordination";
-pub const DEFAULT_QGA_PIPE_PATH: &str = r"\\.\Global\org.qemu.guest_agent.0";
-pub const DEFAULT_SERVICE_ACCOUNT: &str = r"NT AUTHORITY\LocalService";
-pub const DEFAULT_VM_NAME: &str = "win11_gpu";
-pub const DEFAULT_DEMAND_REPORT_PATH: &str =
-    r"C:\ProgramData\VirtioMemService\demand-reports.jsonl";
 pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VirtioMemService\config.json";
 const CONFIG_SCHEMA_VERSION: u32 = 3;
 
@@ -28,24 +20,6 @@ pub struct ServiceConfig {
     pub poll_interval: Duration,
     pub qga_operation_timeout: Duration,
     pub shutdown_timeout: Duration,
-}
-
-impl Default for ServiceConfig {
-    fn default() -> Self {
-        Self {
-            vm_name: DEFAULT_VM_NAME.to_owned(),
-            service_name: DEFAULT_SERVICE_NAME.to_owned(),
-            display_name: DEFAULT_DISPLAY_NAME.to_owned(),
-            description: DEFAULT_DESCRIPTION.to_owned(),
-            qga_pipe_path: DEFAULT_QGA_PIPE_PATH.to_owned(),
-            demand_report_path: DEFAULT_DEMAND_REPORT_PATH.to_owned(),
-            service_account: DEFAULT_SERVICE_ACCOUNT.to_owned(),
-            config_path: DEFAULT_CONFIG_PATH.to_owned(),
-            poll_interval: Duration::from_secs(30),
-            qga_operation_timeout: Duration::from_secs(5),
-            shutdown_timeout: Duration::from_secs(30),
-        }
-    }
 }
 
 impl ServiceConfig {
@@ -87,10 +61,9 @@ impl ServiceConfig {
         let contents = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(Self {
-                    config_path: path.to_string_lossy().into_owned(),
-                    ..Self::default()
-                })
+                return Err(ConfigurationError::MissingFile(
+                    path.to_string_lossy().into_owned(),
+                ))
             }
             Err(error) => return Err(ConfigurationError::FileIo(error.to_string())),
         };
@@ -196,14 +169,30 @@ mod tests {
         ))
     }
 
+    fn test_config() -> ServiceConfig {
+        ServiceConfig {
+            vm_name: "test-vm".to_owned(),
+            service_name: "TestService".to_owned(),
+            display_name: "Test service".to_owned(),
+            description: "Test configuration".to_owned(),
+            qga_pipe_path: r"\\.\pipe\test-qga".to_owned(),
+            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
+            service_account: r"NT AUTHORITY\LocalService".to_owned(),
+            config_path: DEFAULT_CONFIG_PATH.to_owned(),
+            poll_interval: Duration::from_millis(20),
+            qga_operation_timeout: Duration::from_millis(10),
+            shutdown_timeout: Duration::from_millis(30),
+        }
+    }
+
     #[test]
-    fn default_configuration_is_valid() {
-        assert!(ServiceConfig::default().validate().is_ok());
+    fn explicit_configuration_is_valid() {
+        assert!(test_config().validate().is_ok());
     }
 
     #[test]
     fn rejects_empty_identity_fields() {
-        let mut config = ServiceConfig::default();
+        let mut config = test_config();
         config.service_name.clear();
 
         assert_eq!(
@@ -216,7 +205,7 @@ mod tests {
     fn rejects_empty_demand_report_path() {
         let config = ServiceConfig {
             demand_report_path: String::new(),
-            ..ServiceConfig::default()
+            ..test_config()
         };
 
         assert_eq!(
@@ -229,7 +218,7 @@ mod tests {
     fn rejects_zero_timeouts() {
         let mut config = ServiceConfig {
             poll_interval: Duration::ZERO,
-            ..ServiceConfig::default()
+            ..test_config()
         };
         assert_eq!(
             config.validate(),
@@ -259,7 +248,7 @@ mod tests {
             config_path: path.to_string_lossy().into_owned(),
             poll_interval: Duration::from_millis(1250),
             shutdown_timeout: Duration::from_millis(2750),
-            ..ServiceConfig::default()
+            ..test_config()
         };
 
         expected.save().expect("configuration should save");
@@ -274,13 +263,13 @@ mod tests {
         let path = test_path("config-schema");
         let fixture = PersistedServiceConfig {
             schema_version: 99,
-            vm_name: DEFAULT_VM_NAME.to_owned(),
-            service_name: DEFAULT_SERVICE_NAME.to_owned(),
-            display_name: DEFAULT_DISPLAY_NAME.to_owned(),
-            description: DEFAULT_DESCRIPTION.to_owned(),
-            qga_pipe_path: DEFAULT_QGA_PIPE_PATH.to_owned(),
-            demand_report_path: DEFAULT_DEMAND_REPORT_PATH.to_owned(),
-            service_account: DEFAULT_SERVICE_ACCOUNT.to_owned(),
+            vm_name: "test-vm".to_owned(),
+            service_name: "TestService".to_owned(),
+            display_name: "Test service".to_owned(),
+            description: "Test configuration".to_owned(),
+            qga_pipe_path: r"\\.\pipe\test-qga".to_owned(),
+            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
+            service_account: r"NT AUTHORITY\LocalService".to_owned(),
             poll_interval_millis: 30_000,
             qga_operation_timeout_millis: 5_000,
             shutdown_timeout_millis: 30_000,
@@ -299,13 +288,15 @@ mod tests {
     }
 
     #[test]
-    fn missing_configuration_uses_validated_defaults() {
+    fn missing_configuration_is_rejected() {
         let path = test_path("config-missing");
         let _ = std::fs::remove_file(&path);
 
-        let config = ServiceConfig::load_from_path(&path).expect("missing config is allowed");
-
-        assert_eq!(config.config_path, path.to_string_lossy());
-        assert!(config.validate().is_ok());
+        assert_eq!(
+            ServiceConfig::load_from_path(&path),
+            Err(ConfigurationError::MissingFile(
+                path.to_string_lossy().into_owned()
+            ))
+        );
     }
 }

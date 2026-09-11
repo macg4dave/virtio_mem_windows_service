@@ -152,11 +152,27 @@ fn main() {
 mod tests {
     use super::*;
 
+    fn test_config() -> ServiceConfig {
+        ServiceConfig {
+            vm_name: "test-vm".to_owned(),
+            service_name: "TestService".to_owned(),
+            display_name: "Test service".to_owned(),
+            description: "Test configuration".to_owned(),
+            qga_pipe_path: r"\\.\pipe\test-qga".to_owned(),
+            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
+            service_account: r"NT AUTHORITY\LocalService".to_owned(),
+            config_path: r"C:\test\config.json".to_owned(),
+            poll_interval: std::time::Duration::from_millis(20),
+            qga_operation_timeout: std::time::Duration::from_millis(10),
+            shutdown_timeout: std::time::Duration::from_millis(30),
+        }
+    }
+
     #[test]
     fn rejects_invalid_service_configuration_before_startup() {
         let config = ServiceConfig {
             service_name: String::new(),
-            ..ServiceConfig::default()
+            ..test_config()
         };
 
         assert_eq!(

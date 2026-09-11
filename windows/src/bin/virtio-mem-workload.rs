@@ -5,18 +5,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-const MAX_ALLOCATION_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const MAX_HOLD_SECONDS: u64 = 3_600;
-const RESIDENT_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
-
 const USAGE: &str = "Usage: virtio-mem-workload \
     --workload-id ID \
     --mode committed|resident \
     --peak-bytes BYTES \
     --retained-bytes BYTES \
+    --max-allocation-bytes BYTES \
     --peak-hold-seconds SECONDS \
     --settled-hold-seconds SECONDS \
-    --renewed-hold-seconds SECONDS";
+    --renewed-hold-seconds SECONDS \
+    --refresh-interval-seconds SECONDS";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -45,14 +43,16 @@ struct Config {
     mode: WorkloadMode,
     peak_bytes: u64,
     retained_bytes: u64,
+    max_allocation_bytes: u64,
     peak_hold: Duration,
     settled_hold: Duration,
     renewed_hold: Duration,
+    refresh_interval: Duration,
 }
 
 impl Config {
     fn parse(arguments: &[String]) -> Result<Self, String> {
-        if arguments.len() != 14 {
+        if arguments.len() != 18 {
             return Err(USAGE.to_owned());
         }
 
@@ -60,9 +60,11 @@ impl Config {
         let mut mode = None;
         let mut peak_bytes = None;
         let mut retained_bytes = None;
+        let mut max_allocation_bytes = None;
         let mut peak_hold = None;
         let mut settled_hold = None;
         let mut renewed_hold = None;
+        let mut refresh_interval = None;
 
         for pair in arguments.chunks_exact(2) {
             let slot = pair[0].as_str();
@@ -72,6 +74,9 @@ impl Config {
                 "--mode" => set_once(&mut mode, WorkloadMode::parse(value)?, slot)?,
                 "--peak-bytes" => set_once(&mut peak_bytes, parse_u64(value, slot)?, slot)?,
                 "--retained-bytes" => set_once(&mut retained_bytes, parse_u64(value, slot)?, slot)?,
+                "--max-allocation-bytes" => {
+                    set_once(&mut max_allocation_bytes, parse_u64(value, slot)?, slot)?
+                }
                 "--peak-hold-seconds" => {
                     set_once(&mut peak_hold, parse_hold_duration(value, slot)?, slot)?
                 }
@@ -80,6 +85,9 @@ impl Config {
                 }
                 "--renewed-hold-seconds" => {
                     set_once(&mut renewed_hold, parse_hold_duration(value, slot)?, slot)?
+                }
+                "--refresh-interval-seconds" => {
+                    set_once(&mut refresh_interval, parse_hold_duration(value, slot)?, slot)?
                 }
                 _ => return Err(format!("unknown option: {slot}\n{USAGE}")),
             }
@@ -90,18 +98,24 @@ impl Config {
             mode: required(mode, "--mode")?,
             peak_bytes: required(peak_bytes, "--peak-bytes")?,
             retained_bytes: required(retained_bytes, "--retained-bytes")?,
+            max_allocation_bytes: required(max_allocation_bytes, "--max-allocation-bytes")?,
             peak_hold: required(peak_hold, "--peak-hold-seconds")?,
             settled_hold: required(settled_hold, "--settled-hold-seconds")?,
             renewed_hold: required(renewed_hold, "--renewed-hold-seconds")?,
+            refresh_interval: required(refresh_interval, "--refresh-interval-seconds")?,
         };
         config.validate()?;
         Ok(config)
     }
 
     fn validate(&self) -> Result<(), String> {
-        if self.peak_bytes == 0 || self.peak_bytes > MAX_ALLOCATION_BYTES {
+        if self.max_allocation_bytes == 0 {
+            return Err("--max-allocation-bytes must be positive".to_owned());
+        }
+        if self.peak_bytes == 0 || self.peak_bytes > self.max_allocation_bytes {
             return Err(format!(
-                "--peak-bytes must be between 1 and {MAX_ALLOCATION_BYTES}"
+                "--peak-bytes must be positive and no greater than --max-allocation-bytes ({})",
+                self.max_allocation_bytes
             ));
         }
         if self.retained_bytes == 0 || self.retained_bytes >= self.peak_bytes {
@@ -137,10 +151,8 @@ fn parse_u64(value: &str, option: &str) -> Result<u64, String> {
 
 fn parse_hold_duration(value: &str, option: &str) -> Result<Duration, String> {
     let seconds = parse_u64(value, option)?;
-    if seconds == 0 || seconds > MAX_HOLD_SECONDS {
-        return Err(format!(
-            "{option} must be between 1 and {MAX_HOLD_SECONDS} seconds"
-        ));
+    if seconds == 0 {
+        return Err(format!("{option} must be positive"));
     }
     Ok(Duration::from_secs(seconds))
 }
@@ -313,14 +325,20 @@ mod native {
 }
 
 #[cfg(windows)]
-fn hold(duration: Duration, allocations: &mut [&mut native::Allocation]) {
-    let deadline = Instant::now() + duration;
+fn hold(
+    duration: Duration,
+    refresh_interval: Duration,
+    allocations: &mut [&mut native::Allocation],
+) -> Result<(), String> {
+    let deadline = Instant::now()
+        .checked_add(duration)
+        .ok_or_else(|| "workload hold duration exceeds the platform clock range".to_owned())?;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            return;
+            return Ok(());
         }
-        thread::sleep(remaining.min(RESIDENT_REFRESH_INTERVAL));
+        thread::sleep(remaining.min(refresh_interval));
         for allocation in allocations.iter_mut() {
             allocation.refresh();
         }
@@ -336,15 +354,27 @@ fn run(config: &Config) -> Result<(), String> {
     let mut releasable =
         native::Allocation::new(config.releasable_bytes(), config.mode.touches_pages())?;
     emit(config, Phase::Peak, started, config.peak_bytes)?;
-    hold(config.peak_hold, &mut [&mut retained, &mut releasable]);
+    hold(
+        config.peak_hold,
+        config.refresh_interval,
+        &mut [&mut retained, &mut releasable],
+    )?;
 
     drop(releasable);
     emit(config, Phase::Settled, started, config.retained_bytes)?;
-    hold(config.settled_hold, &mut [&mut retained]);
+    hold(
+        config.settled_hold,
+        config.refresh_interval,
+        &mut [&mut retained],
+    )?;
 
     releasable = native::Allocation::new(config.releasable_bytes(), config.mode.touches_pages())?;
     emit(config, Phase::Renewed, started, config.peak_bytes)?;
-    hold(config.renewed_hold, &mut [&mut retained, &mut releasable]);
+    hold(
+        config.renewed_hold,
+        config.refresh_interval,
+        &mut [&mut retained, &mut releasable],
+    )?;
 
     drop(releasable);
     drop(retained);
@@ -381,19 +411,23 @@ mod tests {
     fn valid_arguments() -> Vec<String> {
         [
             "--workload-id",
-            "m10g-resident-01",
+            "resident-cycle",
             "--mode",
             "resident",
             "--peak-bytes",
-            "4294967296",
+            "8192",
             "--retained-bytes",
-            "2147483648",
+            "4096",
+            "--max-allocation-bytes",
+            "16384",
             "--peak-hold-seconds",
-            "600",
+            "2",
             "--settled-hold-seconds",
-            "900",
+            "3",
             "--renewed-hold-seconds",
-            "600",
+            "2",
+            "--refresh-interval-seconds",
+            "1",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -401,14 +435,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_the_m10g_four_gibibyte_then_two_gibibyte_scenario() {
-        let config = Config::parse(&valid_arguments()).expect("valid M10g workload");
+    fn parses_an_explicit_bounded_workload() {
+        let config = Config::parse(&valid_arguments()).expect("valid workload");
 
-        assert_eq!(config.workload_id, "m10g-resident-01");
+        assert_eq!(config.workload_id, "resident-cycle");
         assert_eq!(config.mode, WorkloadMode::Resident);
-        assert_eq!(config.peak_bytes, 4 * 1024 * 1024 * 1024);
-        assert_eq!(config.retained_bytes, 2 * 1024 * 1024 * 1024);
-        assert_eq!(config.releasable_bytes(), 2 * 1024 * 1024 * 1024);
+        assert_eq!(config.peak_bytes, 8192);
+        assert_eq!(config.retained_bytes, 4096);
+        assert_eq!(config.releasable_bytes(), 4096);
     }
 
     #[test]
@@ -429,30 +463,30 @@ mod tests {
             .contains("duplicate option: --mode"));
 
         let mut missing = valid_arguments();
-        missing.truncate(12);
+        missing.truncate(16);
         assert_eq!(Config::parse(&missing), Err(USAGE.to_owned()));
     }
 
     #[test]
     fn rejects_unbounded_or_inverted_memory() {
         let mut too_large = valid_arguments();
-        too_large[5] = (MAX_ALLOCATION_BYTES + 1).to_string();
+        too_large[5] = "16385".to_owned();
         assert!(Config::parse(&too_large).is_err());
 
         let mut inverted = valid_arguments();
-        inverted[7] = "4294967296".to_owned();
+        inverted[7] = "8192".to_owned();
         assert!(Config::parse(&inverted).is_err());
     }
 
     #[test]
-    fn rejects_unsafe_identity_and_unbounded_holds() {
+    fn rejects_unsafe_identity_and_zero_holds() {
         let mut unsafe_id = valid_arguments();
         unsafe_id[1] = "bad id&command".to_owned();
         assert!(Config::parse(&unsafe_id).is_err());
 
-        let mut unbounded = valid_arguments();
-        unbounded[9] = (MAX_HOLD_SECONDS + 1).to_string();
-        assert!(Config::parse(&unbounded).is_err());
+        let mut zero_hold = valid_arguments();
+        zero_hold[11] = "0".to_owned();
+        assert!(Config::parse(&zero_hold).is_err());
     }
 
     #[test]
@@ -465,21 +499,21 @@ mod tests {
     fn serializes_versioned_correlatable_evidence() {
         let evidence = Evidence {
             version: 1,
-            workload_id: "m10g-committed-01",
+            workload_id: "committed-cycle",
             mode: WorkloadMode::Committed,
             phase: Phase::Settled,
             unix_millis: 1_000,
             elapsed_millis: 500,
-            committed_bytes: 2 * 1024 * 1024 * 1024,
+            committed_bytes: 4096,
             touched_bytes: 0,
         };
 
         let value = serde_json::to_value(evidence).expect("serialize evidence");
         assert_eq!(value["version"], 1);
-        assert_eq!(value["workload_id"], "m10g-committed-01");
+        assert_eq!(value["workload_id"], "committed-cycle");
         assert_eq!(value["mode"], "committed");
         assert_eq!(value["phase"], "settled");
-        assert_eq!(value["committed_bytes"], 2 * 1024 * 1024 * 1024_u64);
+        assert_eq!(value["committed_bytes"], 4096);
         assert_eq!(value["touched_bytes"], 0);
     }
 }

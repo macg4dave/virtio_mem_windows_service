@@ -1,37 +1,16 @@
 ---
 name: rust-security
-description: Review and harden Rust parsing, validation, and service boundaries
+description: Review or harden Rust trust boundaries
 ---
 
-Read `docs/architecture.md`, `docs/api-contract.md`, `docs/testing.md`, and `BACKLOG.md` first.
+Read the architecture, threat-relevant contract, owning code, and tests.
 
-Task:
-"""
-<security review or hardening goal>
-"""
+Task: `<security review or hardening goal>`
 
-Review for:
+Review untrusted input, arithmetic and allocation bounds, denial of service,
+unsafe code, secrets, privilege, target identity, replay/freshness, filesystem
+ownership, and host/guest authority boundaries. Fix findings with explicit
+validation and focused regressions; preserve least privilege and fail closed.
 
-- malformed or untrusted QEMU Guest Agent responses;
-- integer overflow, underflow, alignment, range, and threshold errors;
-- panics, unchecked assumptions, denial-of-service inputs, and information leaks;
-- unsafe code, dependency risk, and accidental privilege or host-boundary violations;
-- broad discovery, implicit network access, or remote administrative actions.
-
-Rules:
-
-1. Prefer safe Rust and explicit validation with actionable typed errors.
-2. Do not add `unsafe` unless unavoidable, documented, narrowly scoped, and tested.
-3. Preserve least privilege and the documented Windows-service/host-automation boundary.
-4. Add regression tests for every finding fixed, including malformed and boundary inputs.
-5. Do not commit secrets, credentials, tokens, private keys, or production data.
-6. Keep the fix minimal and update relevant contracts/docs and `BACKLOG.md`.
-
-Run focused direct Cargo regression tests for each fix, then
-`cargo xtask gate local`. Run native Windows and security-relevant deployment
-or live workflows separately when applicable. Report findings and each result.
-
-Shell safety:
-
-- Keep review read-only where possible. Task-scoped beta installation, service lifecycle, live inspection, and bounded reversible resize validation are authorized by default when needed to reproduce or verify a finding.
-- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.
+Run focused security tests, `cargo xtask gate local`, and applicable native or
+deployment validation separately. Lead reports with concrete findings.

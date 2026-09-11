@@ -1,31 +1,18 @@
 ---
 name: rust-api
-description: Change a Rust public API without contract or documentation drift
+description: Change a public Rust or wire contract intentionally
 ---
 
-Read `docs/api-contract.md`, `docs/data-model.md` when relevant, `docs/architecture.md`, `docs/feature-matrix.md`, and `BACKLOG.md`.
+Read `docs/api-contract.md`, `docs/data-model.md`, the owning module, and its
+consumers.
 
-Task:
-"""
-<public API or contract change>
-"""
+Task: `<contract change and migration expectation>`
 
-Rules:
+- Keep public surface minimal and update the normative contract with behavior.
+- Treat compatibility as a current requirement only when a real consumer needs
+  it; do not preserve obsolete behavior speculatively.
+- Test valid, malformed, boundary, and migration cases.
+- Update feature/status/task documentation.
 
-1. Prefer additive, backward-compatible APIs and keep visibility minimal.
-2. Preserve QEMU Guest Agent request/response behavior unless the task explicitly changes it.
-3. Update Rust doc comments, `docs/api-contract.md`, `docs/data-model.md`, or `docs/feature-matrix.md` when applicable.
-4. For breaking changes, include migration notes, compatibility rationale, and tests for old and new behavior where possible.
-5. Use structured error types and avoid exposing implementation details unnecessarily.
-6. Add tests that demonstrate the public contract, including invalid input and boundary behavior.
-7. Do not invent OpenAPI or other schema artifacts; use the repository's documented contracts.
-
-Run focused direct Cargo tests for the changed API, then
-`cargo xtask gate local`. When Windows code changed, run and report
-`cargo xtask windows all` separately. Use the workflow-validation prompt when
-the contract also requires cross-process, deployment, or live evidence.
-
-Shell safety:
-
-- Run local contract validation first. Task-scoped beta installation, service lifecycle, live integration, and bounded reversible resize validation are authorized by default for an unambiguous target.
-- Give the execution notice and follow `.github/copilot-instructions.md` for safety gates, rollback, privilege batching, and password handling. Reboots, deletions, persistent configuration changes, disabled safety controls, and unrelated mutations still require explicit approval.
+Run focused contract tests, `cargo xtask gate local`, and applicable native or
+cross-process validation separately.

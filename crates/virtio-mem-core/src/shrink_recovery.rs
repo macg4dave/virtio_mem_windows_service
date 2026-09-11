@@ -1,20 +1,24 @@
-//! Fake-clock-friendly M10b Windows shrink qualification state machine.
+//! Fake-clock-friendly Windows shrink observation state machine.
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShrinkPolicy {
     pub block_size_bytes: u64,
     pub hard_deadline_millis: u64,
-    pub retry_delays_millis: [u64; 3],
+    pub retry_delays_millis: Vec<u64>,
 }
 
 impl ShrinkPolicy {
-    pub const fn qualification(block_size_bytes: u64) -> Self {
+    pub fn new(
+        block_size_bytes: u64,
+        hard_deadline_millis: u64,
+        retry_delays_millis: Vec<u64>,
+    ) -> Self {
         Self {
             block_size_bytes,
-            hard_deadline_millis: 300_000,
-            retry_delays_millis: [30_000, 60_000, 120_000],
+            hard_deadline_millis,
+            retry_delays_millis,
         }
     }
 }
@@ -177,7 +181,7 @@ impl ShrinkOperation {
     /// Creates the only safe post-restart state for an unowned divergence.
     pub fn recovery_required(reason: impl Into<String>) -> Self {
         Self {
-            policy: ShrinkPolicy::qualification(1),
+            policy: ShrinkPolicy::new(1, 1, Vec::new()),
             target_bytes: 0,
             started_millis: 0,
             last_progress_millis: 0,
@@ -301,9 +305,17 @@ mod tests {
 
     const MIB: u64 = 1024 * 1024;
 
+    fn test_policy(block_size_bytes: u64) -> ShrinkPolicy {
+        ShrinkPolicy::new(
+            block_size_bytes,
+            300_000,
+            vec![30_000, 60_000, 120_000],
+        )
+    }
+
     fn operation() -> ShrinkOperation {
         ShrinkOperation::start(
-            ShrinkPolicy::qualification(2 * MIB),
+            test_policy(2 * MIB),
             1_000,
             12 * MIB,
             4 * MIB,
@@ -477,10 +489,10 @@ mod tests {
     #[test]
     fn rejects_invalid_start_geometry_and_safe_floor() {
         assert!(
-            ShrinkOperation::start(ShrinkPolicy::qualification(2 * MIB), 0, 8 * MIB, 9, 0).is_err()
+            ShrinkOperation::start(test_policy(2 * MIB), 0, 8 * MIB, 9, 0).is_err()
         );
         assert!(ShrinkOperation::start(
-            ShrinkPolicy::qualification(2 * MIB),
+            test_policy(2 * MIB),
             0,
             8 * MIB,
             4 * MIB,

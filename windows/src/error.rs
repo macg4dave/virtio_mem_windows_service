@@ -20,6 +20,8 @@ pub enum ServiceHostError {
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigurationError {
+    #[error("service configuration file is required: {0}")]
+    MissingFile(String),
     #[error("service configuration field is empty: {0}")]
     EmptyField(&'static str),
     #[error("polling interval must be greater than zero")]

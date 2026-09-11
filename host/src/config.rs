@@ -52,6 +52,8 @@ pub enum HostConfigError {
     InvalidTargetPolicy(&'static str),
     #[error("environment variable {name} must be 'true' or 'false': {value}")]
     InvalidBoolean { name: &'static str, value: String },
+    #[error("environment variable {name} must be a comma-separated list of positive seconds: {value}")]
+    InvalidDurationList { name: &'static str, value: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -105,6 +107,7 @@ pub struct HostConfig {
     pub compatibility_attestation_path: String,
     pub automatic_windows_shrink: bool,
     pub shrink_renotification: bool,
+    pub shrink_retry_delays: Vec<Duration>,
 }
 
 impl HostConfig {
@@ -124,6 +127,15 @@ impl HostConfig {
             Ok(value) if value.trim().is_empty() => DemandSourceMode::Raw,
             Ok(other) => return Err(HostConfigError::InvalidDemandSource(other)),
             Err(_) => DemandSourceMode::Raw,
+        };
+        let shrink_renotification = optional_bool(
+            "VIRTIO_MEM_SHRINK_RENOTIFICATION",
+            DEFAULT_SHRINK_RENOTIFICATION,
+        )?;
+        let shrink_retry_delays = if shrink_renotification {
+            positive_duration_list("VIRTIO_MEM_SHRINK_RETRY_DELAYS_SECONDS")?
+        } else {
+            Vec::new()
         };
         let poll_interval_seconds = positive("VIRTIO_MEM_POLL_INTERVAL_SECONDS")?;
         let default_maximum_gap = poll_interval_seconds.checked_mul(2).ok_or_else(|| {
@@ -204,10 +216,8 @@ impl HostConfig {
                 "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
                 DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
             )?,
-            shrink_renotification: optional_bool(
-                "VIRTIO_MEM_SHRINK_RENOTIFICATION",
-                DEFAULT_SHRINK_RENOTIFICATION,
-            )?,
+            shrink_renotification,
+            shrink_retry_delays,
         };
         config.validate()?;
         Ok(config)
@@ -264,6 +274,21 @@ impl HostConfig {
         if self.reclaim_max_gap > self.reclaim_history {
             return Err(HostConfigError::InvalidTargetPolicy(
                 "reclaim maximum gap exceeds history window",
+            ));
+        }
+        if self.shrink_renotification
+            && (self.shrink_retry_delays.is_empty()
+                || self
+                    .shrink_retry_delays
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1])
+                || self
+                    .shrink_retry_delays
+                    .iter()
+                    .any(|delay| *delay >= self.convergence_timeout))
+        {
+            return Err(HostConfigError::InvalidTargetPolicy(
+                "shrink retry delays must be increasing and below convergence timeout",
             ));
         }
         if self.compatibility_attestation_path.trim().is_empty() {
@@ -343,6 +368,24 @@ fn positive_or_default(name: &'static str, default: u64) -> Result<u64, HostConf
     }
 }
 
+fn positive_duration_list(name: &'static str) -> Result<Vec<Duration>, HostConfigError> {
+    let value = required(name)?;
+    value
+        .split(',')
+        .map(str::trim)
+        .map(|part| {
+            part.parse::<u64>()
+                .ok()
+                .filter(|seconds| *seconds > 0)
+                .map(Duration::from_secs)
+                .ok_or_else(|| HostConfigError::InvalidDurationList {
+                    name,
+                    value: value.clone(),
+                })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -411,6 +454,7 @@ mod tests {
                 .to_owned(),
             automatic_windows_shrink: false,
             shrink_renotification: false,
+            shrink_retry_delays: Vec::new(),
         };
         assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
     }
@@ -451,6 +495,7 @@ mod tests {
             compatibility_attestation_path: "valid".to_owned(),
             automatic_windows_shrink: false,
             shrink_renotification: false,
+            shrink_retry_delays: Vec::new(),
         };
         config.compatibility_attestation_path = " ".to_owned();
         assert_eq!(
@@ -495,6 +540,7 @@ mod tests {
             compatibility_attestation_path: "valid".to_owned(),
             automatic_windows_shrink: false,
             shrink_renotification: false,
+            shrink_retry_delays: Vec::new(),
         };
         config.raw_telemetry_path = " ".to_owned();
         assert_eq!(

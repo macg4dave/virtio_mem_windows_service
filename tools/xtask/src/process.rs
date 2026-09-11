@@ -60,6 +60,24 @@ pub fn bounded_text(
     cwd: &Path,
     timeout: Duration,
 ) -> Result<String, String> {
+    let output = bounded_output(program, args, cwd, timeout)?;
+    if !output.status.success() {
+        return Err(format!(
+            "{program} failed with status {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("{program} returned invalid UTF-8: {error}"))
+}
+
+pub fn bounded_output(
+    program: &str,
+    args: &[OsString],
+    cwd: &Path,
+    timeout: Duration,
+) -> Result<Output, String> {
     let mut child = Command::new(program)
         .args(args)
         .current_dir(cwd)
@@ -98,14 +116,11 @@ pub fn bounded_text(
     let stderr = stderr_reader
         .join()
         .map_err(|_| format!("{program} stderr reader panicked"))??;
-    if !status.success() {
-        return Err(format!(
-            "{program} failed with status {}: {}",
-            status,
-            String::from_utf8_lossy(&stderr).trim()
-        ));
-    }
-    String::from_utf8(stdout).map_err(|error| format!("{program} returned invalid UTF-8: {error}"))
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
 }
 
 fn read_all(mut input: impl Read) -> Result<Vec<u8>, String> {
@@ -141,28 +156,6 @@ pub fn run_with_input(
         Ok(())
     } else {
         Err(format!("{program} failed with status {status}"))
-    }
-}
-
-pub fn display_and_write(output: &Output, log: &Path) -> Result<(), String> {
-    let mut bytes = Vec::with_capacity(output.stdout.len() + output.stderr.len());
-    bytes.extend_from_slice(&output.stdout);
-    bytes.extend_from_slice(&output.stderr);
-    std::fs::write(log, &bytes)
-        .map_err(|error| format!("failed to write {}: {error}", log.display()))?;
-    std::io::stdout()
-        .write_all(&output.stdout)
-        .map_err(|error| format!("failed to write stdout: {error}"))?;
-    std::io::stderr()
-        .write_all(&output.stderr)
-        .map_err(|error| format!("failed to write stderr: {error}"))?;
-    if output.status.success() {
-        Ok(())
-    } else {
-        Err(format!(
-            "logged command failed with status {}",
-            output.status
-        ))
     }
 }
 

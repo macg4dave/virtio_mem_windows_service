@@ -1,235 +1,122 @@
-# Leave-It-Running QA Roadmap
+# Unattended single-controller QA roadmap
 
-## Purpose
+## Scope and current decision
 
-This roadmap defines the smallest implementation and qualification program
-needed to leave the virtio-mem services running unattended on the trusted
-development KVM for an extended period.
+This roadmap covers one trusted development guest, one explicitly configured
+virtio-mem device, and one host controller. The exact VM, alias, service
+identities, paths, artifacts, and configuration belong in the current
+deployment manifest and qualification evidence, not in this reusable plan.
 
-The target is deliberately narrower than production readiness:
+The current decision is **NO-GO for unattended automatic resizing**. The host
+controller is in a fail-stop safe hold while candidate deployment coherence,
+production telemetry transport, current attestation, applied workload cycles,
+recovery, and endurance evidence remain incomplete. See
+`qa-deployment-manifest.md` for the current inspected deployment delta.
 
-- one trusted Windows guest: `win11_gpu`;
-- one active RHEL controller instance;
-- one explicitly configured virtio-mem alias: `ua-virtiomem0`;
-- production version-2 raw Windows telemetry;
-- host-owned target calculation and actuation; and
-- automatic growth and reclaim with fail-closed safety controls.
+Multi-VM arbitration, untrusted guests, production support, and direct driver
+control are outside this gate.
 
-Multi-VM arbitration, untrusted guests, production support, and direct
-`viomem.sys` control are outside this gate. `BACKLOG.md` remains the product
-execution source of truth. This document owns only the cross-component QA work
-needed for the development "leave it running" decision.
+## Safety invariants
 
-## Current qualification state
-
-Status as of 2026-09-10:
-
-- The current local RHEL-compatible gate passes 62 shared-core, 67 host, and 19
-  build-tooling tests, including release builds, formatting, warnings-denied
-  Clippy, and diff checks.
-- The latest recorded native Windows gate passes 74 tests and produced the
-  candidate service artifact with SHA-256
-  `cbc8a81aa87ba0a3c2c34ad030d85cb5cd0c7f5c3eeed683708daf8a4a154404`.
-- The live VM, QGA, `viomem`, and Windows service are running, and the selected
-  virtio-mem device is converged.
-- The installed Windows and host binaries do not match the current candidates.
-- The installed host controller uses `guest-stats` compatibility mode rather
-  than the production raw-telemetry path.
-- The Windows ProgramData telemetry/configuration files and the cross-guest
-  telemetry transport are not deployed.
-- The installed compatibility attestation has drifted and correctly rejects
-  resize attempts.
-- The installed host service is in a recurring systemd restart cycle caused by
-  non-advancing `dommemstat` evidence. Its safety gates prevent mutation, but
-  the service is not healthy enough for unattended use.
-- Live Windows shrink has shown zero progress for small requests and partial
-  progress followed by a stall for larger requests.
-- No applied M10g resident/committed qualification or extended repeated-cycle
-  soak has completed.
-
-The current decision is therefore **NO-GO for unattended automatic resizing**.
-Read-only inspection and guarded manual validation remain suitable for normal
-development.
-
-## Non-negotiable safety invariants
-
-Every task and qualification run in this roadmap must preserve these rules:
-
-1. Windows publishes measurements only. It receives no host allocation feed
-   and has no resize authority.
-2. The RHEL controller is the only resize authority.
-3. Live alias-scoped libvirt `current` is authoritative allocation state.
-4. No ordinary command is issued while `requested != current`. Only the
-   documented upward pending-shrink supersession/freeze path is permitted.
-5. Every command is block aligned, bounded, headroom checked, freshly
-   attested, journaled before actuation, and resolved by a fresh live reread.
-6. Missing, stale, replayed, malformed, cross-VM, or provenance-free telemetry
+1. Windows publishes measurements only; the host owns policy and actuation.
+2. Alias-scoped live libvirt `current` is allocation authority.
+3. Ordinary actuation is prohibited while requested and current differ.
+4. Every request is aligned, bounded by current configuration, headroom
+   checked, freshly attested, journaled, and resolved by live reread.
+5. Missing, stale, replayed, malformed, cross-VM, or provenance-free telemetry
    cannot authorize reclaim.
-7. Ambiguous or stalled actuation latches durably and cannot be retried merely
-   because a service restarts.
-8. Automatic shrink remains enabled by default in the product. An explicit
-   `false` setting may pause actuation during deployment or diagnosis.
-9. Live tests capture the initial target and define timeout, cleanup, and
-   recovery before mutation. A shrink is never described as inherently
-   reversible.
-10. Only one controller/device may be active for this qualification.
+6. Ambiguous or stalled actuation latches durably and is never blindly retried.
+7. Automatic reclaim remains default-on; a reviewed explicit pause is allowed.
+8. A live run records initial state, explicit time bounds, cleanup, recovery,
+   and final state before mutation.
+9. Only one controller/device is active in this qualification scope.
 
-## Gate model
+## Gates
 
-| Gate | Meaning | Exit condition |
+| Gate | Exit condition |
+| --- | --- |
+| QA-G0 Safe hold | Unhealthy or incoherent deployment cannot mutate; guest and device health are recorded |
+| QA-G1 Coherent deployment | Current hashed artifacts, configuration, identities, ACLs, attestation, and production telemetry transport agree |
+| QA-G2 Automatic actuation | Explicit resident and committed qualification configurations prove growth, falling demand, safe reclaim/constrained handling, and renewed pressure |
+| QA-G3 Recovery | Telemetry loss, service interruption, command ambiguity, cancellation, and partial/no progress produce bounded actionable states without replay or overlap |
+| QA-G4 Endurance | A reviewed run plan exercises enough cycles and idle time to cover the stated risk model, with continuous evidence and no unexplained transition |
+| QA-G5 Decision | Support profile, operator response, evidence index, and residual risks are reviewed for an explicit GO or NO-GO |
+
+## Task board
+
+### Baseline and deployment
+
+| ID | Task | Status |
 | --- | --- | --- |
-| QA-G0: Safe hold | The current unhealthy deployment cannot mutate or produce an uncontrolled restart loop | Controller is stopped or deliberately paused while deployment faults are corrected; VM health is confirmed |
-| QA-G1: Deployment coherent | Current binaries, configuration, identity, ACLs, attestation, and telemetry transport agree | Both services run current checksum-recorded artifacts and the host accepts fresh production raw telemetry without resizing |
-| QA-G2: Bounded actuation qualified | One complete automatic workload cycle is safe and observable | Resident and committed profiles prove growth, falling demand, reclaim/constrained handling, and renewed-pressure behavior |
-| QA-G3: Recovery qualified | Expected faults cannot cause replay, overlap, unsafe movement, or silent loss of service | Restart, stale input, command ambiguity, partial/no progress, and cancellation cases have correlated evidence |
-| QA-G4: Leave it running | The complete development stack is stable over repeated cycles and idle periods | Soak criteria pass with no unresolved blocker or unexplained restart/memory transition |
+| QA-T001 | Establish fail-stop safe hold and confirm unchanged guest/device health | Complete |
+| QA-T002 | Record installed/candidate hashes, units, configuration, identities, and deployment delta | In progress |
+| QA-T003 | Correct acknowledged durability and SCM identity/registration defects | Complete |
+| QA-T004 | Implement the least-privilege production telemetry transport | Ready after QA-T002 |
+| QA-T005 | Install and verify the current Windows candidate, configuration, ACLs, telemetry, and lifecycle | Blocked by QA-T004 |
+| QA-T006 | Install and verify the current host candidate, instance configuration, and fail-stop service state | Blocked by QA-T004 |
+| QA-T007 | Calibrate deployment-specific visible base and regenerate/review compatibility attestation | Blocked by QA-T006 |
+| QA-T008 | Prove telemetry handoff and replay/session behavior across independent service restarts without actuation | Blocked by QA-T005–QA-T007 |
 
-## Milestones and tasks
+### Automatic behavior and recovery
 
-### QA-M0 — Establish a safe deployment baseline
+| ID | Task | Status |
+| --- | --- | --- |
+| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | Blocked by QA-T008 |
+| QA-T010 | Run an explicitly configured committed-memory qualification through the same path | Blocked by QA-T009 |
+| QA-T011 | Prove renewed pressure during an owned pending shrink without lower-request overlap | Blocked by QA-T009 |
+| QA-T012 | Record an explicit cleanup/recovery result for the captured initial target | Blocked by QA-T009 |
+| QA-T013 | Exercise stale, missing, malformed, and replayed telemetry in converged and pending states | Blocked by QA-T009 |
+| QA-T014 | Exercise host-controller interruption across converged, active, and latched states | Blocked by QA-T009 |
+| QA-T015 | Exercise Windows service interruption and session rollover | Blocked by QA-T010 |
+| QA-T016 | Exercise pre-command rejection and ambiguous command outcome | Blocked by QA-T013–QA-T014 |
+| QA-T017 | Exercise zero-progress and partial-progress shrink recovery | Blocked by QA-T011–QA-T012 |
+| QA-T018 | Verify observability and operator response for every terminal state | Blocked by QA-T013–QA-T017 |
 
-| ID | Task | Owner | Depends on | Status | Required evidence |
-| --- | --- | --- | --- | --- | --- |
-| QA-T001 | Quiesce the current unhealthy automatic controller while preserving the VM's converged target | Operator + Copilot | — | Ready | Initial `requested`/`current`, VM/QGA/Windows health, unit state, restart count, and explicit no-mutation result |
-| QA-T002 | Record the exact installed and candidate host/Windows binary hashes, unit files, configurations, and service identities | Copilot | QA-T001 | Ready | Versioned deployment manifest showing every mismatch and intended replacement |
-| QA-T003 | Correct deployment-affecting service defects: durable raw-telemetry acknowledgement flush, SCM service-name consistency, and Windows service error-control value | Copilot | — | Ready | Focused regressions, current local gate, and native Windows gate |
+### Endurance and decision
 
-QA-M0 exits when the VM remains healthy and converged, the restart loop is no
-longer active, and the exact deployment delta is reviewable. Stopping or
-pausing the controller is an operational safety measure, not qualification of
-automatic resizing.
+| ID | Task | Status |
+| --- | --- | --- |
+| QA-T019 | Define and run a repeated-cycle plan whose cycle count, workload sizes, timings, and acceptance criteria are justified by the current risk model | Blocked by QA-T018 |
+| QA-T020 | Define and run an unattended soak whose duration and schedule are explicit inputs justified by the failure modes under review | Blocked by QA-T019 |
+| QA-T021 | Classify every warning, restart, dropped sample, non-convergence, attestation failure, and operator action | Blocked by QA-T020 |
+| QA-T022 | Publish the development support profile and known limitations | Blocked by QA-T021 |
+| QA-T023 | Publish the operator health, pause, recovery, upgrade, and rollback runbook using current `xtask`/product commands | Blocked by QA-T018 and QA-T021 |
+| QA-T024 | Record the final reviewed GO or NO-GO decision and evidence index | Blocked by QA-T022–QA-T023 |
 
-### QA-M1 — Deploy the production communication path
+## Qualification rules
 
-| ID | Task | Owner | Depends on | Status | Required evidence |
-| --- | --- | --- | --- | --- | --- |
-| QA-T004 | Select, document, and implement the least-privilege transport that presents the Windows atomic telemetry record at the configured host path | Copilot + Operator | QA-T002 | Implementation required | Threat/ownership review, bounded failure behavior, identity preservation, atomic host handoff, and no guest actuation authority |
-| QA-T005 | Install the current Windows candidate under `LocalService` and verify the ProgramData configuration/telemetry DACL | Operator + Copilot | QA-T003, QA-T004 | Blocked | Installed hash, SCM configuration, exact ACL evidence, service start, two advancing version-2 records, retention, and clean stop/start |
-| QA-T006 | Install the current host candidate and repository systemd unit/configuration with production raw demand enabled | Operator + Copilot | QA-T003, QA-T004 | Blocked | Installed hash, one active instance, state/runtime directory ownership, no restart loop, and no `guest-stats` fallback |
-| QA-T007 | Calibrate fixed visible base memory and regenerate the M9d attestation against the exact deployed VM/QEMU/libvirt configuration | Operator + Copilot | QA-T006 | Blocked | Recorded baseline, reviewed attestation fingerprint, dry-run decision, and deliberate proof that a changed fingerprint fails closed |
-| QA-T008 | Prove the Windows-to-host handoff across independent service restarts without actuation | Copilot + Operator | QA-T005, QA-T006, QA-T007 | Blocked | Fresh/unchanged/new-session handling, retired-session rejection, replay acknowledgement recovery, bounded stale-input logging, and zero resize commands |
+Use `cargo xtask qualification` for automatic-controller workload runs. Every
+run supplies its sizes, safety cap, timings, services, endpoints, paths,
+sampling, and acceptance deltas explicitly and stores the versioned
+configuration with its evidence. Do not promote a prior run's values into a
+new profile.
 
-The transport is part of product deployment, not a test-only copy step. It
-must survive independent guest and host service restarts and must not weaken
-the VM/service identity or freshness contract.
+Use `cargo xtask live-resize` only for a separately scoped reversible manual
+test. It is not a substitute for observing the automatic controller through
+the production telemetry path.
 
-QA-M1 exits when the installed host consumes advancing native Windows records
-through `TargetDemandSource`, preserves `desired`/`requested`/`current`
-separation, and remains stable with actuation deliberately paused.
+Endurance duration and cycle count are selected only after the failure modes,
+observation frequency, and confidence target are written down. A short smoke
+run cannot satisfy a longer plan, but this roadmap does not encode an arbitrary
+universal duration.
 
-### QA-M2 — Qualify automatic resize decisions
+## Final decision checklist
 
-| ID | Task | Owner | Depends on | Status | Required evidence |
-| --- | --- | --- | --- | --- | --- |
-| QA-T009 | Run the M10g resident-memory profile through the installed production path | Operator + Copilot | QA-T008 | Blocked | Initial state, workload phases, raw telemetry, estimator state, target decisions, host headroom, request/current transitions, guest health, and final recovery |
-| QA-T010 | Run the M10g committed-only profile through the same installed path | Operator + Copilot | QA-T009 | Blocked | Separate physical and commit candidate evidence, bounded growth/reclaim outcome, and no policy use of since-boot commit peak |
-| QA-T011 | Prove renewed pressure during an owned pending shrink | Operator + Copilot | QA-T009 | Blocked | One upward freeze/supersession at most, no second lower request, fresh intent journal, and convergence or durable latch |
-| QA-T012 | Add a qualification cleanup/recovery result that resolves the captured initial target explicitly | Copilot | QA-T009 | Blocked | The run reports restored, retained-by-policy, constrained-and-latched, or operator-recovery-required; it never silently treats retained growth as success |
+- [ ] Current hashed Windows and host artifacts are installed.
+- [ ] Production raw telemetry and least-privilege transport/ACLs are verified.
+- [ ] Calibration and attestation match fresh live state.
+- [ ] The device starts converged and exactly one controller is active.
+- [ ] Explicit resident and committed apply runs meet their recorded criteria.
+- [ ] Growth, falling demand, reclaim/constrained handling, and renewed
+      pressure are correctly observed.
+- [ ] Loss, interruption, ambiguity, and partial/no-progress recovery gates pass.
+- [ ] No request is replayed or overlapped.
+- [ ] Health, last success, restart count, latch reason, and resize events are
+      monitorable against documented alert criteria.
+- [ ] The reviewed repeated-cycle and soak plans pass.
+- [ ] Final state and every warning/operator action are explained.
+- [ ] Pause, recovery, upgrade, and rollback procedures are rehearsed.
 
-A platform shrink need not always reach the requested lower value for the
-controller to behave correctly. Zero or partial progress is acceptable only
-when the controller preserves the desired target, reports constrained health,
-latches at the documented boundary, and neither overlaps nor replays commands.
-
-QA-M2 exits only after both workload profiles have applied-run evidence. A
-growth-only result does not pass this milestone.
-
-### QA-M3 — Qualify failure and recovery behavior
-
-| ID | Task | Owner | Depends on | Status | Required evidence |
-| --- | --- | --- | --- | --- | --- |
-| QA-T013 | Exercise stale/missing/invalid telemetry while converged and while shrink is pending | Operator + Copilot | QA-T009 | Blocked | Non-fatal converged wait; pending-shrink freeze or durable recovery-required latch; no lower request from stale input |
-| QA-T014 | Exercise host-controller stop/start with converged state, accepted growth, accepted shrink, and durable latch | Operator + Copilot | QA-T009 | Blocked | No command replay, correct intent resolution from fresh live state, bounded restart, and stable restart counter |
-| QA-T015 | Exercise Windows service stop/start and new-session telemetry rollover | Operator + Copilot | QA-T010 | Blocked | Host freezes/waits safely, accepts only the new advancing session, rejects retired-session reuse, and resumes without manual state deletion |
-| QA-T016 | Exercise pre-command rejection and command-outcome ambiguity | Operator + Copilot | QA-T013, QA-T014 | Blocked | Rejection performs no mutation; ambiguity is resolved by live reread and latches durably when unknowable |
-| QA-T017 | Exercise zero-progress and partial-progress Windows shrink recovery | Operator + Copilot | QA-T011, QA-T012 | Blocked | Constrained state, immutable deadline, no blind re-notification, explicit recovery result, preserved guest/application health |
-| QA-T018 | Verify observability and operator response for every terminal state | Copilot + Operator | QA-T013–QA-T017 | Blocked | Correlated operation ID, desired/requested/current, history readiness, latch reason, last-success time, bounded log volume, alert condition, and dry-run-first recovery procedure |
-
-Fault injection must be bounded and must use the documented service/lifecycle
-and live-validation safety procedures. Guest or host reboot remains a separate
-explicitly approved operation.
-
-QA-M3 exits when each failure produces an actionable state rather than a
-restart loop, silent stall, repeated request, or unexplained service stop.
-
-### QA-M4 — Repeated-cycle and endurance qualification
-
-| ID | Task | Owner | Depends on | Status | Required evidence |
-| --- | --- | --- | --- | --- | --- |
-| QA-T019 | Run at least 20 alternating resident/committed growth-and-release cycles over at least 24 continuous hours | Operator + Copilot | QA-T018 | Blocked | Per-cycle results, no overlap/replay, stable process memory/handles, bounded logs/files, continuous guest/application health, and no unexplained target drift |
-| QA-T020 | Run a 72-hour unattended development soak including idle periods and scheduled workload cycles | Operator + Copilot | QA-T019 | Blocked | Continuous health timeline, service restart counts, last-success age, telemetry continuity, all resize/latch transitions, host headroom, and final converged or reviewed-latched state |
-| QA-T021 | Review all soak warnings and classify every non-convergence, restart, dropped sample, attestation failure, and operator action | Copilot + Operator | QA-T020 | Blocked | Signed-off issue list with no unknown or unbounded behavior |
-
-The 24-hour cycle run detects cumulative state and repeated-transition defects.
-The 72-hour run establishes that the services also remain healthy when demand
-does not conveniently align with a test boundary. Short successful runs cannot
-substitute for either result.
-
-### QA-M5 — Leave-it-running decision
-
-| ID | Task | Owner | Depends on | Status | Required evidence |
-| --- | --- | --- | --- | --- | --- |
-| QA-T022 | Publish the development support profile and exact known limitations | Copilot | QA-T021 | Blocked | One-VM/device scope, pinned versions, trust assumption, cgroup-limit decision, default-on/explicit-disable behavior, and unsupported cases |
-| QA-T023 | Publish the operator runbook for health checks, alerts, latch diagnosis, pause, recovery, upgrade, and rollback | Copilot | QA-T018, QA-T021 | Blocked | Commands, expected outputs, decision thresholds, bounded recovery, and escalation conditions |
-| QA-T024 | Make and record the final leave-it-running decision | Operator + Copilot | QA-T022, QA-T023 | Blocked | Completed checklist below, artifact/evidence index, open-risk acceptance, and explicit GO or NO-GO |
-
-## Final GO checklist
-
-The development KVM may be left running with automatic resizing only when all
-of the following are true:
-
-- [ ] Current checksum-recorded Windows and host artifacts are installed.
-- [ ] The installed host uses production raw telemetry, not `guest-stats`.
-- [ ] The cross-guest transport and both endpoint ACLs are verified.
-- [ ] Fixed-base calibration and compatibility attestation match the live VM.
-- [ ] The VM and selected virtio-mem device are initially converged.
-- [ ] Exactly one controller/device is active.
-- [ ] Resident and committed M10g apply runs pass.
-- [ ] Growth, falling demand, reclaim or constrained handling, and renewed
-      pressure are all observed correctly.
-- [ ] Telemetry loss, service restart, command rejection/ambiguity, and
-      zero/partial shrink progress pass their recovery gates.
-- [ ] No command is replayed or overlapped across any fault or restart.
-- [ ] Durable state and replay acknowledgement survive abrupt-process tests.
-- [ ] ProgramData, runtime, state, attestation, and executable permissions are
-      least privilege.
-- [ ] Health/last-success state, restart count, latch reason, and resize events
-      are monitorable with documented alert thresholds.
-- [ ] The 24-hour repeated-cycle run and 72-hour unattended soak pass.
-- [ ] Final state is converged or intentionally latched with a reviewed reason.
-- [ ] No unexplained warning, restart, target transition, or guest health event
-      remains.
-- [ ] Upgrade, explicit automatic-shrink pause, dry-run latch clearing, and
-      rollback procedures are documented and rehearsed.
-
-Any unchecked item keeps the result at **NO-GO**. A fail-closed rejection is a
-safety success but does not by itself establish service availability or
-long-running readiness.
-
-## Evidence and reporting rules
-
-For every task, record these layers separately:
-
-1. focused Rust tests for changed logic;
-2. `cargo xtask gate local` for the RHEL-compatible workspace;
-3. the native Windows gate when Windows code or the installed artifact changes;
-4. dry-run workflow evidence;
-5. bounded live apply evidence; and
-6. endurance evidence.
-
-Do not convert an unrun layer into a pass. Store task-scoped evidence under the
-ignored `.vscode-artifacts/` hierarchy and summarize durable outcomes in
-`BACKLOG.md`, `PROJECT_STATUS.md`, and the affected contract/testing documents.
-Do not store credentials, private keys, production data, or raw guest memory
-contents in qualification artifacts.
-
-## Dependency path
-
-```text
-QA-M0 safe baseline
-    -> QA-M1 coherent production deployment
-        -> QA-M2 bounded automatic resize
-            -> QA-M3 failure and recovery
-                -> QA-M4 repeated-cycle and endurance soak
-                    -> QA-M5 leave-it-running decision
-```
+Any unchecked item keeps the result at NO-GO. Store raw evidence under the
+ignored artifact hierarchy and summarize only durable outcomes in project
+status and task documents.

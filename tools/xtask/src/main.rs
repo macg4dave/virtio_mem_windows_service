@@ -14,50 +14,58 @@ Usage:
   cargo xtask gate <format|build|test|lint|local|all>
   cargo xtask doctor host
   cargo xtask windows <check|sync|build|test|lint|fetch|all>
-  cargo xtask windows milestone SSH_TARGET EXPECTED_ED25519_FINGERPRINT [IDENTITY_FILE]
-  cargo xtask qga VM_NAME [--attempts N] [--connect URI]
+  cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
+  cargo xtask qga VM_NAME --attempts N --command-timeout-seconds N [--connect URI]
   cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES [OPTIONS]
   cargo xtask qualification <start|run|status|review> [OPTIONS]
 
 Qualification commands:
-  start VM ALIAS --ssh-target TARGET --profile m10g-resident [--apply] [OPTIONS]
+  start VM ALIAS --ssh-target TARGET --mode resident|committed [--apply] [OPTIONS]
   status RUN_ID [--output-root PATH]
   review RUN_ID [--output-root PATH]
 
 Qualification options:
-  --profile m10g-resident|m10g-committed
   --apply                    Start the workload; otherwise validate only.
-  --peak-bytes N             Default 4 GiB.
-  --retained-bytes N         Default 2 GiB.
-  --peak-hold-seconds N      Default 600.
-  --settled-hold-seconds N   Default 900.
-  --renewed-hold-seconds N   Default 600.
-  --post-hold-seconds N      Final observation window; default 60.
-  --interval-seconds N       Host sampling interval; default 5.
-  --expect-growth-bytes N    Minimum observed growth; default 1 GiB.
-  --expect-reclaim-bytes N   Minimum observed reclaim; default 64 MiB.
-  --remote-workload PATH     Windows workload executable path.
-  --controller-unit UNIT     Host systemd unit to archive.
-  --guest-service NAME       Required Windows service; default VirtioMemService.
-  --telemetry-path PATH      Optional host-side raw Windows telemetry file.
+  --mode MODE                Required resident or committed workload behavior.
+  --peak-bytes N             Required peak allocation.
+  --retained-bytes N         Required allocation retained between peaks.
+  --max-allocation-bytes N   Required independent workload safety cap.
+  --peak-hold-seconds N      Required first-peak hold.
+  --settled-hold-seconds N   Required retained-allocation hold.
+  --renewed-hold-seconds N   Required renewed-peak hold.
+  --resident-refresh-seconds N  Required page refresh interval.
+  --post-hold-seconds N      Required final observation window; may be zero.
+  --interval-seconds N       Required host sampling interval.
+  --command-timeout-seconds N  Required bound for external commands.
+  --expect-growth-bytes N    Required minimum observed growth.
+  --expect-reclaim-bytes N   Required minimum observed reclaim.
+  --remote-workload PATH     Required Windows workload executable path.
+  --controller-unit UNIT     Required host systemd unit to archive.
+  --guest-service NAME       Required Windows service identity.
+  --telemetry-path PATH      Required host-side raw Windows telemetry file.
   --connect URI              Libvirt URI; default qemu:///system.
   --output-root PATH         Default .vscode-artifacts/qualification.
 
 Live-resize options:
   --apply                 Issue the explicitly requested live resize.
   --keep-target           Do not restore; requires --apply and explicit approval.
-  --timeout SECONDS       Forward convergence timeout, maximum 30; default 30.
-  --rollback-timeout N    Restoration convergence timeout; default 300.
-  --interval SECONDS      Sampling interval; default 5.
+  --forward-timeout-seconds N   Required forward convergence bound.
+  --rollback-timeout-seconds N  Required restoration convergence bound.
+  --sample-interval-seconds N   Required sampling interval.
+  --command-timeout-seconds N  Required external-command bound.
   --connect URI           Libvirt URI; default qemu:///system.
-  --max-target-bytes N    Safety cap; default 8 GiB.
-  --host-reserve-bytes N  Required post-growth MemAvailable; default 4 GiB.
+  --minimum-target-bytes N     Required deployment safety floor.
+  --host-min-headroom-bytes N Required post-growth MemAvailable reserve.
+  --attestation PATH      Required reviewed compatibility attestation.
+  --host-cli PATH         Required attestation-aware host product binary.
   --log PATH              Append detailed CSV samples.
 
 Windows environment:
   VIRTIO_MEM_WINDOWS_SSH              Required SSH config alias or USER@HOST.
   VIRTIO_MEM_WINDOWS_DIR              Remote workspace directory.
   VIRTIO_MEM_WINDOWS_ARTIFACTS        Local artifact directory.
+  VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS Required SSH connection bound.
+  VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS Required operation bound.
   VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE Optional pinned known-hosts file.
   VIRTIO_MEM_WINDOWS_IDENTITY_FILE    Optional private-key path.
 "#;

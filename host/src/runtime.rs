@@ -237,6 +237,14 @@ where
         let mut operation_counter = 0_u64;
         let mut actuation_latched = false;
         let mut unowned_divergence_reported = false;
+        let shrink_deadline_millis =
+            u64::try_from(self.config.convergence_timeout.as_millis()).unwrap_or(u64::MAX);
+        let shrink_retry_delays_millis = self
+            .config
+            .shrink_retry_delays
+            .iter()
+            .map(|delay| u64::try_from(delay.as_millis()).unwrap_or(u64::MAX))
+            .collect::<Vec<_>>();
         while !stop.load(Ordering::Acquire) {
             let state = match self.state_source.memory_state() {
                 Ok(state) => state,
@@ -471,7 +479,7 @@ where
                         } if self.config.shrink_renotification => {
                             match self.resize_sink.renotify_shrink(target_bytes) {
                                 Ok(()) => eprintln!(
-                                    "virtio-mem-host: event=shrink_renotified operation_id={} vm={} alias={} target_bytes={target_bytes} requested_bytes={} current_bytes={} retry_index={retry_index} elapsed_millis={now_millis} deadline_millis=300000",
+                                    "virtio-mem-host: event=shrink_renotified operation_id={} vm={} alias={} target_bytes={target_bytes} requested_bytes={} current_bytes={} retry_index={retry_index} elapsed_millis={now_millis} deadline_millis={shrink_deadline_millis}",
                                     shrink_operation_id.as_deref().unwrap_or("unknown"),
                                     self.config.vm_name,
                                     self.config.alias,
@@ -503,7 +511,7 @@ where
                         }
                         ShrinkAction::Progress { blocks_reclaimed } => {
                             eprintln!(
-                                "virtio-mem-host: event=shrink_progress operation_id={} vm={} alias={} target_bytes={} requested_bytes={} current_bytes={} blocks_reclaimed={blocks_reclaimed} elapsed_millis={now_millis} deadline_millis=300000",
+                                "virtio-mem-host: event=shrink_progress operation_id={} vm={} alias={} target_bytes={} requested_bytes={} current_bytes={} blocks_reclaimed={blocks_reclaimed} elapsed_millis={now_millis} deadline_millis={shrink_deadline_millis}",
                                 shrink_operation_id.as_deref().unwrap_or("unknown"),
                                 self.config.vm_name,
                                 self.config.alias,
@@ -526,7 +534,7 @@ where
                         ShrinkAction::Latch { reason } => {
                             actuation_latched = true;
                             eprintln!(
-                                "virtio-mem-host: event=shrink_latched operation_id={} vm={} alias={} target_bytes={} requested_bytes={} current_bytes={} elapsed_millis={now_millis} deadline_millis=300000 reason={reason}",
+                                "virtio-mem-host: event=shrink_latched operation_id={} vm={} alias={} target_bytes={} requested_bytes={} current_bytes={} elapsed_millis={now_millis} deadline_millis={shrink_deadline_millis} reason={reason}",
                                 shrink_operation_id.as_deref().unwrap_or("unknown"),
                                 self.config.vm_name,
                                 self.config.alias,
@@ -685,7 +693,11 @@ where
                         u64::try_from(runtime_started.elapsed().as_millis()).unwrap_or(u64::MAX);
                     shrink_operation = Some(
                         ShrinkOperation::start(
-                            ShrinkPolicy::qualification(state.block_size_bytes),
+                            ShrinkPolicy::new(
+                                state.block_size_bytes,
+                                shrink_deadline_millis,
+                                shrink_retry_delays_millis.clone(),
+                            ),
                             now_millis,
                             state.current_bytes,
                             requested_bytes,
@@ -695,7 +707,7 @@ where
                     );
                     shrink_operation_id = candidate_operation_id;
                     eprintln!(
-                        "virtio-mem-host: event=shrink_requested operation_id={} vm={} alias={} target_bytes={requested_bytes} requested_bytes={} current_bytes={} retry_index=0 elapsed_millis={now_millis} deadline_millis=300000",
+                        "virtio-mem-host: event=shrink_requested operation_id={} vm={} alias={} target_bytes={requested_bytes} requested_bytes={} current_bytes={} retry_index=0 elapsed_millis={now_millis} deadline_millis={shrink_deadline_millis}",
                         shrink_operation_id.as_deref().unwrap_or("unknown"),
                         self.config.vm_name,
                         self.config.alias,
@@ -782,6 +794,7 @@ mod tests {
             compatibility_attestation_path: "reviewed.json".to_owned(),
             automatic_windows_shrink: false,
             shrink_renotification: false,
+            shrink_retry_delays: Vec::new(),
         }
     }
 

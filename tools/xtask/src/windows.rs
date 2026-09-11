@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::process;
 
@@ -20,10 +20,9 @@ pub enum Operation {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Run(Operation),
-    Milestone {
-        ssh_target: String,
+    Verify {
         expected_fingerprint: String,
-        identity_file: Option<PathBuf>,
+        runs: u32,
     },
 }
 
@@ -34,6 +33,8 @@ struct Config {
     artifact_dir: PathBuf,
     known_hosts_file: Option<PathBuf>,
     identity_file: Option<PathBuf>,
+    connect_timeout_seconds: u64,
+    operation_timeout_seconds: u64,
 }
 
 #[derive(Debug)]
@@ -47,25 +48,24 @@ struct Toolchain {
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let operation = args.first().ok_or_else(|| {
-        "windows requires check|sync|build|test|lint|fetch|all|milestone".to_owned()
+        "windows requires check|sync|build|test|lint|fetch|all|verify".to_owned()
     })?;
-    if operation == "milestone" {
-        if !(args.len() == 3 || args.len() == 4) {
-            return Err(
-                "windows milestone requires SSH_TARGET EXPECTED_ED25519_FINGERPRINT [IDENTITY_FILE]"
-                    .to_owned(),
-            );
+    if operation == "verify" {
+        if args.len() != 4 || args[2] != "--runs" {
+            return Err("windows verify requires EXPECTED_ED25519_FINGERPRINT --runs N".to_owned());
         }
-        let ssh_target = args[1].clone();
-        validate_ssh_target(&ssh_target)?;
-        let expected_fingerprint = args[2].clone();
+        let expected_fingerprint = args[1].clone();
         if !valid_fingerprint(&expected_fingerprint) {
             return Err("expected an OpenSSH SHA256 fingerprint".to_owned());
         }
-        return Ok(Command::Milestone {
-            ssh_target,
+        let runs = args[3]
+            .parse::<u32>()
+            .ok()
+            .filter(|value| *value > 0)
+            .ok_or_else(|| "--runs requires a positive integer".to_owned())?;
+        return Ok(Command::Verify {
             expected_fingerprint,
-            identity_file: args.get(3).map(PathBuf::from),
+            runs,
         });
     }
     if args.len() != 1 {
@@ -89,16 +89,10 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
 pub fn run(command: Command, repo: &Path) -> Result<(), String> {
     match command {
         Command::Run(operation) => run_operation(operation, &Config::from_env(repo)?, repo),
-        Command::Milestone {
-            ssh_target,
+        Command::Verify {
             expected_fingerprint,
-            identity_file,
-        } => milestone(
-            repo,
-            &ssh_target,
-            &expected_fingerprint,
-            identity_file.as_deref(),
-        ),
+            runs,
+        } => verify(repo, &Config::from_env(repo)?, &expected_fingerprint, runs),
     }
 }
 
@@ -111,11 +105,8 @@ impl Config {
         let ssh_target = std::env::var("VIRTIO_MEM_WINDOWS_SSH").map_err(|_| {
             "VIRTIO_MEM_WINDOWS_SSH is required; refusing to guess a guest".to_owned()
         })?;
-        let remote_dir = std::env::var("VIRTIO_MEM_WINDOWS_DIR")
-            .unwrap_or_else(|_| r"C:\Users\Public\virtio-mem-build".to_owned());
-        let artifact_dir = std::env::var_os("VIRTIO_MEM_WINDOWS_ARTIFACTS")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(".vscode-artifacts/windows"));
+        let remote_dir = required_env("VIRTIO_MEM_WINDOWS_DIR")?;
+        let artifact_dir = PathBuf::from(required_env("VIRTIO_MEM_WINDOWS_ARTIFACTS")?);
         let artifact_dir = if artifact_dir.is_absolute() {
             artifact_dir
         } else {
@@ -123,12 +114,17 @@ impl Config {
         };
         let known_hosts_file = optional_path("VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE")?;
         let identity_file = optional_path("VIRTIO_MEM_WINDOWS_IDENTITY_FILE")?;
+        let connect_timeout_seconds = positive_env("VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS")?;
+        let operation_timeout_seconds =
+            positive_env("VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS")?;
         let config = Self {
             ssh_target,
             remote_dir,
             artifact_dir,
             known_hosts_file,
             identity_file,
+            connect_timeout_seconds,
+            operation_timeout_seconds,
         };
         config.validate()?;
         Ok(config)
@@ -153,11 +149,10 @@ impl Config {
             process::os("-o"),
             process::os("BatchMode=yes"),
             process::os("-o"),
-            process::os("ConnectTimeout=10"),
-            process::os("-o"),
-            process::os("ServerAliveInterval=15"),
-            process::os("-o"),
-            process::os("ServerAliveCountMax=4"),
+            process::os(format!(
+                "ConnectTimeout={}",
+                self.connect_timeout_seconds
+            )),
         ];
         if let Some(path) = &self.known_hosts_file {
             options.extend([
@@ -261,7 +256,12 @@ fn sync_source(config: &Config, repo: &Path) -> Result<(), String> {
             archive.as_os_str().to_owned(),
             process::os(format!("{}:{remote_archive}", config.ssh_target)),
         ]);
-        let output = process::output("scp", &scp_args, repo)?;
+        let output = process::bounded_output(
+            "scp",
+            &scp_args,
+            repo,
+            Duration::from_secs(config.operation_timeout_seconds),
+        )?;
         print_checked(output, "scp source archive")?;
         print_remote(
             config,
@@ -336,7 +336,12 @@ fn fetch(config: &Config, repo: &Path) -> Result<(), String> {
         destination.as_os_str().to_owned(),
     ]);
     print_checked(
-        process::output("scp", &scp_args, repo)?,
+        process::bounded_output(
+            "scp",
+            &scp_args,
+            repo,
+            Duration::from_secs(config.operation_timeout_seconds),
+        )?,
         "scp Windows artifact",
     )?;
     let remote_hash_output = remote_stdout(
@@ -423,36 +428,35 @@ fn remote_output(
         process::os(&config.ssh_target),
         process::os(format!("cmd.exe /d /c {command}")),
     ]);
-    process::output("ssh", &args, repo)
+    process::bounded_output(
+        "ssh",
+        &args,
+        repo,
+        Duration::from_secs(config.operation_timeout_seconds),
+    )
 }
 
 fn quoted_remote_dir(config: &Config) -> String {
     format!("\"{}\"", config.remote_dir)
 }
 
-fn milestone(
+fn verify(
     repo: &Path,
-    ssh_target: &str,
+    config: &Config,
     expected_fingerprint: &str,
-    identity_file: Option<&Path>,
+    runs: u32,
 ) -> Result<(), String> {
     require_commands(&["ssh", "ssh-keygen", "ssh-keyscan", "sha256sum"])?;
-    if let Some(path) = identity_file {
-        if !path.is_file() {
-            return Err(format!(
-                "SSH identity file does not exist: {}",
-                path.display()
-            ));
-        }
-    }
-    let ssh_config = process::checked_text(
+    let timeout = Duration::from_secs(config.operation_timeout_seconds);
+    let ssh_config = process::bounded_text(
         "ssh",
         &[
             process::os("-G"),
             process::os("--"),
-            process::os(ssh_target),
+            process::os(&config.ssh_target),
         ],
         repo,
+        timeout,
     )?;
     let host_name = ssh_config_value(&ssh_config, "hostname")
         .ok_or_else(|| "could not resolve SSH hostname".to_owned())?;
@@ -461,11 +465,11 @@ fn milestone(
     let known_hosts =
         std::env::temp_dir().join(format!("virtio-mem-known-hosts-{}", std::process::id()));
     let result = (|| {
-        let scan = process::checked_output(
+        let scan = process::bounded_text(
             "ssh-keyscan",
             &[
                 process::os("-T"),
-                process::os("10"),
+                process::os(config.connect_timeout_seconds.to_string()),
                 process::os("-p"),
                 process::os(&host_port),
                 process::os("-t"),
@@ -474,10 +478,11 @@ fn milestone(
                 process::os(&host_name),
             ],
             repo,
+            timeout,
         )?;
         std::fs::write(&known_hosts, scan)
             .map_err(|error| format!("failed to write pinned known-hosts file: {error}"))?;
-        let fingerprint_output = process::checked_text(
+        let fingerprint_output = process::bounded_text(
             "ssh-keygen",
             &[
                 process::os("-E"),
@@ -486,6 +491,7 @@ fn milestone(
                 known_hosts.as_os_str().to_owned(),
             ],
             repo,
+            timeout,
         )?;
         let observed = fingerprint_output
             .split_whitespace()
@@ -497,18 +503,21 @@ fn milestone(
             ));
         }
 
-        let timestamp = process::checked_text("date", &[process::os("+%Y%m%dT%H%M%SZ")], repo)?;
-        let timestamp = timestamp.trim();
-        let evidence_dir = repo
-            .join(".vscode-artifacts/windows")
-            .join(format!("milestone-{timestamp}"));
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("system clock is before Unix epoch: {error}"))?
+            .as_millis();
+        let evidence_dir = config
+            .artifact_dir
+            .join(format!("verification-{timestamp}"));
         std::fs::create_dir_all(&evidence_dir)
             .map_err(|error| format!("failed to create {}: {error}", evidence_dir.display()))?;
         let summary = evidence_dir.join("summary.txt");
         append_summary(
             &summary,
             &format!(
-                "UTC run timestamp: {timestamp}\nWindows SSH target: {ssh_target}\nVerified Windows SSH host fingerprint: {observed}\nRecording milestone evidence in: {}\n",
+                "Unix run timestamp (milliseconds): {timestamp}\nWindows SSH target: {}\nVerified Windows SSH host fingerprint: {observed}\nConfigured aggregate runs: {runs}\nEvidence directory: {}\n",
+                config.ssh_target,
                 evidence_dir.display()
             ),
         )?;
@@ -517,25 +526,13 @@ fn milestone(
             evidence_dir.display()
         );
 
-        run_self_logged(
-            repo,
-            ssh_target,
-            &known_hosts,
-            identity_file,
-            &["windows", "check"],
-            &evidence_dir.join("endpoint-check.log"),
-        )?;
-        for run_number in 1..=2 {
-            println!("Starting aggregate gate {run_number} of 2.");
-            run_self_logged(
-                repo,
-                ssh_target,
-                &known_hosts,
-                identity_file,
-                &["gate", "all"],
-                &evidence_dir.join(format!("all-gates-run-{run_number}.log")),
-            )?;
-            let artifact = repo.join(".vscode-artifacts/windows/virtio-mem-service.exe");
+        let mut verified_config = config.clone();
+        verified_config.known_hosts_file = Some(known_hosts.clone());
+        for run_number in 1..=runs {
+            println!("Starting aggregate gate {run_number} of {runs}.");
+            crate::local::run(crate::local::Step::Local, repo)?;
+            run_operation(Operation::All, &verified_config, repo)?;
+            let artifact = config.artifact_dir.join("virtio-mem-service.exe");
             let hash = sha256(repo, &artifact)?;
             std::fs::write(
                 evidence_dir.join(format!("artifact-run-{run_number}.sha256")),
@@ -543,37 +540,12 @@ fn milestone(
             )
             .map_err(|error| format!("failed to write artifact hash: {error}"))?;
         }
-        append_summary(&summary, "Two consecutive aggregate gates passed.\n")?;
-        println!("Two consecutive aggregate gates passed.");
+        append_summary(&summary, &format!("{runs} configured aggregate gate run(s) passed.\n"))?;
+        println!("{runs} configured aggregate gate run(s) passed.");
         Ok(())
     })();
     let _ = std::fs::remove_file(&known_hosts);
     result
-}
-
-fn run_self_logged(
-    repo: &Path,
-    ssh_target: &str,
-    known_hosts: &Path,
-    identity_file: Option<&Path>,
-    arguments: &[&str],
-    log: &Path,
-) -> Result<(), String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve xtask executable: {error}"))?;
-    let mut command = ProcessCommand::new(executable);
-    command
-        .args(arguments)
-        .current_dir(repo)
-        .env("VIRTIO_MEM_WINDOWS_SSH", ssh_target)
-        .env("VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE", known_hosts);
-    if let Some(path) = identity_file {
-        command.env("VIRTIO_MEM_WINDOWS_IDENTITY_FILE", path);
-    }
-    let output = command
-        .output()
-        .map_err(|error| format!("failed to run aggregate gate: {error}"))?;
-    process::display_and_write(&output, log)
 }
 
 fn append_summary(path: &Path, value: &str) -> Result<(), String> {
@@ -584,6 +556,22 @@ fn append_summary(path: &Path, value: &str) -> Result<(), String> {
         .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
     file.write_all(value.as_bytes())
         .map_err(|error| format!("failed to write {}: {error}", path.display()))
+}
+
+fn required_env(name: &str) -> Result<String, String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{name} is required"))
+}
+
+fn positive_env(name: &str) -> Result<u64, String> {
+    let value = required_env(name)?;
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{name} must be a positive integer"))
 }
 
 fn optional_path(name: &str) -> Result<Option<PathBuf>, String> {
@@ -699,19 +687,19 @@ mod tests {
     }
 
     #[test]
-    fn parses_operations_and_milestone() {
+    fn parses_operations_and_explicit_verification_count() {
         assert_eq!(parse(&strings(&["all"])), Ok(Command::Run(Operation::All)));
         assert!(matches!(
-            parse(&strings(&["milestone", "builder", "SHA256:abc+"])),
-            Ok(Command::Milestone { .. })
+            parse(&strings(&["verify", "SHA256:abc+", "--runs", "2"])),
+            Ok(Command::Verify { runs: 2, .. })
         ));
     }
 
     #[test]
     fn rejects_unsafe_remote_inputs() {
         assert!(parse(&strings(&["unknown"])).is_err());
-        assert!(parse(&strings(&["milestone", "-oProxyCommand=x", "SHA256:abc"])).is_err());
-        assert!(parse(&strings(&["milestone", "builder", "md5:abc"])).is_err());
+        assert!(parse(&strings(&["verify", "md5:abc", "--runs", "1"])).is_err());
+        assert!(parse(&strings(&["verify", "SHA256:abc", "--runs", "0"])).is_err());
     }
 
     #[test]

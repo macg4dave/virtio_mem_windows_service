@@ -1,119 +1,71 @@
-# Engineering Standards
+# Engineering standards
 
-## Language Policy
+## Language and tooling
 
-This project is restricted to exactly two languages:
+- Product and maintained tooling use Rust 2021.
+- Bash is limited to a generated or task-specific reviewed privilege boundary
+  with `set -euo pipefail`.
+- Format with rustfmt, lint with warnings denied, and keep dependencies locked.
+- Maintained orchestration, parsing, policy, polling, evidence, cleanup, and
+  rollback belong in `tools/xtask` or the owning product crate.
 
-- Rust for service/program logic and maintained build/test tooling
-- Bash only for generated or task-specific process/elevation boundaries
+## Rust
 
-No additional languages are permitted in source code, scripts, build tooling, or infrastructure definitions.
+- Prefer safe Rust, explicit `Result`/`Option`, structured errors, small
+  cohesive functions, and injected external effects.
+- Avoid panics, global mutable state, and `unsafe`; justify and test an
+  unavoidable exception.
+- Keep public items minimal and document units, invariants, errors, and safety
+  assumptions.
+- Review license, maintenance, features, target support, and lockfile impact
+  before adding a dependency.
+- Add focused regressions for fixes and cover malformed, boundary, overflow,
+  cancellation, and convergence behavior where relevant.
 
-## Code Style
+## Configuration
 
-### Rust
+- Do not embed operational VM names, service identities, paths, RAM bounds,
+  resize deltas, workload sizes, durations, sleeps, retry counts, sampling
+  intervals, or timeouts in prompts, scripts, examples, or workflow defaults.
+- Require them through validated configuration or explicit workflow arguments,
+  or derive them from fresh system state when a trustworthy source exists.
+- Keep format/schema/resource limits in their owning contract. Keep normative
+  product safety constants in `docs/target-controller.md`; other docs link to
+  that contract instead of copying values.
 
-- Format: `rustfmt`
-- Lint: `cargo clippy`
-- Test coverage: Aim for >80%
-- Edition: 2021
-- Min version: Rust 1.70+
-- Build: `cargo build --release`
-- Test: `cargo test`
+## Windows service
 
-### Bash
+- SCM callbacks remain bounded and delegate work to the stoppable runtime.
+- Report lifecycle transitions accurately and preserve unexpected worker
+  failure as a non-zero result.
+- Use one wakeable cancellation path and the configured shutdown bound.
+- Require versioned configuration for VM/service identity, paths, polling,
+  adapter operations, shutdown, and least-privilege account.
+- Collect production demand through native Windows APIs. Do not open QGA or
+  receive host allocation state.
 
-- Format: `shfmt`
-- Lint: `shellcheck`
-- Shebang: `#!/bin/bash`
-- Error handling: `set -euo pipefail`
-- Target: Bash 4.0+
-- Maintained build, test, parsing, policy, polling, and remote orchestration
-  belong in `tools/xtask`, not in tracked Bash wrappers.
-- A privileged task batch may remain Bash so the exact command sequence is
-  reviewable and can run under one outer `sudo`; it must delegate reusable
-  behavior to Rust.
+## Host controller
 
-### Windows service lifecycle
+- One explicitly configured controller manages one VM and device alias until
+  global arbitration is implemented.
+- Use fixed argument vectors and configured finite command bounds; never invoke
+  a shell for `virsh`.
+- Refresh live XML and compatibility immediately before mutation. Never issue
+  an ordinary request while requested and current differ.
+- Preserve telemetry provenance, freshness, replay, headroom, alignment,
+  retention-floor, intent-journal, and latch gates.
+- Automatic reclaim remains default-on with an explicit pause override.
+  Detailed target, quantum, history, hysteresis, retry, and recovery behavior
+  is normative only in `target-controller.md` and the owning Rust modules.
+- A service failure is fail-stop in the checked-in unit. Deployment monitoring
+  owns any reviewed restart policy.
 
-- Keep SCM start/stop callbacks short; never perform an unbounded poll or blocking QEMU Guest Agent operation directly in a callback.
-- Make start, running, stop-pending, stopped, and failed states explicit at the SCM boundary. Do not report running before the worker is ready.
-- Use one cancellation path for operator stop and system shutdown. A normal cancellation must not be logged or exited as a crash.
-- Make shutdown idempotent: stop scheduling new work, allow in-flight work to finish within a bounded deadline, release channel resources, and then exit.
-- Treat an unexpected worker failure as a failed service, preserve its error context in Windows event logging, and return a non-zero process result so configured SCM recovery can restart it. Never leave a silent zombie process.
-- Define and validate a stable service identity, executable path, startup mode, recovery policy, and least-privilege service account during installation.
-- Prefer configuration files or other documented persistent configuration for multiple settings; avoid undocumented or security-sensitive startup arguments.
-- Keep service identity, legacy adapter endpoint, report path, polling
-  interval, shutdown timeout, and service account in validated configuration;
-  use `LocalService` by default and require an explicit documented reason to
-  elevate. Production demand collection uses native Windows APIs, not QGA.
-- Cancellation waits must be wakeable; do not use an uninterruptible sleep for
-  the polling interval.
+## Documentation and validation
 
-### RHEL host-controller lifecycle
-
-- Run one explicitly configured VM and virtio-mem alias per systemd instance;
-  do not implement broad VM discovery or implicit multi-target scheduling.
-- Permit only one active Phase 2 controller/device on the development host;
-  multiple independent instances cannot safely reserve the same host pool
-  before M11 global arbitration.
-- Invoke `virsh` through fixed argument vectors with a finite timeout; never
-  use a shell, string interpolation, or an unbounded external command.
-- Refresh and validate the selected live XML immediately before a resize. Do
-  not issue a request while `requested != current` or replay one after restart.
-- Bind workload compatibility authorization to the reviewed live domain/QEMU
-  configuration, backend, memory-slot/VFIO budgets, incompatible workload and
-  device classes, balloon-resize state, topology, and deployed versions; fail
-  closed when its fingerprint changes.
-- Preserve source semantics: `dommemstat actual` is a balloon value, not a
-  whole-guest total or virtio-mem allocation. Require explicit bounded
-  freshness and reject stale, future, or non-advancing policy evidence.
-- Keep the read-only Rust `decision` command on the exact configured telemetry,
-  live-XML, and policy-evaluator path used by a controller cycle; do not add a
-  second Bash policy implementation.
-- Treat `guest-get-memory-stats` as a custom/downstream QGA extension, never as
-  an upstream version guarantee. Keep upstream QGA use to advertised commands.
-- Require a hard QEMU/libvirt memory limit for production or untrusted guests.
-  It is recommended defense-in-depth for the fully trusted development/test
-  `win11_gpu` exception.
-- Keep automatic Windows shrink enabled by default as a core product
-  capability. Treat 1 GiB growth and 64 MiB reclaim as actuation bounds toward
-  the M10e absolute target, not as demand estimates. Reclaim requires the
-  warmed-history safe floor and M10f ownership/latch rules; stale telemetry,
-  ambiguity, or stall must freeze or latch rather than overlap or blindly
-  retry. Re-notification remains a separate default-off diagnostic capability:
-  only the immutable target may be repeated, at most three times on the
-  30/60/120-second profile, without extending the 300-second diagnostic
-  deadline or replaying after restart. Follow
-  [`target-controller.md`](target-controller.md) for the normative policy.
-- Use `SIGTERM` and `SIGINT` for one wakeable cancellation path. Operational
-  failures must produce contextual journal output and a non-zero process exit.
-- Configure an explicit non-login service account and verify its least-privilege
-  libvirt authorization before enabling the unit. Do not silently run as root.
-
-## Documentation Standards
-
-- All features must be documented in [docs/feature-matrix.md](feature-matrix.md)
-- API changes must update [docs/api-contract.md](api-contract.md)
-- Data model changes must update [docs/data-model.md](data-model.md)
-- Every completed task updates [BACKLOG.md](../BACKLOG.md) status
-- Build/test tooling changes update
-  [build-test-tooling-roadmap.md](build-test-tooling-roadmap.md) using the
-  separate BT-M/BT-T/BT-B namespace
-
-## Commit Standards
-
-- Messages must reference the applicable product `TASK-*` ID from `BACKLOG.md`
-  or tooling `BT-T*` ID from `build-test-tooling-roadmap.md`
-- No secrets, credentials, or private keys
-- Keep commits atomic and focused
-- Update docs in the same commit as code changes
-
-## Service Boundary Rules
-
-Respect the [architecture.md](architecture.md) service boundaries:
-
-- Windows service does not invoke Linux commands
-- Host build/test tooling remains separate from guest runtime logic
-- Windows demand delivery uses an explicitly versioned, freshness-checked
-  report contract; QGA and libvirt remain host-owned interfaces
+- Update contracts and boards with behavior changes in the same change.
+- `BACKLOG.md` owns product tasks; `build-test-tooling-roadmap.md` owns tooling
+  tasks.
+- Run focused Cargo tests, then `cargo xtask gate local`, then applicable
+  native or higher-level workflows. Report every layer separately.
+- Keep documentation current and procedural; do not preserve obsolete command
+  generations or transient validation values as instructions.

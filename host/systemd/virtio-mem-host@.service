@@ -12,9 +12,11 @@ Environment=LIBVIRT_DEFAULT_URI=qemu:///system
 Environment=HOME=/run/virtio-mem-host
 Environment=XDG_CACHE_HOME=/run/virtio-mem-host/.cache
 ExecStart=/usr/local/libexec/virtio-mem-host
-Restart=on-failure
-RestartSec=15s
-TimeoutStopSec=45s
+# Failure is fail-stop. Deployment monitoring decides when a reviewed restart
+# is appropriate; the unit does not create an automatic restart loop.
+Restart=no
+# Inherit the host manager's configured stop timeout rather than embedding a
+# test-derived deadline in the repository unit.
 RuntimeDirectory=virtio-mem-host
 RuntimeDirectoryMode=0700
 StateDirectory=virtio-mem-host

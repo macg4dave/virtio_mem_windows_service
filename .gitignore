@@ -15,7 +15,6 @@
 /.vscode/*
 !/.vscode/
 !/.vscode/tasks.json
-!/.vscode/launch.json
 *.user
 *.sln.DotSettings.user
 launchSettings.json

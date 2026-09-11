@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
-use std::io::Read;
+use std::fs::OpenOptions;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -244,12 +245,30 @@ fn persist_replay_state(path: &Path, state: &ReplayState) -> Result<(), String> 
     let bytes = serde_json::to_vec(state)
         .map_err(|error| format!("encode raw telemetry acknowledgement: {error}"))?;
     let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
-    std::fs::write(&temporary, bytes)
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(|error| format!("open raw telemetry acknowledgement: {error}"))?;
+    file.write_all(&bytes)
         .map_err(|error| format!("write raw telemetry acknowledgement: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("flush raw telemetry acknowledgement: {error}"))?;
+    drop(file);
     std::fs::rename(&temporary, path).map_err(|error| {
         let _ = std::fs::remove_file(&temporary);
         format!("publish raw telemetry acknowledgement: {error}")
-    })
+    })?;
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("flush raw telemetry acknowledgement directory: {error}"))?;
+    }
+    Ok(())
 }
 
 fn duration_millis(duration: Duration) -> Result<u64, String> {

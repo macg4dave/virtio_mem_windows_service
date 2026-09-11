@@ -1,54 +1,49 @@
-# Build and test tooling
+# Build and validation tooling
 
-`tools/xtask` is the repository's authoritative repository-gate,
-remote-Windows, and higher-level workflow control plane. It does not replace
-normal Rust unit, integration, regression, or doctests; add and run those in
-the crate that owns the changed behavior first. Run xtask from the repository
-root through the Cargo alias:
+`cargo xtask` is the maintained control plane for repository gates, remote
+native-Windows validation, artifact verification, QGA checks, reversible live
+resize, and unattended workload qualification. Normal Rust tests remain in
+their owning crates.
 
 ```bash
 cargo xtask help
 cargo xtask gate local
 cargo xtask windows all
-cargo xtask qga VM_NAME --attempts 3
-cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES
-cargo xtask qualification start VM_NAME ALIAS --ssh-target WINDOWS_SSH --profile m10g-resident
+cargo xtask windows verify SHA256:EXPECTED_HOST_FINGERPRINT --runs RUN_COUNT
+cargo xtask qga VM_NAME --attempts COUNT --command-timeout-seconds SECONDS
+cargo xtask live-resize VM_NAME DEVICE_ALIAS TARGET_BYTES REQUIRED_OPTIONS
+cargo xtask qualification start VM_NAME DEVICE_ALIAS REQUIRED_OPTIONS
 cargo xtask qualification status RUN_ID
 cargo xtask qualification review RUN_ID
 ```
 
-The tool is intentionally a workspace member. Its parsing and safety checks
-are unit tested with the rest of the RHEL-compatible crates, and it reuses the
-shared Rust virtio-mem XML and unit contracts rather than maintaining copies in
-shell.
+Every endpoint, path, workload size, test duration, retry count, sampling
+interval, safety floor, headroom reserve, and timeout used by a remote or live
+workflow must be supplied explicitly. `cargo xtask help` is the authoritative
+option list. Dry-run remains the default for mutation-capable workflows.
 
-`cargo xtask gate local` validates the shared core, host controller, and this
-tool on RHEL after focused code-level testing. `cargo xtask gate all` adds the
-explicitly configured native Windows gate. It does not treat a Linux build as
-Windows evidence or a repository gate as a substitute for targeted tests.
+The Windows workflow requires these environment variables:
 
-Live mutation remains opt-in. `live-resize` is a dry run unless `--apply` is
-present, rejects unsafe or divergent state, bounds forward convergence to 30
-seconds, and restores the captured allocation unless `--keep-target` is
-explicitly supplied. `--keep-target` is non-reversible and requires explicit
-approval under the repository safety rules.
+- `VIRTIO_MEM_WINDOWS_SSH`
+- `VIRTIO_MEM_WINDOWS_DIR`
+- `VIRTIO_MEM_WINDOWS_ARTIFACTS`
+- `VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS`
+- `VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS`
 
-`qualification start` owns unattended, multi-minute Windows workload and
-automatic-controller observation runs. It is also dry-run by default. With
-`--apply`, it creates a unique directory under
-`.vscode-artifacts/qualification/`, launches a detached Rust supervisor, and
-returns the run ID immediately. The supervisor retains the SSH workload
-session, samples host and guest memory plus alias-scoped requested/current
-state, records observed resize requests, and archives the controller journal.
-Use `status` while it runs and `review` after it finishes. The versioned JSON
-and JSON-lines files are the durable interface for later human or AI analysis.
+Optional pinned-host and identity-file variables are documented by `help` and
+`docs/testing.md`. The tool never guesses a guest or remote workspace.
 
-The qualification harness observes the installed automatic controller; it
-does not issue competing resize commands. The Windows workload releases every
-mapping on completion, after which the supervisor observes a bounded reclaim
-window. It records, but does not force, the final device allocation.
+`live-resize` captures initial allocation, requires QGA health, delegates each
+forward and rollback request to the attestation-aware host product CLI, waits
+for alias-scoped convergence, and restores the captured allocation unless an
+explicitly authorized `--keep-target` is supplied.
 
-See [`../docs/build-test-tooling-roadmap.md`](../docs/build-test-tooling-roadmap.md)
-for the migration inventory, task namespace, dependencies, and remaining
-consolidation work. See [`../docs/testing.md`](../docs/testing.md) for the test
-selection model, workflow organization, and reporting contract.
+`qualification start` observes the installed automatic controller; it never
+issues a competing resize. It requires an explicit workload binary, workload
+sizes and holds, telemetry path, services, timing, and acceptance deltas. With
+`--apply`, a detached supervisor writes versioned JSON/JSONL evidence beneath
+the selected output root for later `status` and `review` calls.
+
+Editor and Make entrypoints are convenience delegates only. Repeatable logic
+belongs here; privileged Bash exists only as a generated or task-specific
+single-process elevation boundary.

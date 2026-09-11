@@ -669,6 +669,7 @@ mod tests {
             compatibility_attestation_path: attestation.display().to_string(),
             automatic_windows_shrink: true,
             shrink_renotification: false,
+            shrink_retry_delays: Vec::new(),
         }
     }
 

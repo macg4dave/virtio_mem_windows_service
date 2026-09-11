@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 
 use winapi::ctypes::c_void;
 use winapi::shared::minwindef::{DWORD, FALSE, TRUE};
+use winapi::um::winnt::SERVICE_ERROR_NORMAL;
 use winapi::um::winsvc::{
     ChangeServiceConfig2W, ControlService, CreateServiceW, DeleteService, OpenSCManagerW,
     OpenServiceW, RegisterServiceCtrlHandlerExW, SetServiceStatus, StartServiceCtrlDispatcherW,
@@ -19,11 +20,11 @@ use winapi::um::winsvc::{
 
 const SERVICE_ALL_ACCESS: DWORD = 0xF01FF;
 const SERVICE_AUTO_START: DWORD = 0x00000002;
-const SERVICE_ERROR_NORMAL: DWORD = 0x00000000;
 const SERVICE_WIN32_OWN_PROCESS: DWORD = 0x00000010;
 const ERROR_FAILED_SERVICE_CONTROLLER_CONNECT: i32 = 1063;
 const SERVICE_DELETE: DWORD = 0x00010000;
 const SERVICE_START: DWORD = 0x00000010;
+const MAX_SERVICE_NAME_UTF16_UNITS: usize = 256;
 
 use crate::config::ServiceConfig;
 use crate::demand::{
@@ -144,6 +145,7 @@ pub struct WindowsServiceRegistration {
     pub executable_path: String,
     pub service_account: String,
     pub startup_type: DWORD,
+    pub error_control: DWORD,
 }
 
 impl WindowsServiceRegistration {
@@ -161,6 +163,7 @@ impl WindowsServiceRegistration {
             executable_path,
             service_account: config.service_account.clone(),
             startup_type: SERVICE_AUTO_START,
+            error_control: SERVICE_ERROR_NORMAL,
         })
     }
 }
@@ -196,7 +199,7 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
             SERVICE_ALL_ACCESS,
             SERVICE_WIN32_OWN_PROCESS,
             registration.startup_type,
-            SERVICE_ERROR_NORMAL,
+            registration.error_control,
             executable.as_ptr(),
             std::ptr::null(),
             std::ptr::null_mut(),
@@ -367,7 +370,10 @@ fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
 }
 
 pub fn run_as_service() -> Result<bool, String> {
-    let service_name = to_wide(crate::config::DEFAULT_SERVICE_NAME);
+    // This is an own-process service, so SCM ignores the table name and passes
+    // the installed identity to `service_main`. Keeping the table entry empty
+    // avoids coupling dispatcher attachment to the configurable install name.
+    let service_name = to_wide("");
     let mut table = [
         SERVICE_TABLE_ENTRYW {
             lpServiceName: service_name.as_ptr() as *mut u16,
@@ -392,9 +398,15 @@ pub fn run_as_service() -> Result<bool, String> {
     }
 }
 
-unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
+unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
+    let event_source = match service_name_from_main_args(argc, argv) {
+        Ok(service_name) => service_name,
+        Err(error) => {
+            eprintln!("resolve SCM service identity failed: {error}");
+            return;
+        }
+    };
     let stop = StopSignal::new();
-    let event_source = crate::config::DEFAULT_SERVICE_NAME.to_owned();
     let service_name = to_wide(&event_source);
     let mut context = Box::new(ServiceContext {
         stop: stop.clone(),
@@ -461,6 +473,21 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
             return;
         }
     };
+    if let Err(error) = validate_configured_service_identity(&config.service_name, &event_source) {
+        emit_event(
+            &event_source,
+            ServiceEvent::new(
+                ServiceEventId::ConfigurationFailed,
+                ServiceEventLevel::Error,
+                error,
+            ),
+        );
+        let _ = publish_status(
+            status_handle,
+            ScmServiceStatus::from_state(ServiceState::Failed),
+        );
+        return;
+    }
     let shutdown_timeout = config.shutdown_timeout;
     let poll_interval = config.poll_interval;
     let vm_name = config.vm_name;
@@ -530,6 +557,40 @@ unsafe extern "system" fn service_main(_argc: DWORD, _argv: *mut *mut u16) {
             ),
         );
     }
+}
+
+fn validate_configured_service_identity(configured: &str, scm: &str) -> Result<(), String> {
+    if configured == scm {
+        Ok(())
+    } else {
+        Err(format!(
+            "configured service name {configured} does not match SCM identity {scm}"
+        ))
+    }
+}
+
+unsafe fn service_name_from_main_args(argc: DWORD, argv: *mut *mut u16) -> Result<String, String> {
+    if argc == 0 || argv.is_null() {
+        return Err("SCM did not provide the service name argument".to_owned());
+    }
+    let service_name = *argv;
+    if service_name.is_null() {
+        return Err("SCM provided a null service name argument".to_owned());
+    }
+    let mut length = 0;
+    while length <= MAX_SERVICE_NAME_UTF16_UNITS {
+        if *service_name.add(length) == 0 {
+            if length == 0 {
+                return Err("SCM provided an empty service name argument".to_owned());
+            }
+            return String::from_utf16(std::slice::from_raw_parts(service_name, length))
+                .map_err(|error| format!("SCM service name is invalid UTF-16: {error}"));
+        }
+        length += 1;
+    }
+    Err(format!(
+        "SCM service name exceeds {MAX_SERVICE_NAME_UTF16_UNITS} UTF-16 units"
+    ))
 }
 
 unsafe extern "system" fn service_control_handler(
@@ -744,6 +805,57 @@ mod tests {
             ScmServiceStatus::from_state(ServiceState::Stopped).current_state,
             SERVICE_STOPPED as DWORD
         );
+    }
+
+    #[test]
+    fn registration_uses_normal_startup_error_control() {
+        let registration = WindowsServiceRegistration::from_config(&ServiceConfig {
+            vm_name: "test-vm".to_owned(),
+            service_name: "TestService".to_owned(),
+            display_name: "Test service".to_owned(),
+            description: "Test configuration".to_owned(),
+            qga_pipe_path: r"\\.\pipe\test-qga".to_owned(),
+            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
+            service_account: r"NT AUTHORITY\LocalService".to_owned(),
+            config_path: r"C:\test\config.json".to_owned(),
+            poll_interval: std::time::Duration::from_millis(20),
+            qga_operation_timeout: std::time::Duration::from_millis(10),
+            shutdown_timeout: std::time::Duration::from_millis(30),
+        })
+        .expect("registration should be valid");
+
+        assert_eq!(registration.error_control, 1);
+    }
+
+    #[test]
+    fn service_main_uses_the_scm_supplied_service_identity() {
+        let mut encoded = to_wide("ConfiguredVirtioMemService");
+        let mut argument = encoded.as_mut_ptr();
+
+        let service_name = unsafe { service_name_from_main_args(1, &mut argument) };
+
+        assert_eq!(service_name.as_deref(), Ok("ConfiguredVirtioMemService"));
+        assert_eq!(
+            validate_configured_service_identity(
+                "ConfiguredVirtioMemService",
+                service_name.as_deref().expect("service identity")
+            ),
+            Ok(())
+        );
+        assert!(validate_configured_service_identity(
+            "AnotherService",
+            service_name.as_deref().expect("service identity")
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn service_main_rejects_missing_or_unbounded_service_identity() {
+        assert!(unsafe { service_name_from_main_args(0, std::ptr::null_mut()) }.is_err());
+
+        let mut encoded = vec![u16::from(b'a'); MAX_SERVICE_NAME_UTF16_UNITS + 1];
+        let mut argument = encoded.as_mut_ptr();
+        assert!(unsafe { service_name_from_main_args(1, &mut argument) }.is_err());
     }
 
     #[test]

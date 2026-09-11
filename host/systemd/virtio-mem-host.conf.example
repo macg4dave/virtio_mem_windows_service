@@ -1,76 +1,45 @@
-# Install as /etc/virtio-mem-host/<instance>.conf. This file contains no secrets.
-# The systemd instance name identifies this explicitly managed VM.
-VIRTIO_MEM_VM_NAME=win11_gpu
-VIRTIO_MEM_ALIAS=ua-virtiomem0
+# Copy to /etc/virtio-mem-host/<instance>.conf and replace every REQUIRED_*
+# marker from reviewed deployment evidence. This file contains no secrets.
+VIRTIO_MEM_VM_NAME=REQUIRED_VM_NAME
+VIRTIO_MEM_ALIAS=REQUIRED_DEVICE_ALIAS
 
-# All memory quantities are byte counts and must be compatible with the live
-# virtio-mem block size. Choose limits only after inspecting the live device.
-VIRTIO_MEM_MIN_MEMORY_BYTES=8589934592
-VIRTIO_MEM_MAX_MEMORY_BYTES=17179869184
-VIRTIO_MEM_LOWER_THRESHOLD_BYTES=1073741824
-VIRTIO_MEM_UPPER_THRESHOLD_BYTES=4294967296
-# Directional service quanta. Defaults are 1 GiB for growth and 64 MiB for
-# reclaim when omitted. Both values must be aligned to the live device block.
-VIRTIO_MEM_GROW_STEP_BYTES=1073741824
-VIRTIO_MEM_SHRINK_STEP_BYTES=67108864
+# These byte counts are deployment inputs. Derive device geometry and current
+# allocation from live XML; calibrate policy bounds and reserves for this VM.
+VIRTIO_MEM_MIN_MEMORY_BYTES=REQUIRED_MINIMUM_BYTES
+VIRTIO_MEM_MAX_MEMORY_BYTES=REQUIRED_MAXIMUM_BYTES
+VIRTIO_MEM_LOWER_THRESHOLD_BYTES=REQUIRED_LOWER_THRESHOLD_BYTES
+VIRTIO_MEM_UPPER_THRESHOLD_BYTES=REQUIRED_UPPER_THRESHOLD_BYTES
+VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES=REQUIRED_CALIBRATED_BASE_BYTES
+VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES=REQUIRED_HOST_HEADROOM_BYTES
 
-# Required M10e calibration: Windows physical total when this virtio-mem
-# device contributes zero allocation. Replace this marker from recorded
-# baseline evidence; the service intentionally rejects the placeholder.
-VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES=REPLACE_WITH_CALIBRATED_BYTES
-# Absolute-target reserves. Omitted values use 2 GiB normal reserves and 1 GiB
-# safe-floor reserves. All byte values must align to the live device block.
-VIRTIO_MEM_PHYSICAL_RESERVE_BYTES=2147483648
-VIRTIO_MEM_COMMIT_RESERVE_BYTES=2147483648
-VIRTIO_MEM_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES=1073741824
-VIRTIO_MEM_SAFE_FLOOR_COMMIT_RESERVE_BYTES=1073741824
-VIRTIO_MEM_RECLAIM_HISTORY_SECONDS=600
-# The default is materialized as twice the configured poll interval.
-VIRTIO_MEM_RECLAIM_MAX_GAP_SECONDS=60
-VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES=268435456
-# Required protected, host-local atomic checkpoint path.
-VIRTIO_MEM_POLICY_STATE_PATH=/var/lib/virtio-mem-host/win11_gpu.policy.json
+# Persistent and transported state paths must be absolute, instance-scoped,
+# and provisioned with the documented least-privilege ownership and ACLs.
+VIRTIO_MEM_POLICY_STATE_PATH=REQUIRED_ABSOLUTE_POLICY_STATE_PATH
+VIRTIO_MEM_RAW_TELEMETRY_PATH=REQUIRED_ABSOLUTE_RAW_TELEMETRY_PATH
+VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME=REQUIRED_WINDOWS_SERVICE_NAME
+VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH=REQUIRED_ABSOLUTE_ATTESTATION_PATH
 
-# Every external command is bounded. TimeoutStopSec must exceed this value.
-VIRTIO_MEM_POLL_INTERVAL_SECONDS=30
-VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS=10
-VIRTIO_MEM_CONVERGENCE_TIMEOUT_SECONDS=300
-# VIRTIO_MEM_VIRSH_BINARY=/usr/bin/virsh
+# All operational timing is selected for this deployment. Record the rationale
+# and ensure the service manager stop bound is compatible with these values.
+VIRTIO_MEM_POLL_INTERVAL_SECONDS=REQUIRED_POLL_INTERVAL_SECONDS
+VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS=REQUIRED_COMMAND_TIMEOUT_SECONDS
+VIRTIO_MEM_CONVERGENCE_TIMEOUT_SECONDS=REQUIRED_CONVERGENCE_TIMEOUT_SECONDS
+VIRTIO_MEM_STATS_MAX_AGE_SECONDS=REQUIRED_STATS_MAX_AGE_SECONDS
+VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS=REQUIRED_STATS_FUTURE_TOLERANCE_SECONDS
+VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS=REQUIRED_TELEMETRY_MAX_AGE_SECONDS
+VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS=REQUIRED_TELEMETRY_FUTURE_TOLERANCE_SECONDS
 
-# dommemstat (virtio-balloon counters) is the default and does not require
-# guest-get-memory-stats support. Set to "qga" only if the connected guest
-# agent implements guest-get-memory-stats.
-# Raw Windows telemetry is the production demand source. The explicit
-# `guest-stats` mode exists for validated pre-M10d development deployments
-# whose cross-guest raw-telemetry transport is not yet provisioned.
+# Current production modes. Automatic reclaim is default-on; set false only
+# for a reviewed rollout pause or diagnosis. Re-notification is diagnostic.
 VIRTIO_MEM_DEMAND_SOURCE=raw
 VIRTIO_MEM_STATS_SOURCE=dommemstat
-# `last-update` must be no older than this bound and must advance between
-# controller samples. Small positive future skew is tolerated explicitly.
-VIRTIO_MEM_STATS_MAX_AGE_SECONDS=60
-VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS=5
-
-# Required M10d raw Windows telemetry input. The deployment transport must
-# present this VM/service-scoped path and provision its least-privilege ACL.
-# The Windows publisher uses bounded atomic handoff/retention and the host
-# persists replay acknowledgement beside this file. Provision the transport
-# and parent-directory ACL for the selected deployment.
-VIRTIO_MEM_RAW_TELEMETRY_PATH=/run/virtio-mem-host/win11_gpu.telemetry.jsonl
-VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME=VirtioMemService
-VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS=60
-VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS=5
-# Automatic reclaim is a default-on product capability. It remains bounded by
-# fresh policy input, the safe floor, 64 MiB actuation, convergence checks, and
-# ambiguity/stall latching. Set false only for diagnosis or an explicit rollout
-# pause. Same-target diagnostic re-notification remains independently off.
 VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=true
 VIRTIO_MEM_SHRINK_RENOTIFICATION=false
+# Required only when re-notification is enabled. Supply a strictly increasing
+# comma-separated schedule below the configured convergence timeout.
+# VIRTIO_MEM_SHRINK_RETRY_DELAYS_SECONDS=REQUIRED_RETRY_SCHEDULE_SECONDS
 
-# Required: a grow request is blocked unless the RHEL host's /proc/meminfo
-# MemAvailable covers the requested delta plus this reserve.
-VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES=4294967296
-
-# Required reviewed M9d attestation. Generate a candidate with the Rust
-# `attest` command after completing the documented review, install it read-only
-# for the service account, and regenerate/review it after any reported drift.
-VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH=/etc/virtio-mem-host/win11_gpu.attestation.json
+# Optional policy inputs are deliberately omitted. When a deployment overrides
+# growth/reclaim quanta, reserves, reclaim history/gap, hysteresis, or the
+# virsh binary, record the reviewed values in its instance file. Otherwise the
+# normative target-controller defaults apply.
