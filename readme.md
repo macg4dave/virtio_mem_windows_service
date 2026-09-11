@@ -65,8 +65,9 @@ and `docs/testing.md`; do not copy values from old evidence.
 - Live mutation requires exact target identity, fresh attestation and live
   state, alignment, headroom, configured time bounds, convergence checks, and
   an explicit rollback/final-state contract.
-- Repeatable validation and deployment logic belongs in Rust. Privileged Bash
-  is one task-specific reviewed process boundary only.
+- Repeatable validation, deployment, and privileged-boundary logic belongs in
+  Rust. Xtask may re-execute its current prebuilt binary through one reviewed
+  outer `sudo`; Cargo never runs as root.
 - Reboot, shutdown, deletion of pre-existing resources, persistent platform or
   security changes, disabled safeguards, and non-reversible resize require
   explicit current-turn authorization.
@@ -84,6 +85,7 @@ endurance gates in `docs/QA-roadmap.md` pass.
 | Document | Purpose |
 | --- | --- |
 | `BACKLOG.md` | Product execution board and current handoff |
+| `docs/roadmap.md` | Automatic-resizing release milestones and exit gates |
 | `docs/architecture.md` | Component ownership and safety boundaries |
 | `docs/testing.md` | Current validation and deployment model |
 | `docs/target-controller.md` | Normative target and recovery contract |

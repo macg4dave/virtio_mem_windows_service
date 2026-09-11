@@ -2,9 +2,17 @@
 
 `BACKLOG.md` owns execution order. This document describes the remaining
 technical dependency chain without prescribing machine-specific commands or
-test values.
+test values. Milestone outcomes and release gates live in
+[docs/roadmap.md](docs/roadmap.md).
 
-## Complete the single-VM deployment
+## Verify the cleaned baseline (AR0)
+
+Run the focused, local, and native-Windows code gates against the same cleaned
+source revision and reconcile compiled interfaces with current documentation.
+An unavailable platform layer remains open; it is not inferred from an older
+build or from another validation layer.
+
+## Complete the single-VM deployment (AR1)
 
 1. Capture the installed host and Windows deployment with exact identities,
    paths, configuration, hashes, security state, and current health.
@@ -19,7 +27,7 @@ test values.
 All settings that influence operations are explicit deployment or run inputs.
 Do not copy values from an earlier manifest or test.
 
-## Qualify the single-VM controller
+## Qualify and harden the single-VM controller (AR2–AR4)
 
 Use `cargo xtask qualification` as the sole maintained workload/controller
 qualification entry point. Define the target, workload mode, allocations,
@@ -36,9 +44,9 @@ Qualification must separate:
 - safe latching from service failure;
 - cleanup from any separately authorized baseline restoration.
 
-## Build the global controller
+## Build and qualify the global controller (AR5–AR6)
 
-After single-VM qualification:
+After the reviewed AR4 single-VM qualification checkpoint:
 
 1. Model actual allocations, absolute desired targets, per-VM safe floors,
    host reserve, and pool-free capacity in deterministic simulation.
@@ -48,12 +56,14 @@ After single-VM qualification:
 4. Introduce live multi-target actuation only after simulation and single-VM
    safety gates pass.
 
-## Operationalize
+## Operationalize and release (AR7–AR8)
 
 Add structured health, metrics, fault injection, repeatable deployment,
 rollback, and monitoring around the proven controller. Endurance duration and
 cycle count are chosen explicitly for each release candidate and recorded in
-the run manifest; they are not repository defaults.
+the run manifest; they are not repository defaults. Freeze and publish only an
+immutable candidate that passes the full supported-platform, security,
+installation, upgrade, rollback, live, recovery, and endurance matrix.
 
 ## Validation rule
 

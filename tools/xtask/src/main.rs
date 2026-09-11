@@ -1,3 +1,4 @@
+mod deployment;
 mod live_resize;
 mod local;
 mod process;
@@ -13,11 +14,20 @@ const HELP: &str = r#"Repository build and test tooling
 Usage:
   cargo xtask gate <format|build|test|lint|local|all>
   cargo xtask doctor host
+  cargo xtask deployment inventory INSTANCE [OPTIONS]
   cargo xtask windows <check|sync|build|test|lint|fetch|all>
   cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
   cargo xtask qga VM_NAME --attempts N --command-timeout-seconds N [--connect URI]
   cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES [OPTIONS]
   cargo xtask qualification <start|run|status|review> [OPTIONS]
+
+Deployment inventory options:
+  --unit UNIT                   Required exact inactive systemd instance unit.
+  --binary PATH                 Required absolute installed executable path.
+  --text-file PATH              Required absolute inspected file; repeatable.
+  --output PATH                 Required structured JSON evidence path.
+  --command-timeout-seconds N   Required external-command bound.
+  --elevate                     Invoke this prebuilt xtask once through sudo.
 
 Qualification commands:
   start VM ALIAS --ssh-target TARGET --mode resident|committed [--apply] [OPTIONS]
@@ -95,6 +105,7 @@ fn execute(arguments: &[String]) -> Result<(), String> {
             local::doctor_host()
         }
         Some("doctor") => Err("doctor requires exactly: host".to_owned()),
+        Some("deployment") => deployment::run(&deployment::parse(&arguments[1..])?, &repo),
         Some("windows") => windows::run(windows::parse(&arguments[1..])?, &repo),
         Some("qga") => qga::run(&qga::parse(&arguments[1..])?, &repo),
         Some("live-resize") => live_resize::run(&live_resize::parse(&arguments[1..])?, &repo),

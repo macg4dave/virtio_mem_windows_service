@@ -15,6 +15,9 @@ Task: `<tooling behavior to add, change, consolidate, or remove>`
   evidence, cleanup, rollback, and failure stages.
 - Remove superseded scripts and entrypoints once their current invariants are
   represented in Rust or deliberately retired.
+- Implement privileged boundaries as explicit typed `xtask` re-execution of
+  the current prebuilt executable through one outer `sudo`; never generate a
+  shell script or run Cargo as root.
 - Add deterministic tests for parsing, command construction, failure,
   cancellation, cleanup, rollback, and result classification.
 - Keep editor and Make entrypoints as policy-free delegates.

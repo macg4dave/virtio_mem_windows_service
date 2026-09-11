@@ -12,7 +12,7 @@
 | Desired/requested/current reconciliation | Implemented | Intent journaling, partial progress, upward supersession, uncertain results, restart recovery, and latches prohibit blind replay. |
 | Rust build/test tooling | Implemented | `cargo xtask` is authoritative for maintained local, Windows, host, live-resize, and qualification workflows. |
 | Single-VM live qualification | In progress | A coherent deployment and complete applied evidence set are required. |
-| Multi-VM global pool | Planned | Simulation and atomic host-capacity reservation precede live actuation. |
+| Multi-VM global pool | Prototype only | Side-effect-free arbitration exists in the shared core; a durable host-wide coordinator, atomic reservation ownership, runtime integration, and live qualification remain AR5–AR6 work. |
 | Driver status interface | Deferred | Optional diagnostics cannot become allocation authority; implementation requires separate external driver ownership and approval. |
 
 ## Platform boundary

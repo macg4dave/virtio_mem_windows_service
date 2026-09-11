@@ -134,9 +134,9 @@ For the host, derive a complete instance file from
 reviewed deployment evidence, and validate it with the product CLI before
 installation. The checked-in unit is fail-stop and inherits the host service
 manager's configured stop timeout; deployment monitoring controls reviewed
-restart policy. Candidate installation or system service changes use one exact
-task-specific privileged Bash boundary. Repeatable parsing, polling, safety,
-and deployment verification belong in Rust tooling.
+restart policy. Candidate installation, inventory, and system service changes
+use capability-named typed xtask workflows. Repeatable parsing, polling,
+safety, evidence, cleanup, and rollback remain in Rust tooling.
 
 ## Reversible live resize
 
@@ -199,10 +199,10 @@ health and the configured resize acceptance criteria must pass.
 ## Privilege and live health
 
 Normal builds and gates run as the development user. A required privileged RHEL
-operation uses one task-specific script under the ignored
-`.artifacts/privileged-tasks/` directory, one outer `sudo`, no nested
-elevation, and prebuilt Rust behavior. Delete the script after its evidence
-retention need ends.
+operation uses an explicit xtask elevation option: the unprivileged parent
+validates scope, invokes its current prebuilt executable through one outer
+`sudo`, and persists the typed result as the invoking user. Never run Cargo as
+root or create a privileged shell script.
 
 Before and after live mutation, record domain identity and QEMU continuity,
 QGA, an independent authenticated guest command, named services/applications,

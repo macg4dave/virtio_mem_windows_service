@@ -40,8 +40,9 @@ orchestration, artifact verification, environment checks, QGA readiness,
 reversible live-resize orchestration, and unattended qualification. It does not
 replace focused Cargo tests or become a second product controller.
 
-Editor and Make entrypoints delegate to `xtask`. Bash is limited to one exact
-task-specific privileged boundary and invokes prebuilt Rust behavior.
+Editor and Make entrypoints delegate to `xtask`. Privileged workflows validate
+their scope before one `sudo` re-execution of the current prebuilt xtask; Cargo
+and evidence persistence remain unprivileged.
 
 ## Data flow
 
@@ -97,8 +98,8 @@ a retry loop learned from testing.
 
 Candidate build/test and hash verification run through `cargo xtask`. Product
 service installation uses the product CLI under the target platform's required
-privilege. Any RHEL elevation is a single task-specific reviewed Bash process.
-Repeatable deployment validation belongs in Rust tooling.
+privilege. RHEL elevation uses one reviewed typed xtask re-execution; no shell
+script or root Cargo process is part of the workflow.
 
 ## Validation
 

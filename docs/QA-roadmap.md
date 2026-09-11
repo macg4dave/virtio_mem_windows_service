@@ -7,6 +7,11 @@ virtio-mem device, and one host controller. The exact VM, alias, service
 identities, paths, artifacts, and configuration belong in the current
 deployment manifest and qualification evidence, not in this reusable plan.
 
+These gates provide the execution detail for AR1 through AR4 in the
+[automatic-resizing release roadmap](roadmap.md). Passing them is the required
+single-VM checkpoint before global-controller work can cross a live boundary;
+it is not the final multi-VM release decision.
+
 The current decision is **NO-GO for unattended automatic resizing**. The host
 controller is in a fail-stop safe hold while candidate deployment coherence,
 production telemetry transport, current attestation, applied workload cycles,

@@ -7,7 +7,8 @@ Updated: 2026-09-11
 The project is in single-VM deployment and qualification. Native Windows
 telemetry, the host-side allocation join, compatibility attestation,
 quantitative targets, durable reconciliation, and bounded recovery are
-implemented. The current installed stack is not treated as a coherent
+implemented. The post-cleanup AR0 source baseline passes the current local and
+native-Windows gates. The current installed stack is not treated as a coherent
 candidate, so the host controller remains held and the development deployment
 is NO-GO.
 
@@ -47,8 +48,8 @@ preflight show a coherent candidate and a reviewed rollback path.
   evidence is incomplete.
 - Classic Windows Event Log text rendering still needs a packaged message
   resource; structured EventData remains available.
-- Multi-controller actuation is deferred until M11 provides atomic host-pool
-  reservation.
+- Multi-controller actuation is deferred until AR5 provides durable atomic
+  host-pool reservation and AR6 qualifies it across live guests.
 
 ## Evidence policy
 
@@ -58,5 +59,6 @@ not embed VM-specific values, historical hashes, test counts, paths, timeouts,
 or workload profiles. Completion claims must name the relevant task and
 evidence location.
 
-See [BACKLOG.md](BACKLOG.md), [docs/QA-roadmap.md](docs/QA-roadmap.md), and
+See [BACKLOG.md](BACKLOG.md), [docs/roadmap.md](docs/roadmap.md),
+[docs/QA-roadmap.md](docs/QA-roadmap.md), and
 [docs/testing.md](docs/testing.md).

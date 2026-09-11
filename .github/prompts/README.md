@@ -20,4 +20,4 @@ platform, deployment, or live-system boundary.
 | Higher-level validation execution or design | `workflow-validation.prompt.md` |
 | Diff review | `review-drift.prompt.md` |
 | Board task selection and claim | `start-backlog-task.prompt.md` |
-| One exact privileged RHEL boundary | `rhel-privileged-batch.prompt.md` |
+| One exact privileged RHEL xtask boundary | `rhel-privileged-xtask.prompt.md` |

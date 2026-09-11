@@ -8,6 +8,7 @@ their owning crates.
 ```bash
 cargo xtask help
 cargo xtask gate local
+cargo xtask deployment inventory INSTANCE REQUIRED_OPTIONS
 cargo xtask windows all
 cargo xtask windows verify SHA256:EXPECTED_HOST_FINGERPRINT --runs RUN_COUNT
 cargo xtask qga VM_NAME --attempts COUNT --command-timeout-seconds SECONDS
@@ -45,5 +46,6 @@ sizes and holds, telemetry path, services, timing, and acceptance deltas. With
 the selected output root for later `status` and `review` calls.
 
 Editor and Make entrypoints are convenience delegates only. Repeatable logic
-belongs here; privileged Bash exists only as a generated or task-specific
-single-process elevation boundary.
+belongs here. A privileged workflow validates its exact scope in the
+unprivileged process, then re-executes the current prebuilt xtask through one
+outer `sudo`; it never generates shell.

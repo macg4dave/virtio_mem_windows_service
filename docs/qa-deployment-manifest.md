@@ -8,7 +8,7 @@ record and does not authorize actuation.
 
 | Item | Installed | Candidate | Result |
 | --- | --- | --- | --- |
-| Executable SHA-256 | `a1c431e67b49ba0373091fb32760cecea38a7e311bdc04a8972a9a44bf2a607c` | `44243d77bfaef336803937d854bd44e9c8435ce94b88653eae40d5f91d02ad9b` | Mismatch |
+| Executable SHA-256 | `a1c431e67b49ba0373091fb32760cecea38a7e311bdc04a8972a9a44bf2a607c` | `2039ea08b72798026508f2b30dddc42ba02551903b0503b9013d6147591ac0b4` | Mismatch |
 | Unit SHA-256 | `6663fd58e924b32777a95a19e2f666ea9c857fe315709e0a73d21df3097ff4bd` | `922a8411acf045751a9f75ec88efa03589b6dcec2aae893b3f9233f148d1f83f` | Mismatch |
 | Service identity | `virtio-mem-host@win11_gpu.service`, user/group `virtio-mem-host` | Same template identity | Matches |
 | Enablement | Enabled; manually stopped for QA-T001 | Not installed | Must remain stopped during deployment preparation |
@@ -26,7 +26,7 @@ must be recreated with the documented ownership/mode when the candidate runs.
 
 | Item | Installed | Candidate | Result |
 | --- | --- | --- | --- |
-| Executable SHA-256 | `5ac0f46e402606a9a71f95318b6338f1649879b1b5389a54e992b3dae9e459d3` | `0c4ac9924d6fbb34589f4309fc2eb7c03f60fb3901109e978f87734bd2daa13d` | Mismatch |
+| Executable SHA-256 | `5ac0f46e402606a9a71f95318b6338f1649879b1b5389a54e992b3dae9e459d3` | `db0e1805764628c0caf667156e6ccbbee0428c0fe595c9f33f9843fd5f3afa9b` | Mismatch |
 | SCM identity | `VirtioMemService`; own process; automatic; `LocalService` | Configurable own-process identity validated against SCM | Compatible, candidate required |
 | SCM error control | `0` (`IGNORE`) | `1` (`NORMAL`) | Mismatch fixed by QA-T003 |
 | ProgramData config | Absent | Current versioned configuration at the documented path | Deployment required |

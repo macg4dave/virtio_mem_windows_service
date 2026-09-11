@@ -44,10 +44,9 @@ Validation layers are cumulative:
 4. Report native Windows, RHEL, deployment, and live results separately. An
    unavailable or unrun layer is not a pass.
 
-Use `gate` only for non-mutating quality aggregation. A repeatable deployment
-or live workflow belongs in `tools/xtask`; a one-off privileged Bash batch may
-only establish the exact reviewable elevation boundary and must call prebuilt
-Rust behavior.
+Use `gate` only for non-mutating quality aggregation. Every deployment, live,
+or privileged workflow belongs in `tools/xtask`; do not create shell scripts
+for elevation, orchestration, parsing, evidence, cleanup, or rollback.
 
 ## Live-system safety
 
@@ -65,10 +64,11 @@ Guest health requires hypervisor continuity, QGA, an independent authenticated
 guest command, named service/application checks, and bounded crash/reboot
 evidence. Do not overlap an installer, update, or pending reboot.
 
-When elevation is needed, create one exact Bash batch under the ignored
-`.artifacts/privileged-tasks/` directory and invoke it with one outer
-`sudo`. The script uses `set -euo pipefail`, contains no nested elevation, and
-does not accept open-ended commands. The operator enters any password directly.
+When elevation is needed, build `xtask` unprivileged and use its explicit
+elevation option. The unprivileged process must validate the complete scope,
+invoke its current prebuilt executable through one outer `sudo`, collect typed
+output, and persist evidence as the invoking user. Never run Cargo as root,
+accept open-ended privileged commands, or automate credentials.
 
 Explicit current-turn approval is still required for reboot or shutdown,
 deleting pre-existing resources, persistent VM/firmware/driver/network/storage/

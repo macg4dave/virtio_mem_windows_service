@@ -209,7 +209,7 @@ where
             let _ = event_sender.send(HostEvent::StopRequested);
         });
 
-        let mut shutdown_started = None;
+        let mut shutdown_started: Option<Instant> = None;
         loop {
             let event = match shutdown_started {
                 Some(started) => event_receiver
