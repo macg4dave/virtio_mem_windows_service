@@ -11,6 +11,3 @@ Task: `<measurable performance goal>`
 - Preserve correctness, bounds, cancellation, and error behavior.
 - Prefer simple measured improvements; add deterministic benchmarks or
   regression tests and avoid live effects in microbenchmarks.
-
-Report measurements and run focused tests, `cargo xtask gate local`, and any
-separate platform measurement workflow.

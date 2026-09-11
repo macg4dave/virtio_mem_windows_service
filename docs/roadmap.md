@@ -44,7 +44,7 @@ M13 harden and operationalize only behavior already proven by those gates.
   health remain distinct.
 - A command with an uncertain result is observed and reconciled; it is never
   blindly replayed.
-- Product policy defaults are configurable and documented once in
+- Product policy inputs are explicit and documented once in
   [target-controller.md](target-controller.md).
 - Live-test timings, targets, thresholds, and workload profiles are explicit
   run inputs recorded with their evidence.

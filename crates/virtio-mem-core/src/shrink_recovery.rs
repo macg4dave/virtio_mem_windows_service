@@ -306,22 +306,12 @@ mod tests {
     const MIB: u64 = 1024 * 1024;
 
     fn test_policy(block_size_bytes: u64) -> ShrinkPolicy {
-        ShrinkPolicy::new(
-            block_size_bytes,
-            300_000,
-            vec![30_000, 60_000, 120_000],
-        )
+        ShrinkPolicy::new(block_size_bytes, 300_000, vec![30_000, 60_000, 120_000])
     }
 
     fn operation() -> ShrinkOperation {
-        ShrinkOperation::start(
-            test_policy(2 * MIB),
-            1_000,
-            12 * MIB,
-            4 * MIB,
-            4 * MIB,
-        )
-        .expect("valid operation")
+        ShrinkOperation::start(test_policy(2 * MIB), 1_000, 12 * MIB, 4 * MIB, 4 * MIB)
+            .expect("valid operation")
     }
 
     fn observation(now: u64, current: u64) -> ShrinkObservation {
@@ -488,17 +478,10 @@ mod tests {
 
     #[test]
     fn rejects_invalid_start_geometry_and_safe_floor() {
+        assert!(ShrinkOperation::start(test_policy(2 * MIB), 0, 8 * MIB, 9, 0).is_err());
         assert!(
-            ShrinkOperation::start(test_policy(2 * MIB), 0, 8 * MIB, 9, 0).is_err()
+            ShrinkOperation::start(test_policy(2 * MIB), 0, 8 * MIB, 4 * MIB, 6 * MIB).is_err()
         );
-        assert!(ShrinkOperation::start(
-            test_policy(2 * MIB),
-            0,
-            8 * MIB,
-            4 * MIB,
-            6 * MIB
-        )
-        .is_err());
     }
 
     #[test]

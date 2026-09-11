@@ -223,7 +223,7 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         })
     }
 
-    /// Prepares the one-shot M10b abandon-to-current recovery after two
+    /// Prepares the one-shot abandon-to-current recovery after two
     /// independent observations have qualified `stable_current_bytes`.
     /// This immediate read is the final race check before an operator applies
     /// the command.

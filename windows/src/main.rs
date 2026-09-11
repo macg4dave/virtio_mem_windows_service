@@ -44,7 +44,7 @@ fn parse_command(args: &[String]) -> Option<ServiceCommand> {
         "install" => Some(ServiceCommand::Install),
         "stop" => Some(ServiceCommand::Stop),
         "start" => Some(ServiceCommand::Start),
-        "remove" | "delete" => Some(ServiceCommand::Remove),
+        "remove" => Some(ServiceCommand::Remove),
         "help" | "--help" | "-h" => Some(ServiceCommand::Help),
         "run" | "" => Some(ServiceCommand::Run),
         _ => None,
@@ -158,12 +158,10 @@ mod tests {
             service_name: "TestService".to_owned(),
             display_name: "Test service".to_owned(),
             description: "Test configuration".to_owned(),
-            qga_pipe_path: r"\\.\pipe\test-qga".to_owned(),
             demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
             service_account: r"NT AUTHORITY\LocalService".to_owned(),
             config_path: r"C:\test\config.json".to_owned(),
             poll_interval: std::time::Duration::from_millis(20),
-            qga_operation_timeout: std::time::Duration::from_millis(10),
             shutdown_timeout: std::time::Duration::from_millis(30),
         }
     }

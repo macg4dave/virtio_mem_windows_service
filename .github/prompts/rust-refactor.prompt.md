@@ -12,6 +12,3 @@ Task: `<refactor goal>`
 - Prefer cohesive functions, explicit ownership, and injected side effects.
 - Keep policy and parsing separate from platform and transport code.
 - Keep existing relevant tests and add coverage for newly exposed boundaries.
-
-Run focused tests and `cargo xtask gate local`; update structural documentation
-when ownership changes.

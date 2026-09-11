@@ -11,6 +11,3 @@ Review untrusted input, arithmetic and allocation bounds, denial of service,
 unsafe code, secrets, privilege, target identity, replay/freshness, filesystem
 ownership, and host/guest authority boundaries. Fix findings with explicit
 validation and focused regressions; preserve least privilege and fail closed.
-
-Run focused security tests, `cargo xtask gate local`, and applicable native or
-deployment validation separately. Lead reports with concrete findings.

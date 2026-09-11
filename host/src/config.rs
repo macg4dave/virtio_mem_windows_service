@@ -3,14 +3,6 @@ use std::time::Duration;
 
 use thiserror::Error;
 
-pub const DEFAULT_GROW_STEP_BYTES: u64 = 1024 * 1024 * 1024;
-pub const DEFAULT_SHRINK_STEP_BYTES: u64 = 64 * 1024 * 1024;
-pub const DEFAULT_PHYSICAL_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-pub const DEFAULT_COMMIT_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-pub const DEFAULT_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
-pub const DEFAULT_SAFE_FLOOR_COMMIT_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
-pub const DEFAULT_RECLAIM_HISTORY_SECONDS: u64 = 600;
-pub const DEFAULT_DOWNWARD_HYSTERESIS_BYTES: u64 = 256 * 1024 * 1024;
 /// Automatic reclaim is a core product capability unless explicitly paused.
 pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = true;
 /// Same-target re-notification remains an explicitly selected diagnostic mode.
@@ -52,7 +44,9 @@ pub enum HostConfigError {
     InvalidTargetPolicy(&'static str),
     #[error("environment variable {name} must be 'true' or 'false': {value}")]
     InvalidBoolean { name: &'static str, value: String },
-    #[error("environment variable {name} must be a comma-separated list of positive seconds: {value}")]
+    #[error(
+        "environment variable {name} must be a comma-separated list of positive seconds: {value}"
+    )]
     InvalidDurationList { name: &'static str, value: String },
 }
 
@@ -151,43 +145,23 @@ impl HostConfig {
             max_memory_bytes: positive("VIRTIO_MEM_MAX_MEMORY_BYTES")?,
             lower_threshold_bytes: positive("VIRTIO_MEM_LOWER_THRESHOLD_BYTES")?,
             upper_threshold_bytes: positive("VIRTIO_MEM_UPPER_THRESHOLD_BYTES")?,
-            grow_step_bytes: positive_or_default(
-                "VIRTIO_MEM_GROW_STEP_BYTES",
-                DEFAULT_GROW_STEP_BYTES,
-            )?,
-            shrink_step_bytes: positive_or_default(
-                "VIRTIO_MEM_SHRINK_STEP_BYTES",
-                DEFAULT_SHRINK_STEP_BYTES,
-            )?,
+            grow_step_bytes: positive("VIRTIO_MEM_GROW_STEP_BYTES")?,
+            shrink_step_bytes: positive("VIRTIO_MEM_SHRINK_STEP_BYTES")?,
             fixed_visible_base_bytes: unsigned("VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES")?,
-            physical_reserve_bytes: positive_or_default(
-                "VIRTIO_MEM_PHYSICAL_RESERVE_BYTES",
-                DEFAULT_PHYSICAL_RESERVE_BYTES,
-            )?,
-            commit_reserve_bytes: positive_or_default(
-                "VIRTIO_MEM_COMMIT_RESERVE_BYTES",
-                DEFAULT_COMMIT_RESERVE_BYTES,
-            )?,
-            safe_floor_physical_reserve_bytes: positive_or_default(
+            physical_reserve_bytes: positive("VIRTIO_MEM_PHYSICAL_RESERVE_BYTES")?,
+            commit_reserve_bytes: positive("VIRTIO_MEM_COMMIT_RESERVE_BYTES")?,
+            safe_floor_physical_reserve_bytes: positive(
                 "VIRTIO_MEM_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES",
-                DEFAULT_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
             )?,
-            safe_floor_commit_reserve_bytes: positive_or_default(
+            safe_floor_commit_reserve_bytes: positive(
                 "VIRTIO_MEM_SAFE_FLOOR_COMMIT_RESERVE_BYTES",
-                DEFAULT_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
             )?,
-            reclaim_history: Duration::from_secs(positive_or_default(
-                "VIRTIO_MEM_RECLAIM_HISTORY_SECONDS",
-                DEFAULT_RECLAIM_HISTORY_SECONDS,
-            )?),
-            reclaim_max_gap: Duration::from_secs(positive_or_default(
+            reclaim_history: Duration::from_secs(positive("VIRTIO_MEM_RECLAIM_HISTORY_SECONDS")?),
+            reclaim_max_gap: Duration::from_secs(positive_or_derived(
                 "VIRTIO_MEM_RECLAIM_MAX_GAP_SECONDS",
                 default_maximum_gap,
             )?),
-            downward_hysteresis_bytes: positive_or_default(
-                "VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES",
-                DEFAULT_DOWNWARD_HYSTERESIS_BYTES,
-            )?,
+            downward_hysteresis_bytes: positive("VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES")?,
             policy_state_path: required("VIRTIO_MEM_POLICY_STATE_PATH")?,
             poll_interval: Duration::from_secs(poll_interval_seconds),
             command_timeout: Duration::from_secs(positive("VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS")?),
@@ -357,9 +331,13 @@ fn unsigned(name: &'static str) -> Result<u64, HostConfigError> {
         .map_err(|_| HostConfigError::InvalidUnsignedInteger { name, value })
 }
 
-fn positive_or_default(name: &'static str, default: u64) -> Result<u64, HostConfigError> {
+fn positive_or_derived(name: &'static str, derived: u64) -> Result<u64, HostConfigError> {
     match env::var(name) {
-        Err(_) => Ok(default),
+        Err(env::VarError::NotPresent) => Ok(derived),
+        Err(env::VarError::NotUnicode(value)) => Err(HostConfigError::InvalidPositiveInteger {
+            name,
+            value: value.to_string_lossy().into_owned(),
+        }),
         Ok(value) => value
             .parse::<u64>()
             .ok()
@@ -389,6 +367,15 @@ fn positive_duration_list(name: &'static str) -> Result<Vec<Duration>, HostConfi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const TEST_GROW_STEP_BYTES: u64 = 1024 * 1024 * 1024;
+    const TEST_SHRINK_STEP_BYTES: u64 = 64 * 1024 * 1024;
+    const TEST_PHYSICAL_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    const TEST_COMMIT_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+    const TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+    const TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
+    const TEST_RECLAIM_HISTORY_SECONDS: u64 = 600;
+    const TEST_DOWNWARD_HYSTERESIS_BYTES: u64 = 256 * 1024 * 1024;
 
     #[test]
     fn automatic_shrink_defaults_on_while_renotification_defaults_off() {
@@ -426,16 +413,16 @@ mod tests {
             max_memory_bytes: 2,
             lower_threshold_bytes: 1,
             upper_threshold_bytes: 2,
-            grow_step_bytes: DEFAULT_GROW_STEP_BYTES,
-            shrink_step_bytes: DEFAULT_SHRINK_STEP_BYTES,
+            grow_step_bytes: TEST_GROW_STEP_BYTES,
+            shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
             fixed_visible_base_bytes: 1,
-            physical_reserve_bytes: DEFAULT_PHYSICAL_RESERVE_BYTES,
-            commit_reserve_bytes: DEFAULT_COMMIT_RESERVE_BYTES,
-            safe_floor_physical_reserve_bytes: DEFAULT_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
-            safe_floor_commit_reserve_bytes: DEFAULT_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
-            reclaim_history: Duration::from_secs(DEFAULT_RECLAIM_HISTORY_SECONDS),
+            physical_reserve_bytes: TEST_PHYSICAL_RESERVE_BYTES,
+            commit_reserve_bytes: TEST_COMMIT_RESERVE_BYTES,
+            safe_floor_physical_reserve_bytes: TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
+            safe_floor_commit_reserve_bytes: TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
+            reclaim_history: Duration::from_secs(TEST_RECLAIM_HISTORY_SECONDS),
             reclaim_max_gap: Duration::from_secs(2),
-            downward_hysteresis_bytes: DEFAULT_DOWNWARD_HYSTERESIS_BYTES,
+            downward_hysteresis_bytes: TEST_DOWNWARD_HYSTERESIS_BYTES,
             policy_state_path: "state.json".to_owned(),
             poll_interval: Duration::from_secs(1),
             command_timeout: Duration::from_secs(1),
@@ -468,16 +455,16 @@ mod tests {
             max_memory_bytes: 2,
             lower_threshold_bytes: 1,
             upper_threshold_bytes: 2,
-            grow_step_bytes: DEFAULT_GROW_STEP_BYTES,
-            shrink_step_bytes: DEFAULT_SHRINK_STEP_BYTES,
+            grow_step_bytes: TEST_GROW_STEP_BYTES,
+            shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
             fixed_visible_base_bytes: 1,
-            physical_reserve_bytes: DEFAULT_PHYSICAL_RESERVE_BYTES,
-            commit_reserve_bytes: DEFAULT_COMMIT_RESERVE_BYTES,
-            safe_floor_physical_reserve_bytes: DEFAULT_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
-            safe_floor_commit_reserve_bytes: DEFAULT_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
-            reclaim_history: Duration::from_secs(DEFAULT_RECLAIM_HISTORY_SECONDS),
+            physical_reserve_bytes: TEST_PHYSICAL_RESERVE_BYTES,
+            commit_reserve_bytes: TEST_COMMIT_RESERVE_BYTES,
+            safe_floor_physical_reserve_bytes: TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
+            safe_floor_commit_reserve_bytes: TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
+            reclaim_history: Duration::from_secs(TEST_RECLAIM_HISTORY_SECONDS),
             reclaim_max_gap: Duration::from_secs(2),
-            downward_hysteresis_bytes: DEFAULT_DOWNWARD_HYSTERESIS_BYTES,
+            downward_hysteresis_bytes: TEST_DOWNWARD_HYSTERESIS_BYTES,
             policy_state_path: "state.json".to_owned(),
             poll_interval: Duration::from_secs(1),
             command_timeout: Duration::from_secs(1),
@@ -513,16 +500,16 @@ mod tests {
             max_memory_bytes: 2,
             lower_threshold_bytes: 1,
             upper_threshold_bytes: 2,
-            grow_step_bytes: DEFAULT_GROW_STEP_BYTES,
-            shrink_step_bytes: DEFAULT_SHRINK_STEP_BYTES,
+            grow_step_bytes: TEST_GROW_STEP_BYTES,
+            shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
             fixed_visible_base_bytes: 1,
-            physical_reserve_bytes: DEFAULT_PHYSICAL_RESERVE_BYTES,
-            commit_reserve_bytes: DEFAULT_COMMIT_RESERVE_BYTES,
-            safe_floor_physical_reserve_bytes: DEFAULT_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
-            safe_floor_commit_reserve_bytes: DEFAULT_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
-            reclaim_history: Duration::from_secs(DEFAULT_RECLAIM_HISTORY_SECONDS),
+            physical_reserve_bytes: TEST_PHYSICAL_RESERVE_BYTES,
+            commit_reserve_bytes: TEST_COMMIT_RESERVE_BYTES,
+            safe_floor_physical_reserve_bytes: TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
+            safe_floor_commit_reserve_bytes: TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
+            reclaim_history: Duration::from_secs(TEST_RECLAIM_HISTORY_SECONDS),
             reclaim_max_gap: Duration::from_secs(2),
-            downward_hysteresis_bytes: DEFAULT_DOWNWARD_HYSTERESIS_BYTES,
+            downward_hysteresis_bytes: TEST_DOWNWARD_HYSTERESIS_BYTES,
             policy_state_path: "state.json".to_owned(),
             poll_interval: Duration::from_secs(1),
             command_timeout: Duration::from_secs(1),

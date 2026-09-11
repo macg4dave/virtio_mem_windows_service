@@ -13,6 +13,3 @@ Task: `<contract change and migration expectation>`
   it; do not preserve obsolete behavior speculatively.
 - Test valid, malformed, boundary, and migration cases.
 - Update feature/status/task documentation.
-
-Run focused contract tests, `cargo xtask gate local`, and applicable native or
-cross-process validation separately.

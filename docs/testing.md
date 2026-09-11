@@ -119,8 +119,8 @@ still comes only from alias-scoped live virtio-mem `current`.
 
 The Windows service requires the versioned configuration file at its product
 configuration path. Missing or invalid configuration fails startup; a VM name,
-service identity, telemetry path, polling interval, QGA adapter timeout, and
-shutdown timeout are never inferred from a previous test guest.
+service identity, telemetry path, polling interval, and shutdown timeout are
+never inferred from a previous test guest.
 
 Build and hash the candidate with `cargo xtask windows all` before invoking the
 service executable's `install`, `start`, `stop`, or `remove` commands in an
@@ -200,7 +200,7 @@ health and the configured resize acceptance criteria must pass.
 
 Normal builds and gates run as the development user. A required privileged RHEL
 operation uses one task-specific script under the ignored
-`.vscode-artifacts/privileged-tasks/` directory, one outer `sudo`, no nested
+`.artifacts/privileged-tasks/` directory, one outer `sudo`, no nested
 elevation, and prebuilt Rust behavior. Delete the script after its evidence
 retention need ends.
 

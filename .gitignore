@@ -1,6 +1,7 @@
 # Rust
 /windows/target/
 /windows/.cargo/
+/windows/obj/
 /target/
 **/*.rs.bk
 
@@ -34,4 +35,6 @@ Thumbs.db
 # Logs
 *.log
 logs/
+.artifacts/
+# Legacy local output may exist in older worktrees. Current tooling never writes here.
 .vscode-artifacts/

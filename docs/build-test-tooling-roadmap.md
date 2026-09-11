@@ -36,7 +36,7 @@ process. It calls prebuilt Rust behavior and has no compatibility contract.
 | BT-T001–BT-T006 | Replaced maintained shell wrappers with capability-named Rust commands and routed repository entrypoints to them |
 | BT-T013 | Separated code-level tests, tooling development, and higher-level workflow prompts |
 | BT-T014 | Added detached resident/committed automatic-controller qualification with durable JSON/JSONL evidence |
-| BT-T015 | Removed experiment-derived workflow defaults, milestone/VM-specific command profiles, obsolete editor/debug artifacts, duplicated AI instructions, and historical test procedures; live mutation now delegates to the attestation-aware product CLI |
+| BT-T015 | Removed experiment-derived workflow and policy defaults, milestone/VM-specific command profiles, obsolete editor/debug artifacts, generated build output, duplicated AI instructions, historical test procedures, and unused guest-side resize compatibility code; live mutation now delegates to the attestation-aware product CLI |
 
 ## Ready queue
 

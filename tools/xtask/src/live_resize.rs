@@ -362,11 +362,7 @@ fn prepare_log(path: Option<&Path>) -> Result<(), String> {
     Ok(())
 }
 
-fn append_sample(
-    path: Option<&Path>,
-    domstate: &str,
-    state: VirtioMemState,
-) -> Result<(), String> {
+fn append_sample(path: Option<&Path>, domstate: &str, state: VirtioMemState) -> Result<(), String> {
     let Some(path) = path else {
         return Ok(());
     };
@@ -382,10 +378,7 @@ fn append_sample(
     writeln!(
         file,
         "{timestamp},{clean_state},{},{},{},{},true",
-        state.requested_bytes,
-        state.current_bytes,
-        state.size_bytes,
-        state.block_size_bytes
+        state.requested_bytes, state.current_bytes, state.size_bytes, state.block_size_bytes
     )
     .map_err(|error| format!("failed to write sample log {}: {error}", path.display()))
 }

@@ -61,7 +61,8 @@ record replaces historical command transcripts and machine-specific evidence:
   identity propagation, and service registration error handling.
 - BT-T001 through BT-T015: maintained Rust gates, probes, live-resize and
   detached qualification workflows, plus removal of superseded operational
-  instructions and generated test artefacts.
+  instructions, generated test artefacts, guest-side resize compatibility code,
+  and inherited operational defaults.
 
 Completion means the implementation and its task-scoped tests passed at the
 time. It does not substitute for current deployment or qualification evidence.

@@ -13,5 +13,3 @@ Task: `<behavior to prove>`
   threshold, cancellation, and convergence cases.
 - Inject network, process, clock, filesystem, platform, and live-system effects.
 - Do not add an `xtask` command merely to wrap a Cargo test.
-
-Run the narrowest focused Cargo test and then `cargo xtask gate local`.

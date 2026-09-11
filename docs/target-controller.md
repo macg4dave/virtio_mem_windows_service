@@ -2,12 +2,9 @@
 
 ## Status and scope
 
-This is the normative design contract for M10e, M10f, and M10g. M10e is
-implemented and replaces the production raw-telemetry directional demand
-estimate with an absolute per-VM target.
-M10f is implemented and reconciles that target with asynchronous virtio-mem
-state. M10g qualifies the estimator and reconciler hermetically and on the
-trusted development VM.
+This is the normative contract for absolute per-VM target estimation,
+asynchronous virtio-mem reconciliation, and qualification. It replaces
+directional demand estimates with an explicit desired target.
 
 Automatic Windows shrink is a default-on product capability. A deployment may
 set `VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false` for diagnosis or a deliberate
@@ -17,7 +14,8 @@ floor, compatible device geometry, current compatibility attestation, and an
 unlatched reconciler. Same-target re-notification remains a separate default-
 off diagnostic feature and is not part of normal target reconciliation.
 
-This contract remains single-VM until M11 supplies atomic global reservation.
+This contract remains single-VM until the global controller supplies atomic
+reservation.
 Windows publishes measurements only; the RHEL controller owns calculation,
 host safety, reconciliation, and actuation.
 
@@ -38,7 +36,7 @@ cannot silently wrap.
   the selected virtio-mem device contributes zero current allocation. It is
   not inferred from QGA, balloon `actual`, aggregate host RAM, or the configured
   virtio-mem maximum.
-- `desired`: the stable absolute policy target produced by M10e.
+- `desired`: the stable absolute policy target produced by the estimator.
 - `safe_floor`: the lowest target that pressure arbitration may consider from
   the current qualified history. It is not an actuation command.
 
@@ -49,7 +47,7 @@ constraint rather than a direct measure of resident physical use, so physical
 and commit candidates are calculated separately and combined with `max`, never
 added together.
 
-## M10e estimator
+## Target estimator
 
 ### Geometry and cross-layer validation
 
@@ -57,8 +55,8 @@ Before accepting a sample, calculate `observed_base = T - C`. Reject underflow.
 Require the absolute difference between `observed_base` and `B` to be no more
 than `max(256 MiB, 2 * live_block_size)`. This tolerance absorbs stable Windows
 visibility overhead without allowing a wrong VM, wrong device, or changed base
-topology to drive policy. M10g must tune or confirm the tolerance from recorded
-baseline evidence.
+topology to drive policy. Compatibility review must confirm the tolerance for
+the selected deployment from recorded baseline evidence.
 
 The effective upper target is:
 
@@ -75,31 +73,26 @@ before target construction instead of repeatedly producing an invalid target.
 
 ### Instantaneous candidates
 
-Initial configurable defaults are:
-
-- normal physical reserve: 2 GiB;
-- normal commit reserve: 2 GiB;
-- safe-floor physical reserve: 1 GiB;
-- safe-floor commit reserve: 1 GiB;
-- reclaim history window and restart warm-up: 10 minutes;
-- maximum accepted gap inside a reclaim window: two configured poll intervals;
-- downward desired-target hysteresis: 256 MiB.
-
-M10e adds these host settings:
+Every deployment supplies its growth and reclaim quanta, physical and commit
+reserves, safe-floor reserves, reclaim-history window, and downward hysteresis.
+The maximum accepted sample gap may be supplied explicitly or derived from the
+configured polling interval. The host exposes these settings:
 
 - `VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES`;
-- `VIRTIO_MEM_PHYSICAL_RESERVE_BYTES` (default 2 GiB);
-- `VIRTIO_MEM_COMMIT_RESERVE_BYTES` (default 2 GiB);
-- `VIRTIO_MEM_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES` (default 1 GiB);
-- `VIRTIO_MEM_SAFE_FLOOR_COMMIT_RESERVE_BYTES` (default 1 GiB);
-- `VIRTIO_MEM_RECLAIM_HISTORY_SECONDS` (default 600);
-- `VIRTIO_MEM_RECLAIM_MAX_GAP_SECONDS` (default twice the poll interval);
-- `VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES` (default 256 MiB);
+- `VIRTIO_MEM_GROW_STEP_BYTES`;
+- `VIRTIO_MEM_SHRINK_STEP_BYTES`;
+- `VIRTIO_MEM_PHYSICAL_RESERVE_BYTES`;
+- `VIRTIO_MEM_COMMIT_RESERVE_BYTES`;
+- `VIRTIO_MEM_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES`;
+- `VIRTIO_MEM_SAFE_FLOOR_COMMIT_RESERVE_BYTES`;
+- `VIRTIO_MEM_RECLAIM_HISTORY_SECONDS`;
+- `VIRTIO_MEM_RECLAIM_MAX_GAP_SECONDS` (optional derived value);
+- `VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES`;
 - `VIRTIO_MEM_POLICY_STATE_PATH` for the protected host checkpoint/journal.
 
-The fixed base and state path are required. Derived defaults are materialized
-and validated at startup so a later poll-interval change cannot silently alter
-an active history policy.
+The fixed base and state path are required. A derived maximum-gap value is
+materialized and validated at startup so a later poll-interval change cannot
+silently alter an active history policy.
 
 All reserves and hysteresis must be positive, block-alignable, ordered so floor
 reserves do not exceed normal reserves, and configurable in canonical bytes.
@@ -135,11 +128,12 @@ History stores timestamped calculated candidates, not allocations and not
 pressure ratios. Growth is immediate: when `desired_now` exceeds durable
 `desired`, raise `desired` to `desired_now` without waiting for history.
 
-Downward movement requires a complete fresh 10-minute window with no gap above
-two poll intervals. Its candidate is the maximum `desired_now` observed in that
-window. Lower durable `desired` only when that maximum is at least 256 MiB below
-the previous desired value. The reconciler, rather than the estimator, bounds
-how quickly allocation moves toward the new absolute target.
+Downward movement requires a complete fresh configured history window with no
+gap above the configured or derived maximum. Its candidate is the maximum
+`desired_now` observed in that window. Lower durable `desired` only when that
+maximum is at least the configured hysteresis below the previous desired value.
+The reconciler, rather than the estimator, bounds how quickly allocation moves
+toward the new absolute target.
 
 `safe_floor` is the maximum `floor_now` in the same qualified window, clamped
 not to exceed durable `desired`. Re-reading the same still-fresh atomic current
@@ -162,16 +156,16 @@ mismatch also fails closed when a latch or command intent is present. Safely
 mismatched estimator-only state restarts reclaim warm-up. A new Windows producer
 session also restarts reclaim warm-up.
 
-## M10f reconciliation
+## Reconciliation
 
-M10f consumes one fresh estimator result plus fresh live `Q` and `C`. `current`
+The reconciler consumes one fresh estimator result plus fresh live `Q` and `C`. `current`
 remains accounting authority; `requested` is device intent; `desired` is policy
 intent. The control state is separate from all three values.
 
 | Live state | Reconciler action |
 | --- | --- |
-| `Q == C < desired` | Grow to `min(desired, C + 1 GiB, effective_max)` after host-headroom reservation. |
-| `Q == C > desired` | If automatic shrink is enabled and history is ready, shrink to `max(desired, safe_floor, C - 64 MiB, configured_minimum)`. |
+| `Q == C < desired` | Grow by at most the configured growth quantum toward `desired`, capped at `effective_max`, after host-headroom reservation. |
+| `Q == C > desired` | If automatic shrink is enabled and history is ready, reclaim by at most the configured reclaim quantum without crossing `desired`, `safe_floor`, or the configured minimum. |
 | `Q > C` | Observe pending growth. Never overlap or supersede it. A timeout changes health, not desired. |
 | `Q < C` and `desired <= Q` | Observe pending shrink. Never send a second lower target. |
 | `Q < desired < C` | Supersede upward to aligned `desired`, reducing but not reversing the remaining shrink. |
@@ -210,14 +204,14 @@ fingerprints. After a success or error, immediately reread live state:
 On restart, compare the journal with live state using the same rules. Resume
 observation but never replay a recorded command. The durable latch survives
 service-manager restart and is cleared only by a documented operator action
-after live state is converged or deliberately recovered. M10f must provide a
+after live state is converged or deliberately recovered. The host provides a
 bounded `clear-latch` CLI operation that is dry-run by default, rereads live
 state, validates VM/alias/fingerprints, refuses divergence, and records the
 operator-visible reason for the clear.
 
-## M10g qualification
+## Qualification
 
-M10g has two separately reported outcomes:
+Qualification has two separately reported outcomes:
 
 1. **Controller qualification:** the estimator and reconciler meet this
    contract under deterministic clocks, generated boundary cases, injected
@@ -239,12 +233,11 @@ bounded quanta, upward-only supersession, stale-during-shrink freeze, partial
 progress accounting, command resolution, journal recovery, and no replay.
 
 The bounded live workload uses a Rust helper to distinguish committed-but-
-untouched memory from committed-and-touched resident memory. It grows demand by
-4 GiB, releases 2 GiB while retaining 2 GiB, renews pressure during shrink, and
-records zero/partial/full progress, desired/requested/current, Windows
-telemetry, controller actions, host headroom, and workload identity. The run
-must restore the captured initial requested allocation or use the documented
-operator recovery path if Windows cannot converge.
+untouched memory from committed-and-touched resident memory. Each run supplies
+its allocation sizes, safety cap, phase durations, sampling interval, command
+bound, and required observed deltas. It records zero/partial/full progress,
+desired/requested/current, Windows telemetry, controller actions, host
+headroom, and workload identity.
 
 The separate Windows `virtio-mem-workload` helper implements the bounded guest
 demand phases and versioned workload evidence. Its native build/tests pass;
@@ -256,11 +249,11 @@ handled correctly. Platform reclaim qualification requires a predeclared set
 of repeated representative shrink operations to converge without unsafe
 overlap, target undershoot, stale-data actuation, or manual guest restart.
 
-## M11 and M11a handoff
+## Global-controller handoff
 
-M11 consumes M10e `desired` and `safe_floor` plus authoritative `current`; it
+The global controller consumes `desired` and `safe_floor` plus authoritative `current`; it
 does not reproduce guest-demand calculation. Global arbitration reserves host
 capacity atomically and may grant a target no greater than desired or reclaim
-toward safe floor. M11a passes that grant through the M10f reconciler, which
-continues to enforce 1 GiB growth, 64 MiB reclaim, upward supersession,
+toward safe floor. Controlled reclaim passes that grant through the reconciler,
+which continues to enforce the configured quanta, upward supersession,
 convergence, journal, and latch rules.

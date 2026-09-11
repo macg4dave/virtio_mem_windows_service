@@ -2,70 +2,11 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-use thiserror::Error;
 
 pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
 pub const RAW_TELEMETRY_RETENTION_FILES: usize = 3;
 
-pub use virtio_mem_core::{
-    DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig, DemandRecommendation,
-    DemandReport, DemandState, MemoryTelemetrySnapshot, RawTelemetryEnvelope,
-};
-
-#[derive(Debug, Error, Clone, PartialEq, Eq)]
-pub enum DemandAgentError {
-    #[error("collect demand telemetry: {0}")]
-    Telemetry(#[from] DemandError),
-    #[error("publish demand report: {0}")]
-    Publication(String),
-}
-
-/// Publishes an advisory report without granting the publisher resize authority.
-pub trait DemandReportPublisher {
-    fn publish(&mut self, report: DemandReport) -> Result<(), String>;
-}
-
-/// Appends complete versioned reports as newline-delimited JSON records.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JsonLinesDemandReportPublisher {
-    path: PathBuf,
-}
-
-impl JsonLinesDemandReportPublisher {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl DemandReportPublisher for JsonLinesDemandReportPublisher {
-    fn publish(&mut self, report: DemandReport) -> Result<(), String> {
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create demand report directory: {error}"))?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|error| format!("open demand report {}: {error}", self.path.display()))?;
-        let mut encoded = serde_json::to_vec(&report)
-            .map_err(|error| format!("encode demand report: {error}"))?;
-        encoded.push(b'\n');
-        file.write_all(&encoded)
-            .map_err(|error| format!("write demand report: {error}"))?;
-        file.flush()
-            .map_err(|error| format!("flush demand report: {error}"))?;
-        Ok(())
-    }
-}
+pub use virtio_mem_core::{DemandError, MemoryTelemetrySnapshot, RawTelemetryEnvelope};
 
 /// Publishes raw telemetry without accepting allocation or resize input.
 pub trait RawTelemetryPublisher {
@@ -294,51 +235,6 @@ pub fn process_session_id(service_name: &str) -> Result<String, String> {
     ))
 }
 
-/// Collects and publishes one demand report per caller-selected poll cycle.
-///
-/// The caller supplies the observed current allocation. This keeps the agent
-/// independent from QGA, libvirt, and driver state, while making the state
-/// boundary explicit and testable.
-#[derive(Debug)]
-pub struct DemandAgent<T> {
-    telemetry: T,
-    calculator: DemandCalculator,
-}
-
-impl<T> DemandAgent<T>
-where
-    T: MemoryTelemetry,
-{
-    pub fn new(telemetry: T, calculator: DemandCalculator) -> Self {
-        Self {
-            telemetry,
-            calculator,
-        }
-    }
-
-    pub fn collect_report(&self, current_bytes: u64) -> Result<DemandReport, DemandAgentError> {
-        let snapshot = self.telemetry.collect()?;
-        self.calculator
-            .calculate(snapshot, current_bytes)
-            .map_err(DemandAgentError::Telemetry)
-    }
-
-    pub fn collect_and_publish<P>(
-        &self,
-        current_bytes: u64,
-        publisher: &mut P,
-    ) -> Result<DemandReport, DemandAgentError>
-    where
-        P: DemandReportPublisher,
-    {
-        let report = self.collect_report(current_bytes)?;
-        publisher
-            .publish(report)
-            .map_err(DemandAgentError::Publication)?;
-        Ok(report)
-    }
-}
-
 /// Collects native Windows memory counters using the documented system APIs.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeMemoryTelemetry;
@@ -417,17 +313,6 @@ mod tests {
 
     const GIB: u64 = 1024 * 1024 * 1024;
 
-    fn policy() -> DemandCalculator {
-        DemandCalculator::new(DemandPolicyConfig {
-            configured_minimum_bytes: 4 * GIB,
-            configured_maximum_bytes: 32 * GIB,
-            block_size_bytes: 2 * GIB,
-            grow_step_bytes: 2 * GIB,
-            shrink_step_bytes: 2 * GIB,
-        })
-        .expect("policy should be valid")
-    }
-
     fn snapshot(available: u64, commit: u64) -> MemoryTelemetrySnapshot {
         MemoryTelemetrySnapshot {
             physical_total_bytes: 16 * GIB,
@@ -439,33 +324,6 @@ mod tests {
             system_cache_bytes: 0,
             kernel_paged_bytes: 0,
             kernel_nonpaged_bytes: 0,
-        }
-    }
-
-    #[derive(Clone)]
-    struct StubTelemetry {
-        result: Result<MemoryTelemetrySnapshot, DemandError>,
-    }
-
-    impl MemoryTelemetry for StubTelemetry {
-        fn collect(&self) -> Result<MemoryTelemetrySnapshot, DemandError> {
-            self.result.clone()
-        }
-    }
-
-    #[derive(Default)]
-    struct StubPublisher {
-        reports: Vec<DemandReport>,
-        failure: Option<String>,
-    }
-
-    impl DemandReportPublisher for StubPublisher {
-        fn publish(&mut self, report: DemandReport) -> Result<(), String> {
-            if let Some(error) = &self.failure {
-                return Err(error.clone());
-            }
-            self.reports.push(report);
-            Ok(())
         }
     }
 
@@ -493,118 +351,6 @@ mod tests {
         let value = snapshot(4 * GIB, 12 * GIB);
         assert!((value.physical_pressure().unwrap() - 0.75).abs() < f64::EPSILON);
         assert!((value.commit_pressure().unwrap() - 0.75).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn calculates_aligned_bounded_recommendation() {
-        let report = policy()
-            .calculate(snapshot(2 * GIB, 15 * GIB), 30 * GIB)
-            .expect("report should be valid");
-        assert_eq!(report.version, 1);
-        assert_eq!(report.demand.state, DemandState::Critical);
-        assert_eq!(report.demand.desired_target_bytes, 32 * GIB);
-        assert_eq!(report.demand.safe_floor_bytes, 28 * GIB);
-    }
-
-    #[test]
-    fn release_respects_configured_minimum() {
-        let report = policy()
-            .calculate(snapshot(15 * GIB, GIB), 4 * GIB)
-            .expect("report should be valid");
-        assert_eq!(report.demand.state, DemandState::Release);
-        assert_eq!(report.demand.desired_target_bytes, 4 * GIB);
-        assert_eq!(report.demand.safe_floor_bytes, 4 * GIB);
-    }
-
-    #[test]
-    fn rejects_unaligned_current_allocation() {
-        assert_eq!(
-            policy().calculate(snapshot(8 * GIB, 4 * GIB), 3 * GIB),
-            Err(DemandError::InvalidPolicy(
-                "current allocation must be block aligned"
-            ))
-        );
-    }
-
-    #[test]
-    fn demand_agent_publishes_advisory_report_only_after_valid_collection() {
-        let agent = DemandAgent::new(
-            StubTelemetry {
-                result: Ok(snapshot(2 * GIB, 15 * GIB)),
-            },
-            policy(),
-        );
-        let mut publisher = StubPublisher::default();
-
-        let report = agent
-            .collect_and_publish(30 * GIB, &mut publisher)
-            .expect("report should publish");
-
-        assert_eq!(publisher.reports, vec![report]);
-        assert_eq!(report.demand.state, DemandState::Critical);
-    }
-
-    #[test]
-    fn demand_agent_does_not_publish_invalid_telemetry() {
-        let agent = DemandAgent::new(
-            StubTelemetry {
-                result: Err(DemandError::ZeroCounter("commit limit")),
-            },
-            policy(),
-        );
-        let mut publisher = StubPublisher::default();
-
-        assert_eq!(
-            agent.collect_and_publish(30 * GIB, &mut publisher),
-            Err(DemandAgentError::Telemetry(DemandError::ZeroCounter(
-                "commit limit"
-            )))
-        );
-        assert!(publisher.reports.is_empty());
-    }
-
-    #[test]
-    fn demand_agent_preserves_publication_failure() {
-        let agent = DemandAgent::new(
-            StubTelemetry {
-                result: Ok(snapshot(2 * GIB, 15 * GIB)),
-            },
-            policy(),
-        );
-        let mut publisher = StubPublisher {
-            failure: Some("sink unavailable".to_owned()),
-            ..StubPublisher::default()
-        };
-
-        assert_eq!(
-            agent.collect_and_publish(30 * GIB, &mut publisher),
-            Err(DemandAgentError::Publication("sink unavailable".to_owned()))
-        );
-    }
-
-    #[test]
-    fn json_lines_publisher_appends_complete_versioned_record() {
-        let path = std::env::temp_dir().join(format!(
-            "virtio-mem-demand-{}-{}.jsonl",
-            std::process::id(),
-            "publisher"
-        ));
-        let _ = std::fs::remove_file(&path);
-        let report = policy()
-            .calculate(snapshot(2 * GIB, 15 * GIB), 30 * GIB)
-            .expect("report should be valid");
-        let mut publisher = JsonLinesDemandReportPublisher::new(&path);
-
-        publisher.publish(report).expect("record should be written");
-        let content = std::fs::read_to_string(&path).expect("record should be readable");
-        let records: Vec<DemandReport> = content
-            .lines()
-            .map(|line| serde_json::from_str(line).expect("record should be valid JSON"))
-            .collect();
-
-        assert_eq!(records, vec![report]);
-        assert!(content.ends_with('\n'));
-        std::fs::remove_file(path).expect("test record should be removed");
     }
 
     #[test]

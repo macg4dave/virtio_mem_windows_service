@@ -179,11 +179,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     }
     while index < args.len() {
         match args[index].as_str() {
-            "--apply"
-                if matches!(mode, "resize" | "abandon-shrink") && !apply =>
-            {
-                apply = true
-            }
+            "--apply" if matches!(mode, "resize" | "abandon-shrink") && !apply => apply = true,
             "--attestation" if matches!(mode, "resize" | "abandon-shrink") => {
                 if attestation_path.is_some() {
                     return Err("--attestation may be supplied only once".to_owned());
@@ -237,7 +233,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             "--convergence-timeout-seconds" if mode == "abandon-shrink" => {
                 if convergence_timeout_seconds.is_some() {
                     return Err(
-                        "--convergence-timeout-seconds may be supplied only once".to_owned(),
+                        "--convergence-timeout-seconds may be supplied only once".to_owned()
                     );
                 }
                 index += 1;
@@ -727,16 +723,14 @@ fn run_abandon_shrink_with<
     }
     let stable_elapsed_millis = u64::try_from(options.sample_interval.as_millis())
         .map_err(|_| "sample interval is too large".to_owned())?;
-    let stable_current_bytes = match recovery.observe(shrink_observation(
-        stable_elapsed_millis,
-        second,
-    )) {
-        AbandonAction::Ready { target_bytes } => target_bytes,
-        AbandonAction::Wait => {
-            return Err("two unchanged samples did not qualify abandon-to-current".to_owned())
-        }
-        AbandonAction::Reject { reason } => return Err(reason),
-    };
+    let stable_current_bytes =
+        match recovery.observe(shrink_observation(stable_elapsed_millis, second)) {
+            AbandonAction::Ready { target_bytes } => target_bytes,
+            AbandonAction::Wait => {
+                return Err("two unchanged samples did not qualify abandon-to-current".to_owned())
+            }
+            AbandonAction::Reject { reason } => return Err(reason),
+        };
     let immediate = state_source.memory_state()?;
     immediate.validate().map_err(|error| error.to_string())?;
     recovery.verify_immediately_before_apply(shrink_observation(
@@ -1100,12 +1094,11 @@ mod tests {
 
     #[test]
     fn validates_correlated_evidence_without_live_commands() {
-        let identity =
-            r#"{"operation_id":"op-1","vm_name":"win11_gpu","device_alias":"ua-virtiomem0"}"#;
+        let identity = r#"{"operation_id":"op-1","vm_name":"guest","device_alias":"memory0"}"#;
         let json = format!(
             r#"{{"version":1,"identity":{identity},"samples":[
                 {{"identity":{identity},"sequence":1,"wall_clock_unix_millis":1000,"monotonic_millis":10,"source_id":"libvirt:qemu:///system","unit":"bytes","layer":"host_libvirt","phase":"before","size_bytes":8589934592,"block_size_bytes":2097152,"requested_bytes":1073741824,"current_bytes":1073741824}},
-                {{"identity":{identity},"sequence":2,"wall_clock_unix_millis":1001,"monotonic_millis":20,"source_id":"windows-scm:ice101","unit":"bytes","layer":"windows_health","viomem_running":true}},
+                {{"identity":{identity},"sequence":2,"wall_clock_unix_millis":1001,"monotonic_millis":20,"source_id":"windows-scm:guest","unit":"bytes","layer":"windows_health","viomem_running":true}},
                 {{"identity":{identity},"sequence":3,"wall_clock_unix_millis":1002,"monotonic_millis":30,"source_id":"systemd:rhel-host","unit":"bytes","layer":"controller_state","enabled":true,"active":false}},
                 {{"identity":{identity},"sequence":4,"wall_clock_unix_millis":1003,"monotonic_millis":40,"source_id":"libvirt:qemu:///system","unit":"bytes","layer":"host_libvirt","phase":"after","size_bytes":8589934592,"block_size_bytes":2097152,"requested_bytes":1075838976,"current_bytes":1075838976}}
             ]}}"#
@@ -1114,7 +1107,7 @@ mod tests {
         run_evidence_with(&json, &mut output).expect("valid evidence");
         assert_eq!(
             String::from_utf8(output).expect("UTF-8 output"),
-            "evidence_valid version=1\noperation_id=op-1\nvm_name=win11_gpu\ndevice_alias=ua-virtiomem0\nsamples=4\n"
+            "evidence_valid version=1\noperation_id=op-1\nvm_name=guest\ndevice_alias=memory0\nsamples=4\n"
         );
 
         let mixed = json.replacen("\"operation_id\":\"op-1\"", "\"operation_id\":\"other\"", 1);

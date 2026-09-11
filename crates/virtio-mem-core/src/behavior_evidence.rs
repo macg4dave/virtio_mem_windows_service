@@ -305,9 +305,9 @@ mod tests {
 
     fn identity() -> EvidenceIdentity {
         EvidenceIdentity {
-            operation_id: "m10a3-grow-1".to_owned(),
-            vm_name: "win11_gpu".to_owned(),
-            device_alias: "ua-virtiomem0".to_owned(),
+            operation_id: "operation-1".to_owned(),
+            vm_name: "guest".to_owned(),
+            device_alias: "memory0".to_owned(),
         }
     }
 
@@ -319,9 +319,9 @@ mod tests {
             monotonic_millis: sequence * 10,
             source_id: match evidence {
                 EvidenceKind::HostLibvirt { .. } => "libvirt:qemu:///system".to_owned(),
-                EvidenceKind::WindowsHealth { .. } => "windows-scm:ice101".to_owned(),
+                EvidenceKind::WindowsHealth { .. } => "windows-scm:guest".to_owned(),
                 EvidenceKind::ControllerState { .. } => "systemd:rhel-host".to_owned(),
-                EvidenceKind::DriverTrace { .. } => "dbgviewcli:ice101".to_owned(),
+                EvidenceKind::DriverTrace { .. } => "driver:guest".to_owned(),
             },
             unit: EvidenceUnit::Bytes,
             evidence,

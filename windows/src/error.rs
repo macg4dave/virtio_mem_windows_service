@@ -1,7 +1,5 @@
 use thiserror::Error;
 
-pub use virtio_mem_core::{MemoryStatsError, PollError, ServiceLoopError, VirtioMemError};
-
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ServiceHostError {
     #[error("service host is already running")]
@@ -28,8 +26,6 @@ pub enum ConfigurationError {
     InvalidPollInterval,
     #[error("shutdown timeout must be greater than zero")]
     InvalidShutdownTimeout,
-    #[error("QEMU Guest Agent operation timeout must be greater than zero")]
-    InvalidQgaOperationTimeout,
     #[error("configuration file I/O failed: {0}")]
     FileIo(String),
     #[error("configuration file is invalid: {0}")]

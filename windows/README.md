@@ -24,8 +24,8 @@ hash. It never installs the service or changes guest memory.
 Production and interactive startup require the versioned JSON configuration at
 `C:\ProgramData\VirtioMemService\config.json`. Missing, malformed, unsupported,
 or incomplete configuration fails closed. The file explicitly supplies VM and
-service identity, display metadata, adapter path, telemetry path, service
-account, polling interval, adapter-operation timeout, and shutdown timeout.
+service identity, display metadata, telemetry path, service account, polling
+interval, and shutdown timeout.
 
 The executable supports `install`, `start`, `run`, `stop`, `remove`, and
 `help`. Service-manager operations require the privileges of the configured

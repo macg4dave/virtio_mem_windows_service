@@ -1,4 +1,4 @@
-//! Host-owned M10e estimator state, checkpointing, and raw-telemetry join.
+//! Host-owned estimator state, checkpointing, and raw-telemetry join.
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};

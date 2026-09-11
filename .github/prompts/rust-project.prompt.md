@@ -11,6 +11,3 @@ Task: `<behavior and acceptance criterion>`
 - Use explicit errors and validated inputs; keep side effects injectable.
 - Add focused regression and boundary tests in the owning crate.
 - Update affected contracts, status, and task documentation.
-
-Run the focused Cargo tests, then `cargo xtask gate local`, then any separately
-applicable native or higher-level workflow.

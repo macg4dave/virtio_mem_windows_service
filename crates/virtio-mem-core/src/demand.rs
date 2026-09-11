@@ -72,7 +72,7 @@ pub enum AllocationProvenance {
     HostLiveLibvirtCurrentRequired,
 }
 
-/// The M10d raw-telemetry record. Allocation remains host-owned and is not
+/// The raw-telemetry record. Allocation remains host-owned and is not
 /// present in this guest-produced envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

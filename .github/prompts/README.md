@@ -2,6 +2,8 @@
 
 Project-wide rules live in `../copilot-instructions.md`. Select one primary
 prompt for the work being done; prompts contain only task-specific guidance.
+The canonical validation, safety, documentation, and reporting rules apply
+without being repeated in each prompt.
 Add `workflow-validation` only when acceptance also crosses a process,
 platform, deployment, or live-system boundary.
 

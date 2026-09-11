@@ -1,16 +1,18 @@
-//! M10e absolute target estimation from raw Windows memory telemetry.
+//! Absolute target estimation from raw Windows memory telemetry.
 
 use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::MemoryTelemetrySnapshot;
+use crate::{MemoryTelemetrySnapshot, MIN_HEADROOM_BYTES};
 
 pub const TARGET_ESTIMATOR_STATE_VERSION: u16 = 1;
 pub const MAX_TARGET_HISTORY_ENTRIES: usize = 4096;
 const MIB: u64 = 1024 * 1024;
+#[cfg(test)]
 const GIB: u64 = 1024 * MIB;
+const MIN_FIXED_BASE_TOLERANCE_BYTES: u64 = 256 * MIB;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -373,7 +375,7 @@ pub fn calculate_instantaneous(
     memory
         .validate()
         .map_err(|error| TargetEstimatorError::InvalidTelemetry(error.to_string()))?;
-    if geometry.device_size_bytes <= GIB {
+    if geometry.device_size_bytes <= MIN_HEADROOM_BYTES {
         return Err(TargetEstimatorError::InvalidGeometry(
             "device size does not leave one GiB of headroom",
         ));
@@ -394,7 +396,7 @@ pub fn calculate_instantaneous(
     let effective_maximum_bytes = align_down(
         config
             .configured_maximum_bytes
-            .min(geometry.device_size_bytes - GIB),
+            .min(geometry.device_size_bytes - MIN_HEADROOM_BYTES),
         geometry.block_size_bytes,
     );
     if config.configured_minimum_bytes > effective_maximum_bytes
@@ -427,7 +429,7 @@ pub fn calculate_instantaneous(
         .ok_or(TargetEstimatorError::InvalidGeometry(
             "physical total is below current allocation",
         ))?;
-    let tolerance = (256 * MIB).max(
+    let tolerance = MIN_FIXED_BASE_TOLERANCE_BYTES.max(
         geometry
             .block_size_bytes
             .checked_mul(2)

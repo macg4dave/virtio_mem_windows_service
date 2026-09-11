@@ -47,9 +47,9 @@ struct Toolchain {
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
-    let operation = args.first().ok_or_else(|| {
-        "windows requires check|sync|build|test|lint|fetch|all|verify".to_owned()
-    })?;
+    let operation = args
+        .first()
+        .ok_or_else(|| "windows requires check|sync|build|test|lint|fetch|all|verify".to_owned())?;
     if operation == "verify" {
         if args.len() != 4 || args[2] != "--runs" {
             return Err("windows verify requires EXPECTED_ED25519_FINGERPRINT --runs N".to_owned());
@@ -149,10 +149,7 @@ impl Config {
             process::os("-o"),
             process::os("BatchMode=yes"),
             process::os("-o"),
-            process::os(format!(
-                "ConnectTimeout={}",
-                self.connect_timeout_seconds
-            )),
+            process::os(format!("ConnectTimeout={}", self.connect_timeout_seconds)),
         ];
         if let Some(path) = &self.known_hosts_file {
             options.extend([
@@ -540,7 +537,10 @@ fn verify(
             )
             .map_err(|error| format!("failed to write artifact hash: {error}"))?;
         }
-        append_summary(&summary, &format!("{runs} configured aggregate gate run(s) passed.\n"))?;
+        append_summary(
+            &summary,
+            &format!("{runs} configured aggregate gate run(s) passed.\n"),
+        )?;
         println!("{runs} configured aggregate gate run(s) passed.");
         Ok(())
     })();

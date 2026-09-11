@@ -10,7 +10,7 @@ Task: `<exact privileged operation already required by the task>`
 - Resolve every target, input, command, output, effect, time bound, and rollback
   through unprivileged discovery first.
 - Create one task-specific script under
-  `.vscode-artifacts/privileged-tasks/` with `#!/bin/bash` and
+  `.artifacts/privileged-tasks/` with `#!/bin/bash` and
   `set -euo pipefail`.
 - Embed fixed reviewed arguments for this task. Do not accept arbitrary shell
   input, use nested elevation, or duplicate Rust parsing/policy/polling.

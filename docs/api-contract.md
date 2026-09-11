@@ -53,8 +53,7 @@ The Rust host binary is the implementation behind maintained operations:
 
 Commands require explicit target identity and command timeout. Mutation requires
 an explicit apply flag. Recovery additionally requires explicit sampling and
-convergence durations. The removed historical shrink-qualification command is
-not part of the current interface.
+convergence durations.
 
 ## Xtask workflows
 

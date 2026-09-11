@@ -1,4 +1,4 @@
-//! M10f reconciliation of durable policy intent with asynchronous device state.
+//! Reconciliation of durable policy intent with asynchronous device state.
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;

@@ -10,7 +10,7 @@ run directory or the deployment manifest.
 | ISSUE-003 | Open | Libvirt transport and uncertain-command failures need broader operational coverage. | Complete the fault/recovery QA tasks without weakening no-replay or latch behavior. |
 | ISSUE-008 | Open | Classic Windows Event Log descriptions depend on a packaged message resource. | Package and verify the resource while preserving structured EventData and bounded messages. |
 | ISSUE-011 | Accepted limitation | The signed Windows virtio-mem driver has no supported user-mode status query used by this project. | Keep optional diagnostics separate from allocation authority; driver work requires a separately approved design and external ownership. |
-| ISSUE-016 | Open qualification | The implemented target controller has not completed current live workload and platform-reclaim qualification. | Deploy one coherent stack and complete M10g/QA gates with durable evidence. |
+| ISSUE-016 | Open qualification | The implemented target controller has not completed current live workload and platform-reclaim qualification. | Deploy one coherent stack and complete the QA gates with durable evidence. |
 | ISSUE-017 | Open deployment | Installed components and configuration have not yet been proven coherent. | Finish QA-T002, deploy one reviewed candidate, recreate attestation, and pass no-actuation preflight. |
 
 ## Standing risk controls

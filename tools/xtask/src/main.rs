@@ -44,7 +44,7 @@ Qualification options:
   --guest-service NAME       Required Windows service identity.
   --telemetry-path PATH      Required host-side raw Windows telemetry file.
   --connect URI              Libvirt URI; default qemu:///system.
-  --output-root PATH         Default .vscode-artifacts/qualification.
+  --output-root PATH         Default .artifacts/qualification.
 
 Live-resize options:
   --apply                 Issue the explicitly requested live resize.

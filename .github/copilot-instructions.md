@@ -66,7 +66,7 @@ guest command, named service/application checks, and bounded crash/reboot
 evidence. Do not overlap an installer, update, or pending reboot.
 
 When elevation is needed, create one exact Bash batch under the ignored
-`.vscode-artifacts/privileged-tasks/` directory and invoke it with one outer
+`.artifacts/privileged-tasks/` directory and invoke it with one outer
 `sudo`. The script uses `set -euo pipefail`, contains no nested elevation, and
 does not accept open-ended commands. The operator enters any password directly.
 

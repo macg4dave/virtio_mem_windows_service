@@ -117,7 +117,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let mut guest_service = None;
     let mut telemetry_path = None;
     let mut connect_uri = "qemu:///system".to_owned();
-    let mut output_root = repo.join(".vscode-artifacts/qualification");
+    let mut output_root = repo.join(".artifacts/qualification");
     let mut apply = false;
     let mut index = 2;
     while index < args.len() {
@@ -136,8 +136,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
                 retained_bytes = Some(number(args, &mut index, "--retained-bytes")?)
             }
             "--max-allocation-bytes" => {
-                max_allocation_bytes =
-                    Some(number(args, &mut index, "--max-allocation-bytes")?)
+                max_allocation_bytes = Some(number(args, &mut index, "--max-allocation-bytes")?)
             }
             "--peak-hold-seconds" => {
                 peak_hold_seconds = Some(number(args, &mut index, "--peak-hold-seconds")?)
@@ -174,9 +173,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             "--controller-unit" => {
                 controller_unit = Some(value(args, &mut index, "--controller-unit")?)
             }
-            "--guest-service" => {
-                guest_service = Some(value(args, &mut index, "--guest-service")?)
-            }
+            "--guest-service" => guest_service = Some(value(args, &mut index, "--guest-service")?),
             "--telemetry-path" => {
                 telemetry_path = Some(PathBuf::from(value(args, &mut index, "--telemetry-path")?))
             }
@@ -201,16 +198,11 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let peak_hold_seconds = required(peak_hold_seconds, "--peak-hold-seconds")?;
     let settled_hold_seconds = required(settled_hold_seconds, "--settled-hold-seconds")?;
     let renewed_hold_seconds = required(renewed_hold_seconds, "--renewed-hold-seconds")?;
-    let resident_refresh_seconds = required(
-        resident_refresh_seconds,
-        "--resident-refresh-seconds",
-    )?;
+    let resident_refresh_seconds =
+        required(resident_refresh_seconds, "--resident-refresh-seconds")?;
     let post_hold_seconds = required(post_hold_seconds, "--post-hold-seconds")?;
     let interval_seconds = required(interval_seconds, "--interval-seconds")?;
-    let command_timeout_seconds = required(
-        command_timeout_seconds,
-        "--command-timeout-seconds",
-    )?;
+    let command_timeout_seconds = required(command_timeout_seconds, "--command-timeout-seconds")?;
     let expect_growth_bytes = required(expect_growth_bytes, "--expect-growth-bytes")?;
     let expect_reclaim_bytes = required(expect_reclaim_bytes, "--expect-reclaim-bytes")?;
     let remote_workload = required(remote_workload, "--remote-workload")?;
@@ -232,9 +224,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
         || retained_bytes == 0
         || retained_bytes >= peak_bytes
     {
-        return Err(
-            "workload bytes require 0 < retained < peak <= max allocation".to_owned(),
-        );
+        return Err("workload bytes require 0 < retained < peak <= max allocation".to_owned());
     }
     for (name, seconds) in [
         ("peak", peak_hold_seconds),
@@ -783,12 +773,20 @@ fn workload_command(config: &Config) -> String {
 
 fn archive_controller_log(config: &Config, run_dir: &Path, repo: &Path) {
     let status_path = run_dir.join("status.json");
-    let since = process::read_file(&status_path)
+    let Some(since) = process::read_file(&status_path)
         .ok()
         .and_then(|s| serde_json::from_str::<Status>(&s).ok())
         .and_then(|s| s.started_unix_millis)
         .map(|v| format!("@{}", v / 1000))
-        .unwrap_or_else(|| "-1 hour".to_owned());
+    else {
+        let _ = event(
+            run_dir,
+            "warning",
+            "controller_log_failed",
+            json!({"error": "run start time is unavailable; refusing to guess a journal window"}),
+        );
+        return;
+    };
     let args = [
         OsString::from("--no-pager"),
         OsString::from("--output=short-iso"),
@@ -861,7 +859,7 @@ fn locate_run(args: &[String], repo: &Path) -> Result<PathBuf, String> {
         return Err("RUN_ID is required".to_owned());
     }
     let run_id = identifier(&args[0], "RUN_ID")?;
-    let mut root = repo.join(".vscode-artifacts/qualification");
+    let mut root = repo.join(".artifacts/qualification");
     if args.len() == 3 && args[1] == "--output-root" {
         root = absolute_or_repo(repo, &args[2]);
     } else if args.len() != 1 {
@@ -1028,7 +1026,11 @@ fn available_artifacts(run_dir: &Path) -> Vec<&'static str> {
     names
 }
 
-fn wait_for_launcher_status(path: &Path, timeout: Duration, interval: Duration) -> Result<(), String> {
+fn wait_for_launcher_status(
+    path: &Path,
+    timeout: Duration,
+    interval: Duration,
+) -> Result<(), String> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or_else(|| "launcher timeout exceeds the platform clock range".to_owned())?;

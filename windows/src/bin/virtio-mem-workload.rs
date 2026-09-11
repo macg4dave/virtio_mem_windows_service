@@ -86,9 +86,11 @@ impl Config {
                 "--renewed-hold-seconds" => {
                     set_once(&mut renewed_hold, parse_hold_duration(value, slot)?, slot)?
                 }
-                "--refresh-interval-seconds" => {
-                    set_once(&mut refresh_interval, parse_hold_duration(value, slot)?, slot)?
-                }
+                "--refresh-interval-seconds" => set_once(
+                    &mut refresh_interval,
+                    parse_hold_duration(value, slot)?,
+                    slot,
+                )?,
                 _ => return Err(format!("unknown option: {slot}\n{USAGE}")),
             }
         }

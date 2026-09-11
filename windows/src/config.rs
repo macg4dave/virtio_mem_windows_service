@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::error::ConfigurationError;
 
 pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VirtioMemService\config.json";
-const CONFIG_SCHEMA_VERSION: u32 = 3;
+const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
@@ -13,12 +13,10 @@ pub struct ServiceConfig {
     pub service_name: String,
     pub display_name: String,
     pub description: String,
-    pub qga_pipe_path: String,
     pub demand_report_path: String,
     pub service_account: String,
     pub config_path: String,
     pub poll_interval: Duration,
-    pub qga_operation_timeout: Duration,
     pub shutdown_timeout: Duration,
 }
 
@@ -29,7 +27,6 @@ impl ServiceConfig {
             (&self.service_name, "service name"),
             (&self.display_name, "display name"),
             (&self.description, "description"),
-            (&self.qga_pipe_path, "QEMU Guest Agent pipe path"),
             (&self.demand_report_path, "demand report path"),
             (&self.service_account, "service account"),
             (&self.config_path, "configuration path"),
@@ -41,9 +38,6 @@ impl ServiceConfig {
 
         if self.poll_interval.is_zero() {
             return Err(ConfigurationError::InvalidPollInterval);
-        }
-        if self.qga_operation_timeout.is_zero() {
-            return Err(ConfigurationError::InvalidQgaOperationTimeout);
         }
         if self.shutdown_timeout.is_zero() {
             return Err(ConfigurationError::InvalidShutdownTimeout);
@@ -79,12 +73,10 @@ impl ServiceConfig {
             service_name: persisted.service_name,
             display_name: persisted.display_name,
             description: persisted.description,
-            qga_pipe_path: persisted.qga_pipe_path,
             demand_report_path: persisted.demand_report_path,
             service_account: persisted.service_account,
             config_path: path.to_string_lossy().into_owned(),
             poll_interval: Duration::from_millis(persisted.poll_interval_millis),
-            qga_operation_timeout: Duration::from_millis(persisted.qga_operation_timeout_millis),
             shutdown_timeout: Duration::from_millis(persisted.shutdown_timeout_millis),
         };
         config.validate()?;
@@ -117,17 +109,16 @@ impl ServiceConfig {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PersistedServiceConfig {
     schema_version: u32,
     vm_name: String,
     service_name: String,
     display_name: String,
     description: String,
-    qga_pipe_path: String,
     demand_report_path: String,
     service_account: String,
     poll_interval_millis: u64,
-    qga_operation_timeout_millis: u64,
     shutdown_timeout_millis: u64,
 }
 
@@ -139,20 +130,15 @@ impl TryFrom<&ServiceConfig> for PersistedServiceConfig {
             .map_err(|_| ConfigurationError::DurationOverflow)?;
         let shutdown_timeout_millis = u64::try_from(config.shutdown_timeout.as_millis())
             .map_err(|_| ConfigurationError::DurationOverflow)?;
-        let qga_operation_timeout_millis = u64::try_from(config.qga_operation_timeout.as_millis())
-            .map_err(|_| ConfigurationError::DurationOverflow)?;
-
         Ok(Self {
             schema_version: CONFIG_SCHEMA_VERSION,
             vm_name: config.vm_name.clone(),
             service_name: config.service_name.clone(),
             display_name: config.display_name.clone(),
             description: config.description.clone(),
-            qga_pipe_path: config.qga_pipe_path.clone(),
             demand_report_path: config.demand_report_path.clone(),
             service_account: config.service_account.clone(),
             poll_interval_millis,
-            qga_operation_timeout_millis,
             shutdown_timeout_millis,
         })
     }
@@ -175,12 +161,10 @@ mod tests {
             service_name: "TestService".to_owned(),
             display_name: "Test service".to_owned(),
             description: "Test configuration".to_owned(),
-            qga_pipe_path: r"\\.\pipe\test-qga".to_owned(),
             demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
             service_account: r"NT AUTHORITY\LocalService".to_owned(),
             config_path: DEFAULT_CONFIG_PATH.to_owned(),
             poll_interval: Duration::from_millis(20),
-            qga_operation_timeout: Duration::from_millis(10),
             shutdown_timeout: Duration::from_millis(30),
         }
     }
@@ -226,13 +210,6 @@ mod tests {
         );
 
         config.poll_interval = Duration::from_secs(1);
-        config.qga_operation_timeout = Duration::ZERO;
-        assert_eq!(
-            config.validate(),
-            Err(ConfigurationError::InvalidQgaOperationTimeout)
-        );
-
-        config.qga_operation_timeout = Duration::from_secs(5);
         config.shutdown_timeout = Duration::ZERO;
         assert_eq!(
             config.validate(),
@@ -267,11 +244,9 @@ mod tests {
             service_name: "TestService".to_owned(),
             display_name: "Test service".to_owned(),
             description: "Test configuration".to_owned(),
-            qga_pipe_path: r"\\.\pipe\test-qga".to_owned(),
             demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
             service_account: r"NT AUTHORITY\LocalService".to_owned(),
             poll_interval_millis: 30_000,
-            qga_operation_timeout_millis: 5_000,
             shutdown_timeout_millis: 30_000,
         };
         std::fs::write(

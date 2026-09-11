@@ -29,7 +29,7 @@ must be recreated with the documented ownership/mode when the candidate runs.
 | Executable SHA-256 | `5ac0f46e402606a9a71f95318b6338f1649879b1b5389a54e992b3dae9e459d3` | `0c4ac9924d6fbb34589f4309fc2eb7c03f60fb3901109e978f87734bd2daa13d` | Mismatch |
 | SCM identity | `VirtioMemService`; own process; automatic; `LocalService` | Configurable own-process identity validated against SCM | Compatible, candidate required |
 | SCM error control | `0` (`IGNORE`) | `1` (`NORMAL`) | Mismatch fixed by QA-T003 |
-| ProgramData config | Absent | Version-3 configuration at the documented path | Deployment required |
+| ProgramData config | Absent | Current versioned configuration at the documented path | Deployment required |
 | ProgramData telemetry | Absent | Atomic version-2 record with retention | Deployment/transport required |
 | Runtime state | `RUNNING`, exit codes zero | Native gate only | Installed replacement not yet validated |
 

@@ -40,7 +40,7 @@ not allocations. Its versioned checkpoint is bounded, durably flushed,
 fingerprint-bound, and atomically replaced. Missing estimator state restarts
 conservatively; malformed control state fails closed.
 
-The exact formulas and configurable defaults live only in
+The exact formulas and required policy inputs live only in
 [target-controller.md](target-controller.md).
 
 ## Live device state
@@ -86,8 +86,8 @@ telemetry remain evidence only; neither gains resize authority.
 ## Windows configuration
 
 The Windows service requires a versioned JSON document containing service
-identity, VM identity, polling and operation durations, paths, report settings,
-and memory-policy inputs. Missing, malformed, unsupported, or invalid
+identity, VM identity, polling and shutdown durations, paths, and report
+settings. Missing, malformed, unsupported, or invalid
 configuration is a visible startup failure. There is no operational fallback
 profile.
 
@@ -95,6 +95,6 @@ profile.
 
 The host reads an explicit VM, device alias, memory bounds, thresholds,
 durations, source modes, telemetry identity/path, policy-state path, attestation
-path, and host reserve. Selected policy fields have current configurable
-defaults documented in the target-controller contract. Deployment examples use
-placeholders rather than machine values.
+path, host reserve, resize quanta, policy reserves, history, and hysteresis.
+Only the maximum sample gap may be derived from the polling interval.
+Deployment examples use placeholders rather than machine values.
