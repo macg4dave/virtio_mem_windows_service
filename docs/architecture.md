@@ -62,6 +62,12 @@ Windows native counters
 The host acknowledges accepted telemetry durably. Missing, stale, malformed,
 replayed, cross-VM, or incomplete records cannot authorize reclaim.
 
+For the production single-VM handoff, the host uses standard bounded QGA
+guest-file operations to read the explicitly configured protected Windows
+current record. It does not use guest execution, SSH copying, a guest-writable
+host share, or a custom memory command. The QGA handle is closed after every
+attempt, and accepted-session acknowledgement remains host-owned durable state.
+
 ## Configuration
 
 Deployment supplies explicit VM/device identity, service identity, paths,

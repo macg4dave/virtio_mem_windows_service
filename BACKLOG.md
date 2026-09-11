@@ -13,7 +13,7 @@ not from completed task notes.
 
 | ID | Work | Exit condition |
 | --- | --- | --- |
-| QA-T002 | Capture the installed deployment | The deployment manifest contains the exact installed identities, paths, configuration, and hashes needed to decide whether a coherent rollout is possible. |
+| QA-T006 | Install and verify the current host candidate in fail-stop mode | Apply the validated binary/unit/config/attestation set through `cargo xtask host-deploy`, archive the obsolete split configuration, and prove the instance remains disabled and inactive. |
 | TASK-009 | Finish the Windows native demand-agent deployment | The candidate is installed with its required configuration and protected telemetry location, and native publication is observed under the service account. |
 | TASK-028 | Qualify the single-VM target controller | An explicitly configured `cargo xtask qualification` run proves or disproves growth, reclaim, renewed pressure, fault handling, restart safety, and cleanup without a second resize authority. |
 
@@ -26,9 +26,8 @@ service, and telemetry contract.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| QA-T004 | Deploy one coherent candidate stack | QA-T002 and an operator-reviewed deployment manifest |
-| QA-T005 | Recreate and review compatibility attestation | QA-T004 |
-| QA-T006 | Run the no-actuation preflight | QA-T004 and QA-T005 |
+| QA-T007 | Recalibrate and review compatibility attestation | QA-T006 |
+| QA-T008 | Run the restart-safe no-actuation telemetry preflight | QA-T005–QA-T007 |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation

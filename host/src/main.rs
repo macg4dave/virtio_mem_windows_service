@@ -4,11 +4,13 @@ use std::sync::{atomic::AtomicBool, Arc};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
-use virtio_mem_host::config::{DemandSourceMode, HostConfig, StatsSource};
+use virtio_mem_host::config::{DemandSourceMode, HostConfig, RawTelemetryTransport, StatsSource};
 use virtio_mem_host::dommemstat::DomMemStatSource;
 use virtio_mem_host::host_memory::ProcMeminfoSource;
-use virtio_mem_host::qga::VirshGuestAgent;
-use virtio_mem_host::raw_telemetry::FileRawTelemetrySource;
+use virtio_mem_host::qga::{VirshGuestAgent, VirshQgaFileReader};
+use virtio_mem_host::raw_telemetry::{
+    FileRawTelemetrySource, QgaFileRawTelemetrySource, RawTelemetrySource,
+};
 use virtio_mem_host::resize_sink::VirshResizeSink;
 use virtio_mem_host::runtime::{DemandSource, GuestStatsDemandSource, HostRuntime};
 use virtio_mem_host::target_policy::TargetDemandSource;
@@ -49,13 +51,30 @@ fn main() -> ExitCode {
     }
     match config.demand_source {
         DemandSourceMode::Raw => {
-            let raw = FileRawTelemetrySource::new(
-                &config.raw_telemetry_path,
-                &config.vm_name,
-                &config.raw_telemetry_service_name,
-                config.raw_telemetry_max_age,
-                config.raw_telemetry_future_tolerance,
-            );
+            let raw: Box<dyn RawTelemetrySource> = match config.raw_telemetry_transport {
+                RawTelemetryTransport::File => Box::new(
+                    FileRawTelemetrySource::new(
+                        &config.raw_telemetry_path,
+                        &config.vm_name,
+                        &config.raw_telemetry_service_name,
+                        config.raw_telemetry_max_age,
+                        config.raw_telemetry_future_tolerance,
+                    )
+                    .with_replay_state_path(&config.raw_telemetry_ack_path),
+                ),
+                RawTelemetryTransport::QgaFile => {
+                    let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
+                    Box::new(QgaFileRawTelemetrySource::new(
+                        VirshQgaFileReader::new(virsh, config.vm_name.clone()),
+                        &config.raw_telemetry_path,
+                        &config.raw_telemetry_ack_path,
+                        &config.vm_name,
+                        &config.raw_telemetry_service_name,
+                        config.raw_telemetry_max_age,
+                        config.raw_telemetry_future_tolerance,
+                    ))
+                }
+            };
             match TargetDemandSource::new(raw, &config) {
                 Ok(source) => run_controller(source, config, &stop),
                 Err(error) => {

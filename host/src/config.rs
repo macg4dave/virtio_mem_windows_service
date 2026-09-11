@@ -30,12 +30,16 @@ pub enum HostConfigError {
     InvalidStatsSource(String),
     #[error("VIRTIO_MEM_DEMAND_SOURCE must be 'raw' or 'guest-stats': {0}")]
     InvalidDemandSource(String),
+    #[error("VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT must be 'file' or 'qga-file': {0}")]
+    InvalidRawTelemetryTransport(String),
     #[error("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH must be non-empty")]
     InvalidAttestationPath,
     #[error("VIRTIO_MEM_RAW_TELEMETRY_PATH must be non-empty")]
     InvalidRawTelemetryPath,
     #[error("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME must be non-empty")]
     InvalidRawTelemetryServiceName,
+    #[error("VIRTIO_MEM_RAW_TELEMETRY_ACK_PATH must be non-empty")]
+    InvalidRawTelemetryAckPath,
     #[error("VIRTIO_MEM_POLICY_STATE_PATH must be non-empty")]
     InvalidPolicyStatePath,
     #[error("safe-floor reserves must not exceed normal reserves")]
@@ -66,6 +70,12 @@ pub enum DemandSourceMode {
     GuestStats,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawTelemetryTransport {
+    File,
+    QgaFile,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostConfig {
     pub vm_name: String,
@@ -94,6 +104,8 @@ pub struct HostConfig {
     pub stats_max_age: Duration,
     pub stats_future_tolerance: Duration,
     pub raw_telemetry_path: String,
+    pub raw_telemetry_ack_path: String,
+    pub raw_telemetry_transport: RawTelemetryTransport,
     pub raw_telemetry_service_name: String,
     pub raw_telemetry_max_age: Duration,
     pub raw_telemetry_future_tolerance: Duration,
@@ -122,6 +134,8 @@ impl HostConfig {
             Ok(other) => return Err(HostConfigError::InvalidDemandSource(other)),
             Err(_) => DemandSourceMode::Raw,
         };
+        let raw_telemetry_transport =
+            parse_raw_telemetry_transport(required("VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT")?)?;
         let shrink_renotification = optional_bool(
             "VIRTIO_MEM_SHRINK_RENOTIFICATION",
             DEFAULT_SHRINK_RENOTIFICATION,
@@ -177,6 +191,8 @@ impl HostConfig {
                 "VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS",
             )?),
             raw_telemetry_path: required("VIRTIO_MEM_RAW_TELEMETRY_PATH")?,
+            raw_telemetry_ack_path: required("VIRTIO_MEM_RAW_TELEMETRY_ACK_PATH")?,
+            raw_telemetry_transport,
             raw_telemetry_service_name: required("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME")?,
             raw_telemetry_max_age: Duration::from_secs(positive(
                 "VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS",
@@ -274,6 +290,9 @@ impl HostConfig {
         if self.raw_telemetry_service_name.trim().is_empty() {
             return Err(HostConfigError::InvalidRawTelemetryServiceName);
         }
+        if self.raw_telemetry_ack_path.trim().is_empty() {
+            return Err(HostConfigError::InvalidRawTelemetryAckPath);
+        }
         if self.policy_state_path.trim().is_empty() {
             return Err(HostConfigError::InvalidPolicyStatePath);
         }
@@ -289,6 +308,14 @@ fn optional_bool(name: &'static str, default: bool) -> Result<bool, HostConfigEr
             name,
             value: value.to_string_lossy().into_owned(),
         }),
+    }
+}
+
+fn parse_raw_telemetry_transport(value: String) -> Result<RawTelemetryTransport, HostConfigError> {
+    match value.as_str() {
+        "file" => Ok(RawTelemetryTransport::File),
+        "qga-file" => Ok(RawTelemetryTransport::QgaFile),
+        _ => Err(HostConfigError::InvalidRawTelemetryTransport(value)),
     }
 }
 
@@ -404,6 +431,24 @@ mod tests {
             Ok(false)
         );
     }
+
+    #[test]
+    fn raw_telemetry_transport_is_explicit_and_closed() {
+        assert_eq!(
+            parse_raw_telemetry_transport("file".to_owned()),
+            Ok(RawTelemetryTransport::File)
+        );
+        assert_eq!(
+            parse_raw_telemetry_transport("qga-file".to_owned()),
+            Ok(RawTelemetryTransport::QgaFile)
+        );
+        assert_eq!(
+            parse_raw_telemetry_transport("ssh".to_owned()),
+            Err(HostConfigError::InvalidRawTelemetryTransport(
+                "ssh".to_owned()
+            ))
+        );
+    }
     #[test]
     fn rejects_unsafe_aliases() {
         let config = HostConfig {
@@ -433,6 +478,8 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_ack_path: "/var/lib/virtio-mem-host/guest.ack.json".to_owned(),
+            raw_telemetry_transport: RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),
@@ -475,6 +522,8 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
+            raw_telemetry_ack_path: "/var/lib/virtio-mem-host/guest.ack.json".to_owned(),
+            raw_telemetry_transport: RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),
@@ -520,6 +569,8 @@ mod tests {
             stats_max_age: Duration::from_secs(60),
             stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "valid".to_owned(),
+            raw_telemetry_ack_path: "valid.ack".to_owned(),
+            raw_telemetry_transport: RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),

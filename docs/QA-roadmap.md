@@ -54,12 +54,12 @@ control are outside this gate.
 | ID | Task | Status |
 | --- | --- | --- |
 | QA-T001 | Establish fail-stop safe hold and confirm unchanged guest/device health | Complete |
-| QA-T002 | Record installed/candidate hashes, units, configuration, identities, and deployment delta | In progress |
+| QA-T002 | Record installed/candidate hashes, units, configuration, identities, and deployment delta | Complete |
 | QA-T003 | Correct acknowledged durability and SCM identity/registration defects | Complete |
-| QA-T004 | Implement the least-privilege production telemetry transport | Ready after QA-T002 |
-| QA-T005 | Install and verify the current Windows candidate, configuration, ACLs, telemetry, and lifecycle | Blocked by QA-T004 |
-| QA-T006 | Install and verify the current host candidate, instance configuration, and fail-stop service state | Blocked by QA-T004 |
-| QA-T007 | Calibrate deployment-specific visible base and regenerate/review compatibility attestation | Blocked by QA-T006 |
+| QA-T004 | Implement the least-privilege production telemetry transport | Complete |
+| QA-T005 | Install and verify the current Windows candidate, configuration, ACLs, telemetry, and lifecycle | Complete |
+| QA-T006 | Install and verify the current host candidate, instance configuration, and fail-stop service state | In progress |
+| QA-T007 | Calibrate deployment-specific visible base and regenerate/review compatibility attestation | Prepared; blocked by QA-T006 install |
 | QA-T008 | Prove telemetry handoff and replay/session behavior across independent service restarts without actuation | Blocked by QA-T005–QA-T007 |
 
 ### Automatic behavior and recovery

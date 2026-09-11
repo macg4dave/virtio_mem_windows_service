@@ -122,12 +122,15 @@ configuration path. Missing or invalid configuration fails startup; a VM name,
 service identity, telemetry path, polling interval, and shutdown timeout are
 never inferred from a previous test guest.
 
-Build and hash the candidate with `cargo xtask windows all` before invoking the
-service executable's `install`, `start`, `stop`, or `remove` commands in an
-appropriately elevated Windows terminal. Validate the configured identity,
-least-privilege account, ProgramData ACLs, advancing telemetry records, event
-records, clean stop, and final SCM state. Do not combine service lifecycle with
-memory mutation.
+Build and hash the candidate with `cargo xtask windows all`. The typed `cargo
+xtask windows deploy MANIFEST --output EVIDENCE [--apply]` workflow owns
+candidate replacement, versioned configuration, product service lifecycle,
+rollback capture, ACL inspection, and advancing-record evidence. Do not combine
+service lifecycle with memory mutation.
+
+Use `cargo xtask calibration` for the allocation-neutral, two-sample visible
+base measurement and `cargo xtask attestation` to generate the live-bound
+document from an explicit reviewed input.
 
 For the host, derive a complete instance file from
 `host/systemd/virtio-mem-host.conf.example`, replace every required marker from
@@ -135,8 +138,17 @@ reviewed deployment evidence, and validate it with the product CLI before
 installation. The checked-in unit is fail-stop and inherits the host service
 manager's configured stop timeout; deployment monitoring controls reviewed
 restart policy. Candidate installation, inventory, and system service changes
-use capability-named typed xtask workflows. Repeatable parsing, polling,
-safety, evidence, cleanup, and rollback remain in Rust tooling.
+use capability-named typed xtask workflows. `cargo xtask host-deploy INSTANCE
+--config CONFIG --attestation ATTESTATION --output EVIDENCE
+--command-timeout-seconds N [--apply --elevate]` archives superseded files and
+drop-ins, installs one coherent configuration, disables the instance, and
+requires it to remain inactive with the fail-stop unit policy.
+
+The production raw-telemetry configuration selects `qga-file`, supplies the
+absolute Windows current-record path and a distinct absolute host
+acknowledgement path, and keeps the QGA operation within the configured command
+timeout. A deployment check must prove bounded open/read/close behavior and
+must not substitute SSH, guest execution, or a shared writable directory.
 
 ## Reversible live resize
 

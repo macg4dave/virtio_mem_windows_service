@@ -1,4 +1,7 @@
+mod attestation;
+mod calibration;
 mod deployment;
+mod host_deploy;
 mod live_resize;
 mod local;
 mod process;
@@ -15,7 +18,12 @@ Usage:
   cargo xtask gate <format|build|test|lint|local|all>
   cargo xtask doctor host
   cargo xtask deployment inventory INSTANCE [OPTIONS]
+  cargo xtask calibration VM_NAME ALIAS [OPTIONS]
+  cargo xtask attestation VM_NAME ALIAS REVIEW --output PATH [OPTIONS]
+  cargo xtask host-deploy INSTANCE --config PATH --attestation PATH [OPTIONS]
   cargo xtask windows <check|sync|build|test|lint|fetch|all>
+  cargo xtask windows deploy MANIFEST --output PATH [--apply]
+  cargo xtask windows service-cycle SERVICE --output PATH [--apply]
   cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
   cargo xtask qga VM_NAME --attempts N --command-timeout-seconds N [--connect URI]
   cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES [OPTIONS]
@@ -27,6 +35,28 @@ Deployment inventory options:
   --text-file PATH              Required absolute inspected file; repeatable.
   --output PATH                 Required structured JSON evidence path.
   --command-timeout-seconds N   Required external-command bound.
+  --elevate                     Invoke this prebuilt xtask once through sudo.
+
+Calibration options:
+  --telemetry-path PATH         Required absolute Windows telemetry file path.
+  --output PATH                 Required structured JSON evidence path.
+  --sample-interval-seconds N   Required interval between two samples.
+  --max-age-seconds N           Required telemetry freshness bound.
+  --future-tolerance-seconds N  Required future-clock tolerance.
+  --command-timeout-seconds N   Required external-command bound.
+  --connect URI                 Libvirt URI; default qemu:///system.
+
+Attestation options:
+  --output PATH                 Required generated attestation path.
+  --command-timeout-seconds N   Required external-command bound.
+  --connect URI                 Libvirt URI; default qemu:///system.
+
+Host deployment options:
+  --config PATH                 Required reviewed instance environment file.
+  --attestation PATH            Required current compatibility attestation.
+  --output PATH                 Required structured JSON evidence path.
+  --command-timeout-seconds N   Required external-command bound.
+  --apply                       Install; otherwise validate only.
   --elevate                     Invoke this prebuilt xtask once through sudo.
 
 Qualification commands:
@@ -78,6 +108,8 @@ Windows environment:
   VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS Required operation bound.
   VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE Optional pinned known-hosts file.
   VIRTIO_MEM_WINDOWS_IDENTITY_FILE    Optional private-key path.
+  VIRTIO_MEM_WINDOWS_HOST_NAME        Optional current endpoint override.
+  VIRTIO_MEM_WINDOWS_HOST_KEY_ALIAS   Required with host-name override.
 "#;
 
 fn main() -> ExitCode {
@@ -106,6 +138,9 @@ fn execute(arguments: &[String]) -> Result<(), String> {
         }
         Some("doctor") => Err("doctor requires exactly: host".to_owned()),
         Some("deployment") => deployment::run(&deployment::parse(&arguments[1..])?, &repo),
+        Some("calibration") => calibration::run(&calibration::parse(&arguments[1..])?, &repo),
+        Some("attestation") => attestation::run(&attestation::parse(&arguments[1..])?, &repo),
+        Some("host-deploy") => host_deploy::run(&host_deploy::parse(&arguments[1..])?, &repo),
         Some("windows") => windows::run(windows::parse(&arguments[1..])?, &repo),
         Some("qga") => qga::run(&qga::parse(&arguments[1..])?, &repo),
         Some("live-resize") => live_resize::run(&live_resize::parse(&arguments[1..])?, &repo),

@@ -7,8 +7,7 @@ the repository. Use `.github/prompts/README.md` to select a task prompt.
 ## Language and ownership
 
 - Product code and maintained automation use Rust.
-- Bash is limited to a generated or task-specific privileged process boundary.
-- Do not add another language, a maintained shell workflow, or duplicated
+- Do not add another language, a shell workflow, or duplicated
   parsing, policy, polling, timeout, evidence, cleanup, or rollback logic.
 - The Windows service collects native telemetry, publishes versioned
   allocation-free records, and owns only its local lifecycle and observability.

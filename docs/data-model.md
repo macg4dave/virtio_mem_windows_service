@@ -19,6 +19,12 @@ atomically replaces the current record and retains bounded predecessors. The
 host validates identity, ordering, freshness, counter consistency, file bounds,
 and durable replay acknowledgement before accepting a sample.
 
+The configured raw transport is explicit. `qga-file` reads the protected
+Windows current record through standard bounded guest-file operations and
+keeps acknowledgement state at a separate host path. `file` reads an
+explicitly provisioned host-local record. Transport success alone never
+acknowledges or authorizes a sample.
+
 ## Target policy
 
 The host joins accepted Windows telemetry with the selected live virtio-mem
@@ -95,6 +101,7 @@ profile.
 
 The host reads an explicit VM, device alias, memory bounds, thresholds,
 durations, source modes, telemetry identity/path, policy-state path, attestation
-path, host reserve, resize quanta, policy reserves, history, and hysteresis.
+path, transport-specific host acknowledgement path, host reserve, resize
+quanta, policy reserves, history, and hysteresis.
 Only the maximum sample gap may be derived from the polling interval.
 Deployment examples use placeholders rather than machine values.

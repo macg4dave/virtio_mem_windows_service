@@ -33,7 +33,7 @@ struct InventoryEvidence {
     captured_unix_millis: u64,
     instance: String,
     unit: String,
-    service_properties: BTreeMap<String, String>,
+    service_properties: BTreeMap<String, Vec<String>>,
     binary: FileEvidence,
     text_files: Vec<FileEvidence>,
     controller_active: bool,
@@ -174,13 +174,13 @@ pub fn run(command: &InventoryCommand, repo: &Path) -> Result<(), String> {
 
 fn collect(command: &InventoryCommand, repo: &Path) -> Result<String, String> {
     let properties = systemd_properties(command, repo)?;
-    let active_state = properties
+    let active_states = properties
         .get("ActiveState")
         .ok_or_else(|| "systemctl did not report ActiveState".to_owned())?;
-    if active_state != "inactive" {
+    if active_states.as_slice() != ["inactive"] {
         return Err(format!(
-            "refusing inventory because {} is {active_state}, expected inactive",
-            command.unit
+            "refusing inventory because {} has ActiveState={active_states:?}, expected inactive",
+            command.unit,
         ));
     }
     let binary = inspect_file(&command.binary, false, command.command_timeout, repo)?;
@@ -216,7 +216,7 @@ fn collect(command: &InventoryCommand, repo: &Path) -> Result<String, String> {
 fn systemd_properties(
     command: &InventoryCommand,
     repo: &Path,
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<BTreeMap<String, Vec<String>>, String> {
     let property_list = "Id,Names,LoadState,ActiveState,SubState,UnitFileState,User,Group,MainPID,NRestarts,FragmentPath,DropInPaths,EnvironmentFiles,ExecStart";
     let text = process::bounded_text(
         "/usr/bin/systemctl",
@@ -229,17 +229,19 @@ fn systemd_properties(
         repo,
         command.command_timeout,
     )?;
+    parse_systemd_properties(&text)
+}
+
+fn parse_systemd_properties(text: &str) -> Result<BTreeMap<String, Vec<String>>, String> {
     let mut properties = BTreeMap::new();
     for line in text.lines().filter(|line| !line.trim().is_empty()) {
         let (name, value) = line
             .split_once('=')
             .ok_or_else(|| format!("systemctl returned malformed property: {line}"))?;
-        if properties
-            .insert(name.to_owned(), value.to_owned())
-            .is_some()
-        {
-            return Err(format!("systemctl returned duplicate property: {name}"));
-        }
+        properties
+            .entry(name.to_owned())
+            .or_insert_with(Vec::new)
+            .push(value.to_owned());
     }
     Ok(properties)
 }
@@ -571,6 +573,22 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn preserves_repeated_systemd_property_values() {
+        let properties = parse_systemd_properties(
+            "ActiveState=inactive\nEnvironmentFiles=/etc/one.conf\nEnvironmentFiles=/etc/two.conf\n",
+        )
+        .expect("valid repeated properties");
+        assert_eq!(
+            properties.get("EnvironmentFiles"),
+            Some(&vec![
+                "/etc/one.conf".to_owned(),
+                "/etc/two.conf".to_owned()
+            ])
+        );
+        assert!(parse_systemd_properties("malformed\n").is_err());
     }
 
     #[test]

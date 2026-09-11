@@ -37,6 +37,15 @@ Same-target diagnostic re-notification is independently disabled by default.
 Any ambiguity, stale input, incompatible state, ownership conflict, or unsafe
 capacity condition fails closed.
 
+Production raw telemetry uses the explicitly selected `qga-file` transport.
+The host opens the configured protected Windows current-record path with the
+standard QGA file API, performs a byte- and chunk-bounded read through EOF,
+rejects mismatched counts and zero progress, and closes the handle on success
+or failure. The existing host
+identity, freshness, session, replay, and durable acknowledgement checks apply
+after transport decoding. The `file` transport remains available only for an
+explicitly provisioned host-local handoff.
+
 The service manager does not blindly restart a failed controller. Recovery and
 resumption are explicit operator decisions made after current live state and
 durable command state are reviewed.

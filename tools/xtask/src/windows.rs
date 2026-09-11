@@ -4,6 +4,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
+
 use crate::process;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +26,53 @@ pub enum Command {
         expected_fingerprint: String,
         runs: u32,
     },
+    Deploy {
+        manifest: PathBuf,
+        output: PathBuf,
+        apply: bool,
+    },
+    ServiceCycle {
+        service: String,
+        output: PathBuf,
+        apply: bool,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeploymentManifest {
+    schema_version: u32,
+    vm_name: String,
+    service_name: String,
+    display_name: String,
+    description: String,
+    telemetry_path: String,
+    service_account: String,
+    poll_interval_millis: u64,
+    shutdown_timeout_millis: u64,
+    install_path: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DeploymentEvidence {
+    schema_version: u32,
+    applied: bool,
+    source_revision: String,
+    candidate_sha256: String,
+    manifest: DeploymentManifestEvidence,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    windows: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize)]
+struct DeploymentManifestEvidence {
+    vm_name: String,
+    service_name: String,
+    telemetry_path: String,
+    service_account: String,
+    poll_interval_millis: u64,
+    shutdown_timeout_millis: u64,
+    install_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +82,8 @@ struct Config {
     artifact_dir: PathBuf,
     known_hosts_file: Option<PathBuf>,
     identity_file: Option<PathBuf>,
+    host_name: Option<String>,
+    host_key_alias: Option<String>,
     connect_timeout_seconds: u64,
     operation_timeout_seconds: u64,
 }
@@ -47,9 +98,47 @@ struct Toolchain {
 }
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
-    let operation = args
-        .first()
-        .ok_or_else(|| "windows requires check|sync|build|test|lint|fetch|all|verify".to_owned())?;
+    let operation = args.first().ok_or_else(|| {
+        "windows requires check|sync|build|test|lint|fetch|all|verify|deploy".to_owned()
+    })?;
+    if operation == "deploy" {
+        if args.len() != 4 && args.len() != 5 {
+            return Err("windows deploy requires MANIFEST --output PATH [--apply]".to_owned());
+        }
+        if args[2] != "--output" || args[3].trim().is_empty() {
+            return Err("windows deploy requires MANIFEST --output PATH [--apply]".to_owned());
+        }
+        let apply = args.get(4).map(String::as_str) == Some("--apply");
+        if args.len() == 5 && !apply {
+            return Err(format!("unknown windows deploy option: {}", args[4]));
+        }
+        return Ok(Command::Deploy {
+            manifest: PathBuf::from(&args[1]),
+            output: PathBuf::from(&args[3]),
+            apply,
+        });
+    }
+    if operation == "service-cycle" {
+        if (args.len() != 4 && args.len() != 5)
+            || args[2] != "--output"
+            || args[1].trim().is_empty()
+            || args[3].trim().is_empty()
+        {
+            return Err(
+                "windows service-cycle requires SERVICE --output PATH [--apply]".to_owned(),
+            );
+        }
+        validate_ssh_target(&args[1])?;
+        let apply = args.get(4).map(String::as_str) == Some("--apply");
+        if args.len() == 5 && !apply {
+            return Err(format!("unknown windows service-cycle option: {}", args[4]));
+        }
+        return Ok(Command::ServiceCycle {
+            service: args[1].clone(),
+            output: PathBuf::from(&args[3]),
+            apply,
+        });
+    }
     if operation == "verify" {
         if args.len() != 4 || args[2] != "--runs" {
             return Err("windows verify requires EXPECTED_ED25519_FINGERPRINT --runs N".to_owned());
@@ -93,6 +182,16 @@ pub fn run(command: Command, repo: &Path) -> Result<(), String> {
             expected_fingerprint,
             runs,
         } => verify(repo, &Config::from_env(repo)?, &expected_fingerprint, runs),
+        Command::Deploy {
+            manifest,
+            output,
+            apply,
+        } => deploy(repo, &Config::from_env(repo)?, &manifest, &output, apply),
+        Command::ServiceCycle {
+            service,
+            output,
+            apply,
+        } => service_cycle(repo, &Config::from_env(repo)?, &service, &output, apply),
     }
 }
 
@@ -114,6 +213,8 @@ impl Config {
         };
         let known_hosts_file = optional_path("VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE")?;
         let identity_file = optional_path("VIRTIO_MEM_WINDOWS_IDENTITY_FILE")?;
+        let host_name = optional_env("VIRTIO_MEM_WINDOWS_HOST_NAME");
+        let host_key_alias = optional_env("VIRTIO_MEM_WINDOWS_HOST_KEY_ALIAS");
         let connect_timeout_seconds = positive_env("VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS")?;
         let operation_timeout_seconds =
             positive_env("VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS")?;
@@ -123,6 +224,8 @@ impl Config {
             artifact_dir,
             known_hosts_file,
             identity_file,
+            host_name,
+            host_key_alias,
             connect_timeout_seconds,
             operation_timeout_seconds,
         };
@@ -132,6 +235,15 @@ impl Config {
 
     fn validate(&self) -> Result<(), String> {
         validate_ssh_target(&self.ssh_target)?;
+        if self.host_name.is_some() != self.host_key_alias.is_some() {
+            return Err("VIRTIO_MEM_WINDOWS_HOST_NAME and VIRTIO_MEM_WINDOWS_HOST_KEY_ALIAS must be supplied together".to_owned());
+        }
+        if let Some(value) = &self.host_name {
+            validate_ssh_target(value)?;
+        }
+        if let Some(value) = &self.host_key_alias {
+            validate_ssh_target(value)?;
+        }
         if self.remote_dir.is_empty()
             || self.remote_dir.chars().any(char::is_control)
             || self
@@ -165,6 +277,14 @@ impl Config {
                 process::os("IdentitiesOnly=yes"),
                 process::os("-i"),
                 path.as_os_str().to_owned(),
+            ]);
+        }
+        if let (Some(host_name), Some(host_key_alias)) = (&self.host_name, &self.host_key_alias) {
+            options.extend([
+                process::os("-o"),
+                process::os(format!("HostName={host_name}")),
+                process::os("-o"),
+                process::os(format!("HostKeyAlias={host_key_alias}")),
             ]);
         }
         options
@@ -558,6 +678,356 @@ fn append_summary(path: &Path, value: &str) -> Result<(), String> {
         .map_err(|error| format!("failed to write {}: {error}", path.display()))
 }
 
+fn deploy(
+    repo: &Path,
+    config: &Config,
+    manifest_path: &Path,
+    output_path: &Path,
+    apply: bool,
+) -> Result<(), String> {
+    let manifest_path = resolve_local(repo, manifest_path);
+    let output_path = resolve_local(repo, output_path);
+    let manifest_text = std::fs::read_to_string(&manifest_path).map_err(|error| {
+        format!(
+            "read Windows deployment manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: DeploymentManifest = serde_json::from_str(&manifest_text)
+        .map_err(|error| format!("parse Windows deployment manifest: {error}"))?;
+    validate_deployment_manifest(&manifest)?;
+
+    let candidate_path = format!(
+        r"{}\target\release\virtio-mem-service.exe",
+        config.remote_dir.trim_end_matches(['\\', '/'])
+    );
+    let candidate_hash_output = remote_stdout(
+        config,
+        repo,
+        &format!("certutil -hashfile \"{candidate_path}\" SHA256"),
+    )?;
+    let candidate_sha256 = parse_sha256(&candidate_hash_output)
+        .ok_or_else(|| "Windows certutil output did not contain a candidate SHA-256".to_owned())?;
+    let source_revision = process::bounded_text(
+        "git",
+        &[process::os("rev-parse"), process::os("HEAD")],
+        repo,
+        Duration::from_secs(config.operation_timeout_seconds),
+    )?
+    .trim()
+    .to_owned();
+
+    let windows = if apply {
+        let service_config = serde_json::json!({
+            "schema_version": 4,
+            "vm_name": manifest.vm_name,
+            "service_name": manifest.service_name,
+            "display_name": manifest.display_name,
+            "description": manifest.description,
+            "demand_report_path": manifest.telemetry_path,
+            "service_account": manifest.service_account,
+            "poll_interval_millis": manifest.poll_interval_millis,
+            "shutdown_timeout_millis": manifest.shutdown_timeout_millis,
+        });
+        let config_base64 = base64_encode(
+            serde_json::to_string_pretty(&service_config)
+                .map_err(|error| format!("encode Windows service configuration: {error}"))?
+                .as_bytes(),
+        );
+        let script = deployment_powershell(&manifest, &candidate_path, &config_base64);
+        let output = remote_powershell(config, repo, &script)?;
+        Some(parse_last_json_line(&output)?)
+    } else {
+        None
+    };
+
+    let evidence = DeploymentEvidence {
+        schema_version: 1,
+        applied: apply,
+        source_revision,
+        candidate_sha256,
+        manifest: DeploymentManifestEvidence {
+            vm_name: manifest.vm_name,
+            service_name: manifest.service_name,
+            telemetry_path: manifest.telemetry_path,
+            service_account: manifest.service_account,
+            poll_interval_millis: manifest.poll_interval_millis,
+            shutdown_timeout_millis: manifest.shutdown_timeout_millis,
+            install_path: manifest.install_path,
+        },
+        windows,
+    };
+    persist_json(&output_path, &evidence)?;
+    println!(
+        "Windows deployment {} evidence written to {}",
+        if apply { "apply" } else { "dry-run" },
+        output_path.display()
+    );
+    Ok(())
+}
+
+fn service_cycle(
+    repo: &Path,
+    config: &Config,
+    service: &str,
+    output: &Path,
+    apply: bool,
+) -> Result<(), String> {
+    let service = ps_literal(service);
+    let action = if apply {
+        "if($before.State -ne 'Stopped'){Stop-Service -Name $service -Force; (Get-Service $service).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))}; Start-Service -Name $service; (Get-Service $service).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))"
+    } else {
+        ""
+    };
+    let script = format!(
+        r#"$ErrorActionPreference='Stop'
+$service={service}
+$before=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
+if($null -eq $before){{throw 'named Windows service was not found'}}
+try {{{action}}} catch {{if($before.State -eq 'Running'){{Start-Service -Name $service -ErrorAction SilentlyContinue}}; throw}}
+$after=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
+[ordered]@{{captured_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();applied={apply};service_name=$after.Name;display_name=$after.DisplayName;before_state=$before.State;after_state=$after.State;start_mode=$after.StartMode;account=$after.StartName;path=$after.PathName}} | ConvertTo-Json -Compress
+"#,
+        apply = if apply { "$true" } else { "$false" },
+    );
+    let value = parse_last_json_line(&remote_powershell(config, repo, &script)?)?;
+    let output = resolve_local(repo, output);
+    persist_json(&output, &value)?;
+    println!(
+        "Windows service-cycle {} evidence written to {}",
+        if apply { "apply" } else { "dry-run" },
+        output.display()
+    );
+    Ok(())
+}
+
+fn parse_last_json_line(output: &str) -> Result<serde_json::Value, String> {
+    output
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find_map(|line| serde_json::from_str(line).ok())
+        .ok_or_else(|| {
+            let bounded = output.chars().take(1_024).collect::<String>();
+            format!("Windows deployment did not return JSON evidence: {bounded:?}")
+        })
+}
+
+fn validate_deployment_manifest(manifest: &DeploymentManifest) -> Result<(), String> {
+    if manifest.schema_version != 1 {
+        return Err(format!(
+            "unsupported Windows deployment manifest schema version: {}",
+            manifest.schema_version
+        ));
+    }
+    for (name, value) in [
+        ("vm_name", &manifest.vm_name),
+        ("service_name", &manifest.service_name),
+        ("display_name", &manifest.display_name),
+        ("description", &manifest.description),
+        ("telemetry_path", &manifest.telemetry_path),
+        ("service_account", &manifest.service_account),
+        ("install_path", &manifest.install_path),
+    ] {
+        if value.trim().is_empty() || value.chars().any(char::is_control) {
+            return Err(format!(
+                "Windows deployment manifest {name} is empty or unsafe"
+            ));
+        }
+    }
+    for (name, value) in [
+        ("telemetry_path", &manifest.telemetry_path),
+        ("install_path", &manifest.install_path),
+    ] {
+        let bytes = value.as_bytes();
+        if bytes.len() < 4
+            || !bytes[0].is_ascii_alphabetic()
+            || bytes[1] != b':'
+            || bytes[2] != b'\\'
+            || value.contains("..")
+        {
+            return Err(format!(
+                "Windows deployment manifest {name} must be an absolute drive path without '..'"
+            ));
+        }
+    }
+    if !manifest.install_path.to_ascii_lowercase().ends_with(".exe") {
+        return Err("Windows deployment install_path must name an .exe file".to_owned());
+    }
+    if manifest.poll_interval_millis == 0 || manifest.shutdown_timeout_millis == 0 {
+        return Err("Windows deployment timings must be positive".to_owned());
+    }
+    Ok(())
+}
+
+fn deployment_powershell(
+    manifest: &DeploymentManifest,
+    candidate_path: &str,
+    config_base64: &str,
+) -> String {
+    let service = ps_literal(&manifest.service_name);
+    let candidate = ps_literal(candidate_path);
+    let install = ps_literal(&manifest.install_path);
+    let telemetry = ps_literal(&manifest.telemetry_path);
+    let wait_millis = manifest.poll_interval_millis.saturating_mul(3).max(1000);
+    format!(
+        r#"$ErrorActionPreference='Stop'
+$service={service}
+$candidate={candidate}
+$install={install}
+$telemetry={telemetry}
+$config='C:\ProgramData\VirtioMemService\config.json'
+$root='C:\ProgramData\VirtioMemService'
+$backup=Join-Path $root ('deployment-backups\'+[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+$prior=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'") -ErrorAction SilentlyContinue
+$priorRunning=($null -ne $prior -and $prior.State -eq 'Running')
+New-Item -ItemType Directory -Force -Path $backup | Out-Null
+if(Test-Path $install){{Copy-Item -LiteralPath $install -Destination (Join-Path $backup 'service.exe') -Force}}
+if(Test-Path $config){{Copy-Item -LiteralPath $config -Destination (Join-Path $backup 'config.json') -Force}}
+if($null -ne $prior){{& reg.exe export ('HKLM\SYSTEM\CurrentControlSet\Services\'+$service) (Join-Path $backup 'service.reg') /y | Out-Null}}
+try {{
+  if($null -ne $prior){{if($prior.State -ne 'Stopped'){{Stop-Service -Name $service -Force; (Get-Service $service).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))}}; & sc.exe delete $service | Out-Null; Start-Sleep -Milliseconds 500}}
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $install),$root | Out-Null
+  Copy-Item -LiteralPath $candidate -Destination $install -Force
+  [IO.File]::WriteAllBytes($config,[Convert]::FromBase64String('{config_base64}'))
+  & $install install
+  if($LASTEXITCODE -ne 0){{throw "candidate install failed with exit code $LASTEXITCODE"}}
+  & $install start
+  if($LASTEXITCODE -ne 0){{throw "candidate start failed with exit code $LASTEXITCODE"}}
+  (Get-Service $service).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))
+  Start-Sleep -Milliseconds {wait_millis}
+  $first=Get-Content -LiteralPath $telemetry -Raw | ConvertFrom-Json
+  Start-Sleep -Milliseconds {wait_millis}
+  $second=Get-Content -LiteralPath $telemetry -Raw | ConvertFrom-Json
+  if($second.sequence -le $first.sequence){{throw 'telemetry sequence did not advance'}}
+  if($second.vm_name -ne {vm} -or $second.service_name -ne $service){{throw 'telemetry identity mismatch'}}
+  $installed=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
+  [ordered]@{{
+    captured_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    backup_path=$backup
+    binary_sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $install).Hash.ToLowerInvariant()
+    config_sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $config).Hash.ToLowerInvariant()
+    binary_acl=(Get-Acl -LiteralPath $install).Sddl
+    config_acl=(Get-Acl -LiteralPath $config).Sddl
+    telemetry_acl=(Get-Acl -LiteralPath $telemetry).Sddl
+    service_name=$installed.Name
+    service_state=$installed.State
+    service_start_mode=$installed.StartMode
+    service_account=$installed.StartName
+    service_path=$installed.PathName
+    service_error_control=$installed.ErrorControl
+    first_session_id=$first.session_id
+    first_sequence=$first.sequence
+    second_session_id=$second.session_id
+    second_sequence=$second.sequence
+  }} | ConvertTo-Json -Compress
+}} catch {{
+  try {{Stop-Service -Name $service -Force -ErrorAction SilentlyContinue; & sc.exe delete $service | Out-Null}} catch {{}}
+  if(Test-Path (Join-Path $backup 'service.exe')){{Copy-Item -LiteralPath (Join-Path $backup 'service.exe') -Destination $install -Force}}
+  if(Test-Path (Join-Path $backup 'config.json')){{Copy-Item -LiteralPath (Join-Path $backup 'config.json') -Destination $config -Force}} else {{Remove-Item -LiteralPath $config -Force -ErrorAction SilentlyContinue}}
+  if(Test-Path (Join-Path $backup 'service.reg')){{& reg.exe import (Join-Path $backup 'service.reg') | Out-Null; if($priorRunning){{Start-Service -Name $service}}}}
+  throw
+}}"#,
+        vm = ps_literal(&manifest.vm_name),
+    )
+}
+
+fn remote_powershell(config: &Config, repo: &Path, script: &str) -> Result<String, String> {
+    let nonce = format!("{}-{}", std::process::id(), unix_millis()?);
+    let local = std::env::temp_dir().join(format!("virtio-mem-deploy-{nonce}.ps1"));
+    let remote = format!("virtio-mem-deploy-{nonce}.ps1");
+    std::fs::write(&local, script)
+        .map_err(|error| format!("write temporary PowerShell payload: {error}"))?;
+    let result = (|| {
+        let mut copy_args = config.ssh_options();
+        copy_args.extend([
+            process::os("--"),
+            local.as_os_str().to_owned(),
+            process::os(format!("{}:{remote}", config.ssh_target)),
+        ]);
+        let copy = process::bounded_output(
+            "scp",
+            &copy_args,
+            repo,
+            Duration::from_secs(config.operation_timeout_seconds),
+        )?;
+        if !copy.status.success() {
+            return Err(format!(
+                "copy temporary PowerShell payload failed with status {}: {}",
+                copy.status,
+                String::from_utf8_lossy(&copy.stderr).trim()
+            ));
+        }
+        remote_stdout(
+            config,
+            repo,
+            &format!("powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File {remote}"),
+        )
+    })();
+    let _ = remote_output(config, repo, &format!("del /q {remote}"));
+    let _ = std::fs::remove_file(local);
+    result
+}
+
+fn unix_millis() -> Result<u128, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .map_err(|error| format!("system clock is before Unix epoch: {error}"))
+}
+
+fn ps_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn base64_encode(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let a = chunk[0];
+        let b = chunk.get(1).copied().unwrap_or(0);
+        let c = chunk.get(2).copied().unwrap_or(0);
+        output.push(TABLE[(a >> 2) as usize] as char);
+        output.push(TABLE[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
+        output.push(if chunk.len() > 1 {
+            TABLE[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() > 2 {
+            TABLE[(c & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
+fn resolve_local(repo: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo.join(path)
+    }
+}
+
+fn persist_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("deployment evidence path has no parent: {}", path.display()))?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("create deployment evidence directory: {error}"))?;
+    let mut bytes = serde_json::to_vec_pretty(value)
+        .map_err(|error| format!("serialize deployment evidence: {error}"))?;
+    bytes.push(b'\n');
+    let temporary = parent.join(format!(".windows-deployment-{}.tmp", std::process::id()));
+    std::fs::write(&temporary, bytes)
+        .map_err(|error| format!("write deployment evidence: {error}"))?;
+    std::fs::rename(&temporary, path)
+        .map_err(|error| format!("commit deployment evidence: {error}"))
+}
+
 fn required_env(name: &str) -> Result<String, String> {
     std::env::var(name)
         .ok()
@@ -572,6 +1042,12 @@ fn positive_env(name: &str) -> Result<u64, String> {
         .ok()
         .filter(|value| *value > 0)
         .ok_or_else(|| format!("{name} must be a positive integer"))
+}
+
+fn optional_env(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 fn optional_path(name: &str) -> Result<Option<PathBuf>, String> {
@@ -693,6 +1169,16 @@ mod tests {
             parse(&strings(&["verify", "SHA256:abc+", "--runs", "2"])),
             Ok(Command::Verify { runs: 2, .. })
         ));
+        assert!(matches!(
+            parse(&strings(&[
+                "deploy",
+                "deployment.json",
+                "--output",
+                "evidence.json",
+                "--apply"
+            ])),
+            Ok(Command::Deploy { apply: true, .. })
+        ));
     }
 
     #[test]
@@ -724,5 +1210,40 @@ mod tests {
         std::fs::remove_file(root.join("present")).expect("remove fixture file");
         std::fs::remove_dir(root).expect("remove fixture directory");
         assert_eq!(filtered, b"present\0");
+    }
+
+    #[test]
+    fn deployment_manifest_requires_explicit_safe_paths_and_timings() {
+        let mut manifest = DeploymentManifest {
+            schema_version: 1,
+            vm_name: "guest".to_owned(),
+            service_name: "VirtioMemService".to_owned(),
+            display_name: "Virtio memory telemetry".to_owned(),
+            description: "Publishes telemetry".to_owned(),
+            telemetry_path: r"C:\ProgramData\VirtioMemService\telemetry.json".to_owned(),
+            service_account: r"NT AUTHORITY\LocalService".to_owned(),
+            poll_interval_millis: 5_000,
+            shutdown_timeout_millis: 30_000,
+            install_path: r"C:\Program Files\VirtioMemService\virtio-mem-service.exe".to_owned(),
+        };
+        assert!(validate_deployment_manifest(&manifest).is_ok());
+        manifest.telemetry_path = r"relative\telemetry.json".to_owned();
+        assert!(validate_deployment_manifest(&manifest).is_err());
+        manifest.telemetry_path = r"C:\ProgramData\..\unsafe.json".to_owned();
+        assert!(validate_deployment_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn powershell_payload_encoding_is_standard_base64() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(ps_literal("a'b"), "'a''b'");
+        assert_eq!(
+            parse_last_json_line("service installed\n{\"ok\":true}\n").expect("last JSON line")
+                ["ok"],
+            true
+        );
     }
 }

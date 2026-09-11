@@ -9,7 +9,8 @@ do not copy versions, paths, VM names, or endpoints from prior validation runs.
   documented minimum supported Rust version.
 - The native Windows MSVC target and linker for the Windows crate.
 - Locked Cargo dependencies from the workspace manifests and lockfiles.
-- Bash only for one generated or task-specific privileged process boundary.
+- Privileged RHEL workflows use the prebuilt typed xtask boundary; Cargo and
+  evidence persistence remain unprivileged.
 
 Run the local dependency and repository checks with:
 
@@ -46,7 +47,8 @@ telemetry, and attestation paths.
 The guest requires supported Windows APIs, the virtio-mem driver, QEMU Guest
 Agent on its standard virtio-serial channel, and the configured service
 identity and ProgramData ACLs. Windows telemetry is native; the service does
-not open the QGA channel.
+not open the QGA channel. The host's production telemetry transport uses the
+standard bounded QGA guest-file API to read that protected native record.
 
 The upstream guest agent does not guarantee the optional downstream
 `guest-get-memory-stats` command. The host uses validated `dommemstat` by

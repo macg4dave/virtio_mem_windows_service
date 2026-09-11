@@ -19,6 +19,10 @@ and operation timeout are required environment inputs; see
 native build/tests/format/Clippy, fetches the executable, and verifies its
 hash. It never installs the service or changes guest memory.
 
+The service writes only its protected atomic local current record. The host may
+read that configured path through standard bounded QGA guest-file operations;
+the Windows service itself does not open QGA or accept host commands.
+
 ## Configuration and service lifecycle
 
 Production and interactive startup require the versioned JSON configuration at

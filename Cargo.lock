@@ -276,6 +276,7 @@ dependencies = [
  "serde_json",
  "signal-hook",
  "virtio-mem-core",
+ "virtio-mem-host",
  "wait-timeout",
 ]
 
