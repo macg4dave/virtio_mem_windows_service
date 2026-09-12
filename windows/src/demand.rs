@@ -267,6 +267,229 @@ pub fn process_session_id(service_name: &str) -> Result<String, String> {
     ))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryResourceNotificationKind {
+    Low,
+    High,
+}
+
+/// Injectable boundary around the paired Windows memory-resource handles.
+pub trait MemoryResourceNotificationApi {
+    type Handle: Copy;
+
+    fn create(&self, kind: MemoryResourceNotificationKind) -> Result<Self::Handle, u32>;
+    fn query(&self, handle: Self::Handle) -> Result<bool, u32>;
+    fn close(&self, handle: Self::Handle);
+}
+
+pub trait MemoryResourceNotificationTelemetry {
+    fn capability(&self) -> TelemetryCapability;
+    fn collect(
+        &self,
+        observed_monotonic_millis: u64,
+    ) -> OptionalTelemetrySignal<MemoryResourceNotificationState>;
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnavailableMemoryResourceNotifications;
+
+impl MemoryResourceNotificationTelemetry for UnavailableMemoryResourceNotifications {
+    fn capability(&self) -> TelemetryCapability {
+        TelemetryCapability::Unavailable
+    }
+
+    fn collect(
+        &self,
+        observed_monotonic_millis: u64,
+    ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
+        OptionalTelemetrySignal::unavailable(observed_monotonic_millis)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MemoryResourceNotificationHandles<H> {
+    Ready { low: H, high: H },
+    CreationFailed(u32),
+}
+
+/// Owns both notification handles for one service worker lifetime.
+#[derive(Debug)]
+pub struct MemoryResourceNotificationCollector<A: MemoryResourceNotificationApi> {
+    api: A,
+    handles: MemoryResourceNotificationHandles<A::Handle>,
+}
+
+impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationCollector<A> {
+    pub fn new(api: A) -> Self {
+        let low = match api.create(MemoryResourceNotificationKind::Low) {
+            Ok(low) => low,
+            Err(error_code) => {
+                return Self {
+                    api,
+                    handles: MemoryResourceNotificationHandles::CreationFailed(
+                        normalize_error_code(error_code),
+                    ),
+                };
+            }
+        };
+        let high = match api.create(MemoryResourceNotificationKind::High) {
+            Ok(high) => high,
+            Err(error_code) => {
+                api.close(low);
+                return Self {
+                    api,
+                    handles: MemoryResourceNotificationHandles::CreationFailed(
+                        normalize_error_code(error_code),
+                    ),
+                };
+            }
+        };
+        Self {
+            api,
+            handles: MemoryResourceNotificationHandles::Ready { low, high },
+        }
+    }
+}
+
+impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationTelemetry
+    for MemoryResourceNotificationCollector<A>
+{
+    fn capability(&self) -> TelemetryCapability {
+        TelemetryCapability::Supported
+    }
+
+    fn collect(
+        &self,
+        observed_monotonic_millis: u64,
+    ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
+        let (low, high) = match self.handles {
+            MemoryResourceNotificationHandles::Ready { low, high } => (low, high),
+            MemoryResourceNotificationHandles::CreationFailed(error_code) => {
+                return OptionalTelemetrySignal::failed(observed_monotonic_millis, error_code);
+            }
+        };
+        let low = match self.api.query(low) {
+            Ok(value) => value,
+            Err(error_code) => {
+                return OptionalTelemetrySignal::failed(
+                    observed_monotonic_millis,
+                    normalize_error_code(error_code),
+                );
+            }
+        };
+        let high = match self.api.query(high) {
+            Ok(value) => value,
+            Err(error_code) => {
+                return OptionalTelemetrySignal::failed(
+                    observed_monotonic_millis,
+                    normalize_error_code(error_code),
+                );
+            }
+        };
+        let state = match (low, high) {
+            (true, false) => MemoryResourceNotificationState::Low,
+            (false, true) => MemoryResourceNotificationState::High,
+            (false, false) => MemoryResourceNotificationState::Neutral,
+            (true, true) => {
+                return OptionalTelemetrySignal::failed(
+                    observed_monotonic_millis,
+                    CONTRADICTORY_NOTIFICATION_ERROR_CODE,
+                );
+            }
+        };
+        OptionalTelemetrySignal::supported(observed_monotonic_millis, state)
+    }
+}
+
+impl<A: MemoryResourceNotificationApi> Drop for MemoryResourceNotificationCollector<A> {
+    fn drop(&mut self) {
+        if let MemoryResourceNotificationHandles::Ready { low, high } = self.handles {
+            self.api.close(low);
+            self.api.close(high);
+        }
+    }
+}
+
+const FALLBACK_NOTIFICATION_ERROR_CODE: u32 = 31;
+const CONTRADICTORY_NOTIFICATION_ERROR_CODE: u32 = 13;
+
+fn normalize_error_code(error_code: u32) -> u32 {
+    if error_code == 0 {
+        FALLBACK_NOTIFICATION_ERROR_CODE
+    } else {
+        error_code
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsMemoryResourceNotificationApi;
+
+#[cfg(windows)]
+impl MemoryResourceNotificationApi for WindowsMemoryResourceNotificationApi {
+    type Handle = usize;
+
+    fn create(&self, kind: MemoryResourceNotificationKind) -> Result<Self::Handle, u32> {
+        use winapi::um::memoryapi::{
+            CreateMemoryResourceNotification, HighMemoryResourceNotification,
+            LowMemoryResourceNotification,
+        };
+
+        let notification_type = match kind {
+            MemoryResourceNotificationKind::Low => LowMemoryResourceNotification,
+            MemoryResourceNotificationKind::High => HighMemoryResourceNotification,
+        };
+        // SAFETY: The API receives a valid documented enum and returns an owned
+        // handle or null. The collector closes every successfully created handle.
+        let handle = unsafe { CreateMemoryResourceNotification(notification_type) };
+        if handle.is_null() {
+            Err(last_windows_error_code())
+        } else {
+            Ok(handle as usize)
+        }
+    }
+
+    fn query(&self, handle: Self::Handle) -> Result<bool, u32> {
+        use winapi::ctypes::c_void;
+        use winapi::shared::minwindef::FALSE;
+        use winapi::um::memoryapi::QueryMemoryResourceNotification;
+
+        let mut signaled = FALSE;
+        // SAFETY: `handle` was returned by the create call and remains owned by
+        // the collector; the output pointer is valid for the duration of the call.
+        let result =
+            unsafe { QueryMemoryResourceNotification(handle as *mut c_void, &mut signaled) };
+        if result == FALSE {
+            Err(last_windows_error_code())
+        } else {
+            Ok(signaled != FALSE)
+        }
+    }
+
+    fn close(&self, handle: Self::Handle) {
+        use winapi::ctypes::c_void;
+        use winapi::um::handleapi::CloseHandle;
+
+        // SAFETY: The collector calls this exactly once for each owned handle.
+        let _ = unsafe { CloseHandle(handle as *mut c_void) };
+    }
+}
+
+#[cfg(windows)]
+fn last_windows_error_code() -> u32 {
+    normalize_error_code(
+        std::io::Error::last_os_error()
+            .raw_os_error()
+            .unwrap_or_default() as u32,
+    )
+}
+
+#[cfg(windows)]
+pub fn native_memory_resource_notifications(
+) -> MemoryResourceNotificationCollector<WindowsMemoryResourceNotificationApi> {
+    MemoryResourceNotificationCollector::new(WindowsMemoryResourceNotificationApi)
+}
+
 /// Collects native Windows memory counters using the documented system APIs.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeMemoryTelemetry;
@@ -342,6 +565,8 @@ impl MemoryTelemetry for NativeMemoryTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex};
 
     const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -357,6 +582,144 @@ mod tests {
             kernel_paged_bytes: 0,
             kernel_nonpaged_bytes: 0,
         }
+    }
+
+    #[derive(Debug, Default)]
+    struct NotificationFixtureState {
+        creates: VecDeque<Result<u8, u32>>,
+        low_queries: VecDeque<Result<bool, u32>>,
+        high_queries: VecDeque<Result<bool, u32>>,
+        closed: Vec<u8>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct NotificationFixtureApi(Arc<Mutex<NotificationFixtureState>>);
+
+    impl MemoryResourceNotificationApi for NotificationFixtureApi {
+        type Handle = u8;
+
+        fn create(&self, _kind: MemoryResourceNotificationKind) -> Result<Self::Handle, u32> {
+            self.0
+                .lock()
+                .expect("notification fixture lock")
+                .creates
+                .pop_front()
+                .expect("scripted create result")
+        }
+
+        fn query(&self, handle: Self::Handle) -> Result<bool, u32> {
+            let mut state = self.0.lock().expect("notification fixture lock");
+            let results = if handle == 1 {
+                &mut state.low_queries
+            } else {
+                &mut state.high_queries
+            };
+            results.pop_front().expect("scripted query result")
+        }
+
+        fn close(&self, handle: Self::Handle) {
+            self.0
+                .lock()
+                .expect("notification fixture lock")
+                .closed
+                .push(handle);
+        }
+    }
+
+    fn notification_fixture(
+        state: NotificationFixtureState,
+    ) -> (NotificationFixtureApi, Arc<Mutex<NotificationFixtureState>>) {
+        let state = Arc::new(Mutex::new(state));
+        (NotificationFixtureApi(state.clone()), state)
+    }
+
+    #[test]
+    fn notification_collector_reports_neutral_low_and_high() {
+        let (api, state) = notification_fixture(NotificationFixtureState {
+            creates: VecDeque::from([Ok(1), Ok(2)]),
+            low_queries: VecDeque::from([Ok(false), Ok(true), Ok(false)]),
+            high_queries: VecDeque::from([Ok(false), Ok(false), Ok(true)]),
+            ..NotificationFixtureState::default()
+        });
+        let collector = MemoryResourceNotificationCollector::new(api);
+
+        for (monotonic, expected) in [
+            (10, MemoryResourceNotificationState::Neutral),
+            (20, MemoryResourceNotificationState::Low),
+            (30, MemoryResourceNotificationState::High),
+        ] {
+            assert_eq!(
+                collector.collect(monotonic),
+                OptionalTelemetrySignal::supported(monotonic, expected)
+            );
+        }
+        drop(collector);
+        assert_eq!(
+            state.lock().expect("notification fixture lock").closed,
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn notification_creation_failure_is_sticky_and_cleans_partial_state() {
+        let (api, state) = notification_fixture(NotificationFixtureState {
+            creates: VecDeque::from([Ok(1), Err(5)]),
+            ..NotificationFixtureState::default()
+        });
+        let collector = MemoryResourceNotificationCollector::new(api);
+
+        assert_eq!(collector.capability(), TelemetryCapability::Supported);
+        assert_eq!(
+            collector.collect(10),
+            OptionalTelemetrySignal::failed(10, 5)
+        );
+        drop(collector);
+        assert_eq!(
+            state.lock().expect("notification fixture lock").closed,
+            vec![1]
+        );
+    }
+
+    #[test]
+    fn notification_query_failure_and_contradiction_fail_closed_then_recover() {
+        let (api, _state) = notification_fixture(NotificationFixtureState {
+            creates: VecDeque::from([Ok(1), Ok(2)]),
+            low_queries: VecDeque::from([Err(0), Ok(true), Ok(false)]),
+            high_queries: VecDeque::from([Ok(true), Ok(true)]),
+            ..NotificationFixtureState::default()
+        });
+        let collector = MemoryResourceNotificationCollector::new(api);
+
+        assert_eq!(
+            collector.collect(10),
+            OptionalTelemetrySignal::failed(10, FALLBACK_NOTIFICATION_ERROR_CODE)
+        );
+        assert_eq!(
+            collector.collect(20),
+            OptionalTelemetrySignal::failed(20, CONTRADICTORY_NOTIFICATION_ERROR_CODE)
+        );
+        assert_eq!(
+            collector.collect(30),
+            OptionalTelemetrySignal::supported(30, MemoryResourceNotificationState::High)
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_notification_api_reports_a_supported_categorical_state() {
+        let collector = native_memory_resource_notifications();
+        let observation = collector.collect(1);
+
+        assert_eq!(collector.capability(), TelemetryCapability::Supported);
+        assert_eq!(observation.status, TelemetrySignalStatus::Supported);
+        assert!(matches!(
+            observation.value,
+            Some(
+                MemoryResourceNotificationState::Low
+                    | MemoryResourceNotificationState::Neutral
+                    | MemoryResourceNotificationState::High
+            )
+        ));
     }
 
     #[test]

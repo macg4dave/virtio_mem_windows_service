@@ -28,7 +28,8 @@ const MAX_SERVICE_NAME_UTF16_UNITS: usize = 256;
 
 use crate::config::ServiceConfig;
 use crate::demand::{
-    process_session_id, AtomicRawTelemetryPublisher, NativeMemoryTelemetry, SystemTelemetryClock,
+    native_memory_resource_notifications, process_session_id, AtomicRawTelemetryPublisher,
+    NativeMemoryTelemetry, SystemTelemetryClock,
 };
 use crate::event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
@@ -500,8 +501,9 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
         move |service_stop: &StopSignal| {
             let session_id = process_session_id(&service_name)
                 .map_err(|error| format!("runtime wiring / session identity: {error}"))?;
-            let mut worker = RawTelemetryWorker::new(
+            let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
                 NativeMemoryTelemetry,
+                native_memory_resource_notifications(),
                 AtomicRawTelemetryPublisher::new(&telemetry_path),
                 SystemTelemetryClock::default(),
                 &vm_name,

@@ -50,6 +50,13 @@ incomplete observations cannot provide pressure-qualified reclaim evidence.
 These additions remain measurements and never contain a desired target. See
 [windows-native-pressure-controller.md](windows-native-pressure-controller.md).
 
+WN2 populates only `memory_resource_notifications`. Its capability is
+`supported` on the Windows build even when a handle creation or query attempt
+reports `failed`; this distinguishes API availability from an observation
+failure. Low and high handles are queried as one categorical sample. Neither
+signalled is neutral, while both signalled is contradictory invalid-data
+evidence. The other two capability groups remain explicitly unavailable.
+
 ## Target policy
 
 The host joins accepted Windows telemetry with the selected live virtio-mem

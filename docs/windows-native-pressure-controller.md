@@ -197,7 +197,8 @@ shrink and request bounded growth, subject to host and device safety.
 
 ### Windows collector
 
-Introduce an additive telemetry schema revision with:
+The additive schema-v3 contract is implemented, and WN2 populates its paired
+low/high notification group. The complete destination contains:
 
 - low and high memory-resource notification states and API availability;
 - existing physical and commit totals;
@@ -208,8 +209,9 @@ Introduce an additive telemetry schema revision with:
 - existing producer identity, sequence, monotonic/wall timestamps, and bounded
   atomic publication.
 
-The Windows service normalises units and counter semantics only. It must not
-publish `desired` or infer host capacity.
+The Windows service normalises units and counter semantics only. It does not
+publish `desired` or infer host capacity. Reusable-memory and rate groups remain
+explicitly unavailable until their later milestones.
 
 ### Host assessment and target construction
 

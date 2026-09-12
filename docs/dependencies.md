@@ -56,12 +56,14 @@ default and treats alias-scoped live virtio-mem `current` as allocation
 authority.
 
 The versioned telemetry contract has capability groups for Windows memory
-resource notifications, memory-list detail, and PDH-style paging rates. WN1
-publishes those groups as explicitly unavailable without calling new APIs.
-WN2 and later may use the Windows-supplied facilities only after the native
-capability gate records exact availability, counter names, sampling behavior,
-failure behavior, and required privileges. No third-party pressure library is
-assumed.
+resource notifications, memory-list detail, and PDH-style paging rates. WN2
+uses `CreateMemoryResourceNotification` and
+`QueryMemoryResourceNotification` from Kernel32 and closes their handles with
+`CloseHandle`; the native capability gate verifies this path on the supported
+build. Later milestones may add Windows-supplied memory-list or PDH facilities
+only after their native gates record exact availability, counter names,
+sampling behavior, failure behavior, and required privileges. No third-party
+pressure library is assumed.
 
 ## Live resize prerequisites
 

@@ -81,12 +81,14 @@ and `docs/testing.md`; do not copy values from old evidence.
 
 ## Current readiness
 
-Core telemetry, single-controller policy/reconciliation, native service
-lifecycle, host actuation, and Rust validation tooling are implemented. The
-implemented policy is now a compatibility baseline, not the release-candidate
-sizing algorithm. The stack remains NO-GO for unattended automatic resizing
-until the pressure-aware implementation and its applied qualification,
-recovery, and endurance gates in `docs/QA-roadmap.md` pass.
+Core telemetry, Windows low/high memory-resource notification collection,
+single-controller policy/reconciliation, native service lifecycle, host
+actuation, and Rust validation tooling are implemented. Notification state is
+measurement-only and not yet used by target policy. The implemented sizing
+policy remains a compatibility baseline, not the release candidate. The stack
+remains NO-GO for unattended automatic resizing until the pressure-aware
+implementation and its applied qualification, recovery, and endurance gates in
+`docs/QA-roadmap.md` pass.
 
 ## Documentation
 

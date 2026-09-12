@@ -6,10 +6,12 @@ roadmap to implementation-sized slices without duplicating milestone contracts.
 
 ## Current checkpoint
 
-WN1 / TASK-036 is complete. The additive schema-v3 shared contract and its
-explicit schema-v2 fallback passed focused, local, and native Windows gates
-without new native collection, target-policy changes, deployment, or actuation.
-The next slice is TASK-037 / WN2. The installed controller remains disabled and
+WN2 / TASK-037 is complete. The Windows service now publishes authoritative
+low/neutral/high memory-resource notification state with explicit failure and
+cleanup behavior. Focused, local, and native Windows gates passed, including a
+real native API capability probe. Workload correlation, installed-service
+evidence, target-policy use, and actuation remain outstanding. TASK-030 is the
+next Ready dependency for WN3. The installed controller remains disabled and
 inactive.
 
 ## Ordered implementation slices

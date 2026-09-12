@@ -11,8 +11,8 @@ not from completed task notes.
 
 ## In progress
 
-No implementation task is claimed. TASK-036 completed the WN1 contract;
-TASK-037 is the next ready native-telemetry slice.
+No implementation task is claimed. TASK-037 completed WN2; TASK-030 is the
+next Ready task and is required before WN3 can begin.
 
 ## Paused fixed-headroom qualification
 
@@ -32,7 +32,6 @@ no historical result authorizes automatic resizing under the new policy.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| TASK-037 | Complete WN2: collect authoritative Windows memory-resource notifications and publish their capability, state, and failures without policy actuation | TASK-036 |
 | TASK-030 | Expose a versioned, read-only controller status snapshot containing live desired/requested/current, accepted telemetry identity, reclaim readiness, capacity state, command ownership, and latch/recovery details | TASK-029 |
 | TASK-032 | Define the global-controller contract and implement a versioned durable reservation ledger around the existing pure pool planner | Existing `global_pool` prototype |
 
@@ -71,7 +70,7 @@ they do not replace executable task cards.
 | --- | --- | --- | --- |
 | WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
 | WN1 | Complete | Define the Windows-native telemetry contract | WN0 |
-| WN2 | Ready | Add authoritative Windows pressure notifications | WN1 |
+| WN2 | Complete | Add authoritative Windows pressure notifications | WN1 |
 | WN3 | Planned | Separate requirement, pressure, and shrink-safety assessment | WN2 |
 | WN4 | Planned | Integrate pressure-aware growth | WN3 |
 | WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
@@ -112,6 +111,12 @@ record replaces historical command transcripts and machine-specific evidence:
   rules, and shared Windows/host fixtures. Focused core/host tests, the local
   aggregate gate, and the native Windows aggregate gate passed on 2026-09-13;
   no service deployment, native pressure collection, or actuation was run.
+- TASK-037: added lifetime-owned low/high Windows memory-resource notification
+  handles, categorical low/neutral/high publication, explicit creation/query
+  failure evidence, contradiction handling, and cancellation-safe cleanup.
+  Focused host tests, the local aggregate gate, and the native Windows gate
+  including a real API capability probe passed on 2026-09-13; no installed
+  service, workload correlation, target-policy change, or actuation was run.
 - TASK-009 and QA-T001 through QA-T008: native Windows deployment, safe
   baseline, coherent least-privilege host deployment, calibration, current
   attestation, and restart-safe no-actuation preflight.

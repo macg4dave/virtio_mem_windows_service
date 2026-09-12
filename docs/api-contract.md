@@ -68,6 +68,18 @@ session at sequence zero. Fallback supplies basic-counter context only and
 cannot acquire pressure-qualified reclaim authority. Rate evidence remains
 optional for the baseline policy.
 
+The WN2 collector creates one low-memory and one high-memory resource
+notification handle for the worker lifetime and queries both on each existing
+poll. Exactly low signalled becomes `low`, exactly high signalled becomes
+`high`, and neither becomes `neutral`. Handle creation or query failure is
+published as `failed` with a non-zero Win32 error code while basic counters
+continue to advance. A contradictory paired observation fails closed as
+Win32 `ERROR_INVALID_DATA` (13) for that sample. Query failures may recover on
+a later poll; creation failure remains visible for that producer session.
+Every successfully created handle is closed when construction partially fails
+or the worker exits, including cancellation. Reusable-memory and paging-rate
+capabilities remain unavailable until later milestones.
+
 ## Host service
 
 The host controller loads validated environment configuration and runs one

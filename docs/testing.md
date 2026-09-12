@@ -77,6 +77,12 @@ checks the endpoint, synchronizes the non-ignored working tree once, builds,
 tests, formats, lints, fetches the service executable, and verifies its hash.
 It does not install or start a service or change guest memory.
 
+The native suite directly creates, queries, and closes the paired Windows
+memory-resource notification handles. Injectable tests separately cover low,
+neutral, high, creation/query failure, contradiction, recovery, cancellation,
+and partial/full cleanup. This is API capability and code-path evidence, not
+installed-service or workload-correlation evidence.
+
 For pinned repeatability evidence, choose the number of aggregate runs rather
 than relying on a historical milestone count:
 

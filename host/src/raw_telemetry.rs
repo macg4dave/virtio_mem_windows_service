@@ -430,7 +430,8 @@ fn duration_millis(duration: Duration) -> Result<u64, String> {
 mod tests {
     use super::*;
     use virtio_mem_core::{
-        MemoryTelemetrySnapshot, RawTelemetryContractMode, LEGACY_RAW_TELEMETRY_VERSION,
+        MemoryResourceNotificationState, MemoryTelemetrySnapshot, OptionalTelemetrySignal,
+        RawTelemetryContractMode, TelemetryCapability, LEGACY_RAW_TELEMETRY_VERSION,
     };
 
     struct FixedGuestFile(Vec<u8>);
@@ -548,6 +549,49 @@ mod tests {
         assert_eq!(
             accepted.contract_mode(),
             Ok(RawTelemetryContractMode::LegacyV2Fallback)
+        );
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn records_native_notification_state_without_interpreting_it() {
+        let path = path("native-notification");
+        let mut current = envelope("session-a", 995_000, 10, 0);
+        let native = current
+            .windows_native
+            .as_mut()
+            .expect("current telemetry extension");
+        native.capabilities.memory_resource_notifications = TelemetryCapability::Supported;
+        native.memory_resource_notifications =
+            OptionalTelemetrySignal::supported(10, MemoryResourceNotificationState::Low);
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&current).expect("encode current telemetry")
+            ),
+        )
+        .expect("write current fixture");
+        let source = FileRawTelemetrySource::with_clock(
+            &path,
+            "guest",
+            "VirtioMemService",
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+            FixedClock(1_000_000),
+        );
+
+        let RawTelemetryRead::Fresh(accepted) = source.read().expect("accept current telemetry")
+        else {
+            panic!("first current record must be fresh");
+        };
+        assert_eq!(
+            accepted
+                .windows_native
+                .expect("accepted extension")
+                .memory_resource_notifications
+                .value,
+            Some(MemoryResourceNotificationState::Low)
         );
         std::fs::remove_file(path).expect("remove fixture");
     }

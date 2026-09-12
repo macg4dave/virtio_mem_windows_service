@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use crate::demand::{
-    MemoryTelemetry, MemoryTelemetrySnapshot, RawTelemetryEnvelope, RawTelemetryPublisher,
-    TelemetryClock,
+    MemoryResourceNotificationTelemetry, MemoryTelemetry, MemoryTelemetrySnapshot,
+    RawTelemetryEnvelope, RawTelemetryPublisher, TelemetryClock,
+    UnavailableMemoryResourceNotifications,
 };
 use crate::service_host::{ServiceWorker, StopSignal};
 
@@ -56,8 +57,9 @@ where
 /// Production worker: publishes only raw, VM-scoped Windows telemetry.
 /// It has no current-allocation input and no resize interface.
 #[derive(Debug)]
-pub struct RawTelemetryWorker<T, P, C> {
+pub struct RawTelemetryWorker<T, P, C, N = UnavailableMemoryResourceNotifications> {
     telemetry: T,
+    memory_resource_notifications: N,
     publisher: P,
     clock: C,
     vm_name: String,
@@ -68,7 +70,7 @@ pub struct RawTelemetryWorker<T, P, C> {
     interval: Duration,
 }
 
-impl<T, P, C> RawTelemetryWorker<T, P, C>
+impl<T, P, C> RawTelemetryWorker<T, P, C, UnavailableMemoryResourceNotifications>
 where
     T: MemoryTelemetry,
     P: RawTelemetryPublisher,
@@ -76,6 +78,37 @@ where
 {
     pub fn new(
         telemetry: T,
+        publisher: P,
+        clock: C,
+        vm_name: impl Into<String>,
+        service_name: impl Into<String>,
+        session_id: impl Into<String>,
+        interval: Duration,
+    ) -> Result<Self, String> {
+        Self::with_memory_resource_notifications(
+            telemetry,
+            UnavailableMemoryResourceNotifications,
+            publisher,
+            clock,
+            vm_name,
+            service_name,
+            session_id,
+            interval,
+        )
+    }
+}
+
+impl<T, P, C, N> RawTelemetryWorker<T, P, C, N>
+where
+    T: MemoryTelemetry,
+    P: RawTelemetryPublisher,
+    C: TelemetryClock,
+    N: MemoryResourceNotificationTelemetry,
+{
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_memory_resource_notifications(
+        telemetry: T,
+        memory_resource_notifications: N,
         publisher: P,
         clock: C,
         vm_name: impl Into<String>,
@@ -102,6 +135,7 @@ where
         }
         Ok(Self {
             telemetry,
+            memory_resource_notifications,
             publisher,
             clock,
             vm_name,
@@ -135,6 +169,17 @@ where
             self.next_sequence,
             memory,
         );
+        let mut envelope = envelope;
+        let windows_native = envelope.windows_native.as_mut().ok_or_else(|| {
+            "current raw telemetry is missing its Windows-native extension".to_owned()
+        })?;
+        windows_native.capabilities.memory_resource_notifications =
+            self.memory_resource_notifications.capability();
+        windows_native.memory_resource_notifications =
+            self.memory_resource_notifications.collect(monotonic_millis);
+        envelope
+            .contract_mode()
+            .map_err(|error| format!("native telemetry contract failed: {error}"))?;
         self.publisher
             .publish(&envelope)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
@@ -151,11 +196,12 @@ where
     }
 }
 
-impl<T, P, C> ServiceWorker for RawTelemetryWorker<T, P, C>
+impl<T, P, C, N> ServiceWorker for RawTelemetryWorker<T, P, C, N>
 where
     T: MemoryTelemetry + Send + 'static,
     P: RawTelemetryPublisher + Send + 'static,
     C: TelemetryClock + Send + 'static,
+    N: MemoryResourceNotificationTelemetry + Send + 'static,
 {
     fn initialize(&mut self, _stop: &StopSignal) -> Result<(), String> {
         self.poll_once().map(|_| ())
@@ -175,7 +221,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::demand::{DemandError, RawTelemetryContractMode};
+    use crate::demand::{
+        DemandError, MemoryResourceNotificationState, OptionalTelemetrySignal,
+        RawTelemetryContractMode, TelemetryCapability,
+    };
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
 
     const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -203,6 +254,47 @@ mod tests {
     impl MemoryTelemetry for FailingTelemetry {
         fn collect(&self) -> Result<MemoryTelemetrySnapshot, DemandError> {
             Err(DemandError::UnsupportedPlatform)
+        }
+    }
+
+    struct FixedNotifications {
+        state: MemoryResourceNotificationState,
+    }
+
+    impl MemoryResourceNotificationTelemetry for FixedNotifications {
+        fn capability(&self) -> TelemetryCapability {
+            TelemetryCapability::Supported
+        }
+
+        fn collect(
+            &self,
+            observed_monotonic_millis: u64,
+        ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
+            OptionalTelemetrySignal::supported(observed_monotonic_millis, self.state)
+        }
+    }
+
+    struct DropTrackedNotifications(Arc<AtomicBool>);
+
+    impl MemoryResourceNotificationTelemetry for DropTrackedNotifications {
+        fn capability(&self) -> TelemetryCapability {
+            TelemetryCapability::Supported
+        }
+
+        fn collect(
+            &self,
+            observed_monotonic_millis: u64,
+        ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
+            OptionalTelemetrySignal::supported(
+                observed_monotonic_millis,
+                MemoryResourceNotificationState::Neutral,
+            )
+        }
+    }
+
+    impl Drop for DropTrackedNotifications {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
         }
     }
 
@@ -271,6 +363,89 @@ mod tests {
         );
         assert_eq!(worker.publisher().0, vec![envelope]);
         assert!(worker.poll_once().is_err(), "monotonic time must advance");
+    }
+
+    #[test]
+    fn raw_worker_publishes_native_notification_state_without_policy_output() {
+        let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
+            TelemetryFixture,
+            FixedNotifications {
+                state: MemoryResourceNotificationState::Low,
+            },
+            PublisherFixture::default(),
+            FixedClock,
+            "guest",
+            "TelemetryService",
+            "session-a",
+            Duration::from_secs(1),
+        )
+        .expect("worker should be valid");
+
+        let envelope = worker.poll_once().expect("raw publication should pass");
+        assert_eq!(
+            envelope.contract_mode(),
+            Ok(RawTelemetryContractMode::WindowsNativeSignals)
+        );
+        assert_eq!(
+            envelope
+                .windows_native
+                .expect("Windows-native extension")
+                .memory_resource_notifications
+                .value,
+            Some(MemoryResourceNotificationState::Low)
+        );
+        let encoded = serde_json::to_string(&envelope).expect("encode envelope");
+        assert!(!encoded.contains("desired"));
+        assert!(!encoded.contains("requested"));
+        assert!(!encoded.contains("current_bytes"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn raw_worker_publishes_a_real_native_notification_observation() {
+        let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
+            TelemetryFixture,
+            crate::demand::native_memory_resource_notifications(),
+            PublisherFixture::default(),
+            FixedClock,
+            "guest",
+            "TelemetryService",
+            "session-a",
+            Duration::from_secs(1),
+        )
+        .expect("worker should be valid");
+
+        let envelope = worker
+            .poll_once()
+            .expect("native observation should publish");
+        assert_eq!(
+            envelope.contract_mode(),
+            Ok(RawTelemetryContractMode::WindowsNativeSignals)
+        );
+        assert_eq!(worker.publisher().0, vec![envelope]);
+    }
+
+    #[test]
+    fn cancellation_drops_notification_ownership_without_an_extra_poll() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
+            TelemetryFixture,
+            DropTrackedNotifications(dropped.clone()),
+            PublisherFixture::default(),
+            FixedClock,
+            "guest",
+            "TelemetryService",
+            "session-a",
+            Duration::from_secs(1),
+        )
+        .expect("worker should be valid");
+        let stop = StopSignal::new();
+        stop.cancel();
+
+        assert_eq!(worker.run(&stop), Ok(()));
+        assert!(worker.publisher().0.is_empty());
+        drop(worker);
+        assert!(dropped.load(Ordering::Acquire));
     }
 
     #[test]

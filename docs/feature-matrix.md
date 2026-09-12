@@ -10,7 +10,7 @@
 | Live virtio-mem state | Implemented | The host selects one explicit alias; live libvirt `current` is allocation authority. |
 | Compatibility and headroom gates | Implemented | Fresh attestation, device bounds, host reserve, freshness, convergence, and ownership fail closed before mutation. |
 | Fixed-headroom desired target | Implemented compatibility baseline | Physical/commit candidates and history work, but fixed reserves are not a Windows demand prediction and will become fallback guards. |
-| Windows-native pressure telemetry | Contract implemented; collection planned | Schema v3 defines fixed-size capabilities, notification state, optional reusable/rate evidence, warm-up/error states, and explicit schema-v2 fallback; WN2 must collect and qualify the native signals. |
+| Windows-native pressure telemetry | Notification collection implemented; workload qualification pending | Schema v3 carries fixed-size capabilities and explicit fallback. The service owns paired low/high notification handles and publishes low, neutral, high, or failed state; reusable/rate collection remains planned. |
 | Pressure-aware desired target | Design complete; implementation planned | The host will combine Windows-native pressure classification with a validated quantitative baseline while retaining all safety and reconciliation gates. |
 | Desired/requested/current reconciliation | Implemented | Intent journaling, partial progress, upward supersession, uncertain results, restart recovery, and latches prohibit blind replay. |
 | Rust build/test tooling | Implemented | `cargo xtask` is authoritative for maintained local, Windows, host, live-resize, and qualification workflows. |

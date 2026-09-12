@@ -114,7 +114,7 @@ only after its rate semantics have passed the trend milestone.
 | --- | --- | --- | --- |
 | WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
 | WN1 | Complete | Define the Windows-native telemetry contract and capability model | WN0 |
-| WN2 | Ready | Collect authoritative Windows pressure notifications | WN1 |
+| WN2 | Complete | Collect authoritative Windows pressure notifications | WN1 |
 | WN3 | Planned | Separate requirement, pressure, and shrink-safety assessment in shadow mode | WN2 |
 | WN4 | Planned | Integrate pressure-aware bounded growth | WN3 |
 | WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |

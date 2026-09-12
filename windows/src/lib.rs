@@ -7,13 +7,18 @@ pub mod service_host;
 pub mod service_scm;
 
 pub use config::ServiceConfig;
+#[cfg(windows)]
+pub use demand::{native_memory_resource_notifications, WindowsMemoryResourceNotificationApi};
 pub use demand::{
     process_session_id, AtomicRawTelemetryPublisher, DemandError, JsonLinesRawTelemetryPublisher,
-    MemoryResourceNotificationState, MemoryTelemetry, MemoryTelemetrySnapshot,
+    MemoryResourceNotificationApi, MemoryResourceNotificationCollector,
+    MemoryResourceNotificationKind, MemoryResourceNotificationState,
+    MemoryResourceNotificationTelemetry, MemoryTelemetry, MemoryTelemetrySnapshot,
     NativeMemoryTelemetry, OptionalTelemetrySignal, PagingActivitySnapshot,
     RawTelemetryContractMode, RawTelemetryEnvelope, RawTelemetryPublisher, ReusableMemorySnapshot,
     SystemTelemetryClock, TelemetryCapability, TelemetryClock, TelemetrySignalStatus,
-    TelemetryWarmup, WindowsNativeTelemetry, WindowsTelemetryCapabilities,
+    TelemetryWarmup, UnavailableMemoryResourceNotifications, WindowsNativeTelemetry,
+    WindowsTelemetryCapabilities,
 };
 pub use error::{ConfigurationError, RuntimeWiringError, ServiceHostError};
 pub use event_log::{
