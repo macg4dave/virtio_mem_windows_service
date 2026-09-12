@@ -50,6 +50,14 @@ The local gate checks formatting, locked release builds and tests,
 warnings-denied Clippy, and `git diff --check` for the shared core, host, and
 tooling crates. It is not native Windows evidence.
 
+Raw-telemetry contract changes require focused shared-core serialization and
+validation tests plus host-reader migration fixtures. When the Windows
+producer or its shared surface changes, also run the native Windows aggregate
+gate. Schema-v2 fallback, schema-v3 capability/status combinations, malformed
+and unknown fields, bounds, timestamps, warm-up, session changes, and replay
+remain distinct cases; successful fallback decoding is not pressure-qualified
+reclaim evidence.
+
 ## Native Windows gate
 
 Configure every remote input explicitly:

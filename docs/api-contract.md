@@ -33,11 +33,40 @@ The optional custom QGA memory adapter is an experimental API boundary. Its
 operation deadline must be provided by its caller. Production telemetry does
 not depend on that command.
 
-The planned additive telemetry revision reports each pressure signal with
-support/error state, timestamps, and rate-sample readiness. Unsupported or
-unwarmed counters cannot be encoded as zero. A schema-v2 producer remains
-usable only under an explicit migration/fallback policy and can never acquire
-pressure-qualified reclaim authority by omission.
+Raw telemetry schema v3 adds a version-1 `windows_native` extension. It contains
+a fixed capability set and three fixed-size signal groups:
+
+- `memory_resource_notifications`: one categorical `low`, `neutral`, or `high`
+  state representing the paired low/high notification objects;
+- `reusable_memory`: standby-reserve, free/zero, and modified byte counts; and
+- `paging_activity`: a non-zero sample interval and integer
+  milli-events/second for pages output, page reads, pages input, and hard
+  faults.
+
+Every group has `supported`, `unavailable`, `failed`, or `warming` status, its
+own producer-monotonic observation time, and exactly the fields appropriate to
+that status. `supported` carries a value, `failed` carries a non-zero native
+error code, `warming` carries a positive required-sample count and a smaller
+collected count, and `unavailable` carries none of those payloads. Capability
+`unavailable` requires signal status `unavailable`; a supported capability may
+report supported, failed, or warming. Unknown fields and unsupported outer or
+extension versions are rejected.
+
+The extension is allocation-free after the existing envelope identities have
+been constructed: it contains no strings, vectors, maps, or unbounded lists.
+Its timestamps cannot exceed the envelope monotonic timestamp. Reusable byte
+counts are checked against the basic physical counters, and the existing file,
+identity, freshness, session, sequence, wall-clock, provenance, and durable
+replay bounds still apply.
+
+Schema v2 is accepted only without `windows_native` and is classified
+`legacy_v2_fallback`. Schema v3 requires the extension and is classified
+`windows_native_fallback` until a supported notification observation is
+present, otherwise `windows_native_signals`. Schema/capabilities are stable
+within a producer session and may be renegotiated only by starting a new
+session at sequence zero. Fallback supplies basic-counter context only and
+cannot acquire pressure-qualified reclaim authority. Rate evidence remains
+optional for the baseline policy.
 
 ## Host service
 

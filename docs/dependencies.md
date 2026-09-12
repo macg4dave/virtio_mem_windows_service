@@ -55,11 +55,13 @@ The upstream guest agent does not guarantee the optional downstream
 default and treats alias-scoped live virtio-mem `current` as allocation
 authority.
 
-The pressure-aware collector is expected to use memory resource notifications
-and PDH/performance-counter APIs supplied by Windows. Exact counter
-availability, names, sampling behavior, and required privileges must be
-captured by the native capability gate before becoming release dependencies;
-no third-party pressure library is assumed.
+The versioned telemetry contract has capability groups for Windows memory
+resource notifications, memory-list detail, and PDH-style paging rates. WN1
+publishes those groups as explicitly unavailable without calling new APIs.
+WN2 and later may use the Windows-supplied facilities only after the native
+capability gate records exact availability, counter names, sampling behavior,
+failure behavior, and required privileges. No third-party pressure library is
+assumed.
 
 ## Live resize prerequisites
 

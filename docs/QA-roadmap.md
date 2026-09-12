@@ -91,8 +91,8 @@ a QA task's status until the corresponding applied gate is run and reviewed.
 
 | ID | Task | Status |
 | --- | --- | --- |
-| QA-T025 | Validate the additive schema, capability, warm-up, fallback, compatibility, and fail-closed contract without actuation | Blocked by TASK-036 |
-| QA-T026 | Record native support and failure behavior for Windows memory notifications, then correlate their states with distinct memory workloads | Blocked by QA-T025 and TASK-037 |
+| QA-T025 | Validate the additive schema, capability, warm-up, fallback, compatibility, and fail-closed contract without actuation | Complete; focused, local, and native Windows gates passed 2026-09-13; no deployment or actuation |
+| QA-T026 | Record native support and failure behavior for Windows memory notifications, then correlate their states with distinct memory workloads | Blocked by TASK-037 |
 | QA-T027 | Review commit-centred shadow classifications and byte candidates for false growth, missed pressure, cache treatment, capability/warm-up handling, in-flight allocation treatment, continuity, and fallback behavior | Blocked by QA-T026 and TASK-038 |
 | QA-T028 | Prove pressure-aware bounded growth under low-memory, commit-stress, and paging scenarios with reclaim disabled | Blocked by QA-T027 and TASK-039 |
 | QA-T029 | Prove conservative reclaim requires sustained high/healthy evidence and stops or reverses under renewed pressure | Blocked by QA-T028 and TASK-040 |

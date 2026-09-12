@@ -6,12 +6,11 @@ roadmap to implementation-sized slices without duplicating milestone contracts.
 
 ## Current checkpoint
 
-WN0 is complete: the fixed-headroom policy has been audited and demoted to a
-compatibility/fallback role. No pressure-aware code or live qualification is
-complete. The installed controller remains disabled and inactive.
-
-The next slice is TASK-036 / WN1. It changes contracts and tests only; it must
-not add live collection, change target policy, or actuate memory.
+WN1 / TASK-036 is complete. The additive schema-v3 shared contract and its
+explicit schema-v2 fallback passed focused, local, and native Windows gates
+without new native collection, target-policy changes, deployment, or actuation.
+The next slice is TASK-037 / WN2. The installed controller remains disabled and
+inactive.
 
 ## Ordered implementation slices
 

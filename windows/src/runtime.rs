@@ -175,7 +175,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::demand::DemandError;
+    use crate::demand::{DemandError, RawTelemetryContractMode};
 
     const GIB: u64 = 1024 * 1024 * 1024;
 
@@ -264,6 +264,11 @@ mod tests {
         let envelope = worker.poll_once().expect("raw publication should pass");
         assert_eq!(envelope.vm_name, "guest");
         assert_eq!(envelope.sequence, 0);
+        assert_eq!(
+            envelope.contract_mode(),
+            Ok(RawTelemetryContractMode::WindowsNativeFallback),
+            "WN1 publishes an explicit fallback until WN2 collects native pressure"
+        );
         assert_eq!(worker.publisher().0, vec![envelope]);
         assert!(worker.poll_once().is_err(), "monotonic time must advance");
     }

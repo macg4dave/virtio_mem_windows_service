@@ -5,13 +5,14 @@ are presentation only and must be converted explicitly at a boundary.
 
 ## Windows raw telemetry
 
-`RawTelemetryEnvelope` contains:
+`RawTelemetryEnvelope` schema v3 contains:
 
 - schema version;
 - configured VM and service identity;
 - process session identity and session-local sequence;
 - wall-clock and monotonic observation time;
 - native physical and commit counters;
+- a versioned `windows_native` capability and signal extension; and
 - explicit measurement and allocation-provenance labels.
 
 It contains no libvirt allocation and no resize recommendation. The publisher
@@ -31,11 +32,22 @@ clears estimator history; a transport interruption leaves accepted history
 unchanged so the next accepted sample's time gap determines whether the
 history remains qualified.
 
-The planned pressure-aware schema revision adds low/high memory-resource
-notification state, reusable and modified memory-list bytes, paging-rate
-samples with their interval/warm-up state, and per-signal availability or
-error status. These additions remain measurements. Unsupported is distinct
-from zero, and a partial record cannot silently authorize reclaim. See
+The extension groups paired memory-resource notification state, reusable and
+modified memory-list bytes, and optional paging-rate samples. Each fixed-size
+group declares its capability and uses an explicit `supported`, `unavailable`,
+`failed`, or `warming` observation; absence and warm-up are never encoded as a
+zero measurement. Every signal state carries its own monotonic observation
+time. Paging rates use a non-zero sampling interval and milli-events/second
+integer units so the wire representation is deterministic.
+
+Schema v2 without the extension remains decodable as
+`legacy_v2_fallback`. Schema v3 without the extension, schema v2 with it,
+unknown fields, capability/status contradictions, invalid warm-up progress,
+future signal timestamps, inconsistent memory-list bounds, and unsupported
+versions are invalid evidence. Capabilities cannot change within a producer
+session. A new sequence-zero session may renegotiate them. Fallback and
+incomplete observations cannot provide pressure-qualified reclaim evidence.
+These additions remain measurements and never contain a desired target. See
 [windows-native-pressure-controller.md](windows-native-pressure-controller.md).
 
 ## Target policy

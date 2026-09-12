@@ -24,8 +24,12 @@ pub use compatibility::{
 pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 pub use demand::{
     AllocationProvenance, DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig,
-    DemandRecommendation, DemandReport, DemandState, MemoryTelemetrySnapshot, RawTelemetryEnvelope,
-    TelemetrySource, DEMAND_REPORT_VERSION, RAW_TELEMETRY_VERSION,
+    DemandRecommendation, DemandReport, DemandState, MemoryResourceNotificationState,
+    MemoryTelemetrySnapshot, OptionalTelemetrySignal, PagingActivitySnapshot,
+    RawTelemetryContractMode, RawTelemetryEnvelope, ReusableMemorySnapshot, TelemetryCapability,
+    TelemetrySignalStatus, TelemetrySource, TelemetryWarmup, WindowsNativeTelemetry,
+    WindowsTelemetryCapabilities, DEMAND_REPORT_VERSION, LEGACY_RAW_TELEMETRY_VERSION,
+    RAW_TELEMETRY_VERSION, WINDOWS_NATIVE_TELEMETRY_VERSION,
 };
 pub use error::{MemoryStatsError, PollError, ServiceLoopError, VirtioMemError};
 pub use global_pool::{

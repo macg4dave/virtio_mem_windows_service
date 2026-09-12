@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const RAW_TELEMETRY_VERSION: u16 = 2;
+pub const LEGACY_RAW_TELEMETRY_VERSION: u16 = 2;
+pub const RAW_TELEMETRY_VERSION: u16 = 3;
+pub const WINDOWS_NATIVE_TELEMETRY_VERSION: u16 = 1;
 pub const DEMAND_REPORT_VERSION: u16 = 1;
 
 /// Native, canonical-byte memory observations collected from the Windows guest.
@@ -72,6 +74,259 @@ pub enum AllocationProvenance {
     HostLiveLibvirtCurrentRequired,
 }
 
+/// Whether a supported Windows facility can produce a telemetry group.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelemetryCapability {
+    Supported,
+    Unavailable,
+}
+
+/// Fixed capability set negotiated with a schema-v3 producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsTelemetryCapabilities {
+    pub memory_resource_notifications: TelemetryCapability,
+    pub reusable_memory: TelemetryCapability,
+    pub paging_activity: TelemetryCapability,
+}
+
+/// Availability of one optional signal group in this observation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TelemetrySignalStatus {
+    Supported,
+    Unavailable,
+    Failed,
+    Warming,
+}
+
+/// Bounded progress for a rate signal that requires multiple observations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TelemetryWarmup {
+    pub samples_collected: u16,
+    pub samples_required: u16,
+}
+
+/// An optional signal with explicit availability, failure, and warm-up state.
+///
+/// The representation is fixed-size for allocation-free producer updates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OptionalTelemetrySignal<T> {
+    pub status: TelemetrySignalStatus,
+    pub observed_monotonic_millis: u64,
+    pub value: Option<T>,
+    pub error_code: Option<u32>,
+    pub warmup: Option<TelemetryWarmup>,
+}
+
+impl<T> OptionalTelemetrySignal<T> {
+    pub fn supported(observed_monotonic_millis: u64, value: T) -> Self {
+        Self {
+            status: TelemetrySignalStatus::Supported,
+            observed_monotonic_millis,
+            value: Some(value),
+            error_code: None,
+            warmup: None,
+        }
+    }
+
+    pub fn unavailable(observed_monotonic_millis: u64) -> Self {
+        Self {
+            status: TelemetrySignalStatus::Unavailable,
+            observed_monotonic_millis,
+            value: None,
+            error_code: None,
+            warmup: None,
+        }
+    }
+
+    pub fn failed(observed_monotonic_millis: u64, error_code: u32) -> Self {
+        Self {
+            status: TelemetrySignalStatus::Failed,
+            observed_monotonic_millis,
+            value: None,
+            error_code: Some(error_code),
+            warmup: None,
+        }
+    }
+
+    pub fn warming(
+        observed_monotonic_millis: u64,
+        samples_collected: u16,
+        samples_required: u16,
+    ) -> Self {
+        Self {
+            status: TelemetrySignalStatus::Warming,
+            observed_monotonic_millis,
+            value: None,
+            error_code: None,
+            warmup: Some(TelemetryWarmup {
+                samples_collected,
+                samples_required,
+            }),
+        }
+    }
+
+    fn validate(&self, capability: TelemetryCapability) -> Result<(), DemandError> {
+        let shape_is_valid = match self.status {
+            TelemetrySignalStatus::Supported => {
+                self.value.is_some() && self.error_code.is_none() && self.warmup.is_none()
+            }
+            TelemetrySignalStatus::Unavailable => {
+                self.value.is_none() && self.error_code.is_none() && self.warmup.is_none()
+            }
+            TelemetrySignalStatus::Failed => {
+                self.value.is_none()
+                    && self.error_code.is_some_and(|error_code| error_code != 0)
+                    && self.warmup.is_none()
+            }
+            TelemetrySignalStatus::Warming => {
+                self.value.is_none()
+                    && self.error_code.is_none()
+                    && self.warmup.is_some_and(|warmup| {
+                        warmup.samples_required > 0
+                            && warmup.samples_collected < warmup.samples_required
+                    })
+            }
+        };
+        if !shape_is_valid {
+            return Err(DemandError::InvalidTelemetrySignalState);
+        }
+        match capability {
+            TelemetryCapability::Supported if self.status != TelemetrySignalStatus::Unavailable => {
+                Ok(())
+            }
+            TelemetryCapability::Unavailable
+                if self.status == TelemetrySignalStatus::Unavailable =>
+            {
+                Ok(())
+            }
+            _ => Err(DemandError::TelemetryCapabilityMismatch),
+        }
+    }
+}
+
+/// Categorical state of the paired low/high Windows memory notifications.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryResourceNotificationState {
+    Low,
+    Neutral,
+    High,
+}
+
+/// Snapshot detail that distinguishes immediately reusable and modified pages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReusableMemorySnapshot {
+    pub standby_reserve_bytes: u64,
+    pub free_zero_bytes: u64,
+    pub modified_bytes: u64,
+}
+
+/// Optional formatted rate evidence. Rates are scaled to milli-events/second
+/// so the wire representation remains deterministic and integer-only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagingActivitySnapshot {
+    pub sample_interval_millis: u64,
+    pub pages_output_milli_events_per_second: u64,
+    pub page_reads_milli_events_per_second: u64,
+    pub pages_input_milli_events_per_second: u64,
+    pub hard_faults_milli_events_per_second: u64,
+}
+
+/// Additive Windows-native telemetry carried by schema v3.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsNativeTelemetry {
+    pub version: u16,
+    pub capabilities: WindowsTelemetryCapabilities,
+    pub memory_resource_notifications: OptionalTelemetrySignal<MemoryResourceNotificationState>,
+    pub reusable_memory: OptionalTelemetrySignal<ReusableMemorySnapshot>,
+    pub paging_activity: OptionalTelemetrySignal<PagingActivitySnapshot>,
+}
+
+impl WindowsNativeTelemetry {
+    /// Explicit fallback emitted until WN2 adds native signal collection.
+    pub fn unavailable(observed_monotonic_millis: u64) -> Self {
+        Self {
+            version: WINDOWS_NATIVE_TELEMETRY_VERSION,
+            capabilities: WindowsTelemetryCapabilities {
+                memory_resource_notifications: TelemetryCapability::Unavailable,
+                reusable_memory: TelemetryCapability::Unavailable,
+                paging_activity: TelemetryCapability::Unavailable,
+            },
+            memory_resource_notifications: OptionalTelemetrySignal::unavailable(
+                observed_monotonic_millis,
+            ),
+            reusable_memory: OptionalTelemetrySignal::unavailable(observed_monotonic_millis),
+            paging_activity: OptionalTelemetrySignal::unavailable(observed_monotonic_millis),
+        }
+    }
+
+    fn validate(
+        &self,
+        envelope_monotonic_millis: u64,
+        memory: &MemoryTelemetrySnapshot,
+    ) -> Result<(), DemandError> {
+        if self.version != WINDOWS_NATIVE_TELEMETRY_VERSION {
+            return Err(DemandError::UnsupportedWindowsNativeTelemetryVersion(
+                self.version,
+            ));
+        }
+        self.memory_resource_notifications
+            .validate(self.capabilities.memory_resource_notifications)?;
+        self.reusable_memory
+            .validate(self.capabilities.reusable_memory)?;
+        self.paging_activity
+            .validate(self.capabilities.paging_activity)?;
+
+        for observed in [
+            self.memory_resource_notifications.observed_monotonic_millis,
+            self.reusable_memory.observed_monotonic_millis,
+            self.paging_activity.observed_monotonic_millis,
+        ] {
+            if observed > envelope_monotonic_millis {
+                return Err(DemandError::TelemetrySignalFromFuture);
+            }
+        }
+        if let Some(reusable) = self.reusable_memory.value {
+            let immediately_reusable = reusable
+                .standby_reserve_bytes
+                .checked_add(reusable.free_zero_bytes)
+                .ok_or(DemandError::ArithmeticOverflow)?;
+            if immediately_reusable > memory.physical_available_bytes
+                || reusable.modified_bytes > memory.physical_total_bytes
+            {
+                return Err(DemandError::InconsistentOptionalTelemetry);
+            }
+        }
+        if self
+            .paging_activity
+            .value
+            .is_some_and(|paging| paging.sample_interval_millis == 0)
+        {
+            return Err(DemandError::InvalidTelemetrySampleInterval);
+        }
+        Ok(())
+    }
+
+    fn has_native_pressure_state(&self) -> bool {
+        self.memory_resource_notifications.status == TelemetrySignalStatus::Supported
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawTelemetryContractMode {
+    LegacyV2Fallback,
+    WindowsNativeFallback,
+    WindowsNativeSignals,
+}
+
 /// The raw-telemetry record. Allocation remains host-owned and is not
 /// present in this guest-produced envelope.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +342,8 @@ pub struct RawTelemetryEnvelope {
     pub telemetry_source: TelemetrySource,
     pub allocation_provenance: AllocationProvenance,
     pub memory: MemoryTelemetrySnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows_native: Option<WindowsNativeTelemetry>,
 }
 
 impl RawTelemetryEnvelope {
@@ -110,6 +367,25 @@ impl RawTelemetryEnvelope {
             telemetry_source: TelemetrySource::WindowsNativeMemoryApis,
             allocation_provenance: AllocationProvenance::HostLiveLibvirtCurrentRequired,
             memory,
+            windows_native: Some(WindowsNativeTelemetry::unavailable(monotonic_millis)),
+        }
+    }
+
+    pub fn contract_mode(&self) -> Result<RawTelemetryContractMode, DemandError> {
+        match (self.version, self.windows_native.as_ref()) {
+            (LEGACY_RAW_TELEMETRY_VERSION, None) => Ok(RawTelemetryContractMode::LegacyV2Fallback),
+            (RAW_TELEMETRY_VERSION, Some(windows_native)) => {
+                windows_native.validate(self.monotonic_millis, &self.memory)?;
+                if windows_native.has_native_pressure_state() {
+                    Ok(RawTelemetryContractMode::WindowsNativeSignals)
+                } else {
+                    Ok(RawTelemetryContractMode::WindowsNativeFallback)
+                }
+            }
+            (LEGACY_RAW_TELEMETRY_VERSION, Some(_)) | (RAW_TELEMETRY_VERSION, None) => {
+                Err(DemandError::TelemetrySchemaMismatch)
+            }
+            (version, _) => Err(DemandError::UnsupportedTelemetryVersion(version)),
         }
     }
 
@@ -121,9 +397,7 @@ impl RawTelemetryEnvelope {
         max_age_millis: u64,
         future_tolerance_millis: u64,
     ) -> Result<(), DemandError> {
-        if self.version != RAW_TELEMETRY_VERSION {
-            return Err(DemandError::UnsupportedTelemetryVersion(self.version));
-        }
+        self.contract_mode()?;
         for (field, value) in [
             ("vm_name", self.vm_name.as_str()),
             ("service_name", self.service_name.as_str()),
@@ -169,6 +443,18 @@ impl RawTelemetryEnvelope {
             return Err(DemandError::ChangedTelemetryIdentity);
         }
         if self.session_id == previous.session_id {
+            let contract_changed = self.version != previous.version
+                || self
+                    .windows_native
+                    .as_ref()
+                    .map(|native| (native.version, native.capabilities))
+                    != previous
+                        .windows_native
+                        .as_ref()
+                        .map(|native| (native.version, native.capabilities));
+            if contract_changed {
+                return Err(DemandError::ChangedTelemetryContract);
+            }
             if self.sequence <= previous.sequence {
                 return Err(DemandError::ReplayedTelemetrySequence(self.sequence));
             }
@@ -218,6 +504,20 @@ pub enum DemandError {
     PerformanceInfo(u32),
     #[error("unsupported raw telemetry version: {0}")]
     UnsupportedTelemetryVersion(u16),
+    #[error("unsupported Windows-native telemetry version: {0}")]
+    UnsupportedWindowsNativeTelemetryVersion(u16),
+    #[error("raw telemetry schema version and Windows-native extension do not match")]
+    TelemetrySchemaMismatch,
+    #[error("optional telemetry signal fields contradict its status")]
+    InvalidTelemetrySignalState,
+    #[error("optional telemetry signal state contradicts its declared capability")]
+    TelemetryCapabilityMismatch,
+    #[error("optional telemetry signal timestamp exceeds the envelope monotonic timestamp")]
+    TelemetrySignalFromFuture,
+    #[error("optional telemetry counters contradict the basic memory snapshot")]
+    InconsistentOptionalTelemetry,
+    #[error("optional telemetry rate sample interval must be greater than zero")]
+    InvalidTelemetrySampleInterval,
     #[error("raw telemetry identity field is invalid: {0}")]
     InvalidTelemetryIdentity(&'static str),
     #[error("raw telemetry belongs to VM {actual}, expected {expected}")]
@@ -232,6 +532,8 @@ pub enum DemandError {
     FutureTelemetry { observed: u64, now: u64 },
     #[error("raw telemetry VM or service identity changed")]
     ChangedTelemetryIdentity,
+    #[error("raw telemetry schema or capabilities changed within one producer session")]
+    ChangedTelemetryContract,
     #[error("raw telemetry sequence is replayed or non-increasing: {0}")]
     ReplayedTelemetrySequence(u64),
     #[error("raw telemetry monotonic clock is non-increasing: {0}")]
@@ -517,6 +819,262 @@ mod tests {
             invalid_restart.validate_successor(&next),
             Err(DemandError::InvalidTelemetrySessionStart(1))
         );
+    }
+
+    fn windows_native_fixture() -> WindowsNativeTelemetry {
+        WindowsNativeTelemetry {
+            version: WINDOWS_NATIVE_TELEMETRY_VERSION,
+            capabilities: WindowsTelemetryCapabilities {
+                memory_resource_notifications: TelemetryCapability::Supported,
+                reusable_memory: TelemetryCapability::Supported,
+                paging_activity: TelemetryCapability::Supported,
+            },
+            memory_resource_notifications: OptionalTelemetrySignal::supported(
+                9,
+                MemoryResourceNotificationState::Neutral,
+            ),
+            reusable_memory: OptionalTelemetrySignal::supported(
+                9,
+                ReusableMemorySnapshot {
+                    standby_reserve_bytes: GIB,
+                    free_zero_bytes: GIB,
+                    modified_bytes: GIB,
+                },
+            ),
+            paging_activity: OptionalTelemetrySignal::supported(
+                9,
+                PagingActivitySnapshot {
+                    sample_interval_millis: 1_000,
+                    pages_output_milli_events_per_second: 0,
+                    page_reads_milli_events_per_second: 1_000,
+                    pages_input_milli_events_per_second: 1_000,
+                    hard_faults_milli_events_per_second: 2_000,
+                },
+            ),
+        }
+    }
+
+    #[test]
+    fn round_trips_current_and_legacy_contract_modes() {
+        let mut current = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000,
+            10,
+            0,
+            snapshot(),
+        );
+        current.windows_native = Some(windows_native_fixture());
+        let encoded = serde_json::to_string(&current).expect("encode current telemetry");
+        let decoded: RawTelemetryEnvelope =
+            serde_json::from_str(&encoded).expect("decode current telemetry");
+        assert_eq!(decoded, current);
+        assert_eq!(
+            decoded.contract_mode(),
+            Ok(RawTelemetryContractMode::WindowsNativeSignals)
+        );
+
+        let mut legacy = current.clone();
+        legacy.version = LEGACY_RAW_TELEMETRY_VERSION;
+        legacy.windows_native = None;
+        let encoded = serde_json::to_string(&legacy).expect("encode legacy telemetry");
+        let decoded: RawTelemetryEnvelope =
+            serde_json::from_str(&encoded).expect("decode legacy telemetry");
+        assert_eq!(
+            decoded.contract_mode(),
+            Ok(RawTelemetryContractMode::LegacyV2Fallback)
+        );
+        let encoded_value: serde_json::Value =
+            serde_json::from_str(&encoded).expect("decode legacy JSON value");
+        assert!(encoded_value.get("windows_native").is_none());
+    }
+
+    #[test]
+    fn rejects_missing_new_extension_and_newer_schemas() {
+        let mut missing = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000,
+            10,
+            0,
+            snapshot(),
+        );
+        missing.windows_native = None;
+        assert_eq!(
+            missing.contract_mode(),
+            Err(DemandError::TelemetrySchemaMismatch)
+        );
+
+        let mut newer = missing;
+        newer.version = RAW_TELEMETRY_VERSION + 1;
+        assert_eq!(
+            newer.contract_mode(),
+            Err(DemandError::UnsupportedTelemetryVersion(
+                RAW_TELEMETRY_VERSION + 1
+            ))
+        );
+    }
+
+    #[test]
+    fn validates_every_optional_signal_state() {
+        let supported =
+            OptionalTelemetrySignal::supported(1, MemoryResourceNotificationState::High);
+        assert_eq!(supported.validate(TelemetryCapability::Supported), Ok(()));
+        let unavailable =
+            OptionalTelemetrySignal::<MemoryResourceNotificationState>::unavailable(1);
+        assert_eq!(
+            unavailable.validate(TelemetryCapability::Unavailable),
+            Ok(())
+        );
+        let failed = OptionalTelemetrySignal::<MemoryResourceNotificationState>::failed(1, 5);
+        assert_eq!(failed.validate(TelemetryCapability::Supported), Ok(()));
+        let warming = OptionalTelemetrySignal::<MemoryResourceNotificationState>::warming(1, 1, 2);
+        assert_eq!(warming.validate(TelemetryCapability::Supported), Ok(()));
+
+        for fixture in [supported, unavailable, failed, warming] {
+            let encoded = serde_json::to_string(&fixture).expect("encode signal state");
+            assert_eq!(
+                serde_json::from_str::<OptionalTelemetrySignal<MemoryResourceNotificationState>>(
+                    &encoded
+                )
+                .expect("decode signal state"),
+                fixture
+            );
+        }
+    }
+
+    #[test]
+    fn capability_negotiation_is_stable_within_a_session() {
+        let first = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000,
+            10,
+            0,
+            snapshot(),
+        );
+        let mut changed = first.clone();
+        changed.observed_unix_millis += 1;
+        changed.monotonic_millis += 1;
+        changed.sequence += 1;
+        changed
+            .windows_native
+            .as_mut()
+            .expect("current extension")
+            .capabilities
+            .memory_resource_notifications = TelemetryCapability::Supported;
+        changed
+            .windows_native
+            .as_mut()
+            .expect("current extension")
+            .memory_resource_notifications = OptionalTelemetrySignal::failed(11, 5);
+        assert_eq!(
+            changed.validate_successor(&first),
+            Err(DemandError::ChangedTelemetryContract)
+        );
+
+        changed.session_id = "session-b".to_owned();
+        changed.sequence = 0;
+        assert_eq!(changed.validate_successor(&first), Ok(()));
+    }
+
+    #[test]
+    fn rejects_malformed_contradictory_and_oversized_optional_evidence() {
+        let mut envelope = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000,
+            10,
+            0,
+            snapshot(),
+        );
+        let mut rich = windows_native_fixture();
+        rich.memory_resource_notifications.error_code = Some(5);
+        envelope.windows_native = Some(rich);
+        assert_eq!(
+            envelope.contract_mode(),
+            Err(DemandError::InvalidTelemetrySignalState)
+        );
+
+        let mut rich = windows_native_fixture();
+        rich.capabilities.memory_resource_notifications = TelemetryCapability::Unavailable;
+        envelope.windows_native = Some(rich);
+        assert_eq!(
+            envelope.contract_mode(),
+            Err(DemandError::TelemetryCapabilityMismatch)
+        );
+
+        let mut rich = windows_native_fixture();
+        rich.reusable_memory = OptionalTelemetrySignal::supported(
+            9,
+            ReusableMemorySnapshot {
+                standby_reserve_bytes: u64::MAX,
+                free_zero_bytes: 1,
+                modified_bytes: 0,
+            },
+        );
+        envelope.windows_native = Some(rich);
+        assert_eq!(
+            envelope.contract_mode(),
+            Err(DemandError::ArithmeticOverflow)
+        );
+
+        let mut malformed = serde_json::to_value(windows_native_fixture()).expect("encode fixture");
+        malformed
+            .as_object_mut()
+            .expect("object")
+            .insert("unknown".to_owned(), serde_json::json!(true));
+        assert!(serde_json::from_value::<WindowsNativeTelemetry>(malformed).is_err());
+    }
+
+    #[test]
+    fn rejects_bad_warmup_timestamp_and_rate_interval() {
+        let mut envelope = RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000,
+            10,
+            0,
+            snapshot(),
+        );
+        let mut rich = windows_native_fixture();
+        rich.paging_activity = OptionalTelemetrySignal::warming(9, 2, 2);
+        envelope.windows_native = Some(rich);
+        assert_eq!(
+            envelope.contract_mode(),
+            Err(DemandError::InvalidTelemetrySignalState)
+        );
+
+        let mut rich = windows_native_fixture();
+        rich.reusable_memory.observed_monotonic_millis = 11;
+        envelope.windows_native = Some(rich);
+        assert_eq!(
+            envelope.contract_mode(),
+            Err(DemandError::TelemetrySignalFromFuture)
+        );
+
+        let mut rich = windows_native_fixture();
+        rich.paging_activity
+            .value
+            .as_mut()
+            .expect("paging value")
+            .sample_interval_millis = 0;
+        envelope.windows_native = Some(rich);
+        assert_eq!(
+            envelope.contract_mode(),
+            Err(DemandError::InvalidTelemetrySampleInterval)
+        );
+    }
+
+    #[test]
+    fn windows_native_extension_has_no_heap_owned_fields() {
+        fn assert_copy<T: Copy>() {}
+        assert_copy::<WindowsNativeTelemetry>();
     }
 
     #[test]

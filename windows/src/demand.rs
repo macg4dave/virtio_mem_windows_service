@@ -14,7 +14,12 @@ const ATOMIC_REPLACE_ATTEMPTS: usize = 201;
 #[cfg(any(windows, test))]
 const ATOMIC_REPLACE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
-pub use virtio_mem_core::{DemandError, MemoryTelemetrySnapshot, RawTelemetryEnvelope};
+pub use virtio_mem_core::{
+    DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot, OptionalTelemetrySignal,
+    PagingActivitySnapshot, RawTelemetryContractMode, RawTelemetryEnvelope, ReusableMemorySnapshot,
+    TelemetryCapability, TelemetrySignalStatus, TelemetryWarmup, WindowsNativeTelemetry,
+    WindowsTelemetryCapabilities,
+};
 
 /// Publishes raw telemetry without accepting allocation or resize input.
 pub trait RawTelemetryPublisher {

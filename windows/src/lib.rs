@@ -9,8 +9,11 @@ pub mod service_scm;
 pub use config::ServiceConfig;
 pub use demand::{
     process_session_id, AtomicRawTelemetryPublisher, DemandError, JsonLinesRawTelemetryPublisher,
-    MemoryTelemetry, MemoryTelemetrySnapshot, NativeMemoryTelemetry, RawTelemetryEnvelope,
-    RawTelemetryPublisher, SystemTelemetryClock, TelemetryClock,
+    MemoryResourceNotificationState, MemoryTelemetry, MemoryTelemetrySnapshot,
+    NativeMemoryTelemetry, OptionalTelemetrySignal, PagingActivitySnapshot,
+    RawTelemetryContractMode, RawTelemetryEnvelope, RawTelemetryPublisher, ReusableMemorySnapshot,
+    SystemTelemetryClock, TelemetryCapability, TelemetryClock, TelemetrySignalStatus,
+    TelemetryWarmup, WindowsNativeTelemetry, WindowsTelemetryCapabilities,
 };
 pub use error::{ConfigurationError, RuntimeWiringError, ServiceHostError};
 pub use event_log::{

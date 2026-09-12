@@ -429,7 +429,9 @@ fn duration_millis(duration: Duration) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use virtio_mem_core::MemoryTelemetrySnapshot;
+    use virtio_mem_core::{
+        MemoryTelemetrySnapshot, RawTelemetryContractMode, LEGACY_RAW_TELEMETRY_VERSION,
+    };
 
     struct FixedGuestFile(Vec<u8>);
 
@@ -513,6 +515,40 @@ mod tests {
         );
 
         assert_eq!(source.read(), Ok(RawTelemetryRead::Fresh(latest)));
+        std::fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn accepts_v2_only_as_the_explicit_legacy_fallback() {
+        let path = path("legacy-v2");
+        let mut legacy = envelope("session-a", 995_000, 10, 0);
+        legacy.version = LEGACY_RAW_TELEMETRY_VERSION;
+        legacy.windows_native = None;
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&legacy).expect("encode legacy telemetry")
+            ),
+        )
+        .expect("write legacy fixture");
+        let source = FileRawTelemetrySource::with_clock(
+            &path,
+            "guest",
+            "VirtioMemService",
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+            FixedClock(1_000_000),
+        );
+
+        let RawTelemetryRead::Fresh(accepted) = source.read().expect("accept legacy fallback")
+        else {
+            panic!("first legacy record must be fresh");
+        };
+        assert_eq!(
+            accepted.contract_mode(),
+            Ok(RawTelemetryContractMode::LegacyV2Fallback)
+        );
         std::fs::remove_file(path).expect("remove fixture");
     }
 
