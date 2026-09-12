@@ -52,6 +52,12 @@ identity, freshness, session, replay, and durable acknowledgement checks apply
 after transport decoding. The `file` transport remains available only for an
 explicitly provisioned host-local handoff.
 
+A transport acquisition failure and invalid telemetry evidence are distinct
+controller outcomes. Either blocks the current cycle. A bounded acquisition
+failure preserves already accepted history until the next accepted sample can
+apply the configured maximum-gap rule; invalid, stale, replayed, or
+identity-mismatched evidence clears reclaim readiness immediately.
+
 The service manager does not blindly restart a failed controller. Recovery and
 resumption are explicit operator decisions made after current live state and
 durable command state are reviewed.

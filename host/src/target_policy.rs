@@ -153,13 +153,15 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
                 });
             }
             Err(error) => {
-                let mut estimator = self
-                    .estimator
-                    .lock()
-                    .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
-                estimator.invalidate_history();
-                self.persist_estimator(&estimator)?;
-                return Err(error);
+                if error.invalidates_history() {
+                    let mut estimator = self
+                        .estimator
+                        .lock()
+                        .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
+                    estimator.invalidate_history();
+                    self.persist_estimator(&estimator)?;
+                }
+                return Err(error.to_string());
             }
         };
         let mut estimator = self
@@ -385,14 +387,12 @@ pub fn clear_actuation_latch(
     let compatibility_fingerprint =
         compatibility_fingerprint(&config.compatibility_attestation_path)?;
     let path = PathBuf::from(&config.policy_state_path);
-    let mut checkpoint = load_matching_checkpoint(
+    let mut checkpoint = load_checkpoint_for_latch_clear(
         &path,
         &config.vm_name,
         &config.alias,
         &policy_fingerprint,
-        &compatibility_fingerprint,
-    )?
-    .ok_or_else(|| "no matching target-controller checkpoint exists".to_owned())?;
+    )?;
     if !checkpoint.actuation_latched {
         return Err("target-controller actuation is not latched".to_owned());
     }
@@ -401,6 +401,8 @@ pub fn clear_actuation_latch(
         config.vm_name, config.alias, live.requested_bytes, live.current_bytes, reason
     );
     if apply {
+        checkpoint.compatibility_fingerprint_sha256 = compatibility_fingerprint;
+        checkpoint.estimator = TargetEstimatorState::cold();
         checkpoint.actuation_latched = false;
         checkpoint.actuation_latch_reason = None;
         checkpoint.command_intent = None;
@@ -408,6 +410,36 @@ pub fn clear_actuation_latch(
         persist_checkpoint(&path, &checkpoint)?;
     }
     Ok(message)
+}
+
+fn load_checkpoint_for_latch_clear(
+    path: &Path,
+    vm_name: &str,
+    device_alias: &str,
+    policy_fingerprint: &str,
+) -> Result<PolicyCheckpoint, String> {
+    let metadata = fs::metadata(path)
+        .map_err(|error| format!("inspect target policy checkpoint for latch clear: {error}"))?;
+    if metadata.len() > MAX_POLICY_CHECKPOINT_BYTES {
+        return Err("target policy checkpoint is oversized; refusing latch clear".to_owned());
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| format!("read target policy checkpoint for latch clear: {error}"))?;
+    let checkpoint: PolicyCheckpoint = serde_json::from_slice(&bytes).map_err(|error| {
+        format!("target policy checkpoint is invalid; refusing latch clear: {error}")
+    })?;
+    if checkpoint.version != POLICY_CHECKPOINT_VERSION
+        || checkpoint.estimator.version != virtio_mem_core::TARGET_ESTIMATOR_STATE_VERSION
+        || checkpoint.vm_name != vm_name
+        || checkpoint.device_alias != device_alias
+        || checkpoint.policy_fingerprint_sha256 != policy_fingerprint
+    {
+        return Err(
+            "target policy checkpoint does not match the current VM, alias, or policy; refusing latch clear"
+                .to_owned(),
+        );
+    }
+    Ok(checkpoint)
 }
 
 fn target_policy_config(config: &HostConfig) -> Result<TargetPolicyConfig, String> {
@@ -554,6 +586,7 @@ mod tests {
     use super::*;
     use crate::attestation::{CompatibilityReview, LiveCompatibilityEvidence};
     use crate::config::{DemandSourceMode, StatsSource};
+    use crate::raw_telemetry::RawTelemetryError;
     use serde_json::json;
     use std::time::Duration;
     use virtio_mem_core::{MemoryTelemetrySnapshot, RawTelemetryEnvelope};
@@ -564,26 +597,42 @@ mod tests {
     struct OneEnvelope(Mutex<Option<RawTelemetryEnvelope>>);
 
     impl RawTelemetrySource for OneEnvelope {
-        fn read(&self) -> Result<RawTelemetryRead, String> {
+        fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
             self.0
                 .lock()
-                .map_err(|_| "fixture lock poisoned".to_owned())?
+                .map_err(|_| {
+                    RawTelemetryError::TransportUnavailable("fixture lock poisoned".to_owned())
+                })?
                 .take()
                 .map(RawTelemetryRead::Fresh)
-                .ok_or_else(|| "fixture exhausted".to_owned())
+                .ok_or_else(|| {
+                    RawTelemetryError::TransportUnavailable("fixture exhausted".to_owned())
+                })
         }
     }
 
     struct OneUnchangedEnvelope(Mutex<Option<RawTelemetryEnvelope>>);
 
     impl RawTelemetrySource for OneUnchangedEnvelope {
-        fn read(&self) -> Result<RawTelemetryRead, String> {
+        fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
             self.0
                 .lock()
-                .map_err(|_| "fixture lock poisoned".to_owned())?
+                .map_err(|_| {
+                    RawTelemetryError::TransportUnavailable("fixture lock poisoned".to_owned())
+                })?
                 .take()
                 .map(RawTelemetryRead::Unchanged)
-                .ok_or_else(|| "fixture exhausted".to_owned())
+                .ok_or_else(|| {
+                    RawTelemetryError::TransportUnavailable("fixture exhausted".to_owned())
+                })
+        }
+    }
+
+    struct FailingRaw(RawTelemetryError);
+
+    impl RawTelemetrySource for FailingRaw {
+        fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
+            Err(self.0.clone())
         }
     }
 
@@ -599,11 +648,15 @@ mod tests {
     }
 
     fn write_attestation(path: &Path) -> String {
+        write_attestation_with_domain(path, 'a')
+    }
+
+    fn write_attestation_with_domain(path: &Path, domain_hash_character: char) -> String {
         let document = CompatibilityAttestation::new(
             LiveCompatibilityEvidence {
                 vm_name: "guest".to_owned(),
                 device_alias: "memory0".to_owned(),
-                domain_xml_sha256: "a".repeat(64),
+                domain_xml_sha256: domain_hash_character.to_string().repeat(64),
                 qemu_argv_sha256: "b".repeat(64),
                 libvirt_version_sha256: "c".repeat(64),
                 qemu_version: json!({
@@ -753,6 +806,93 @@ mod tests {
         )
         .is_err());
         fs::remove_file(state_path).expect("remove checkpoint");
+    }
+
+    #[test]
+    fn transport_interruption_preserves_history_while_invalid_evidence_clears_it() {
+        let (state_path, attestation_path) = paths("telemetry-failure-history");
+        let config = config(&state_path, &attestation_path);
+        let compatibility_fingerprint = write_attestation(&attestation_path);
+        let mut estimator = TargetEstimatorState::cold();
+        estimator.desired_bytes = 8 * GIB;
+        estimator.safe_floor_bytes = 6 * GIB;
+        estimator.session_id = "session-a".to_owned();
+        estimator.last_observed_unix_millis = 1_000_000;
+        estimator.last_monotonic_millis = 600_000;
+        estimator.last_sequence = 10;
+        estimator
+            .history
+            .push_back(virtio_mem_core::CandidateHistoryEntry {
+                observed_unix_millis: 1_000_000,
+                desired_now_bytes: 6 * GIB,
+                floor_now_bytes: 5 * GIB,
+            });
+        let checkpoint = PolicyCheckpoint {
+            version: POLICY_CHECKPOINT_VERSION,
+            vm_name: config.vm_name.clone(),
+            device_alias: config.alias.clone(),
+            policy_fingerprint_sha256: policy_fingerprint(
+                &target_policy_config(&config).expect("policy"),
+            )
+            .expect("policy fingerprint"),
+            compatibility_fingerprint_sha256: compatibility_fingerprint.clone(),
+            estimator: estimator.clone(),
+            actuation_latched: false,
+            actuation_latch_reason: None,
+            command_intent: None,
+            last_latch_clear_reason: None,
+        };
+        persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
+        let live = VirtioMemState {
+            size_bytes: 24 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 8 * GIB,
+            current_bytes: 8 * GIB,
+        };
+
+        let interrupted = TargetDemandSource::with_compatibility_fingerprint(
+            FailingRaw(RawTelemetryError::TransportUnavailable(
+                "QGA file is temporarily shared".to_owned(),
+            )),
+            &config,
+            compatibility_fingerprint.clone(),
+        )
+        .expect("interrupted source");
+        assert!(interrupted.evaluate(live, &config).is_err());
+        let preserved = load_matching_checkpoint(
+            &state_path,
+            &config.vm_name,
+            &config.alias,
+            &checkpoint.policy_fingerprint_sha256,
+            &compatibility_fingerprint,
+        )
+        .expect("load preserved checkpoint")
+        .expect("matching checkpoint");
+        assert_eq!(preserved.estimator, estimator);
+
+        let invalid = TargetDemandSource::with_compatibility_fingerprint(
+            FailingRaw(RawTelemetryError::InvalidEvidence(
+                "malformed telemetry".to_owned(),
+            )),
+            &config,
+            compatibility_fingerprint.clone(),
+        )
+        .expect("invalid source");
+        assert!(invalid.evaluate(live, &config).is_err());
+        let cleared = load_matching_checkpoint(
+            &state_path,
+            &config.vm_name,
+            &config.alias,
+            &checkpoint.policy_fingerprint_sha256,
+            &compatibility_fingerprint,
+        )
+        .expect("load cleared checkpoint")
+        .expect("matching checkpoint");
+        assert!(cleared.estimator.history.is_empty());
+        assert_eq!(cleared.estimator.safe_floor_bytes, 8 * GIB);
+
+        fs::remove_file(state_path).expect("remove checkpoint");
+        fs::remove_file(attestation_path).expect("remove attestation");
     }
 
     #[test]
@@ -1061,6 +1201,61 @@ mod tests {
         assert_eq!(
             cleared.last_latch_clear_reason.as_deref(),
             Some("operator reviewed")
+        );
+        fs::remove_file(state_path).expect("remove checkpoint");
+        fs::remove_file(attestation_path).expect("remove attestation");
+    }
+
+    #[test]
+    fn clear_latch_migrates_a_live_valid_compatibility_fingerprint_and_clears_history() {
+        let (state_path, attestation_path) = paths("clear-latch-compatibility-migration");
+        let config = config(&state_path, &attestation_path);
+        let old_compatibility_fingerprint = write_attestation_with_domain(&attestation_path, 'a');
+        let mut estimator = TargetEstimatorState::cold();
+        estimator.session_id = "old-session".to_owned();
+        estimator.last_sequence = 4;
+        let checkpoint = PolicyCheckpoint {
+            version: POLICY_CHECKPOINT_VERSION,
+            vm_name: config.vm_name.clone(),
+            device_alias: config.alias.clone(),
+            policy_fingerprint_sha256: policy_fingerprint(
+                &target_policy_config(&config).expect("policy"),
+            )
+            .expect("policy fingerprint"),
+            compatibility_fingerprint_sha256: old_compatibility_fingerprint,
+            estimator,
+            actuation_latched: true,
+            actuation_latch_reason: Some("attestation changed before command".to_owned()),
+            command_intent: None,
+            last_latch_clear_reason: None,
+        };
+        persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
+        let new_compatibility_fingerprint = write_attestation_with_domain(&attestation_path, 'd');
+        let converged = VirtioMemState {
+            size_bytes: 24 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 8 * GIB,
+            current_bytes: 8 * GIB,
+        };
+
+        clear_actuation_latch(&config, converged, "reviewed VM restart attestation", true)
+            .expect("apply compatibility migration");
+
+        let cleared = load_matching_checkpoint(
+            &state_path,
+            &config.vm_name,
+            &config.alias,
+            &checkpoint.policy_fingerprint_sha256,
+            &new_compatibility_fingerprint,
+        )
+        .expect("reload")
+        .expect("migrated checkpoint");
+        assert!(!cleared.actuation_latched);
+        assert!(cleared.command_intent.is_none());
+        assert_eq!(cleared.estimator, TargetEstimatorState::cold());
+        assert_eq!(
+            cleared.last_latch_clear_reason.as_deref(),
+            Some("reviewed VM restart attestation")
         );
         fs::remove_file(state_path).expect("remove checkpoint");
         fs::remove_file(attestation_path).expect("remove attestation");

@@ -64,6 +64,16 @@ prototype with focused tests. It is not yet a host-wide controller: no runtime
 collects a complete multi-VM snapshot, owns durable pool reservations, or
 passes grants to per-device reconcilers.
 
+Release work now proceeds in two explicit lanes. The construction lane builds
+the remaining controller, recovery, observability, global-pool, packaging, and
+operator surfaces whenever their code dependencies and contracts are ready.
+The qualification lane applies workloads and fault scenarios only after the
+corresponding implementation slice exists. Construction may move ahead of the
+current lab gate; milestone completion may not. This keeps live-system delays
+from turning the roadmap into repeated tests of unfinished behavior while
+preserving every native, deployment, live, recovery, endurance, and release
+gate as an unclaimed exit condition.
+
 [BACKLOG.md](../BACKLOG.md) owns current task status.
 [QA-roadmap.md](QA-roadmap.md) owns the ordered single-controller deployment
 and qualification tasks.
@@ -79,9 +89,9 @@ historical evidence.
 | AR0 | Complete | Verify the post-cleanup repository as one coherent candidate source tree | `BACKLOG.md`, tooling board |
 | AR1 | Complete | Deploy one coherent, least-privilege single-VM stack | QA-G1 / QA-T002–QA-T008 |
 | AR2 | In Progress | Prove automatic single-VM growth and reclaim under real workloads | QA-G2 / QA-T009–QA-T012 |
-| AR3 | Planned | Prove bounded failure recovery and actionable observability | QA-G3 / QA-T013–QA-T018 |
+| AR3 | Construction open | Build, then prove, bounded failure recovery and actionable observability | Product backlog; QA-G3 / QA-T013–QA-T018 |
 | AR4 | Planned | Pass single-VM endurance and record the scoped qualification decision | QA-G4–QA-G5 / QA-T019–QA-T024 |
-| AR5 | Prototype only | Complete the deterministic, durable global controller | Product backlog |
+| AR5 | Construction open | Complete the deterministic, durable global controller | Product backlog |
 | AR6 | Planned | Integrate and qualify live multi-VM arbitration and actuation | Product backlog and new live QA board |
 | AR7 | Planned | Make the supported stack distributable, secure, operable, and upgradeable | Product and tooling backlogs |
 | AR8 | Planned | Freeze, qualify, and publish the automatic-resizing release | Release checklist and evidence index |
@@ -241,11 +251,12 @@ single-VM platform before extending actuation to a shared host pool.
 ### Verification and exit
 
 QA-T019 through QA-T024 pass and the review records an explicit GO or NO-GO.
-GO qualifies the declared single-VM candidate and permits AR5 work. AR6 may
-cross the live multi-VM boundary only after AR5 closes. The checkpoint does not
-by itself authorize a multi-VM or general production claim. Any unexplained
-transition, missing raw evidence, or unrehearsed recovery keeps the result at
-NO-GO.
+GO qualifies the declared single-VM candidate for AR6 integration. AR6 may
+cross the live multi-VM boundary only after both AR4 and AR5 close. Hermetic AR5
+contract, persistence, and simulation work may proceed before AR4 so it is
+ready for that checkpoint. The checkpoint does not by itself authorize a
+multi-VM or general production claim. Any unexplained transition, missing raw
+evidence, or unrehearsed recovery keeps the result at NO-GO.
 
 ## AR5 — Durable global controller
 
@@ -389,12 +400,15 @@ resizing.
 ## Rules for executing this roadmap
 
 1. Claim and complete work through `BACKLOG.md`; keep milestone status here at
-   outcome level.
+   outcome level. Prefer a ready construction task while its corresponding
+   qualification behavior does not yet exist or its lab boundary is blocked.
 2. Change the owning contract, code, tests, examples, feature status, and
    trackers together when behavior or a public schema changes.
-3. Run focused owner tests before `cargo xtask gate local`; then run native,
-   deployment, live, and endurance workflows only where their boundaries
-   apply. Report each layer separately.
+3. Run focused owner tests for code that changed, then run the local aggregate
+   with `cargo xtask gate local`; run native, deployment, live, and endurance
+   workflows only when the implemented slice and its prerequisite environment
+   are ready. Report each layer separately; never use a later workflow to
+   discover whether its required product behavior has been written.
 4. Preserve durable JSON/JSONL evidence for long-running or cross-process work.
    A summary without raw evidence cannot close a live milestone.
 5. Derive device geometry and allocation from fresh alias-scoped live state.

@@ -25,6 +25,12 @@ keeps acknowledgement state at a separate host path. `file` reads an
 explicitly provisioned host-local record. Transport success alone never
 acknowledges or authorizes a sample.
 
+Telemetry read failures distinguish unavailable transport from invalid
+evidence. Neither produces a sample or authorizes actuation. Invalid evidence
+clears estimator history; a transport interruption leaves accepted history
+unchanged so the next accepted sample's time gap determines whether the
+history remains qualified.
+
 ## Target policy
 
 The host joins accepted Windows telemetry with the selected live virtio-mem

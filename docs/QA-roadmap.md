@@ -21,6 +21,11 @@ applied workload cycles, recovery, and endurance evidence remain incomplete. See
 Multi-VM arbitration, untrusted guests, production support, and direct driver
 control are outside this gate.
 
+Product construction is tracked separately in `BACKLOG.md`. Recovery,
+observability, hermetic global-controller, and release-operability code may be
+built while these ordered live gates remain pending. That code does not change
+a QA task's status until the corresponding applied gate is run and reviewed.
+
 ## Safety invariants
 
 1. Windows publishes measurements only; the host owns policy and actuation.

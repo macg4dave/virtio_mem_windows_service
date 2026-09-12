@@ -166,6 +166,12 @@ Windows atomic publisher retries only transient access-denied replacement
 collisions for a bounded interval because QGA holds the current record open
 without delete sharing; other publication errors remain fatal.
 
+At the controller boundary, a telemetry transport interruption blocks the
+current cycle without erasing previously accepted reclaim history. The next
+accepted sample must still meet the configured maximum-gap rule. Invalid,
+stale, replayed, identity-mismatched, or over-gapped evidence clears reclaim
+readiness and requires a complete new history window.
+
 ## Reversible live resize
 
 `cargo xtask live-resize` is the supported test harness. It requires explicit

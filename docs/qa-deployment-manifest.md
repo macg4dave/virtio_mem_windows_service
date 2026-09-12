@@ -122,3 +122,54 @@ and matching source/installed configuration SHA-256
 It left the exact unit disabled/inactive with `Restart=no`. Qualification
 cleanup now also resets systemd's failed marker after a fail-stop so its
 terminal safe state is disabled and inactive.
+
+The first controller start after that deployment exposed a durable recovery
+edge before workload launch: the prior attestation rejection had safely
+latched a command intent under the old compatibility fingerprint, while the
+new attestation changed that fingerprint. Startup therefore refused the
+pending mismatched checkpoint and issued no resize. The explicit `clear-latch`
+path now permits only a live-validated compatibility-fingerprint migration
+when VM, alias, policy, and converged live state still match; it clears intent,
+restarts estimator history cold, and preserves the operator reason. This
+recovery must be applied before another qualification attempt.
+
+The first clear attempt correctly refused because policy also differed. Hash
+comparison identified the exact change: the latched deployment hash
+`e5d068a9824c1647466aaa432f50c7bab211d16eeb0d663530d3508564e4d539`
+is the current configuration with a 10-second reclaim maximum gap, whereas the
+later hash
+`614ba3c31e34a48de3c452cf1739801877c9735419592b93c98584b5c93e435f`
+uses the reviewed 15-second gap. No other line differs. Recovery therefore
+temporarily installs the exact 10-second policy with the new live attestation,
+uses the product's explicit converged-state latch clear, then reinstalls the
+15-second policy. This preserves the hard refusal on policy migration and
+allows the subsequent unmatched but unlatched checkpoint to restart cold.
+
+That recovery completed. The policy-10 deployment and successful transient
+service execution cleared the latch under the original policy fingerprint.
+`.artifacts/deployment/qa-t009-host-apply-policy15-restored.json` then restored
+the reviewed policy and records matching candidate/installed binary SHA-256
+`81245cabff0392357b439ad25e1049cc7e1c023eb0166abe0dd1ae127b477d16`,
+configuration SHA-256
+`614ba3c31e34a48de3c452cf1739801877c9735419592b93c98584b5c93e435f`,
+and attestation SHA-256
+`b07e56356487fd1c5863a448e38268f721275cb53634abb63ead07523a9fc9e1`.
+The unit remains disabled/inactive and requested/current remain converged at
+1 GiB pending a fresh resident run.
+
+Applied resident run `qualification-1789231813766-72447` completed with durable
+terminal evidence. It observed growth from `1073741824` to `2172649472` bytes
+during peak pressure and further upward requests to `2300575744` bytes under
+renewed pressure, with all five workload phases, 141 host samples, zero
+observer warnings, and successful disabled/inactive cleanup. It failed the
+predeclared reclaim criterion: a single transient QGA sharing collision at
+17:56:59 invalidated demand input and correctly reset the 300-second reclaim
+history. History became ready again only after renewed pressure had raised
+desired, so observed reclaim was zero. Final requested/current were converged
+at `2300575744` bytes. This is valid failure evidence, not a QA-T009 pass.
+
+Afterward, bounded read-only `virsh` probes timed out while `virtqemud.service`
+remained active and both QEMU processes remained present. No libvirt daemon
+restart or direct resize was performed. Restoring the captured initial target
+and rerunning with a low-demand window robust to one late transient reset
+remain pending.

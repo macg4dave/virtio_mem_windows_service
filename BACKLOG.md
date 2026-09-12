@@ -38,17 +38,43 @@ explicit review now matches the current evidence and was installed by the
 typed host deployment recorded in
 `.artifacts/deployment/qa-t009-host-apply-after-vm-restart.json`. Source and
 installed hashes match, requested/current remain converged at 1 GiB, and the
-unit is disabled/inactive. A fresh applied resident run remains required.
+unit is disabled/inactive. The prior latch was cleared without accepting policy
+drift: the exact 10-second policy was temporarily restored, the explicit
+converged-state clear ran against the current live attestation, and the reviewed
+15-second policy was reinstalled. Restored evidence is in
+`.artifacts/deployment/qa-t009-host-apply-policy15-restored.json`. A fresh
+applied resident run `qualification-1789231813766-72447` then proved automatic
+growth by `1098907648` bytes, renewed-pressure growth, every workload phase,
+zero observer warnings, and disabled/inactive cleanup. It did not reclaim: one
+transient QGA file-sharing collision reset the 300-second reclaim history late
+enough that renewed pressure arrived before history recovered. The run failed
+its declared 64 MiB reclaim threshold and does not close QA-T009. Its final
+requested/current are converged at `2300575744` bytes. The system libvirt
+management daemon stopped answering bounded probes after the run; no daemon
+restart has been authorized or performed.
 
 ## Ready
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| _None_ |  |  |
+| TASK-030 | Expose a versioned, read-only controller status snapshot containing live desired/requested/current, accepted telemetry identity, reclaim readiness, capacity state, command ownership, and latch/recovery details | TASK-029 |
+| TASK-032 | Define the global-controller contract and implement a versioned durable reservation ledger around the existing pure pool planner | Existing `global_pool` prototype |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation
 evidence here when it completes.
+
+## Queued construction
+
+| ID | Work | Depends on |
+| --- | --- | --- |
+| TASK-031 | Add deterministic fault-scenario execution and machine-readable results for telemetry loss, restart, rejection, ambiguity, and partial progress | TASK-030 |
+| TASK-033 | Build the configured host-wide coordinator that applies durable pool grants through per-VM reconcilers without live actuation | TASK-032 |
+| TASK-034 | Add release artifact, configuration migration, install/upgrade/rollback, and monitoring surfaces required before packaging qualification | TASK-030, TASK-033 |
+
+These are construction tasks, not qualification passes. They may proceed while
+QA-T009 is blocked or pending, but their milestone remains open until the
+applicable local, native, deployment, live, recovery, and endurance gates pass.
 
 ## Automatic-resizing release train
 
@@ -61,9 +87,9 @@ they do not replace executable task cards.
 | AR0 | Complete | Verify the post-cleanup source, documentation, local gate, and native-Windows gate as one candidate | Current cleaned tree |
 | AR1 | Complete | Deploy one coherent least-privilege single-VM candidate | AR0, QA-T002, TASK-009 |
 | AR2 | In Progress | Prove automatic single-VM growth and reclaim under resident and committed workloads | AR1, TASK-028 |
-| AR3 | Planned | Prove bounded fault recovery and actionable observability | AR2 |
+| AR3 | Construction open | Build, then prove, bounded fault recovery and actionable observability | AR2 for qualification, not implementation |
 | AR4 | Planned | Pass single-VM repeated-cycle/endurance gates and record the scoped decision | AR3 |
-| AR5 | Prototype only | Complete the deterministic durable global controller and atomic reservation model | AR4 |
+| AR5 | Construction open | Complete the deterministic durable global controller and atomic reservation model | AR4 only for live AR6 integration |
 | AR6 | Planned | Integrate and qualify live multi-VM arbitration and actuation | AR5 |
 | AR7 | Planned | Complete distribution, security, upgrade/rollback, monitoring, and support readiness | AR6, remaining tooling tasks |
 | AR8 | Planned | Freeze, fully qualify, and publish the supported automatic-resizing release | AR7 |
@@ -86,6 +112,10 @@ record replaces historical command transcripts and machine-specific evidence:
   and roadmap reconciliation.
 - TASK-026 and TASK-027: quantitative absolute-target estimation and durable
   desired/requested/current reconciliation.
+- TASK-029: transport acquisition failures now block only the current cycle and
+  preserve accepted reclaim history for the maximum-gap check; invalid, stale,
+  replayed, identity-mismatched, or over-gapped evidence still clears reclaim
+  readiness immediately.
 - TASK-009 and QA-T001 through QA-T008: native Windows deployment, safe
   baseline, coherent least-privilege host deployment, calibration, current
   attestation, and restart-safe no-actuation preflight.

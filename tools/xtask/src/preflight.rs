@@ -198,9 +198,14 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
     }
 
     let initial_source = source(command, &ack_path);
-    let initial = expect_fresh(initial_source.read()?, "initial telemetry")?;
+    let initial = expect_fresh(
+        initial_source.read().map_err(|error| error.to_string())?,
+        "initial telemetry",
+    )?;
     let initial_restart = expect_unchanged(
-        replay_source(command, &ack_path, &initial)?.read()?,
+        replay_source(command, &ack_path, &initial)?
+            .read()
+            .map_err(|error| error.to_string())?,
         "initial host-reader restart",
     )?;
     if initial.session_id != initial_restart.session_id
@@ -222,7 +227,9 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
 
     let deadline = Instant::now() + command.preflight_timeout;
     let new_session = loop {
-        let sample = source(command, &ack_path).read()?;
+        let sample = source(command, &ack_path)
+            .read()
+            .map_err(|error| error.to_string())?;
         if let RawTelemetryRead::Fresh(envelope) = sample {
             if envelope.session_id != initial.session_id {
                 break envelope;
@@ -237,7 +244,9 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         std::thread::sleep(command.sample_interval);
     };
     let final_restart = expect_unchanged(
-        replay_source(command, &ack_path, &new_session)?.read()?,
+        replay_source(command, &ack_path, &new_session)?
+            .read()
+            .map_err(|error| error.to_string())?,
         "new-session host-reader restart",
     )?;
     if final_restart.session_id != new_session.session_id

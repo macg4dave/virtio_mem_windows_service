@@ -46,24 +46,29 @@ Qualification must separate:
 
 ## Build and qualify the global controller (AR5–AR6)
 
-After the reviewed AR4 single-VM qualification checkpoint:
+Build the hermetic global-controller contract, state model, and simulator while
+single-VM qualification proceeds. Before the reviewed AR4 checkpoint:
 
 1. Model actual allocations, absolute desired targets, per-VM safe floors,
    host reserve, and pool-free capacity in deterministic simulation.
 2. Add atomic reservation before any multi-target actuation.
 3. Exercise stale input, competing growth, reclaim priority, partial progress,
    cancellation, restart, and command ambiguity.
-4. Introduce live multi-target actuation only after simulation and single-VM
-   safety gates pass.
+4. Keep the coordinator side-effect-free and do not introduce live multi-target
+   actuation.
+
+Introduce live multi-target actuation only after both AR4 qualification and
+AR5 hermetic construction close.
 
 ## Operationalize and release (AR7–AR8)
 
-Add structured health, metrics, fault injection, repeatable deployment,
-rollback, and monitoring around the proven controller. Endurance duration and
-cycle count are chosen explicitly for each release candidate and recorded in
-the run manifest; they are not repository defaults. Freeze and publish only an
-immutable candidate that passes the full supported-platform, security,
-installation, upgrade, rollback, live, recovery, and endurance matrix.
+Build structured health, metrics, deterministic fault injection, repeatable
+deployment, rollback, and monitoring as construction dependencies instead of
+waiting for the final release gate. Endurance duration and cycle count are
+chosen explicitly for each release candidate and recorded in the run manifest;
+they are not repository defaults. Freeze and publish only an immutable
+candidate that passes the full supported-platform, security, installation,
+upgrade, rollback, live, recovery, and endurance matrix.
 
 ## Validation rule
 

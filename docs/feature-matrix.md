@@ -3,7 +3,7 @@
 | Capability | Status | Authority and remaining work |
 | --- | --- | --- |
 | Windows native memory measurement | Implemented | Windows measures physical and commit state; it has no resize authority. Current deployment evidence remains. |
-| Atomic raw telemetry delivery | Implemented | Identity, provenance, ordering, retention, size bounds, and replay acknowledgement are enforced. Installed ACL/publication evidence remains. |
+| Atomic raw telemetry delivery | Implemented | Identity, provenance, ordering, retention, size bounds, replay acknowledgement, and fail-closed transport-versus-evidence failure handling are enforced. Installed ACL/publication evidence remains. |
 | Windows SCM lifecycle | Implemented | Required configuration, identity propagation, cancellation, EventData, and explicit failures are covered; packaged classic message text remains open. |
 | QGA integration | Implemented health boundary | Maintained use is guest health and identity. The custom memory command is experimental and not a production dependency. |
 | Live virtio-mem state | Implemented | The host selects one explicit alias; live libvirt `current` is allocation authority. |

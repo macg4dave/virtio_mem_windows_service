@@ -6,6 +6,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 use virtio_mem_core::RawTelemetryEnvelope;
 
 use crate::qga::GuestFileReader;
@@ -20,12 +21,26 @@ pub enum RawTelemetryRead {
     Unchanged(RawTelemetryEnvelope),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum RawTelemetryError {
+    #[error("{0}")]
+    TransportUnavailable(String),
+    #[error("{0}")]
+    InvalidEvidence(String),
+}
+
+impl RawTelemetryError {
+    pub fn invalidates_history(&self) -> bool {
+        matches!(self, Self::InvalidEvidence(_))
+    }
+}
+
 pub trait RawTelemetrySource {
-    fn read(&self) -> Result<RawTelemetryRead, String>;
+    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError>;
 }
 
 impl RawTelemetrySource for Box<dyn RawTelemetrySource> {
-    fn read(&self) -> Result<RawTelemetryRead, String> {
+    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
         (**self).read()
     }
 }
@@ -181,34 +196,48 @@ impl<T> FileRawTelemetrySource<T> {
 }
 
 impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
-    fn read(&self) -> Result<RawTelemetryRead, String> {
-        let metadata = std::fs::metadata(&self.path)
-            .map_err(|error| format!("inspect raw telemetry {}: {error}", self.path.display()))?;
+    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
+        let metadata = std::fs::metadata(&self.path).map_err(|error| {
+            RawTelemetryError::TransportUnavailable(format!(
+                "inspect raw telemetry {}: {error}",
+                self.path.display()
+            ))
+        })?;
         if metadata.len() > MAX_RAW_TELEMETRY_FILE_BYTES {
-            return Err(format!(
+            return Err(RawTelemetryError::InvalidEvidence(format!(
                 "raw telemetry {} exceeds {} byte file limit",
                 self.path.display(),
                 MAX_RAW_TELEMETRY_FILE_BYTES
-            ));
+            )));
         }
         let mut contents = String::new();
         std::fs::File::open(&self.path)
-            .map_err(|error| format!("open raw telemetry {}: {error}", self.path.display()))?
+            .map_err(|error| {
+                RawTelemetryError::TransportUnavailable(format!(
+                    "open raw telemetry {}: {error}",
+                    self.path.display()
+                ))
+            })?
             .take(MAX_RAW_TELEMETRY_FILE_BYTES + 1)
             .read_to_string(&mut contents)
-            .map_err(|error| format!("read raw telemetry {}: {error}", self.path.display()))?;
+            .map_err(|error| {
+                RawTelemetryError::TransportUnavailable(format!(
+                    "read raw telemetry {}: {error}",
+                    self.path.display()
+                ))
+            })?;
         if contents.len() as u64 > MAX_RAW_TELEMETRY_FILE_BYTES {
-            return Err(format!(
+            return Err(RawTelemetryError::InvalidEvidence(format!(
                 "raw telemetry {} exceeds {} byte file limit",
                 self.path.display(),
                 MAX_RAW_TELEMETRY_FILE_BYTES
-            ));
+            )));
         }
         if !contents.is_empty() && !contents.ends_with('\n') {
-            return Err(format!(
+            return Err(RawTelemetryError::InvalidEvidence(format!(
                 "raw telemetry {} ends with a partial record",
                 self.path.display()
-            ));
+            )));
         }
         validate_contents(
             &contents,
@@ -220,16 +249,21 @@ impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
             &self.replay_state_path,
             &self.replay,
         )
+        .map_err(RawTelemetryError::InvalidEvidence)
     }
 }
 
 impl<R: GuestFileReader, T: UnixClock> RawTelemetrySource for QgaFileRawTelemetrySource<R, T> {
-    fn read(&self) -> Result<RawTelemetryRead, String> {
+    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
         let bytes = self
             .reader
-            .read_file(&self.guest_path, MAX_RAW_TELEMETRY_FILE_BYTES as usize)?;
-        let contents = String::from_utf8(bytes)
-            .map_err(|error| format!("QGA raw telemetry is not valid UTF-8: {error}"))?;
+            .read_file(&self.guest_path, MAX_RAW_TELEMETRY_FILE_BYTES as usize)
+            .map_err(RawTelemetryError::TransportUnavailable)?;
+        let contents = String::from_utf8(bytes).map_err(|error| {
+            RawTelemetryError::InvalidEvidence(format!(
+                "QGA raw telemetry is not valid UTF-8: {error}"
+            ))
+        })?;
         validate_contents(
             &contents,
             &self.expected_vm_name,
@@ -240,6 +274,7 @@ impl<R: GuestFileReader, T: UnixClock> RawTelemetrySource for QgaFileRawTelemetr
             &self.replay_state_path,
             &self.replay,
         )
+        .map_err(RawTelemetryError::InvalidEvidence)
     }
 }
 
@@ -556,9 +591,45 @@ mod tests {
                 Duration::from_secs(5),
                 FixedClock(1_000_000),
             );
-            assert!(source.read().is_err(), "{name} should fail");
+            assert!(
+                matches!(source.read(), Err(RawTelemetryError::InvalidEvidence(_))),
+                "{name} should reject invalid evidence"
+            );
             std::fs::remove_file(path).expect("remove fixture");
         }
+    }
+
+    #[test]
+    fn classifies_transport_failure_separately_from_invalid_evidence() {
+        let missing_path = path("transport-unavailable");
+        let _ = std::fs::remove_file(&missing_path);
+        let file = FileRawTelemetrySource::with_clock(
+            &missing_path,
+            "guest",
+            "VirtioMemService",
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+            FixedClock(1_000_000),
+        );
+        assert!(matches!(
+            file.read(),
+            Err(RawTelemetryError::TransportUnavailable(_))
+        ));
+
+        let qga = QgaFileRawTelemetrySource::with_clock(
+            FixedGuestFile(vec![b'x'; MAX_RAW_TELEMETRY_FILE_BYTES as usize + 1]),
+            r"C:\ProgramData\VirtioMemService\telemetry.json",
+            path("transport-unavailable-ack"),
+            "guest",
+            "VirtioMemService",
+            Duration::from_secs(60),
+            Duration::from_secs(5),
+            FixedClock(1_000_000),
+        );
+        assert!(matches!(
+            qga.read(),
+            Err(RawTelemetryError::TransportUnavailable(_))
+        ));
     }
 
     #[test]

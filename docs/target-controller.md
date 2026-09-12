@@ -138,8 +138,11 @@ toward the new absolute target.
 `safe_floor` is the maximum `floor_now` in the same qualified window, clamped
 not to exceed durable `desired`. Re-reading the same still-fresh atomic current
 record is a normal no-new-sample state: it does not advance policy, actuate, or
-clear history. A missing, stale, non-increasing-but-different, retired-session,
-or over-gapped sample clears reclaim readiness. A new valid sample may still
+clear history. A bounded transport interruption also blocks that control cycle
+without changing accepted estimator state. The next accepted sample must still
+satisfy the maximum-gap rule; an over-gap clears reclaim readiness. Missing or
+invalid content, stale evidence, a non-increasing-but-different record, or a
+retired session clears readiness immediately. A new valid sample may still
 raise desired immediately.
 
 Without a qualified history checkpoint, initialize both durable desired and
@@ -208,6 +211,13 @@ after live state is converged or deliberately recovered. The host provides a
 bounded `clear-latch` CLI operation that is dry-run by default, rereads live
 state, validates VM/alias/fingerprints, refuses divergence, and records the
 operator-visible reason for the clear.
+
+An explicit clear may migrate a compatibility fingerprint after the replacement
+attestation has itself passed live validation. The checkpoint must still match
+the exact VM, alias, and policy fingerprint, and live `requested` must equal
+`current`. Applying that reviewed recovery clears command intent, restarts
+estimator/reclaim history cold, records the reason, and never replays the old
+operation. Policy or identity drift remains a hard refusal.
 
 ## Qualification
 
