@@ -46,19 +46,25 @@ must be recreated with the documented ownership/mode when the candidate runs.
 QA-T002 is complete. Evidence is stored at
 `.artifacts/deployment/qa-t002-host-inventory.json`; it confirms the exact unit,
 binary, drop-in, environment files, hashes, ownership, contents, and inactive
-controller state. QA-T004 must implement the selected production telemetry
-transport before either current candidate is installed for QA-G1.
+controller state.
 
-QA-T004 and QA-T005 are complete. The production transport uses bounded
+QA-T004 through QA-T008 are complete. The production transport uses bounded
 standard QGA guest-file reads with durable host acknowledgement. The native
 Windows candidate hash
-`db0e1805764628c0caf667156e6ccbbee0428c0fe595c9f33f9843fd5f3afa9b`
+`52d1692f83ed2b935214b3bf0a3f90c47b4adbe9f7a11464fba2e51bab58713c`
 is installed as `VirtioMemService` under `LocalService`; versioned config,
 protected ACLs, normal SCM error control, and advancing same-session telemetry
-are recorded in `.artifacts/deployment/qa-t005-windows-apply.json`.
+are recorded in `.artifacts/deployment/qa-t005-windows-apply.json`. Bounded
+atomic-replace retries tolerate QGA readers that temporarily deny delete
+sharing; repeated live reads left the service running with exit code zero.
 
 Fresh allocation-neutral calibration recorded a stable visible base of
 `8518938624` bytes with live requested/current both `2155872256` bytes. The
-reviewed live attestation and validated host deployment dry-run are retained
-under `.artifacts/deployment/`. QA-T006 remains open until the typed elevated
-host install is applied; the controller remains inactive.
+reviewed live attestation and applied host deployment are retained under
+`.artifacts/deployment/`. The installed host binary hash is
+`f549a438300166be67577323ae609354295fdc6b5c9c4a251e5f2be9278cd2a3`;
+the obsolete split configuration was archived to the recorded rollback path.
+The final no-actuation preflight proved fresh transport, durable replay
+handling across reader reconstruction, Windows session rollover, current
+attestation, sufficient host headroom, and unchanged allocation. The host
+controller remains disabled and inactive for AR2.

@@ -13,21 +13,17 @@ not from completed task notes.
 
 | ID | Work | Exit condition |
 | --- | --- | --- |
-| QA-T006 | Install and verify the current host candidate in fail-stop mode | Apply the validated binary/unit/config/attestation set through `cargo xtask host-deploy`, archive the obsolete split configuration, and prove the instance remains disabled and inactive. |
-| TASK-009 | Finish the Windows native demand-agent deployment | The candidate is installed with its required configuration and protected telemetry location, and native publication is observed under the service account. |
 | TASK-028 | Qualify the single-VM target controller | An explicitly configured `cargo xtask qualification` run proves or disproves growth, reclaim, renewed pressure, fault handling, restart safety, and cleanup without a second resize authority. |
 
-The installed host controller is intentionally held while its deployment is
-known to be incoherent. Do not resume it until QA-T002 and the deployment gate
-identify a matching host binary, unit, environment, attestation, Windows
-service, and telemetry contract.
+The installed host controller remains intentionally disabled and inactive
+after AR1. AR2 qualification may start it only through the explicit bounded
+`cargo xtask qualification` workflow with one resize authority.
 
 ## Ready
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| QA-T007 | Recalibrate and review compatibility attestation | QA-T006 |
-| QA-T008 | Run the restart-safe no-actuation telemetry preflight | QA-T005–QA-T007 |
+| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | QA-T008 |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation
@@ -42,7 +38,7 @@ they do not replace executable task cards.
 | Milestone | Status | Work | Depends on |
 | --- | --- | --- | --- |
 | AR0 | Complete | Verify the post-cleanup source, documentation, local gate, and native-Windows gate as one candidate | Current cleaned tree |
-| AR1 | In progress | Deploy one coherent least-privilege single-VM candidate | AR0, QA-T002, TASK-009 |
+| AR1 | Complete | Deploy one coherent least-privilege single-VM candidate | AR0, QA-T002, TASK-009 |
 | AR2 | Planned | Prove automatic single-VM growth and reclaim under resident and committed workloads | AR1, TASK-028 |
 | AR3 | Planned | Prove bounded fault recovery and actionable observability | AR2 |
 | AR4 | Planned | Pass single-VM repeated-cycle/endurance gates and record the scoped decision | AR3 |
@@ -69,8 +65,9 @@ record replaces historical command transcripts and machine-specific evidence:
   and roadmap reconciliation.
 - TASK-026 and TASK-027: quantitative absolute-target estimation and durable
   desired/requested/current reconciliation.
-- QA-T001 and QA-T003: safe baseline capture, raw-telemetry durability, SCM
-  identity propagation, and service registration error handling.
+- TASK-009 and QA-T001 through QA-T008: native Windows deployment, safe
+  baseline, coherent least-privilege host deployment, calibration, current
+  attestation, and restart-safe no-actuation preflight.
 - BT-T001 through BT-T015: maintained Rust gates, probes, live-resize and
   detached qualification workflows, plus removal of superseded operational
   instructions, generated test artefacts, guest-side resize compatibility code,

@@ -36,6 +36,10 @@ pub enum Command {
         output: PathBuf,
         apply: bool,
     },
+    DiagnoseService {
+        service: String,
+        output: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -139,6 +143,20 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             apply,
         });
     }
+    if operation == "diagnose-service" {
+        if args.len() != 4
+            || args[2] != "--output"
+            || args[1].trim().is_empty()
+            || args[3].trim().is_empty()
+        {
+            return Err("windows diagnose-service requires SERVICE --output PATH".to_owned());
+        }
+        validate_ssh_target(&args[1])?;
+        return Ok(Command::DiagnoseService {
+            service: args[1].clone(),
+            output: PathBuf::from(&args[3]),
+        });
+    }
     if operation == "verify" {
         if args.len() != 4 || args[2] != "--runs" {
             return Err("windows verify requires EXPECTED_ED25519_FINGERPRINT --runs N".to_owned());
@@ -192,6 +210,9 @@ pub fn run(command: Command, repo: &Path) -> Result<(), String> {
             output,
             apply,
         } => service_cycle(repo, &Config::from_env(repo)?, &service, &output, apply),
+        Command::DiagnoseService { service, output } => {
+            diagnose_service(repo, &Config::from_env(repo)?, &service, &output)
+        }
     }
 }
 
@@ -784,9 +805,10 @@ fn service_cycle(
 $service={service}
 $before=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
 if($null -eq $before){{throw 'named Windows service was not found'}}
-try {{{action}}} catch {{if($before.State -eq 'Running'){{Start-Service -Name $service -ErrorAction SilentlyContinue}}; throw}}
+$beforeState=[string]$before.State
+try {{{action}}} catch {{if($beforeState -eq 'Running'){{Start-Service -Name $service -ErrorAction SilentlyContinue}}; throw}}
 $after=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
-[ordered]@{{captured_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();applied={apply};service_name=$after.Name;display_name=$after.DisplayName;before_state=$before.State;after_state=$after.State;start_mode=$after.StartMode;account=$after.StartName;path=$after.PathName}} | ConvertTo-Json -Compress
+[ordered]@{{captured_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();applied={apply};service_name=$after.Name;display_name=$after.DisplayName;before_state=$beforeState;after_state=$after.State;start_mode=$after.StartMode;account=$after.StartName;path=$after.PathName}} | ConvertTo-Json -Compress
 "#,
         apply = if apply { "$true" } else { "$false" },
     );
@@ -796,6 +818,35 @@ $after=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''"
     println!(
         "Windows service-cycle {} evidence written to {}",
         if apply { "apply" } else { "dry-run" },
+        output.display()
+    );
+    Ok(())
+}
+
+fn diagnose_service(
+    repo: &Path,
+    config: &Config,
+    service: &str,
+    output: &Path,
+) -> Result<(), String> {
+    let service = ps_literal(service);
+    let script = format!(
+        r#"$ErrorActionPreference='Stop'
+$service={service}
+$svc=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
+if($null -eq $svc){{throw 'named Windows service was not found'}}
+$since=(Get-Date).AddHours(-24)
+$application=@(Get-WinEvent -FilterHashtable @{{LogName='Application';StartTime=$since}} -ErrorAction SilentlyContinue | Where-Object {{$_.ProviderName -eq $service}} | Select-Object -First 50 | ForEach-Object {{[ordered]@{{time_created=$_.TimeCreated;id=$_.Id;level=$_.LevelDisplayName;provider=$_.ProviderName;message=$_.Message;data=@($_.Properties | ForEach-Object {{$_.Value}})}}}})
+$system=@(Get-WinEvent -FilterHashtable @{{LogName='System';ProviderName='Service Control Manager';StartTime=$since}} -ErrorAction SilentlyContinue | Where-Object {{$_.Message -like ('*'+$service+'*')}} | Select-Object -First 50 | ForEach-Object {{[ordered]@{{time_created=$_.TimeCreated;id=$_.Id;level=$_.LevelDisplayName;provider=$_.ProviderName;message=$_.Message;data=@($_.Properties | ForEach-Object {{$_.Value}})}}}})
+$failureActions=(& sc.exe qfailure $service 2>&1 | Out-String)
+[ordered]@{{captured_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();service_name=$svc.Name;state=$svc.State;status=$svc.Status;exit_code=$svc.ExitCode;service_specific_exit_code=$svc.ServiceSpecificExitCode;process_id=$svc.ProcessId;start_mode=$svc.StartMode;account=$svc.StartName;path=$svc.PathName;failure_actions=$failureActions;application_events=$application;system_events=$system}} | ConvertTo-Json -Depth 6 -Compress
+"#,
+    );
+    let value = parse_last_json_line(&remote_powershell(config, repo, &script)?)?;
+    let output = resolve_local(repo, output);
+    persist_json(&output, &value)?;
+    println!(
+        "Windows service diagnostics written to {}",
         output.display()
     );
     Ok(())

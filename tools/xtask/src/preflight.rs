@@ -6,7 +6,7 @@ use serde_json::Value;
 use virtio_mem_core::{parse_virtio_mem_xml_for_alias, VirtioMemState};
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
 use virtio_mem_host::compatibility_source::CompatibilitySource;
-use virtio_mem_host::qga::VirshQgaFileReader;
+use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
 use virtio_mem_host::raw_telemetry::{
     QgaFileRawTelemetrySource, RawTelemetryRead, RawTelemetrySource,
 };
@@ -199,9 +199,10 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
 
     let initial_source = source(command, &ack_path);
     let initial = expect_fresh(initial_source.read()?, "initial telemetry")?;
-    let restarted_source = source(command, &ack_path);
-    let initial_restart =
-        expect_unchanged(restarted_source.read()?, "initial host-reader restart")?;
+    let initial_restart = expect_unchanged(
+        replay_source(command, &ack_path, &initial)?.read()?,
+        "initial host-reader restart",
+    )?;
     if initial.session_id != initial_restart.session_id
         || initial.sequence != initial_restart.sequence
     {
@@ -221,7 +222,7 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
 
     let deadline = Instant::now() + command.preflight_timeout;
     let new_session = loop {
-        let sample = restarted_source.read()?;
+        let sample = source(command, &ack_path).read()?;
         if let RawTelemetryRead::Fresh(envelope) = sample {
             if envelope.session_id != initial.session_id {
                 break envelope;
@@ -235,8 +236,10 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         }
         std::thread::sleep(command.sample_interval);
     };
-    let final_source = source(command, &ack_path);
-    let final_restart = expect_unchanged(final_source.read()?, "new-session host-reader restart")?;
+    let final_restart = expect_unchanged(
+        replay_source(command, &ack_path, &new_session)?.read()?,
+        "new-session host-reader restart",
+    )?;
     if final_restart.session_id != new_session.session_id
         || final_restart.sequence != new_session.sequence
     {
@@ -285,6 +288,39 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         resolve(repo, &command.output).display()
     );
     Ok(())
+}
+
+#[derive(Clone)]
+struct CapturedTelemetry(Vec<u8>);
+
+impl GuestFileReader for CapturedTelemetry {
+    fn read_file(&self, _path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
+        if self.0.len() > maximum_bytes {
+            return Err(format!(
+                "captured telemetry exceeds {maximum_bytes} byte limit"
+            ));
+        }
+        Ok(self.0.clone())
+    }
+}
+
+fn replay_source(
+    command: &Command,
+    ack_path: &Path,
+    envelope: &virtio_mem_core::RawTelemetryEnvelope,
+) -> Result<QgaFileRawTelemetrySource<CapturedTelemetry>, String> {
+    let mut bytes = serde_json::to_vec(envelope)
+        .map_err(|error| format!("encode captured telemetry replay: {error}"))?;
+    bytes.push(b'\n');
+    Ok(QgaFileRawTelemetrySource::new(
+        CapturedTelemetry(bytes),
+        &command.telemetry_path,
+        ack_path,
+        &command.vm,
+        &command.service,
+        command.telemetry_max_age,
+        command.future_tolerance,
+    ))
 }
 
 fn source(

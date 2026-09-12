@@ -26,6 +26,7 @@ Usage:
   cargo xtask windows <check|sync|build|test|lint|fetch|all>
   cargo xtask windows deploy MANIFEST --output PATH [--apply]
   cargo xtask windows service-cycle SERVICE --output PATH [--apply]
+  cargo xtask windows diagnose-service SERVICE --output PATH
   cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
   cargo xtask qga VM_NAME --attempts N --command-timeout-seconds N [--connect URI]
   cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES [OPTIONS]

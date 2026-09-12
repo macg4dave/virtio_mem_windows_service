@@ -5,6 +5,14 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
 pub const RAW_TELEMETRY_RETENTION_FILES: usize = 3;
+#[cfg(any(windows, test))]
+// QGA guest-file reads require several bounded round trips while holding the
+// current file open without delete sharing. Keep publication retryable for a
+// complete normal read, but below the configured 30-second service shutdown
+// deadline.
+const ATOMIC_REPLACE_ATTEMPTS: usize = 201;
+#[cfg(any(windows, test))]
+const ATOMIC_REPLACE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub use virtio_mem_core::{DemandError, MemoryTelemetrySnapshot, RawTelemetryEnvelope};
 
@@ -172,20 +180,39 @@ fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
-    // SAFETY: Both pointers reference NUL-terminated UTF-16 buffers that live
-    // for the complete call, and MoveFileExW does not retain them.
-    if unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    } == FALSE
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
+    retry_atomic_replace(|| {
+        // SAFETY: Both pointers reference NUL-terminated UTF-16 buffers that
+        // live for the complete call, and MoveFileExW does not retain them.
+        if unsafe {
+            MoveFileExW(
+                source.as_ptr(),
+                destination.as_ptr(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            )
+        } == FALSE
+        {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+#[cfg(any(windows, test))]
+fn retry_atomic_replace(mut operation: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
+    for attempt in 1..=ATOMIC_REPLACE_ATTEMPTS {
+        match operation() {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::PermissionDenied
+                    && attempt < ATOMIC_REPLACE_ATTEMPTS =>
+            {
+                std::thread::sleep(ATOMIC_REPLACE_RETRY_DELAY);
+            }
+            Err(error) => return Err(error),
+        }
     }
+    unreachable!("atomic replace retry loop always returns")
 }
 
 pub trait TelemetryClock {
@@ -433,5 +460,32 @@ mod tests {
             NativeMemoryTelemetry.collect(),
             Err(DemandError::UnsupportedPlatform)
         );
+    }
+
+    #[test]
+    fn atomic_replace_retries_only_transient_access_denial() {
+        let mut attempts = 0;
+        retry_atomic_replace(|| {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("transient sharing collision should recover");
+        assert_eq!(attempts, 3);
+
+        let mut attempts = 0;
+        assert_eq!(
+            retry_atomic_replace(|| {
+                attempts += 1;
+                Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
+            })
+            .expect_err("non-transient error should fail")
+            .kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        assert_eq!(attempts, 1);
     }
 }

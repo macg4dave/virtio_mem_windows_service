@@ -12,10 +12,10 @@ These gates provide the execution detail for AR1 through AR4 in the
 single-VM checkpoint before global-controller work can cross a live boundary;
 it is not the final multi-VM release decision.
 
-The current decision is **NO-GO for unattended automatic resizing**. The host
-controller is in a fail-stop safe hold while candidate deployment coherence,
-production telemetry transport, current attestation, applied workload cycles,
-recovery, and endurance evidence remain incomplete. See
+The current decision is **NO-GO for unattended automatic resizing**. AR1's
+coherent deployment, production telemetry transport, and current attestation
+are complete, but the host controller remains in a fail-stop safe hold while
+applied workload cycles, recovery, and endurance evidence remain incomplete. See
 `qa-deployment-manifest.md` for the current inspected deployment delta.
 
 Multi-VM arbitration, untrusted guests, production support, and direct driver
@@ -58,15 +58,15 @@ control are outside this gate.
 | QA-T003 | Correct acknowledged durability and SCM identity/registration defects | Complete |
 | QA-T004 | Implement the least-privilege production telemetry transport | Complete |
 | QA-T005 | Install and verify the current Windows candidate, configuration, ACLs, telemetry, and lifecycle | Complete |
-| QA-T006 | Install and verify the current host candidate, instance configuration, and fail-stop service state | In progress |
-| QA-T007 | Calibrate deployment-specific visible base and regenerate/review compatibility attestation | Prepared; blocked by QA-T006 install |
-| QA-T008 | Prove telemetry handoff and replay/session behavior across independent service restarts without actuation | Blocked by QA-T005–QA-T007 |
+| QA-T006 | Install and verify the current host candidate, instance configuration, and fail-stop service state | Complete |
+| QA-T007 | Calibrate deployment-specific visible base and regenerate/review compatibility attestation | Complete |
+| QA-T008 | Prove telemetry handoff and replay/session behavior across independent service restarts without actuation | Complete |
 
 ### Automatic behavior and recovery
 
 | ID | Task | Status |
 | --- | --- | --- |
-| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | Blocked by QA-T008 |
+| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | Ready |
 | QA-T010 | Run an explicitly configured committed-memory qualification through the same path | Blocked by QA-T009 |
 | QA-T011 | Prove renewed pressure during an owned pending shrink without lower-request overlap | Blocked by QA-T009 |
 | QA-T012 | Record an explicit cleanup/recovery result for the captured initial target | Blocked by QA-T009 |

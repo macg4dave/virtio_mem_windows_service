@@ -132,6 +132,14 @@ Use `cargo xtask calibration` for the allocation-neutral, two-sample visible
 base measurement and `cargo xtask attestation` to generate the live-bound
 document from an explicit reviewed input.
 
+Use `cargo xtask windows service-cycle` for a bounded, evidence-producing
+service restart and `cargo xtask windows diagnose-service` for SCM recovery and
+structured EventData inspection. The AR1 no-actuation gate is `cargo xtask
+preflight`; with explicit identity, paths, bounds, and
+`--apply-service-restart`, it proves live QGA delivery, exact durable replay,
+producer-session rollover, current attestation, host headroom, rollback
+evidence, controller safe hold, and unchanged allocation.
+
 For the host, derive a complete instance file from
 `host/systemd/virtio-mem-host.conf.example`, replace every required marker from
 reviewed deployment evidence, and validate it with the product CLI before
@@ -148,7 +156,10 @@ The production raw-telemetry configuration selects `qga-file`, supplies the
 absolute Windows current-record path and a distinct absolute host
 acknowledgement path, and keeps the QGA operation within the configured command
 timeout. A deployment check must prove bounded open/read/close behavior and
-must not substitute SSH, guest execution, or a shared writable directory.
+must not substitute SSH, guest execution, or a shared writable directory. The
+Windows atomic publisher retries only transient access-denied replacement
+collisions for a bounded interval because QGA holds the current record open
+without delete sharing; other publication errors remain fatal.
 
 ## Reversible live resize
 

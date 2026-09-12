@@ -54,9 +54,10 @@ shell or running Cargo as root.
 
 ## Current gaps
 
-- Candidate deployment still crosses platform privilege boundaries. Inventory
-  now has a typed xtask boundary; installation and rollback still require the
-  general typed deployment manifest and capability-named Rust workflow.
+- AR1 inventory, Windows/host installation, service lifecycle, diagnostics,
+  calibration, attestation, and no-actuation preflight now have typed xtask
+  boundaries. They still need unification under the general versioned task
+  manifest and common result model tracked by BT-T007 and BT-T011.
 - Guest lifecycle evidence is captured by current qualification preflight but
   is not yet a reusable typed command.
 - Some external effects remain covered only at parser/unit boundaries rather

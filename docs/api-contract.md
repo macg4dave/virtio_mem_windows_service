@@ -19,7 +19,9 @@ the configured path; missing or invalid configuration fails visibly.
 The service emits bounded structured lifecycle and failure EventData. Stop is
 cooperative and bounded by the configured shutdown duration. Native telemetry
 publication uses an atomic current-record handoff with protected deployment
-permissions.
+permissions. Windows retries only transient access-denied replacement
+collisions for a bounded interval so a standard QGA file reader cannot
+terminate publication; other errors remain visible and fatal.
 
 The optional custom QGA memory adapter is an experimental API boundary. Its
 operation deadline must be provided by its caller. Production telemetry does
@@ -71,7 +73,9 @@ convergence durations.
 - `gate local|all`;
 - `doctor host`;
 - `qga`;
-- `windows build|test|all|verify`;
+- `windows build|test|all|verify|deploy|service-cycle|diagnose-service`;
+- `deployment inventory`, `host-deploy`, `calibration`, `attestation`, and
+  restart-safe no-actuation `preflight`;
 - `live-resize`;
 - `qualification start|status|review`.
 
