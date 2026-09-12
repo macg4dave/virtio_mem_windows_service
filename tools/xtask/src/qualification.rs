@@ -59,6 +59,9 @@ struct Config {
     controller_timeout_seconds: u64,
     expect_growth_bytes: u64,
     expect_reclaim_bytes: u64,
+    expect_renewed_growth_bytes: u64,
+    #[serde(default)]
+    require_renewed_during_pending_shrink: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -127,11 +130,39 @@ struct Observations {
     maximum_current: u64,
     maximum_peak_current: u64,
     minimum_settled_current: Option<u64>,
+    minimum_settled_phase_current: Option<u64>,
+    maximum_renewed_current: Option<u64>,
     workload_phases: Vec<String>,
     sample_count: u64,
     warnings: u64,
     last_requested: Option<u64>,
     last_privileged_sample_millis: Option<u128>,
+    memory_samples: Vec<MemorySample>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+struct MemorySample {
+    phase: String,
+    requested_bytes: u64,
+    current_bytes: u64,
+    telemetry_session_id: String,
+    telemetry_sequence: u64,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct QualificationAnalysis {
+    initial_current_bytes: Option<u64>,
+    maximum_peak_current_bytes: u64,
+    minimum_settled_current_bytes: Option<u64>,
+    minimum_settled_phase_current_bytes: Option<u64>,
+    maximum_renewed_current_bytes: Option<u64>,
+    observed_growth_bytes: u64,
+    observed_reclaim_bytes: u64,
+    observed_renewed_growth_bytes: u64,
+    renewed_during_observed_pending_shrink: bool,
+    lower_request_while_pending_violations: u64,
+    telemetry_session_changes: u64,
+    telemetry_sequence_regressions: u64,
 }
 
 pub fn execute(arguments: &[String], repo: &Path) -> Result<(), String> {
@@ -168,6 +199,8 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let mut controller_timeout_seconds = None;
     let mut expect_growth_bytes = None;
     let mut expect_reclaim_bytes = None;
+    let mut expect_renewed_growth_bytes = None;
+    let mut require_renewed_during_pending_shrink = false;
     let mut remote_workload = None;
     let mut controller_unit = None;
     let mut guest_service = None;
@@ -233,6 +266,13 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             "--expect-reclaim-bytes" => {
                 expect_reclaim_bytes = Some(number(args, &mut index, "--expect-reclaim-bytes")?)
             }
+            "--expect-renewed-growth-bytes" => {
+                expect_renewed_growth_bytes =
+                    Some(number(args, &mut index, "--expect-renewed-growth-bytes")?)
+            }
+            "--require-renewed-during-pending-shrink" => {
+                require_renewed_during_pending_shrink = true
+            }
             "--remote-workload" => {
                 remote_workload = Some(value(args, &mut index, "--remote-workload")?)
             }
@@ -292,6 +332,8 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
         required(controller_timeout_seconds, "--controller-timeout-seconds")?;
     let expect_growth_bytes = required(expect_growth_bytes, "--expect-growth-bytes")?;
     let expect_reclaim_bytes = required(expect_reclaim_bytes, "--expect-reclaim-bytes")?;
+    let expect_renewed_growth_bytes =
+        required(expect_renewed_growth_bytes, "--expect-renewed-growth-bytes")?;
     let remote_workload = required(remote_workload, "--remote-workload")?;
     let controller_unit = required(controller_unit, "--controller-unit")?;
     let guest_service = required(guest_service, "--guest-service")?;
@@ -343,7 +385,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     {
         return Err("refresh, sampling, and command timeout values must be positive".to_owned());
     }
-    if expect_growth_bytes == 0 || expect_reclaim_bytes == 0 {
+    if expect_growth_bytes == 0 || expect_reclaim_bytes == 0 || expect_renewed_growth_bytes == 0 {
         return Err("resize expectations must be positive".to_owned());
     }
     match (apply_service_restart, guest_service_cycle_timeout_seconds) {
@@ -415,6 +457,8 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             controller_timeout_seconds,
             expect_growth_bytes,
             expect_reclaim_bytes,
+            expect_renewed_growth_bytes,
+            require_renewed_during_pending_shrink,
         },
         output_root,
         apply,
@@ -1027,29 +1071,29 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
         thread::sleep(interval.min(post_deadline.saturating_duration_since(Instant::now())));
     }
     preflight_health(config, run_dir, repo, "after_workload")?;
-    let initial = observations.initial_current.unwrap_or(0);
-    let growth = observations.maximum_peak_current.saturating_sub(initial);
-    let reclaimed = observations.minimum_settled_current.map_or(0, |minimum| {
-        observations.maximum_peak_current.saturating_sub(minimum)
-    });
+    let analysis = analyze(&observations);
     write_json(
         &run_dir.join("result.json"),
         &json!({
             "version": SCHEMA_VERSION,
             "sample_count": observations.sample_count,
             "warning_count": observations.warnings,
-            "initial_current_bytes": observations.initial_current,
+            "initial_current_bytes": analysis.initial_current_bytes,
             "maximum_current_bytes": observations.maximum_current,
-            "maximum_peak_current_bytes": observations.maximum_peak_current,
-            "minimum_settled_current_bytes": observations.minimum_settled_current,
-            "observed_growth_bytes": growth,
+            "maximum_peak_current_bytes": analysis.maximum_peak_current_bytes,
+            "minimum_settled_current_bytes": analysis.minimum_settled_current_bytes,
+            "observed_growth_bytes": analysis.observed_growth_bytes,
             "required_growth_bytes": config.expect_growth_bytes,
-            "observed_reclaim_bytes": reclaimed,
+            "observed_reclaim_bytes": analysis.observed_reclaim_bytes,
             "required_reclaim_bytes": config.expect_reclaim_bytes,
+            "observed_renewed_growth_bytes": analysis.observed_renewed_growth_bytes,
+            "required_renewed_growth_bytes": config.expect_renewed_growth_bytes,
+            "require_renewed_during_pending_shrink": config.require_renewed_during_pending_shrink,
+            "analysis": analysis,
             "workload_phases": observations.workload_phases,
         }),
     )?;
-    classify(config, &observations)
+    classify(config, &observations, &analysis)
 }
 
 fn wait_for_controller_decision(
@@ -1148,6 +1192,24 @@ fn sample_host(
         observations.maximum_peak_current =
             observations.maximum_peak_current.max(sample.current_bytes);
     }
+    if phase == "renewed" {
+        observations.maximum_renewed_current = Some(
+            observations
+                .maximum_renewed_current
+                .map_or(sample.current_bytes, |value| {
+                    value.max(sample.current_bytes)
+                }),
+        );
+    }
+    if phase == "settled" {
+        observations.minimum_settled_phase_current = Some(
+            observations
+                .minimum_settled_phase_current
+                .map_or(sample.current_bytes, |value| {
+                    value.min(sample.current_bytes)
+                }),
+        );
+    }
     if matches!(phase, "settled" | "post_workload" | "complete") {
         observations.minimum_settled_current = Some(
             observations
@@ -1158,6 +1220,13 @@ fn sample_host(
         );
     }
     observations.sample_count += 1;
+    observations.memory_samples.push(MemorySample {
+        phase: phase.to_owned(),
+        requested_bytes: sample.requested_bytes,
+        current_bytes: sample.current_bytes,
+        telemetry_session_id: sample.windows_raw_telemetry.session_id.clone(),
+        telemetry_sequence: sample.windows_raw_telemetry.sequence,
+    });
     Ok(())
 }
 
@@ -1251,7 +1320,66 @@ fn remote_text(config: &Config, repo: &Path, command: &str) -> Result<String, St
     )
 }
 
-fn classify(config: &Config, observations: &Observations) -> Result<(), String> {
+fn analyze(observations: &Observations) -> QualificationAnalysis {
+    let initial = observations.initial_current.unwrap_or(0);
+    let observed_growth_bytes = observations.maximum_peak_current.saturating_sub(initial);
+    let observed_reclaim_bytes = observations.minimum_settled_current.map_or(0, |minimum| {
+        observations.maximum_peak_current.saturating_sub(minimum)
+    });
+    let observed_renewed_growth_bytes = observations
+        .maximum_renewed_current
+        .zip(observations.minimum_settled_phase_current)
+        .map_or(0, |(maximum, minimum)| maximum.saturating_sub(minimum));
+    let renewed_during_observed_pending_shrink = observations
+        .memory_samples
+        .iter()
+        .position(|sample| sample.phase == "renewed")
+        .and_then(|renewed| {
+            observations.memory_samples[..renewed]
+                .iter()
+                .rev()
+                .find(|sample| sample.phase == "settled")
+        })
+        .is_some_and(|sample| sample.requested_bytes < sample.current_bytes);
+    let mut lower_request_while_pending_violations = 0;
+    let mut telemetry_session_changes = 0;
+    let mut telemetry_sequence_regressions = 0;
+    for pair in observations.memory_samples.windows(2) {
+        let previous = &pair[0];
+        let next = &pair[1];
+        if previous.requested_bytes != previous.current_bytes
+            && next.requested_bytes < previous.requested_bytes
+            && next.current_bytes != previous.requested_bytes
+        {
+            lower_request_while_pending_violations += 1;
+        }
+        if next.telemetry_session_id != previous.telemetry_session_id {
+            telemetry_session_changes += 1;
+        } else if next.telemetry_sequence < previous.telemetry_sequence {
+            telemetry_sequence_regressions += 1;
+        }
+    }
+    QualificationAnalysis {
+        initial_current_bytes: observations.initial_current,
+        maximum_peak_current_bytes: observations.maximum_peak_current,
+        minimum_settled_current_bytes: observations.minimum_settled_current,
+        minimum_settled_phase_current_bytes: observations.minimum_settled_phase_current,
+        maximum_renewed_current_bytes: observations.maximum_renewed_current,
+        observed_growth_bytes,
+        observed_reclaim_bytes,
+        observed_renewed_growth_bytes,
+        renewed_during_observed_pending_shrink,
+        lower_request_while_pending_violations,
+        telemetry_session_changes,
+        telemetry_sequence_regressions,
+    }
+}
+
+fn classify(
+    config: &Config,
+    observations: &Observations,
+    analysis: &QualificationAnalysis,
+) -> Result<(), String> {
     let required = ["baseline", "peak", "settled", "renewed", "complete"];
     for phase in required {
         if !observations
@@ -1262,23 +1390,42 @@ fn classify(config: &Config, observations: &Observations) -> Result<(), String> 
             return Err(format!("missing workload phase: {phase}"));
         }
     }
-    let initial = observations
-        .initial_current
-        .ok_or_else(|| "no initial memory sample".to_owned())?;
-    let growth = observations.maximum_peak_current.saturating_sub(initial);
-    let reclaimed = observations.minimum_settled_current.map_or(0, |minimum| {
-        observations.maximum_peak_current.saturating_sub(minimum)
-    });
-    if growth < config.expect_growth_bytes {
+    if analysis.initial_current_bytes.is_none() {
+        return Err("no initial memory sample".to_owned());
+    }
+    if analysis.observed_growth_bytes < config.expect_growth_bytes {
         return Err(format!(
-            "observed growth {growth} bytes is below required {}",
-            config.expect_growth_bytes
+            "observed growth {} bytes is below required {}",
+            analysis.observed_growth_bytes, config.expect_growth_bytes
         ));
     }
-    if reclaimed < config.expect_reclaim_bytes {
+    if analysis.observed_reclaim_bytes < config.expect_reclaim_bytes {
         return Err(format!(
-            "observed reclaim {reclaimed} bytes is below required {}",
-            config.expect_reclaim_bytes
+            "observed reclaim {} bytes is below required {}",
+            analysis.observed_reclaim_bytes, config.expect_reclaim_bytes
+        ));
+    }
+    if analysis.observed_renewed_growth_bytes < config.expect_renewed_growth_bytes {
+        return Err(format!(
+            "observed renewed growth {} bytes is below required {}",
+            analysis.observed_renewed_growth_bytes, config.expect_renewed_growth_bytes
+        ));
+    }
+    if config.require_renewed_during_pending_shrink
+        && !analysis.renewed_during_observed_pending_shrink
+    {
+        return Err("renewed pressure did not overlap an observed pending shrink".to_owned());
+    }
+    if analysis.lower_request_while_pending_violations != 0 {
+        return Err(format!(
+            "observed {} lower request(s) while a prior request was pending",
+            analysis.lower_request_while_pending_violations
+        ));
+    }
+    if analysis.telemetry_session_changes != 0 || analysis.telemetry_sequence_regressions != 0 {
+        return Err(format!(
+            "telemetry continuity failed: session_changes={} sequence_regressions={}",
+            analysis.telemetry_session_changes, analysis.telemetry_sequence_regressions
         ));
     }
     Ok(())
@@ -2003,6 +2150,8 @@ mod tests {
             "2048",
             "--expect-reclaim-bytes",
             "1024",
+            "--expect-renewed-growth-bytes",
+            "50",
             "--remote-workload",
             r"C:\qualification\virtio-mem-workload.exe",
             "--controller-unit",
@@ -2026,6 +2175,7 @@ mod tests {
         assert_eq!(parsed.config.mode, WorkloadMode::Resident);
         assert_eq!(parsed.config.peak_bytes, 8192);
         assert_eq!(parsed.config.expect_reclaim_bytes, 1024);
+        assert_eq!(parsed.config.expect_renewed_growth_bytes, 50);
     }
 
     #[test]
@@ -2137,6 +2287,8 @@ mod tests {
             maximum_current: 1_200,
             maximum_peak_current: 1_200,
             minimum_settled_current: Some(1_100),
+            minimum_settled_phase_current: Some(1_100),
+            maximum_renewed_current: Some(1_175),
             workload_phases: ["baseline", "peak", "settled", "renewed", "complete"]
                 .iter()
                 .map(|v| (*v).to_owned())
@@ -2145,10 +2297,137 @@ mod tests {
             warnings: 0,
             last_requested: Some(1_100),
             last_privileged_sample_millis: None,
+            memory_samples: vec![
+                MemorySample {
+                    phase: "settled".to_owned(),
+                    requested_bytes: 1_100,
+                    current_bytes: 1_150,
+                    telemetry_session_id: "session-a".to_owned(),
+                    telemetry_sequence: 1,
+                },
+                MemorySample {
+                    phase: "renewed".to_owned(),
+                    requested_bytes: 1_200,
+                    current_bytes: 1_175,
+                    telemetry_session_id: "session-a".to_owned(),
+                    telemetry_sequence: 2,
+                },
+            ],
         };
-        assert!(classify(&options.config, &observations).is_ok());
+        let analysis = analyze(&observations);
+        assert!(classify(&options.config, &observations, &analysis).is_ok());
+        assert!(analysis.renewed_during_observed_pending_shrink);
         options.config.expect_growth_bytes = 201;
-        assert!(classify(&options.config, &observations).is_err());
+        assert!(classify(&options.config, &observations, &analysis).is_err());
+    }
+
+    #[test]
+    fn result_rejects_renewed_growth_and_continuity_failures() {
+        let mut options =
+            parse_start(&valid_start_arguments(), Path::new("/repo")).expect("options");
+        options.config.expect_growth_bytes = 100;
+        options.config.expect_reclaim_bytes = 50;
+        options.config.expect_renewed_growth_bytes = 50;
+        let mut observations = Observations {
+            initial_current: Some(1_000),
+            maximum_current: 1_200,
+            maximum_peak_current: 1_200,
+            minimum_settled_current: Some(1_100),
+            minimum_settled_phase_current: Some(1_100),
+            maximum_renewed_current: Some(1_125),
+            workload_phases: ["baseline", "peak", "settled", "renewed", "complete"]
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            sample_count: 2,
+            warnings: 0,
+            last_requested: Some(1_200),
+            last_privileged_sample_millis: None,
+            memory_samples: vec![
+                MemorySample {
+                    phase: "settled".to_owned(),
+                    requested_bytes: 1_100,
+                    current_bytes: 1_150,
+                    telemetry_session_id: "session-a".to_owned(),
+                    telemetry_sequence: 2,
+                },
+                MemorySample {
+                    phase: "renewed".to_owned(),
+                    requested_bytes: 1_050,
+                    current_bytes: 1_125,
+                    telemetry_session_id: "session-b".to_owned(),
+                    telemetry_sequence: 1,
+                },
+            ],
+        };
+        let analysis = analyze(&observations);
+        let error = classify(&options.config, &observations, &analysis)
+            .expect_err("renewed growth is below its declared threshold");
+        assert!(error.contains("renewed growth"));
+
+        observations.maximum_renewed_current = Some(1_175);
+        let analysis = analyze(&observations);
+        let error = classify(&options.config, &observations, &analysis)
+            .expect_err("lower pending request is unsafe");
+        assert!(error.contains("lower request"));
+        assert_eq!(analysis.telemetry_session_changes, 1);
+
+        observations.memory_samples[1].requested_bytes = 1_200;
+        let analysis = analyze(&observations);
+        let error = classify(&options.config, &observations, &analysis)
+            .expect_err("session change breaks telemetry continuity");
+        assert!(error.contains("telemetry continuity"));
+
+        observations.memory_samples[1].telemetry_session_id = "session-a".to_owned();
+        let analysis = analyze(&observations);
+        let error = classify(&options.config, &observations, &analysis)
+            .expect_err("sequence regression breaks telemetry continuity");
+        assert!(error.contains("sequence_regressions=1"));
+    }
+
+    #[test]
+    fn pending_shrink_overlap_is_an_explicit_acceptance_gate() {
+        let mut arguments = valid_start_arguments();
+        arguments.push("--require-renewed-during-pending-shrink".to_owned());
+        let options = parse_start(&arguments, Path::new("/repo")).expect("options");
+        assert!(options.config.require_renewed_during_pending_shrink);
+
+        let observations = Observations {
+            initial_current: Some(1_000),
+            maximum_current: 3_100,
+            maximum_peak_current: 3_100,
+            minimum_settled_current: Some(2_000),
+            minimum_settled_phase_current: Some(2_000),
+            maximum_renewed_current: Some(3_100),
+            workload_phases: ["baseline", "peak", "settled", "renewed", "complete"]
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            sample_count: 2,
+            warnings: 0,
+            last_requested: Some(3_100),
+            last_privileged_sample_millis: None,
+            memory_samples: vec![
+                MemorySample {
+                    phase: "settled".to_owned(),
+                    requested_bytes: 2_000,
+                    current_bytes: 2_000,
+                    telemetry_session_id: "session-a".to_owned(),
+                    telemetry_sequence: 1,
+                },
+                MemorySample {
+                    phase: "renewed".to_owned(),
+                    requested_bytes: 3_100,
+                    current_bytes: 3_100,
+                    telemetry_session_id: "session-a".to_owned(),
+                    telemetry_sequence: 2,
+                },
+            ],
+        };
+        let analysis = analyze(&observations);
+        let error = classify(&options.config, &observations, &analysis)
+            .expect_err("renewed pressure did not begin during a pending shrink");
+        assert!(error.contains("did not overlap"));
     }
 
     #[test]

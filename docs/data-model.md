@@ -31,6 +31,13 @@ clears estimator history; a transport interruption leaves accepted history
 unchanged so the next accepted sample's time gap determines whether the
 history remains qualified.
 
+The planned pressure-aware schema revision adds low/high memory-resource
+notification state, reusable and modified memory-list bytes, paging-rate
+samples with their interval/warm-up state, and per-signal availability or
+error status. These additions remain measurements. Unsupported is distinct
+from zero, and a partial record cannot silently authorize reclaim. See
+[windows-native-pressure-controller.md](windows-native-pressure-controller.md).
+
 ## Target policy
 
 The host joins accepted Windows telemetry with the selected live virtio-mem
@@ -54,6 +61,12 @@ conservatively; malformed control state fails closed.
 
 The exact formulas and required policy inputs live only in
 [target-controller.md](target-controller.md).
+
+The replacement design inserts a versioned `WindowsPressureAssessment` between
+accepted raw telemetry and the estimator. It records an explainable class
+(`urgent_grow`, `grow_or_hold`, `neutral_hold`, `reclaim_eligible`, or
+`unavailable`) plus contributing evidence. It is not allocation authority and
+does not remove `desired`, `requested`, or `current` from the model.
 
 ## Live device state
 
@@ -95,6 +108,13 @@ metrics, controller journal, and logs in a unique run directory. Its thresholds
 and durations are run data, not schema defaults. Workload records and Windows
 telemetry remain evidence only; neither gains resize authority.
 
+The qualification result derives separate initial-growth, settled-reclaim, and
+renewed-growth measurements from phase-correlated live `requested`/`current`
+samples. It also records whether renewed pressure began while the last settled
+sample showed a pending shrink, any observed lower request before prior
+convergence, and telemetry session/sequence discontinuities. These fields are
+evidence classification only and never drive product actuation.
+
 ## Windows configuration
 
 The Windows service requires a versioned JSON document containing service
@@ -111,3 +131,7 @@ path, transport-specific host acknowledgement path, host reserve, resize
 quanta, policy reserves, history, and hysteresis.
 Only the maximum sample gap may be derived from the polling interval.
 Deployment examples use placeholders rather than machine values.
+
+Pressure-aware settings require a versioned migration. Existing fixed
+physical/commit reserves become fallback safety inputs rather than silently
+changing meaning in place.

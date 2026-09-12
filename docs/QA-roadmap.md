@@ -7,15 +7,17 @@ virtio-mem device, and one host controller. The exact VM, alias, service
 identities, paths, artifacts, and configuration belong in the current
 deployment manifest and qualification evidence, not in this reusable plan.
 
-These gates provide the execution detail for AR1 through AR4 in the
+These gates provide the execution detail for WN1 through WN10 in the
 [automatic-resizing release roadmap](roadmap.md). Passing them is the required
 single-VM checkpoint before global-controller work can cross a live boundary;
 it is not the final multi-VM release decision.
 
-The current decision is **NO-GO for unattended automatic resizing**. AR1's
+The current decision is **NO-GO for unattended automatic resizing**. The
 coherent deployment, production telemetry transport, and current attestation
-are complete, but the host controller remains in a fail-stop safe hold while
-applied workload cycles, recovery, and endurance evidence remain incomplete. See
+are complete, but the fixed-headroom qualification has been paused following
+the pressure-aware architecture pivot. The host controller remains in a
+fail-stop safe hold while native signal, shadow-policy, applied behavior,
+recovery, and endurance evidence remain incomplete. See
 `qa-deployment-manifest.md` for the current inspected deployment delta.
 
 Multi-VM arbitration, untrusted guests, production support, and direct driver
@@ -40,6 +42,8 @@ a QA task's status until the corresponding applied gate is run and reviewed.
 8. A live run records initial state, explicit time bounds, cleanup, recovery,
    and final state before mutation.
 9. Only one controller/device is active in this qualification scope.
+10. Missing, unsupported, or unwarmed release-critical pressure signals cannot
+    authorize shrink; they are never represented as zero.
 
 ## Gates
 
@@ -47,9 +51,9 @@ a QA task's status until the corresponding applied gate is run and reviewed.
 | --- | --- |
 | QA-G0 Safe hold | Unhealthy or incoherent deployment cannot mutate; guest and device health are recorded |
 | QA-G1 Coherent deployment | Current hashed artifacts, configuration, identities, ACLs, attestation, and production telemetry transport agree |
-| QA-G2 Automatic actuation | Explicit resident and committed qualification configurations prove growth, falling demand, safe reclaim/constrained handling, and renewed pressure |
-| QA-G3 Recovery | Telemetry loss, service interruption, command ambiguity, cancellation, and partial/no progress produce bounded actionable states without replay or overlap |
-| QA-G4 Endurance | A reviewed run plan exercises enough cycles and idle time to cover the stated risk model, with continuous evidence and no unexplained transition |
+| QA-G2 Native pressure evidence | Supported Windows pressure signals are inventoried and semantically validated under resident, commit, cache, and paging workloads |
+| QA-G3 Shadow and applied policy | Explainable shadow targets pass review, then bounded growth and conservative reclaim pass with fallback and renewed-pressure behavior |
+| QA-G4 Recovery and endurance | Signal degradation, telemetry loss, interruption, ambiguity, cancellation, partial progress, and repeated cycles remain bounded and observable |
 | QA-G5 Decision | Support profile, operator response, evidence index, and residual risks are reviewed for an explicit GO or NO-GO |
 
 ## Task board
@@ -67,39 +71,58 @@ a QA task's status until the corresponding applied gate is run and reviewed.
 | QA-T007 | Calibrate deployment-specific visible base and regenerate/review compatibility attestation | Complete |
 | QA-T008 | Prove telemetry handoff and replay/session behavior across independent service restarts without actuation | Complete |
 
-### Automatic behavior and recovery
+### Historical fixed-headroom sequence
 
 | ID | Task | Status |
 | --- | --- | --- |
-| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | In Progress |
-| QA-T010 | Run an explicitly configured committed-memory qualification through the same path | Blocked by QA-T009 |
-| QA-T011 | Prove renewed pressure during an owned pending shrink without lower-request overlap | Blocked by QA-T009 |
-| QA-T012 | Record an explicit cleanup/recovery result for the captured initial target | Blocked by QA-T009 |
-| QA-T013 | Exercise stale, missing, malformed, and replayed telemetry in converged and pending states | Blocked by QA-T009 |
-| QA-T014 | Exercise host-controller interruption across converged, active, and latched states | Blocked by QA-T009 |
-| QA-T015 | Exercise Windows service interruption and session rollover | Blocked by QA-T010 |
-| QA-T016 | Exercise pre-command rejection and ambiguous command outcome | Blocked by QA-T013–QA-T014 |
-| QA-T017 | Exercise zero-progress and partial-progress shrink recovery | Blocked by QA-T011–QA-T012 |
-| QA-T018 | Verify observability and operator response for every terminal state | Blocked by QA-T013–QA-T017 |
+| QA-T009 | Run an explicitly configured resident-memory qualification through the fixed-headroom path | Paused; historical partial evidence only |
+| QA-T010 | Run an explicitly configured committed-memory qualification through the same path | Superseded |
+| QA-T011 | Prove renewed pressure during an owned pending shrink without lower-request overlap | Superseded as a policy gate; invariant retained |
+| QA-T012 | Record an explicit cleanup/recovery result for the captured initial target | Superseded as a policy gate; cleanup rule retained |
+| QA-T013–QA-T018 | Prior fixed-headroom recovery and observability sequence | Superseded by QA-T030–QA-T032 |
 
-### Endurance and decision
+### Historical endurance and decision
 
 | ID | Task | Status |
 | --- | --- | --- |
-| QA-T019 | Define and run a repeated-cycle plan whose cycle count, workload sizes, timings, and acceptance criteria are justified by the current risk model | Blocked by QA-T018 |
-| QA-T020 | Define and run an unattended soak whose duration and schedule are explicit inputs justified by the failure modes under review | Blocked by QA-T019 |
-| QA-T021 | Classify every warning, restart, dropped sample, non-convergence, attestation failure, and operator action | Blocked by QA-T020 |
-| QA-T022 | Publish the development support profile and known limitations | Blocked by QA-T021 |
-| QA-T023 | Publish the operator health, pause, recovery, upgrade, and rollback runbook using current `xtask`/product commands | Blocked by QA-T018 and QA-T021 |
-| QA-T024 | Record the final reviewed GO or NO-GO decision and evidence index | Blocked by QA-T022–QA-T023 |
+| QA-T019–QA-T024 | Prior fixed-headroom endurance and decision sequence | Superseded by QA-T033–QA-T035 |
+
+### Windows-native pressure policy
+
+| ID | Task | Status |
+| --- | --- | --- |
+| QA-T025 | Validate the additive schema, capability, warm-up, fallback, compatibility, and fail-closed contract without actuation | Blocked by TASK-036 |
+| QA-T026 | Record native support and failure behavior for Windows memory notifications, then correlate their states with distinct memory workloads | Blocked by QA-T025 and TASK-037 |
+| QA-T027 | Review commit-centred shadow classifications and byte candidates for false growth, missed pressure, cache treatment, capability/warm-up handling, in-flight allocation treatment, continuity, and fallback behavior | Blocked by QA-T026 and TASK-038 |
+| QA-T028 | Prove pressure-aware bounded growth under low-memory, commit-stress, and paging scenarios with reclaim disabled | Blocked by QA-T027 and TASK-039 |
+| QA-T029 | Prove conservative reclaim requires sustained high/healthy evidence and stops or reverses under renewed pressure | Blocked by QA-T028 and TASK-040 |
+| QA-T030 | Prove each proposed rate/trend signal adds value, has correct interval/warm-up semantics, and degrades without unsafe shrink | Blocked by QA-T029 and TASK-041 |
+| QA-T031 | Run the automated resident, commit-only, cache/standby, modified, paging, burst, steady-state, and recovery workload matrix | Blocked by QA-T030 and TASK-042 |
+| QA-T032 | Exercise interruption, ambiguity, partial/no progress, restart, status, operator response, cleanup, and fallback without overlap or replay | Blocked by QA-T031 and TASK-030–TASK-031 |
+| QA-T033 | Run reviewed repeated-cycle and endurance plans across growth, reclaim, cache, paging, and signal-degradation cases | Blocked by QA-T032 and TASK-043 |
+| QA-T034 | Qualify frozen configuration, defaults, schema migration, deployment, upgrade, downgrade, and rollback | Blocked by QA-T033 and TASK-044 |
+| QA-T035 | Publish the support profile and record the final reviewed GO or NO-GO decision with evidence index | Blocked by QA-T034 and TASK-045 |
 
 ## Qualification rules
 
-Use `cargo xtask qualification` for automatic-controller workload runs. Every
+Use `cargo xtask qualification` for automatic-controller workload runs after
+the shadow and active pressure fields have been added. Every
 run supplies its sizes, safety cap, timings, services, endpoints, paths,
-sampling, and acceptance deltas explicitly and stores the versioned
-configuration with its evidence. Do not promote a prior run's values into a
-new profile.
+sampling, and initial-growth, reclaim, and renewed-growth acceptance deltas
+explicitly and stores the versioned configuration with its evidence. QA-T029
+also requires the explicit pending-shrink overlap gate inherited from the
+reconciler qualification. Do not promote a prior run's values into a new
+profile.
+
+QA-T025 through QA-T027 are measurement/shadow gates and must not actuate
+memory. Native notifications, counter availability, rate warm-up, sampling
+interval, assessment reason, fallback state, and policy/schema version must be
+preserved with their evidence.
+
+QA-T026 records notification semantics without inventing a numeric pressure
+score. QA-T030 derives any proposed reusable-memory or paging-rate threshold
+from supported guest and workload evidence. Diagnostic examples are not
+product defaults and cannot authorize actuation before review.
 
 Use `cargo xtask live-resize` only for a separately scoped reversible manual
 test. It is not a substitute for observing the automatic controller through
@@ -116,8 +139,12 @@ universal duration.
 - [ ] Production raw telemetry and least-privilege transport/ACLs are verified.
 - [ ] Calibration and attestation match fresh live state.
 - [ ] The device starts converged and exactly one controller is active.
-- [ ] Explicit resident and committed apply runs meet their recorded criteria.
-- [ ] Growth, falling demand, reclaim/constrained handling, and renewed
+- [ ] Native pressure capabilities and failure states are recorded for the
+      supported Windows build.
+- [ ] Resident, commit, cache/standby, and paging workloads validate signal
+      semantics and shadow classifications.
+- [ ] Pressure-aware growth and reclaim runs meet their recorded criteria.
+- [ ] Falling demand, reclaim/constrained handling, fallback, and renewed
       pressure are correctly observed.
 - [ ] Loss, interruption, ambiguity, and partial/no-progress recovery gates pass.
 - [ ] No request is replayed or overlapped.

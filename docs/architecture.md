@@ -11,11 +11,11 @@ architecture.
 
 ### Windows service
 
-The Windows Rust service owns native memory measurement, versioned atomic raw
-telemetry publication, local configuration and ACLs, SCM lifecycle, and Windows
-observability. It never receives host allocation, calculates a host resize, or
-invokes QGA/libvirt/Linux commands. The installed QEMU Guest Agent owns the QGA
-virtio-serial channel.
+The Windows Rust service owns native memory measurement and pressure-signal
+normalisation, versioned atomic raw telemetry publication, local configuration
+and ACLs, SCM lifecycle, and Windows observability. It never receives host
+allocation, calculates a host resize, or invokes QGA/libvirt/Linux commands.
+The installed QEMU Guest Agent owns the QGA virtio-serial channel.
 
 ### Host controller
 
@@ -26,6 +26,12 @@ journaling, actuation, convergence, latching, and recovery.
 
 Live libvirt `current` is allocation authority. `requested` is device intent;
 Windows counters are demand evidence only.
+
+The implemented estimator currently converts available physical memory and
+commit headroom into fixed-reserve candidates. The release direction replaces
+that primary sizing input with a Windows-native pressure assessment while
+preserving host ownership. See
+[windows-native-pressure-controller.md](windows-native-pressure-controller.md).
 
 ### Shared core
 
@@ -47,12 +53,13 @@ and evidence persistence remain unprivileged.
 ## Data flow
 
 ```text
-Windows native counters
+Windows native counters and memory-manager pressure state
     -> versioned allocation-free telemetry record
     -> least-privilege transport
     -> host identity/freshness/replay validation
     + alias-scoped live libvirt current
-    -> absolute desired target
+    -> versioned pressure assessment
+    -> bounded absolute desired target
     -> desired/requested/current reconciliation
     -> compatibility and headroom gates
     -> journaled libvirt request
@@ -74,6 +81,10 @@ Deployment supplies explicit VM/device identity, service identity, paths,
 memory policy inputs, timing, source selection, and safety reserves. Device
 size, block geometry, requested, and current are derived from fresh live state.
 No component infers a deployment from a historical test VM.
+
+During the pressure-aware migration, signal availability and degradation are
+explicit configuration/telemetry states. Missing required pressure evidence
+blocks shrink; it is never interpreted as a zero counter.
 
 The Windows versioned configuration file is required. The host instance file
 is validated before service startup. Configuration changes that affect

@@ -6,6 +6,16 @@ This is the normative contract for absolute per-VM target estimation,
 asynchronous virtio-mem reconciliation, and qualification. It replaces
 directional demand estimates with an explicit desired target.
 
+The project direction has changed. The fixed-reserve estimator documented
+below describes the currently implemented compatibility policy, not the
+intended release sizing algorithm. Its replacement will use Windows-native
+memory-resource notifications, commit evidence, reusable-memory lists, and
+paging evidence as described in
+[windows-native-pressure-controller.md](windows-native-pressure-controller.md).
+Until that replacement is implemented and qualified, the installed controller
+remains disabled outside explicitly bounded tests, and fixed reserves must not
+be presented as a Windows pressure prediction.
+
 Automatic Windows shrink is a default-on product capability. A deployment may
 set `VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false` for diagnosis or a deliberate
 rollout pause, but absence of that setting means enabled. Enabled reclaim still
@@ -47,7 +57,7 @@ constraint rather than a direct measure of resident physical use, so physical
 and commit candidates are calculated separately and combined with `max`, never
 added together.
 
-## Target estimator
+## Implemented fixed-headroom estimator
 
 ### Geometry and cross-layer validation
 
@@ -97,6 +107,10 @@ silently alter an active history policy.
 All reserves and hysteresis must be positive, block-alignable, ordered so floor
 reserves do not exceed normal reserves, and configurable in canonical bytes.
 
+These reserves are fixed policy margins. They are not derived from low-memory
+notifications, paging activity, standby/cache pressure, hard faults, memory
+compression, or another Windows memory-manager recommendation.
+
 For reserve pair `(Rphysical, Rcommit)`, calculate:
 
 ```text
@@ -127,6 +141,9 @@ configured_minimum <= floor_now <= desired_now <= effective_max
 History stores timestamped calculated candidates, not allocations and not
 pressure ratios. Growth is immediate: when `desired_now` exceeds durable
 `desired`, raise `desired` to `desired_now` without waiting for history.
+
+History and hysteresis delay downward movement; they do not make the fixed
+headroom estimate predictive.
 
 Downward movement requires a complete fresh configured history window with no
 gap above the configured or derived maximum. Its candidate is the maximum
@@ -245,9 +262,14 @@ progress accounting, command resolution, journal recovery, and no replay.
 The bounded live workload uses a Rust helper to distinguish committed-but-
 untouched memory from committed-and-touched resident memory. Each run supplies
 its allocation sizes, safety cap, phase durations, sampling interval, command
-bound, and required observed deltas. It records zero/partial/full progress,
+bound, and separate required initial-growth, settled-reclaim, and
+renewed-growth deltas. It records zero/partial/full progress,
 desired/requested/current, Windows telemetry, controller actions, host
-headroom, and workload identity.
+headroom, and workload identity. The analyzer rejects telemetry continuity
+failures and an observed lower request before the prior request converges. A
+run intended to prove pressure cancellation or supersession additionally
+requires renewed pressure to begin while the last observed settled-phase
+sample still has `requested < current`.
 
 The maintained qualification workflow is the sole resize authority for its
 run. It requires the installed unit to begin disabled and inactive, uses one

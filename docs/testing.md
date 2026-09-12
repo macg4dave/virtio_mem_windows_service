@@ -139,7 +139,7 @@ document from an explicit reviewed input.
 
 Use `cargo xtask windows service-cycle` for a bounded, evidence-producing
 service restart and `cargo xtask windows diagnose-service` for SCM recovery and
-structured EventData inspection. The AR1 no-actuation gate is `cargo xtask
+structured EventData inspection. The coherent-deployment no-actuation gate is `cargo xtask
 preflight`; with explicit identity, paths, bounds, and
 `--apply-service-restart`, it proves live QGA delivery, exact durable replay,
 producer-session rollover, current attestation, host headroom, rollback
@@ -214,7 +214,7 @@ workflow. A start command must explicitly supply:
   resident refresh interval;
 - host sampling interval, external-command timeout, hard controller-ownership
   timeout, final observation window, and required observed growth/reclaim
-  deltas; and
+  deltas, including a separate renewed-pressure growth delta; and
 - when the telemetry producer must begin a new session after controller
   ownership starts, the explicit service-restart flag and its separate hard
   timeout; and
@@ -251,6 +251,52 @@ Each run records configuration, status, events, host metrics, workload phases,
 controller logs, observations, and summary as durable JSON/JSONL artifacts.
 A successful workload process alone is not qualification success; both guest
 health and the configured resize acceptance criteria must pass.
+
+The result analyzer separately grades initial growth, reclaim after the first
+peak, and growth after renewed pressure. It rejects an observed lower request
+while a prior request remains unconverged and rejects telemetry session changes
+or sequence regressions within the workload. Runs for QA-T011 additionally use
+`--require-renewed-during-pending-shrink`; this requires the last observed
+settled-phase sample before renewed pressure to show a shrink still in
+progress. These sampled invariants complement, rather than replace, controller
+journal review.
+
+## Windows-native pressure validation
+
+The fixed-headroom qualification path is retained as historical platform and
+reconciler evidence; it cannot qualify the replacement demand policy. Follow
+QA-T025 onward before enabling pressure-aware actuation.
+
+The first pressure work is measurement-only. On the supported native Windows
+build, record API/counter availability, required privileges, low/high resource
+notification state, rate-counter warm-up, sampling interval, and every
+collection error. Unsupported or unwarmed is not zero and cannot authorize
+reclaim.
+
+Shadow validation must cover at least these semantically distinct workloads:
+
+- resident allocation and release;
+- committed address space that is not fully resident;
+- useful file-cache/standby growth and reuse;
+- sustained paging/page-output pressure; and
+- telemetry interruption, counter reset, producer restart, and unsupported
+  signal behavior.
+
+Capture PerfMon or a bounded WPR/ETW trace as a Microsoft-supported diagnostic
+oracle where needed, but do not make ETW an always-on controller dependency.
+Compare raw samples, assessment reason, shadow candidate, fallback state, and
+legacy candidate on the same timeline. Record false growth, missed pressure,
+classification lag, and cache treatment explicitly.
+
+For QA-T026, derive any proposed reusable-memory and paging-rate threshold from
+the supported guest, workload, and observation-window evidence. Diagnostic
+examples are not repository defaults or automatic pass/fail rules.
+
+Applied qualification begins with growth only. Reclaim stays blocked until the
+shadow review shows sustained high/healthy Windows evidence, adequate commit
+headroom, no paging blocker, complete continuity, and an accepted fallback
+contract. Existing attestation, host headroom, journaling, convergence,
+no-overlap, and recovery checks continue unchanged.
 
 ## Privilege and live health
 

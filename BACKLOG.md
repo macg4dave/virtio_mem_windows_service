@@ -11,52 +11,28 @@ not from completed task notes.
 
 ## In progress
 
-| ID | Work | Exit condition |
+No implementation task is claimed. TASK-035 completed the architecture audit
+and documentation pivot; TASK-036 is the next ready code/evidence slice.
+
+## Paused fixed-headroom qualification
+
+| ID | Prior work | Disposition |
 | --- | --- | --- |
-| TASK-028 | Qualify the single-VM target controller | An explicitly configured `cargo xtask qualification` run proves or disproves growth, reclaim, renewed pressure, fault handling, restart safety, and cleanup without a second resize authority. |
-| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | Durable evidence satisfies the run's predeclared resident growth, falling-demand, reclaim or constrained-state, guest-health, timing, and cleanup criteria. |
+| TASK-028 | Qualify the fixed-headroom single-VM target controller | Superseded as the release-policy qualification; retain its artifacts as historical reconciler/platform evidence. |
+| QA-T009 | Resident-memory qualification through the prior production path | Paused after partial growth evidence; it cannot qualify the pressure-aware policy. |
 
 The installed host controller remains intentionally disabled and inactive
-after AR1. AR2 qualification may start it only through the explicit bounded
-`cargo xtask qualification` workflow with one resize authority.
-
-Current QA-T009 handoff: the corrected production QGA path is deployed. One
-resident attempt observed automatic growth before its detached observer lost
-Polkit authorization; a later complete run
-`qualification-1789215769941-25346` then correctly failed closed because the
-telemetry producer's new session had already advanced beyond sequence zero
-while the controller was inactive. Neither attempt is qualification evidence.
-The guard now owns all fixed libvirt/QGA observation under one bounded
-elevation, and qualification can explicitly restart only the named telemetry
-service after controller ownership begins and wait for the first accepted
-controller decision before workload launch. Applied run
-`qualification-1789217084408-38317` proved that handoff and completed every
-resident workload phase, but its first resize was rejected before actuation
-because the September 11 compatibility attestation predates the VM process
-started on September 12. A fresh attestation generated from the unchanged
-explicit review now matches the current evidence and was installed by the
-typed host deployment recorded in
-`.artifacts/deployment/qa-t009-host-apply-after-vm-restart.json`. Source and
-installed hashes match, requested/current remain converged at 1 GiB, and the
-unit is disabled/inactive. The prior latch was cleared without accepting policy
-drift: the exact 10-second policy was temporarily restored, the explicit
-converged-state clear ran against the current live attestation, and the reviewed
-15-second policy was reinstalled. Restored evidence is in
-`.artifacts/deployment/qa-t009-host-apply-policy15-restored.json`. A fresh
-applied resident run `qualification-1789231813766-72447` then proved automatic
-growth by `1098907648` bytes, renewed-pressure growth, every workload phase,
-zero observer warnings, and disabled/inactive cleanup. It did not reclaim: one
-transient QGA file-sharing collision reset the 300-second reclaim history late
-enough that renewed pressure arrived before history recovered. The run failed
-its declared 64 MiB reclaim threshold and does not close QA-T009. Its final
-requested/current are converged at `2300575744` bytes. The system libvirt
-management daemon stopped answering bounded probes after the run; no daemon
-restart has been authorized or performed.
+after the coherent deployment milestone. Historical run details remain in their
+artifact directories and deployment manifest rather than this execution board.
+Pressure-contract, collection, and shadow tasks do not start it for actuation.
+The prior fixed-headroom qualification sequence is superseded by QA-T025 onward;
+no historical result authorizes automatic resizing under the new policy.
 
 ## Ready
 
 | ID | Work | Depends on |
 | --- | --- | --- |
+| TASK-036 | Complete WN1: define and test the additive Windows-native telemetry, capability, warm-up, and fallback contract without changing collection or actuation | TASK-035 |
 | TASK-030 | Expose a versioned, read-only controller status snapshot containing live desired/requested/current, accepted telemetry identity, reclaim readiness, capacity state, command ownership, and latch/recovery details | TASK-029 |
 | TASK-032 | Define the global-controller contract and implement a versioned durable reservation ledger around the existing pure pool planner | Existing `global_pool` prototype |
 
@@ -68,15 +44,25 @@ evidence here when it completes.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
+| TASK-037 | Complete WN2: collect authoritative Windows memory-resource notifications and publish their capability, state, and failures without policy actuation | TASK-036 |
+| TASK-038 | Complete WN3: implement separate memory-requirement, pressure-state, and shrink-safety assessments in shadow mode | TASK-037, TASK-030 |
+| TASK-039 | Complete WN4: enable pressure-aware bounded growth while reclaim remains disabled | TASK-038, QA-T025–QA-T027 |
+| TASK-040 | Complete WN5: add fail-closed shrink blockers and conservative reclaim from sustained qualified evidence | TASK-039, QA-T028 |
+| TASK-041 | Complete WN6: add only rate/trend signals that demonstrate value in shadow qualification | TASK-040, QA-T029 |
+| TASK-042 | Complete WN7: automate the realistic Windows workload and decision-classification matrix | TASK-041, QA-T030 |
+| TASK-043 | Complete WN8: run and review resumable unattended repeated-cycle and endurance qualification | TASK-042, QA-T031–QA-T032 |
+| TASK-044 | Complete WN9: freeze versioned configuration, evidence-backed defaults, and migration behavior | TASK-043, QA-T033 |
+| TASK-045 | Complete WN10 construction: freeze the candidate and production-readiness evidence index for final review | TASK-044, QA-T034 |
 | TASK-031 | Add deterministic fault-scenario execution and machine-readable results for telemetry loss, restart, rejection, ambiguity, and partial progress | TASK-030 |
-| TASK-033 | Build the configured host-wide coordinator that applies durable pool grants through per-VM reconcilers without live actuation | TASK-032 |
+| TASK-033 | Build the configured host-wide coordinator that applies durable pool grants through per-VM reconcilers without live actuation | TASK-032, WN3 assessment contract |
 | TASK-034 | Add release artifact, configuration migration, install/upgrade/rollback, and monitoring surfaces required before packaging qualification | TASK-030, TASK-033 |
 
 These are construction tasks, not qualification passes. They may proceed while
-QA-T009 is blocked or pending, but their milestone remains open until the
-applicable local, native, deployment, live, recovery, and endurance gates pass.
+the revised pressure QA gates are pending, but their milestone remains open
+until the applicable local, native, deployment, live, recovery, and endurance
+gates pass.
 
-## Automatic-resizing release train
+## Windows-native controller milestones
 
 Detailed outcomes and exit conditions live in
 [docs/roadmap.md](docs/roadmap.md). Milestones summarize dependent task groups;
@@ -84,21 +70,23 @@ they do not replace executable task cards.
 
 | Milestone | Status | Work | Depends on |
 | --- | --- | --- | --- |
-| AR0 | Complete | Verify the post-cleanup source, documentation, local gate, and native-Windows gate as one candidate | Current cleaned tree |
-| AR1 | Complete | Deploy one coherent least-privilege single-VM candidate | AR0, QA-T002, TASK-009 |
-| AR2 | In Progress | Prove automatic single-VM growth and reclaim under resident and committed workloads | AR1, TASK-028 |
-| AR3 | Construction open | Build, then prove, bounded fault recovery and actionable observability | AR2 for qualification, not implementation |
-| AR4 | Planned | Pass single-VM repeated-cycle/endurance gates and record the scoped decision | AR3 |
-| AR5 | Construction open | Complete the deterministic durable global controller and atomic reservation model | AR4 only for live AR6 integration |
-| AR6 | Planned | Integrate and qualify live multi-VM arbitration and actuation | AR5 |
-| AR7 | Planned | Complete distribution, security, upgrade/rollback, monitoring, and support readiness | AR6, remaining tooling tasks |
-| AR8 | Planned | Freeze, fully qualify, and publish the supported automatic-resizing release | AR7 |
+| WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
+| WN1 | Ready | Define the Windows-native telemetry contract | WN0 |
+| WN2 | Planned | Add authoritative Windows pressure notifications | WN1 |
+| WN3 | Planned | Separate requirement, pressure, and shrink-safety assessment | WN2 |
+| WN4 | Planned | Integrate pressure-aware growth | WN3 |
+| WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
+| WN6 | Planned | Add qualified trend/rate evidence | WN5 |
+| WN7 | Planned | Automate realistic Windows behavior qualification | WN6 |
+| WN8 | Planned | Complete unattended endurance qualification | WN7 |
+| WN9 | Planned | Stabilise configuration, migration, and defaults | WN8 |
+| WN10 | Planned | Record the production-readiness decision | WN9 |
 
-The QA roadmap owns AR1–AR4's ordered deployment, fault, endurance, and
-GO/NO-GO tasks. It deliberately requires run-specific workload duration,
-cycle count, timeouts, thresholds, and target identity rather than repository
-defaults. AR5 starts from the existing side-effect-free global-pool prototype;
-it remains open until durable host-wide reservation and recovery are proved.
+The QA roadmap owns the ordered native, shadow, live, recovery, endurance, and
+GO/NO-GO tasks. It requires run-specific workload duration, cycle count,
+timeouts, configurable thresholds, and target identity rather than repository
+examples. Multi-VM work remains separate until WN3 stabilises the per-VM
+assessment and durable host-wide reservation is proved.
 
 ## Completed foundations
 
@@ -116,6 +104,10 @@ record replaces historical command transcripts and machine-specific evidence:
   preserve accepted reclaim history for the maximum-gap check; invalid, stale,
   replayed, identity-mismatched, or over-gapped evidence still clears reclaim
   readiness immediately.
+- TASK-035: audited the fixed-headroom implementation, researched supported
+  Microsoft pressure facilities, and established the Windows-native
+  pressure-aware architecture and migration roadmap. This is design evidence,
+  not implementation or live qualification.
 - TASK-009 and QA-T001 through QA-T008: native Windows deployment, safe
   baseline, coherent least-privilege host deployment, calibration, current
   attestation, and restart-safe no-actuation preflight.
@@ -130,6 +122,9 @@ time. It does not substitute for current deployment or qualification evidence.
 ## Standing decisions
 
 - Windows publishes measurement only. The host owns allocation and resize.
+- Microsoft-supported Windows pressure facilities are the primary demand
+  evidence. Current fixed reserves become configurable fallback/safety guards,
+  not the release sizing algorithm.
 - Alias-scoped live libvirt `current` is authoritative allocation state.
 - Automatic shrink is enabled by default, but stale input, ambiguity,
   incompatibility, missing headroom, or a recovery latch fails closed.

@@ -1,78 +1,72 @@
 # Implementation Plan
 
-`BACKLOG.md` owns execution order. This document describes the remaining
-technical dependency chain without prescribing machine-specific commands or
-test values. Milestone outcomes and release gates live in
-[docs/roadmap.md](docs/roadmap.md).
+[`docs/roadmap.md`](docs/roadmap.md) is the normative architecture and
+milestone path. `BACKLOG.md` owns the current task claim. This document maps the
+roadmap to implementation-sized slices without duplicating milestone contracts.
 
-## Verify the cleaned baseline (AR0)
+## Current checkpoint
 
-Run the focused, local, and native-Windows code gates against the same cleaned
-source revision and reconcile compiled interfaces with current documentation.
-An unavailable platform layer remains open; it is not inferred from an older
-build or from another validation layer.
+WN0 is complete: the fixed-headroom policy has been audited and demoted to a
+compatibility/fallback role. No pressure-aware code or live qualification is
+complete. The installed controller remains disabled and inactive.
 
-## Complete the single-VM deployment (AR1)
+The next slice is TASK-036 / WN1. It changes contracts and tests only; it must
+not add live collection, change target policy, or actuate memory.
 
-1. Capture the installed host and Windows deployment with exact identities,
-   paths, configuration, hashes, security state, and current health.
-2. Build one candidate through the maintained `cargo xtask` gates.
-3. Deploy matching Windows and host artifacts with required configuration and
-   a reviewed rollback path.
-4. Recreate compatibility attestation from the deployed allocation-neutral
-   state.
-5. Run the no-actuation preflight and verify telemetry freshness, service
-   identity, controller ownership, headroom, and convergence.
+## Ordered implementation slices
 
-All settings that influence operations are explicit deployment or run inputs.
-Do not copy values from an earlier manifest or test.
+1. **WN1 — Contract.** Add versioned types and validation for notification
+   state, capability, availability, error, warm-up, timestamps, and optional
+   snapshot/rate fields. Preserve allocation-free Windows telemetry.
+2. **WN2 — Authoritative state.** Collect Windows low/high memory resource
+   notifications through the cancellable service lifecycle and publish them
+   through the existing atomic transport. Keep policy unchanged.
+3. **WN3 — Shadow decisions.** Implement separate memory-requirement,
+   pressure-state, and shrink-safety results. Join them with live
+   `requested`/`current`, expose reasons, and compare them with the legacy
+   candidate without actuation.
+4. **WN4 — Growth.** Enable bounded normal and faster-growth modes using the
+   pressure-aware assessment. Keep reclaim disabled and preserve every current
+   host-capacity, attestation, journal, convergence, and latch gate.
+5. **WN5 — Reclaim.** Add sustained shrink eligibility, blockers, hysteresis,
+   safe floor, bounded shrink steps, and renewed-pressure cancellation. Fallback
+   evidence never authorizes shrink.
+6. **WN6 — Rates.** Add page-output evidence first. Add other Windows rates only
+   if shadow results show independent value. Rates affect urgency and shrink
+   blocking, not required-byte calculation.
+7. **WN7 — Workloads.** Extend the Windows workload and qualification analyzer
+   to distinguish resident, commit-only, cache/standby, modified, paging,
+   burst, steady-state, and recovery behavior.
+8. **WN8 — Endurance.** Run the reviewed detached repeated-cycle and unattended
+   plans with resumable, immutable evidence and explicit final-state handling.
+9. **WN9 — Configuration.** Freeze validated configuration, defaults,
+   fingerprints, schema migration, fallback behavior, deployment templates,
+   upgrade, downgrade, and rollback.
+10. **WN10 — Release decision.** Freeze an immutable candidate and execute the
+    complete code, native Windows, deployment, live, recovery, endurance,
+    security, operations, and applicable host-capacity gates.
 
-## Qualify and harden the single-VM controller (AR2–AR4)
+## Cross-cutting implementation rules
 
-Use `cargo xtask qualification` as the sole maintained workload/controller
-qualification entry point. Define the target, workload mode, allocations,
-phase durations, sampling, command deadline, and acceptance thresholds for the
-current run. Preserve its versioned status, events, metrics, journals, and
-review result.
-
-Qualification must separate:
-
-- demand calculation from device progress;
-- desired, requested, and current allocation;
-- workload release from actual platform reclaim;
-- preparation rejection from uncertain command outcome;
-- safe latching from service failure;
-- cleanup from any separately authorized baseline restoration.
-
-## Build and qualify the global controller (AR5–AR6)
-
-Build the hermetic global-controller contract, state model, and simulator while
-single-VM qualification proceeds. Before the reviewed AR4 checkpoint:
-
-1. Model actual allocations, absolute desired targets, per-VM safe floors,
-   host reserve, and pool-free capacity in deterministic simulation.
-2. Add atomic reservation before any multi-target actuation.
-3. Exercise stale input, competing growth, reclaim priority, partial progress,
-   cancellation, restart, and command ambiguity.
-4. Keep the coordinator side-effect-free and do not introduce live multi-target
-   actuation.
-
-Introduce live multi-target actuation only after both AR4 qualification and
-AR5 hermetic construction close.
-
-## Operationalize and release (AR7–AR8)
-
-Build structured health, metrics, deterministic fault injection, repeatable
-deployment, rollback, and monitoring as construction dependencies instead of
-waiting for the final release gate. Endurance duration and cycle count are
-chosen explicitly for each release candidate and recorded in the run manifest;
-they are not repository defaults. Freeze and publish only an immutable
-candidate that passes the full supported-platform, security, installation,
-upgrade, rollback, live, recovery, and endurance matrix.
+- Windows collects and normalises only. The host calculates targets and acts.
+- Keep required-memory bytes, pressure state, and shrink safety separate in
+  types, tests, status, and evidence.
+- Prefer supported Windows APIs and counters. Do not synthesize a composite
+  score when a native state exists.
+- Keep every operational size, threshold, step, margin, window, and timeout in
+  validated configuration or explicit run input.
+- Add one signal family at a time and prove its semantics before granting it
+  policy authority.
+- Preserve telemetry identity/freshness/replay, compatibility, host reserve,
+  alignment, desired/requested/current reconciliation, intent journaling,
+  partial-progress accounting, and durable latches.
+- Remove deprecated fixed-headroom and legacy demand paths only after the new
+  schema, fallback, migration, and rollback behavior are proved.
 
 ## Validation rule
 
-Every change receives focused tests first, then the relevant `cargo xtask`
-gate. Live testing requires the explicit run configuration described in
-[docs/testing.md](docs/testing.md). Historical evidence can explain a risk but
-cannot authorize a command or supply a current value.
+For each slice, run focused tests in the owning crate and then
+`cargo xtask gate local`. Run native Windows validation when collection or
+Windows lifecycle changes. Deployment, live, recovery, and endurance results
+remain separate and are required only when the milestone crosses those
+boundaries. Historical or shadow evidence never counts as applied proof.

@@ -1,28 +1,29 @@
 # Project Status
 
-Updated: 2026-09-11
+Updated: 2026-09-13
 
 ## Summary
 
-The project is in single-VM deployment and qualification. Native Windows
-telemetry, the host-side allocation join, compatibility attestation,
-quantitative targets, durable reconciliation, and bounded recovery are
-implemented. The post-cleanup AR0 source baseline passes the current local and
-native-Windows gates. The current installed stack is not treated as a coherent
-candidate, so the host controller remains held and the development deployment
-is NO-GO.
+The project has redirected its single-VM controller toward Windows-native
+memory pressure. Basic Windows telemetry, the host-side allocation join,
+compatibility attestation, fixed-headroom targets, durable reconciliation, and
+bounded recovery are implemented. The target formula is now a compatibility
+baseline rather than the intended release policy. The completed coherent
+deployment evidence remains valid. The controller remains disabled/inactive,
+and automatic resizing remains NO-GO until the new pressure-aware path is
+implemented and qualified.
 
 ## Current work
 
-- QA-T002 records the exact installed deployment in
-  [qa-deployment-manifest.md](docs/qa-deployment-manifest.md).
-- TASK-009 deploys and verifies Windows configuration, protected telemetry,
-  and service-account publication.
-- TASK-028 uses the detached `cargo xtask qualification` workflow to qualify
-  the controller and platform with run-specific parameters.
+- TASK-035 completed the implementation/document audit, Microsoft-native signal
+  research, target architecture, obsolete-item classification, and WN0 cleanup.
+- TASK-036 / WN1 is next: define and test the additive telemetry, capability,
+  warm-up, and fallback contract without changing collection or actuation.
+- TASK-028 and QA-T009 are paused as fixed-headroom qualification. Their
+  evidence remains useful for reconciliation and platform behavior but cannot
+  qualify the replacement demand policy.
 
-The next authorized mutation is selected only after the manifest and current
-preflight show a coherent candidate and a reviewed rollback path.
+No live mutation was performed for the current source change.
 
 ## Implemented
 
@@ -38,18 +39,23 @@ preflight show a coherent candidate and a reviewed rollback path.
 - Rust `xtask` workflows for local and cross-platform gates, host prerequisites,
   QGA health, live resize, Windows verification, and detached qualification.
 
+The audit found that the active raw-path formula directly uses only available
+physical memory and commit headroom plus configured reserves. Low/high memory
+notifications, standby/free/modified lists, paging activity, hard faults, and
+compression do not currently influence `desired`.
+
 ## Known gaps
 
-- The installed host and Windows components have not yet been proven to share
-  one current configuration and telemetry contract.
-- Installed Windows configuration/ACL publication evidence is incomplete.
-- Compatibility attestation must be recreated after coherent deployment.
-- Applied workload, reclaim, renewed-pressure, fault, restart, and endurance
-  evidence is incomplete.
+- Windows-native pressure collection, semantic workload evidence, shadow target
+  comparison, pressure-aware actuation, and its recovery/endurance evidence are
+  not implemented or qualified.
+- Windows does not expose a general recommended-RAM byte target for KVM; the
+  host's minimal mapping from pressure evidence to bytes still requires shadow
+  calibration and validation.
 - Classic Windows Event Log text rendering still needs a packaged message
   resource; structured EventData remains available.
-- Multi-controller actuation is deferred until AR5 provides durable atomic
-  host-pool reservation and AR6 qualifies it across live guests.
+- Multi-controller actuation is deferred until WN10's release scope has durable
+  atomic host-pool reservation and live multi-guest qualification.
 
 ## Evidence policy
 

@@ -6,11 +6,12 @@ run directory or the deployment manifest.
 
 | ID | Status | Issue | Required resolution |
 | --- | --- | --- | --- |
-| ISSUE-002 | Open | Memory-policy tuning has not been qualified against a current coherent deployment. | Complete TASK-028 with explicit run inputs and review the resulting demand and reclaim evidence. |
+| ISSUE-002 | Superseded by redesign | The fixed-headroom memory policy was not fully qualified and is no longer the intended release algorithm. | Preserve prior evidence as historical; qualify the Windows-native pressure policy through the revised QA gates. |
 | ISSUE-003 | Open | Libvirt transport and uncertain-command failures need broader operational coverage. | Complete the fault/recovery QA tasks without weakening no-replay or latch behavior. |
 | ISSUE-008 | Open | Classic Windows Event Log descriptions depend on a packaged message resource. | Package and verify the resource while preserving structured EventData and bounded messages. |
 | ISSUE-011 | Accepted limitation | The signed Windows virtio-mem driver has no supported user-mode status query used by this project. | Keep optional diagnostics separate from allocation authority; driver work requires a separately approved design and external ownership. |
-| ISSUE-016 | Open qualification | The implemented target controller has not completed current live workload and platform-reclaim qualification. | Complete TASK-028 and QA-T009 onward with explicit run inputs and durable evidence. |
+| ISSUE-016 | Open redesign | The implemented fixed-headroom controller is not a Windows memory-pressure model and has not completed live reclaim qualification. | Complete the native signal probe, shadow assessment, and revised applied qualification before enabling unattended actuation. |
+| ISSUE-017 | Open | Supported Windows APIs expose pressure state and evidence but no general KVM-ready recommended-RAM byte target. | Validate a minimal host mapping from committed demand plus proportional buffer, with native pressure signals controlling urgency and reclaim eligibility. |
 
 ## Standing risk controls
 

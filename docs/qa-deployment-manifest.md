@@ -1,5 +1,12 @@
 # QA Deployment Manifest
 
+> Historical deployment evidence: this manifest describes the fixed-headroom
+> controller candidate and remains useful for the completed deployment baseline,
+> transport, reconciliation,
+> and platform facts. It does not qualify the Windows-native pressure-aware
+> policy adopted on 2026-09-12. AR labels below are retained only as historical
+> evidence labels; current execution status is in `BACKLOG.md`.
+
 This manifest records the read-only QA-T002 deployment comparison captured on
 2026-09-11 for `win11_gpu` and `ua-virtiomem0`. It is not an installation
 record and does not authorize actuation.

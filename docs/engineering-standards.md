@@ -43,6 +43,12 @@
   adapter operations, shutdown, and least-privilege account.
 - Collect production demand through native Windows APIs. Do not open QGA or
   receive host allocation state.
+- Prefer Microsoft-supported memory-manager notifications, documented APIs,
+  and documented performance counters over a project-specific pressure model.
+  Normalise units, provenance, sampling readiness, and availability; do not
+  turn the Windows collector into a resize authority.
+- Use ETW/WPR as qualification or diagnostic evidence unless an explicit cost,
+  stability, and support review approves an always-on provider contract.
 
 ## Host controller
 
@@ -57,6 +63,9 @@
 - Automatic reclaim remains default-on with an explicit pause override.
   Detailed target, quantum, history, hysteresis, retry, and recovery behavior
   is normative only in `target-controller.md` and the owning Rust modules.
+- Keep pressure classification separate from byte-target construction. Missing
+  required pressure evidence blocks shrink, and fixed headroom is a fallback
+  safety input rather than the primary release demand model.
 - A service failure is fail-stop in the checked-in unit. Deployment monitoring
   owns any reviewed restart policy.
 

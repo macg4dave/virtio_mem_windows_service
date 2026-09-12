@@ -1,419 +1,778 @@
-# Automatic-resizing release roadmap
+# Windows-Native Memory Controller Roadmap
 
-## Destination
+## Destination and authority
 
-The destination is a supported automatic-resizing release in which the host
-controller grows and reclaims virtio-mem for every configured Windows guest in
-the declared support matrix without routine operator resize commands. Reclaim
-is enabled by default. Every change remains bounded by fresh guest demand,
-alias-scoped live device state, host capacity, compatibility, durable command
-ownership, and convergence.
+The destination is a supported controller that sizes Windows guest memory from
+Microsoft-supported Windows memory-management evidence instead of primarily
+maintaining fixed physical and commit headroom.
 
-"Release" in this roadmap means all of the following are true:
+Windows remains measurement-only. The Windows service collects and normalises
+native APIs, notifications, and counters. The host joins that evidence with
+authoritative live virtio-mem allocation and converts it into bounded targets.
+Only the host owns capacity allocation and resize actuation.
 
-- both growth and reclaim have passed representative applied workloads;
-- one host-wide authority reserves capacity before granting competing growth;
-- stale data, restart, partial progress, and uncertain command outcomes cannot
-  cause overlapping or replayed requests;
-- operators can install, monitor, pause, recover, upgrade, and roll back the
-  supported stack using maintained product or `cargo xtask` entrypoints;
-- release artifacts, configuration schemas, compatibility assumptions, and
-  evidence are versioned and reviewable; and
-- every required code, native Windows, deployment, live, recovery, endurance,
-  and release gate has a current result for the candidate.
+The following safety mechanisms remain architectural invariants:
 
-A single successful resize, a passing unit test, or a long-running process is
-not a release. Likewise, default-on reclaim is a product behavior, not
-permission to bypass a failed safety gate.
+- exact VM and device identity;
+- fresh, ordered, versioned telemetry with replay protection;
+- alias-scoped live `current` as allocation authority;
+- distinct `desired`, `requested`, and `current` state;
+- configured minimum, maximum, reserve, safety margin, growth step, shrink
+  step, hysteresis, and history window;
+- device alignment, compatibility attestation, and host headroom;
+- no ordinary resize while `requested != current`;
+- write-before-command intent, immediate live reread, no blind replay, and
+  durable recovery latches; and
+- fail-closed shrink whenever required evidence is missing or ambiguous.
 
-The first supported release remains limited to explicitly configured, trusted
-Windows guests on one RHEL/libvirt host. General untrusted-guest or broad
-production support additionally requires supported upstream platform behavior,
-hard resource isolation, and the security review in AR7. The optional custom
-QGA memory command and a Windows driver status API are not release
-dependencies.
+The current fixed-headroom estimator remains implemented during migration. It
+is a comparison baseline and conservative fallback-growth guard, not the target
+release policy. It cannot authorize fallback shrink.
 
-## Current position
+## Decision model
 
-The post-cleanup repository has one Rust implementation path:
+The new controller has three deliberately separate outputs.
 
-- Windows measures and atomically publishes allocation-free telemetry.
-- The single-VM host runtime calculates absolute targets and owns libvirt
-  actuation, journaling, convergence, and recovery.
-- The shared core contains deterministic estimator, reconciler, shrink
-  recovery, and global-pool logic.
-- `cargo xtask` owns maintained local, native-Windows, live-resize, and
-  detached qualification workflows.
+### Memory requirement
 
-AR1 proved a coherent installed single-VM candidate and production telemetry
-handoff. AR2 exposed and corrected two qualification bootstrap failures: the
-detached observer's repeated Polkit authorization and a new telemetry session
-that had advanced before controller ownership. The guard now owns the complete
-bounded libvirt observation batch, and the workflow can explicitly restart the
-named telemetry producer only after controller start and wait for an accepted
-decision before workload pressure. The first run through that corrected path
-then rejected actuation because the reviewed live attestation predated the
-current VM process; a matching attestation has been regenerated from the
-unchanged explicit review and installed through the typed host deployment. A
-fresh applied resident rerun, committed workload, recovery, and endurance
-evidence are still incomplete, so unattended automatic resizing remains
-**NO-GO**.
+This is a byte estimate used to construct `desired`. Its first shadow policy is
+based on current Windows committed memory plus a configurable demand safety
+margin. The host converts the total visible-memory requirement into a
+virtio-mem requirement using the configured visible base, then applies the
+configured minimum, maximum, device geometry, alignment, and host-capacity
+bounds.
 
-The shared `global_pool` module is a useful side-effect-free arbitration
-prototype with focused tests. It is not yet a host-wide controller: no runtime
-collects a complete multi-VM snapshot, owns durable pool reservations, or
-passes grants to per-device reconcilers.
+The initial shadow formula is fixed by this roadmap:
 
-Release work now proceeds in two explicit lanes. The construction lane builds
-the remaining controller, recovery, observability, global-pool, packaging, and
-operator surfaces whenever their code dependencies and contracts are ready.
-The qualification lane applies workloads and fault scenarios only after the
-corresponding implementation slice exists. Construction may move ahead of the
-current lab gate; milestone completion may not. This keeps live-system delays
-from turning the roadmap into repeated tests of unfinished behavior while
-preserving every native, deployment, live, recovery, endurance, and release
-gate as an unclaimed exit condition.
+```text
+demand_margin = clamp(
+    ceil(commit_total * configured_demand_margin_ratio),
+    configured_demand_margin_minimum,
+    configured_demand_margin_maximum
+)
+visible_requirement = commit_total + demand_margin
+device_requirement = saturating_sub(
+    visible_requirement,
+    configured_visible_base
+)
+requirement_target = align_up(
+    clamp(device_requirement, configured_minimum, effective_maximum),
+    live_block_size
+)
+```
 
-[BACKLOG.md](../BACKLOG.md) owns current task status.
-[QA-roadmap.md](QA-roadmap.md) owns the ordered single-controller deployment
-and qualification tasks.
-[build-test-tooling-roadmap.md](build-test-tooling-roadmap.md) owns remaining
-workflow infrastructure. This document defines release dependencies and exit
-conditions without copying run-specific sizes, endpoints, durations, or
-historical evidence.
+Every operation is checked. Invalid bounds, overflow, inconsistent counters,
+or alignment failure rejects the assessment. This formula remains shadow-only
+until commit-only, resident, cache, and paging qualification demonstrates that
+it is a defensible physical-allocation baseline.
 
-## Release train
+Physical available memory, notification state, and paging activity do not get
+added to committed memory as independent demand. They qualify the state and
+urgency of the requirement.
 
-| Milestone | Status | Release outcome | Primary execution source |
+### Pressure state
+
+This classifies fresh Windows evidence as low, neutral, high, or unavailable.
+Windows low/high memory resource notifications are the primary categorical
+signal. Commit risk and reusable-memory evidence can corroborate the state but
+must not silently replace an unavailable authoritative signal.
+
+Pressure state can block shrink or accelerate movement toward a requirement.
+It does not independently manufacture an unbounded byte target.
+
+### Shrink safety
+
+This separately decides whether a lower target may be considered. Reclaim
+requires sustained high/healthy Windows evidence over the configured history
+window, adequate commit and physical safety margins, a lower qualified memory
+requirement, configured hysteresis, and every existing reconciliation gate.
+
+Low, neutral, unavailable, stale, discontinuous, or contradictory evidence
+blocks shrink. Paging or hard-page activity may become an additional blocker
+only after its rate semantics have passed the trend milestone.
+
+## Signal roles
+
+| Signal or input | Initial role | Must not do |
+| --- | --- | --- |
+| Windows committed bytes | Calculate the initial quantitative memory requirement | Be treated as resident working-set size without qualification |
+| Windows commit limit/headroom | Indicate commit risk, block shrink, and corroborate growth urgency | Be added to physical demand as a second allocation |
+| Low memory resource notification | Authoritative low-available-memory state; block shrink and trigger faster bounded growth | Select an exact target size |
+| High memory resource notification | Required categorical evidence for reclaim eligibility | Authorize reclaim by itself |
+| Neither notification signalled | Neutral hold state | Authorize shrink |
+| Available physical memory | Physical safety context and fallback-growth evidence | Serve as the primary release demand formula |
+| Standby/free/zero memory | Identify immediately reusable physical memory and distinguish cache from pressure | Be assumed reclaimable without sustained high/healthy evidence |
+| Modified memory | Block or delay reclaim when reusable memory is overstated | Directly calculate a larger target initially |
+| Page output rate | After qualification, indicate paging pressure, block shrink, and accelerate bounded growth | Directly calculate required bytes |
+| Page input or hard-fault rates | After qualification, corroborate pressure when paired with other evidence | Trigger growth alone |
+| Memory load, cache, pools, peak commit, compression | Diagnostic and qualification context initially | Acquire release-critical actuation authority without a later contract change |
+| Host `current` and `requested` | Account allocation and in-flight work | Be replaced by Windows telemetry |
+
+## Milestone summary
+
+| Milestone | Status | Outcome | Depends on |
 | --- | --- | --- | --- |
-| AR0 | Complete | Verify the post-cleanup repository as one coherent candidate source tree | `BACKLOG.md`, tooling board |
-| AR1 | Complete | Deploy one coherent, least-privilege single-VM stack | QA-G1 / QA-T002–QA-T008 |
-| AR2 | In Progress | Prove automatic single-VM growth and reclaim under real workloads | QA-G2 / QA-T009–QA-T012 |
-| AR3 | Construction open | Build, then prove, bounded failure recovery and actionable observability | Product backlog; QA-G3 / QA-T013–QA-T018 |
-| AR4 | Planned | Pass single-VM endurance and record the scoped qualification decision | QA-G4–QA-G5 / QA-T019–QA-T024 |
-| AR5 | Construction open | Complete the deterministic, durable global controller | Product backlog |
-| AR6 | Planned | Integrate and qualify live multi-VM arbitration and actuation | Product backlog and new live QA board |
-| AR7 | Planned | Make the supported stack distributable, secure, operable, and upgradeable | Product and tooling backlogs |
-| AR8 | Planned | Freeze, qualify, and publish the automatic-resizing release | Release checklist and evidence index |
-
-AR0 through AR4 establish that the existing single-device controller and
-platform are safe enough to become an input to multi-VM work. AR5 and AR6 add
-host-wide safety; they do not replace the per-VM estimator or reconciler. AR7
-turns proven behavior into a supported deliverable. AR8 accepts or rejects the
-exact release candidate.
-
-## AR0 — Post-cleanup verified baseline
-
-### Objective
-
-Establish that the large cleanup left one buildable, documented, internally
-consistent implementation before new controller behavior is added.
-
-### Deliverables
-
-- A source-to-contract audit confirms the remaining Windows, host, core, and
-  `xtask` modules have clear owners and no maintained workflow depends on
-  deleted guest-side resize or custom-QGA code.
-- Current command help, examples, configuration templates, feature status,
-  and boards agree with the compiled interfaces.
-- Open work is classified as product behavior, tooling, deployment evidence,
-  platform qualification, or deferred scope; obsolete milestone-era
-  procedures and run values are not restored.
-- The candidate source revision and produced artifacts are identifiable, with
-  local and native-Windows validation reported independently.
-
-### Verification and exit
-
-- Focused tests pass for any corrected owner.
-- `cargo xtask gate local` passes on the cleaned tree.
-- `cargo xtask windows all` passes for the same source revision.
-- Documentation links and `git diff --check` pass, and any unavailable platform
-  gate is explicitly open rather than treated as passed.
-
-AR0 closes only when the cleanup itself is verified. It does not prove an
-installed deployment or automatic resize behavior.
-
-## AR1 — Coherent single-VM candidate
-
-### Objective
-
-Create one reviewable candidate in which Windows publication, telemetry
-transport, host configuration, live device identity, and compatibility
-attestation describe the same VM and artifacts.
-
-### Deliverables
-
-- Complete the installed-state inventory and deployment delta in QA-T002.
-- Define and implement the least-privilege production telemetry handoff,
-  including identity, ACL, atomicity, bounded retention, acknowledgement, and
-  restart behavior.
-- Build and install matching Windows and host candidates from the verified
-  source revision; validate their versioned configuration before start.
-- Verify Windows service identity, protected publication, advancing records,
-  clean lifecycle, and guest health independently of QGA alone.
-- Verify the host unit and instance configuration in fail-stop mode while
-  actuation remains paused.
-- Recalibrate the visible base from fresh allocation-neutral state and produce
-  a reviewed compatibility attestation for the installed stack.
-- Add or finish typed deployment, guest-health, and evidence workflows where a
-  repeatable check still depends on manual parsing.
-
-### Verification and exit
-
-QA-T002 through QA-T008 pass. A no-actuation preflight proves exact VM/device
-selection, fresh telemetry, replay/session handling, live `requested ==
-current`, host headroom, current attestation, single-controller ownership, and
-a reviewed rollback path. No memory mutation is needed to close AR1.
-
-## AR2 — Automatic single-VM behavior
-
-### Objective
-
-Demonstrate that the installed controller—not the test harness—automatically
-grows and safely reclaims memory from measured Windows demand.
-
-### Deliverables
-
-- Run applied resident-memory and committed-memory workloads through the
-  production telemetry path using explicit, reviewed run inputs.
-- Correlate workload phases, raw telemetry identity, estimator output,
-  `desired`, live `requested`/`current`, host headroom, controller events, and
-  guest health in one durable evidence set.
-- Prove immediate bounded growth, history-qualified bounded reclaim, default-on
-  automatic shrink, capacity-limited behavior, and no lower request while a
-  previous request is pending.
-- Apply renewed pressure during an owned shrink and prove upward freeze,
-  cancellation, or supersession follows the target-controller contract.
-- Record cleanup and final-state disposition separately from controller
-  success; restore the captured initial target only when that run's approved
-  recovery contract requires it.
-
-### Verification and exit
-
-QA-T009 through QA-T012 pass for both workload modes. Each run satisfies its
-predeclared growth, reclaim, health, timing, and cleanup criteria. Zero or
-partial platform reclaim may demonstrate safe controller behavior, but it does
-not satisfy the platform-reclaim part of AR2.
-
-## AR3 — Recovery and observability
-
-### Objective
-
-Prove that every expected fault becomes a bounded, diagnosable state and that
-restart never creates a second resize authority or replays uncertain work.
-
-### Deliverables
-
-- Exercise missing, stale, malformed, replayed, cross-session, and
-  identity-mismatched telemetry in converged and pending states.
-- Exercise Windows and host service interruption, cancellation, pre-command
-  rejection, command timeout/ambiguity, and controller restart with durable
-  intent present.
-- Exercise zero-progress and partial-progress growth/reclaim, stale telemetry
-  during shrink, upward cancellation, convergence timeout, and explicit latch
-  recovery.
-- Expose structured current state, last accepted telemetry, last successful
-  decision, desired/requested/current, capacity limitation, pending age,
-  restart count, latch reason, command identity, and recovery result.
-- Provide maintained health collection and fault-injection workflows with a
-  common versioned machine-readable result.
-- Package and verify readable Windows Event Log descriptions while preserving
-  bounded structured EventData.
-- Document and rehearse pause, inspect, clear-latch, abandon-to-current,
-  service restart, and escalation procedures.
-
-### Verification and exit
-
-QA-T013 through QA-T018 pass. Every injected fault has an expected terminal or
-recoverable state, evidence and alert mapping, and operator action. No case
-causes blind retry, duplicate authority, target undershoot, stale-data reclaim,
-or unexplained service-manager cycling.
-
-## AR4 — Single-VM endurance and qualification checkpoint
-
-### Objective
-
-Turn functional evidence into a reviewed statement about the selected
-single-VM platform before extending actuation to a shared host pool.
-
-### Deliverables
-
-- Define a repeated-cycle plan from the failure modes and observation cadence,
-  with workload sizes, timings, cycle count, and acceptance thresholds stored
-  as run inputs rather than product defaults.
-- Run an unattended soak long enough to exercise the stated risk model while
-  preserving controller, workload, host, guest-health, and service evidence.
-- Classify every warning, restart, dropped sample, constrained operation,
-  attestation rejection, latch, cleanup result, and operator intervention.
-- Publish the single-VM support profile, known limitations, monitoring and
-  recovery runbook, and indexed evidence.
-
-### Verification and exit
-
-QA-T019 through QA-T024 pass and the review records an explicit GO or NO-GO.
-GO qualifies the declared single-VM candidate for AR6 integration. AR6 may
-cross the live multi-VM boundary only after both AR4 and AR5 close. Hermetic AR5
-contract, persistence, and simulation work may proceed before AR4 so it is
-ready for that checkpoint. The checkpoint does not by itself authorize a
-multi-VM or general production claim. Any unexplained transition, missing raw
-evidence, or unrehearsed recovery keeps the result at NO-GO.
-
-## AR5 — Durable global controller
-
-### Objective
-
-Convert the existing pure `global_pool` prototype into the single host-wide
-authority that atomically arbitrates all configured guests before any live
-command is issued.
-
-### Deliverables
-
-- Write a normative global-controller contract covering complete-snapshot
-  identity, freshness, pressure policy, host reserves, priorities, fairness,
-  starvation bounds, capacity limitation, and degraded modes.
-- Replace fixed prototype assumptions with validated policy configuration or
-  explicitly documented invariants; keep run-specific values out of defaults.
-- Consume each VM's authoritative `current`, pending `requested`, absolute
-  `desired`, `safe_floor`, demand freshness, reconciler health, and command
-  ownership without recalculating Windows demand globally.
-- Introduce reservation epochs or an equivalent durable transaction model so
-  competing growth cannot oversubscribe the pool and restart cannot duplicate
-  a grant.
-- Count reclaimed capacity only after a lower live `current` is observed.
-  Planned, requested, or partially completed reclaim is not free capacity.
-- Define behavior for stale/missing members, membership changes, one stuck VM,
-  host pressure escalation, insufficient reclaim, arithmetic failure, and
-  command ambiguity.
-- Persist bounded global state with schema/fingerprint checks and explicit
-  migration or fail-closed behavior.
-
-### Verification and exit
-
-Deterministic, generated, and fault-injected tests prove conservation of host
-capacity, alignment, reservation uniqueness, deterministic ordering,
-priority/fairness rules, no stale grant, no double counting, restart/no-replay,
-and safe degradation for multiple concurrent demands. The simulator emits a
-versioned decision/evidence model. AR5 performs no live multi-VM actuation.
-
-## AR6 — Live multi-VM automatic resizing
-
-### Objective
-
-Wire global grants through the existing per-VM reconcilers and qualify real
-competing guests without weakening any single-device invariant.
-
-### Deliverables
-
-- Run one host-wide controller process or equivalently exclusive coordinator;
-  independent per-VM services may not race over unreserved host memory.
-- Discover no mutation targets: every VM, device alias, policy, priority, and
-  isolation boundary is explicitly configured and validated.
-- Pass global grants to each existing reconciler, which continues to own block
-  alignment, quanta, command intent, convergence, cancellation, and latching.
-- Enforce reviewed hypervisor/cgroup limits and a host reserve independently of
-  guest telemetry and controller calculation.
-- Add detached multi-VM qualification that correlates all guest workloads,
-  global decisions, reservations, live allocations, host pressure, health,
-  cleanup, and final state without becoming a second resize authority.
-- Prove rolling addition/removal of a paused member and failure isolation for a
-  stale, stopped, slow, or latched VM.
-
-### Verification and exit
-
-Applied tests cover simultaneous growth, growth versus reclaim, host pressure,
-priority/fairness, partial progress, renewed pressure, one unavailable guest,
-coordinator restart, and uncertain commands. Total granted live allocation
-never exceeds the allocatable pool; capacity is reused only after observation;
-healthy guests remain safe when one guest fails. Repeated-cycle and soak gates
-pass for the declared maximum guest count.
-
-## AR7 — Distribution, security, and operations
-
-### Objective
-
-Turn the qualified controller into a supportable product that can be installed
-and changed without repository knowledge or ad hoc machine repair.
-
-### Deliverables
-
-- Produce versioned Windows and RHEL artifacts with hashes, provenance,
-  dependency/license inventory, and an explicit supported platform matrix.
-- Provide maintained install, configuration validation, upgrade, rollback,
-  uninstall, and post-install verification paths with least-privilege service
-  identities and protected state/telemetry directories.
-- Define compatibility and migration behavior for configuration, raw
-  telemetry, acknowledgement, policy checkpoint, command journal, global
-  reservation, and evidence schemas.
-- Complete a threat review for telemetry spoofing/tampering, cross-VM identity,
-  local privilege boundaries, command injection, state replacement, resource
-  exhaustion, and artifact supply chain.
-- Verify hard host/guest resource limits, monitoring integration, alert
-  thresholds, log retention, time synchronization assumptions, backup/restore,
-  and operator escalation.
-- Re-audit the supported QEMU, libvirt, Windows, virtio-mem driver, and service
-  stack; unsupported upstream behavior remains an explicit release limitation.
-- Ensure maintained `cargo xtask` workflows can create a deployment manifest,
-  collect health/evidence, and validate rollback without embedding one lab's
-  identities or policy values.
-
-### Verification and exit
-
-Clean-machine install, upgrade from the declared predecessor, configuration
-rejection, rollback, uninstall, credential/ACL, tamper, resource-bound, and
-monitoring tests pass on every supported platform combination. The operator
-runbook is rehearsed by someone other than the implementation author, and no
-release-critical step depends on an undocumented command or ignored artifact.
-
-## AR8 — Release candidate and release decision
-
-### Objective
-
-Qualify one immutable candidate and publish it only if its exact artifacts and
-support claims satisfy every preceding milestone.
-
-### Deliverables
-
-- Freeze versioned source and artifact identities; rerun the full cumulative
-  gate matrix without substituting results from another revision.
-- Run the declared single- and multi-VM workloads, recovery matrix, repeated
-  cycles, and endurance plan on the supported platform matrix.
-- Resolve or explicitly accept every warning, known issue, dependency risk,
-  security finding, and platform limitation against written release criteria.
-- Publish release notes, install/upgrade/rollback instructions, configuration
-  reference, architecture and safety contract, operator runbook, support
-  matrix, known limitations, and a machine-readable evidence index.
-- Record an independent reviewed GO or NO-GO decision and retain the rollback
-  artifacts for the release support window.
-
-### Verification and exit
-
-The release is GO only when every required focused, local, native Windows,
-deployment, live, fault, recovery, endurance, packaging, upgrade, rollback,
-security, and documentation gate is current and passing for the frozen
-candidate. Any missing gate is NO-GO, not a conditional pass.
-
-At GO, normal operation automatically grows and reclaims memory from current
-demand under one durable host-wide authority. Operators intervene for policy
-change, pause, recovery, upgrade, or exceptional failure—not for routine
-resizing.
-
-## Rules for executing this roadmap
-
-1. Claim and complete work through `BACKLOG.md`; keep milestone status here at
-   outcome level. Prefer a ready construction task while its corresponding
-   qualification behavior does not yet exist or its lab boundary is blocked.
-2. Change the owning contract, code, tests, examples, feature status, and
-   trackers together when behavior or a public schema changes.
-3. Run focused owner tests for code that changed, then run the local aggregate
-   with `cargo xtask gate local`; run native, deployment, live, and endurance
-   workflows only when the implemented slice and its prerequisite environment
-   are ready. Report each layer separately; never use a later workflow to
-   discover whether its required product behavior has been written.
-4. Preserve durable JSON/JSONL evidence for long-running or cross-process work.
-   A summary without raw evidence cannot close a live milestone.
-5. Derive device geometry and allocation from fresh alias-scoped live state.
-   Deployment and qualification inputs are explicit and recorded per run.
-6. Do not carry old VM names, hashes, sizes, thresholds, timeouts, or workload
-   profiles into a new candidate merely because they appeared in prior work.
-7. If a safety invariant cannot be proven, hold actuation, preserve evidence,
-   and record the milestone as blocked or NO-GO.
+| WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
+| WN1 | Ready | Define the Windows-native telemetry contract and capability model | WN0 |
+| WN2 | Planned | Collect authoritative Windows pressure notifications | WN1 |
+| WN3 | Planned | Separate requirement, pressure, and shrink-safety assessment in shadow mode | WN2 |
+| WN4 | Planned | Integrate pressure-aware bounded growth | WN3 |
+| WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
+| WN6 | Planned | Add only qualified trend and rate evidence | WN5 |
+| WN7 | Planned | Qualify realistic Windows memory behavior and automate the workload matrix | WN6 |
+| WN8 | Planned | Run unattended repeated-cycle and endurance qualification | WN7 |
+| WN9 | Planned | Stabilise configuration, migration, and defaults | WN8 |
+| WN10 | Planned | Satisfy the production-readiness and release decision | WN9 |
+
+## WN0 — Audit and controller-direction cleanup
+
+### Goal
+
+Establish the exact behavior of the existing fixed-headroom estimator, preserve
+valid safety mechanisms, and remove it as the assumed release sizing model.
+
+### Design changes
+
+- Trace every counter and configuration value that reaches `desired`.
+- Classify current values as demand, reserve, diagnostic, allocation, or
+  reconciliation state.
+- Mark the fixed physical/commit candidates as compatibility behavior.
+- Preserve the Windows-measures/host-acts ownership boundary.
+- Replace obsolete qualification ordering with this milestone path.
+
+### Likely files and modules
+
+- `windows/src/demand.rs`
+- `crates/virtio-mem-core/src/demand.rs`
+- `crates/virtio-mem-core/src/target_controller.rs`
+- `host/src/target_policy.rs`
+- `host/src/runtime.rs`
+- `docs/target-controller.md`
+- `docs/windows-native-pressure-controller.md`
+- project roadmaps, boards, contracts, and status documents
+
+### Tests required
+
+- Existing estimator and reconciler regression tests remain green.
+- Documentation/source consistency and whitespace checks pass.
+- No native or live result is inferred from source inspection.
+
+### Success criteria
+
+- The implemented formula and unused pressure signals are documented exactly.
+- Retained safety logic and redesign targets are explicitly listed.
+- Obsolete fixed-headroom qualification is marked historical.
+- The next task is measurement-only and cannot resize memory.
+
+### Dependencies
+
+None beyond the existing repository.
+
+### Explicitly not yet
+
+- No new Windows signal collection.
+- No schema or target-policy change.
+- No live actuation or qualification claim.
+
+## WN1 — Windows-native telemetry contract
+
+### Goal
+
+Define an additive, versioned, allocation-free telemetry contract before
+changing collection or policy.
+
+### Design changes
+
+- Define fields for low/high memory-resource notification state, existing
+  physical and commit counters, reusable/modified memory detail, and optional
+  rate evidence.
+- Give every optional signal explicit supported, unavailable, failed, and
+  warming states; never encode those states as zero.
+- Preserve producer identity, session, sequence, monotonic and wall time,
+  provenance, bounds, atomic publication, and durable acknowledgement.
+- Define capability negotiation and schema migration behavior.
+- Define validation relationships without assigning target authority to the
+  Windows service.
+
+### Likely files and modules
+
+- `crates/virtio-mem-core/src/demand.rs`
+- `windows/src/demand.rs`
+- `windows/src/config.rs`
+- `host/src/raw_telemetry.rs`
+- `host/src/config.rs`
+- `docs/data-model.md`
+- `docs/api-contract.md`
+- `docs/dependencies.md`
+
+### Tests required
+
+- Serialization round trips and older/newer schema compatibility.
+- Missing, unknown, malformed, contradictory, and oversized field cases.
+- Capability, warm-up, timestamp, session, sequence, and replay validation.
+- Deterministic fixtures for every supported/unavailable/error state.
+
+### Success criteria
+
+- Windows and host crates share one reviewed contract.
+- Older telemetry can enter only the explicit fallback path.
+- Missing richer evidence cannot authorize shrink.
+- Native collection and actuation remain unchanged.
+
+### Dependencies
+
+WN0.
+
+### Explicitly not yet
+
+- No new API calls in the service runtime.
+- No pressure classification, target change, or resize.
+- No rate counter is required for baseline operation.
+
+## WN2 — Authoritative Windows pressure signals
+
+### Goal
+
+Collect the smallest authoritative Windows-native pressure state and publish it
+through the existing telemetry path.
+
+### Design changes
+
+- Add low and high memory resource notification handles through supported
+  Windows APIs.
+- Integrate create, query or wait, cancellation, error, and handle-close
+  behavior with the existing service lifecycle.
+- Represent low, high, neutral, and unavailable states explicitly.
+- Retain existing physical and commit collection for context.
+- Publish capability and warm-up state without changing host decisions.
+
+### Likely files and modules
+
+- `windows/src/demand.rs`
+- Windows runtime/service lifecycle modules
+- `crates/virtio-mem-core/src/demand.rs`
+- `host/src/raw_telemetry.rs`
+- native Windows `xtask` verification and fixtures
+
+### Tests required
+
+- Injected API success, failure, cancellation, and cleanup tests.
+- State-transition tests for low, neutral, high, and unavailable.
+- Native Windows build/test and capability evidence.
+- Atomic publication, restart, ordering, and transport regression tests.
+
+### Success criteria
+
+- The supported Windows build publishes trustworthy notification state.
+- Failure is observable and fail closed.
+- Existing telemetry transport and service shutdown remain bounded.
+- The host records but does not act on the new state.
+
+### Dependencies
+
+WN1.
+
+### Explicitly not yet
+
+- No target calculation from notification state.
+- No reclaim.
+- No performance-rate collection or custom pressure score.
+
+## WN3 — Separate requirement, pressure, and shrink safety
+
+### Goal
+
+Implement three independently testable host assessments and run them beside
+the fixed-headroom policy without actuation.
+
+### Design changes
+
+- Add a versioned memory-requirement result using committed bytes plus the
+  configured demand safety margin and visible-base conversion.
+- Add a pressure-state result led by Windows resource notifications, with
+  explicit corroborating and contradictory evidence.
+- Add a shrink-safety result whose default is blocked until a complete healthy
+  history exists.
+- Record reason codes, input identities, confidence/availability state, and
+  policy version for every output.
+- Join every assessment with live `requested` and `current`; never treat
+  in-flight or unavailable allocation as guest slack.
+- Emit shadow comparisons against the fixed-headroom candidate.
+
+### Likely files and modules
+
+- new focused assessment module in `crates/virtio-mem-core/src/`
+- `crates/virtio-mem-core/src/target_controller.rs`
+- `host/src/target_policy.rs`
+- `host/src/runtime.rs`
+- controller status/evidence types
+- `docs/target-controller.md`
+
+### Tests required
+
+- Table-driven tests proving each input affects only its assigned output.
+- Checked arithmetic, alignment, min/max, safety-margin, and overflow cases.
+- Low/neutral/high/unavailable and contradictory-state tests.
+- Cold start, history gaps, producer restart, and in-flight allocation tests.
+- Golden shadow-decision fixtures with stable reason codes.
+
+### Success criteria
+
+- Requirement bytes, pressure state, and shrink eligibility are independently
+  visible and explainable.
+- Notification state cannot invent a byte target.
+- Requirement calculation cannot bypass shrink-safety gates.
+- Shadow mode cannot reach the resize sink.
+
+### Dependencies
+
+WN2 and the read-only controller status surface.
+
+### Explicitly not yet
+
+- No pressure-aware actuation.
+- No shrink under either new or fallback evidence.
+- No paging-rate influence.
+
+## WN4 — Pressure-aware growth
+
+### Goal
+
+Allow the new assessment to grow memory safely while keeping reclaim disabled.
+
+### Design changes
+
+- Move toward the qualified memory requirement by the configured growth step.
+- Let authoritative low-memory state trigger a configured faster-growth mode,
+  still bounded by the requirement, effective maximum, device geometry, and
+  host capacity.
+- Permit conservative fallback growth from fresh basic counters when richer
+  pressure state is unavailable; label it explicitly.
+- Preserve journaling, fresh attestation, live reread, no-overlap,
+  capacity-limited health, and durable latches.
+- Expose normal, urgent, fallback, held, and capacity-limited growth reasons.
+
+The initial movement rule is:
+
+```text
+normal_growth_goal = requirement_target
+urgent_growth_goal = max(
+    requirement_target,
+    saturating_add(current, configured_pressure_growth_step)
+)
+next_target = min(selected_growth_goal, effective_maximum)
+```
+
+The reconciler applies the applicable configured growth-step bound. An urgent
+step creates bounded relief; it does not claim that Windows recommended that
+exact target.
+
+### Likely files and modules
+
+- pressure assessment and target-controller modules
+- `crates/virtio-mem-core/src/reconciler.rs`
+- `host/src/target_policy.rs`
+- `host/src/runtime.rs`
+- controller status and qualification evidence
+
+### Tests required
+
+- Immediate and stepped growth under normal and low-memory states.
+- Faster-growth bounds and transition back to normal growth.
+- Host reserve, maximum, alignment, pending request, and capacity limitation.
+- Missing/stale signal fallback and no-fallback cases.
+- Restart, ambiguous command, no-replay, and partial-progress regressions.
+
+### Success criteria
+
+- Applied growth follows the new requirement and recorded pressure reason.
+- Low-memory state reduces response delay without bypassing any safety gate.
+- No scenario produces a lower request.
+- Fixed-headroom behavior is no longer the primary growth policy.
+
+### Dependencies
+
+WN3 shadow evidence and the applicable native/deployment preflight.
+
+### Explicitly not yet
+
+- No automatic shrink.
+- No rate-driven growth.
+- No multi-VM allocation without durable host reservation.
+
+## WN5 — Shrink blocking and conservative reclaim
+
+### Goal
+
+Enable reclaim only when Windows-native evidence shows sustained safety and
+prove that renewed pressure stops or reverses it.
+
+### Design changes
+
+- Require high-memory notification state throughout the configured history
+  window.
+- Require a lower qualified memory requirement, adequate physical and commit
+  safety margins, configured hysteresis, and a valid safe floor.
+- Treat low, neutral, unavailable, stale, discontinuous, contradictory, or
+  warming evidence as a shrink blocker.
+- Move down only by the configured shrink step without crossing requirement,
+  safe floor, configured minimum, or owned in-flight intent.
+- Preserve upward freeze, cancellation, and supersession when pressure returns.
+- Disable reclaim in fallback mode.
+
+The lower movement goal is:
+
+```text
+reclaim_goal = max(
+    requirement_target,
+    qualified_safe_floor,
+    configured_minimum
+)
+next_target = max(
+    reclaim_goal,
+    saturating_sub(current, configured_shrink_step)
+)
+```
+
+This goal is eligible only after the complete shrink-safety decision passes.
+
+### Likely files and modules
+
+- pressure assessment and target-controller modules
+- `crates/virtio-mem-core/src/reconciler.rs`
+- `crates/virtio-mem-core/src/shrink_recovery.rs`
+- `host/src/runtime.rs`
+- policy checkpoint and status/evidence types
+
+### Tests required
+
+- Every shrink blocker independently prevents a lower target.
+- Complete versus incomplete history and hysteresis boundaries.
+- Bounded reclaim, zero/partial progress, and safe-floor enforcement.
+- Renewed low/neutral/unavailable state during pending shrink.
+- Cancellation, stale-evidence freeze, restart, latch, and no lower overlap.
+
+### Success criteria
+
+- Reclaim occurs only from a complete, explainable Windows-native evidence set.
+- Missing richer evidence always holds or grows; it never shrinks.
+- Renewed pressure cannot leave an unowned lower request progressing.
+- Default-on reclaim remains subject to all qualification and pause gates.
+
+### Dependencies
+
+WN4 growth behavior and a warmed pressure history.
+
+### Explicitly not yet
+
+- No paging-rate thresholds.
+- No cache-specific target arithmetic.
+- No broad enablement outside bounded single-VM qualification.
+
+## WN6 — Selective trend and rate evidence
+
+### Goal
+
+Add only Windows performance rates that demonstrate clear incremental value
+over notifications and snapshots.
+
+### Design changes
+
+- Add supported performance-counter collection behind explicit capabilities.
+- Start with page-output evidence; evaluate page-input and hard-fault rates only
+  as corroboration.
+- Record raw samples, sample interval, warm-up, reset, discontinuity, and
+  formatted rate.
+- Use qualified page-output pressure to block shrink and optionally select the
+  configured faster-growth mode.
+- Keep rates out of byte requirement arithmetic.
+- Retain modified memory, cache, pools, memory load, peak commit, and
+  compression as diagnostics unless evidence justifies a later role.
+
+### Likely files and modules
+
+- Windows performance-counter collector module
+- `windows/src/demand.rs`
+- telemetry schema and validation
+- pressure assessment/history module
+- native capability and qualification tooling
+
+### Tests required
+
+- Two-sample warm-up, interval, reset, wrap, missing-counter, and localization
+  behavior.
+- Sustained versus transient rate traces.
+- Rate discontinuity blocking shrink.
+- Evidence that generic page-fault activity alone cannot grow or shrink.
+- Native Windows counter availability and semantic correlation.
+
+### Success criteria
+
+- Each enabled rate has measured value beyond the notification/snapshot model.
+- Rate collection failure degrades explicitly and blocks shrink safely.
+- No unqualified rate becomes a release dependency.
+- Sampling cost remains within the configured service budget.
+
+### Dependencies
+
+WN5 provides a safe snapshot-based controller to compare against.
+
+### Explicitly not yet
+
+- No ETW dependency in the control loop.
+- No custom composite pressure score.
+- No per-process working-set controller.
+
+## WN7 — Realistic Windows behavior qualification
+
+### Goal
+
+Prove signal semantics and controller decisions across workloads that separate
+commit, residency, cache, paging, bursts, and idle recovery.
+
+### Design changes
+
+- Extend the bounded Windows workload and qualification evidence schemas.
+- Add resident allocation/release, committed-but-not-resident, useful
+  file-cache/standby, dirty/modified memory, paging pressure, burst allocation,
+  steady-state, and recovery scenarios.
+- Correlate workload phase, raw telemetry, requirement, pressure state,
+  shrink-safety result, target decision, live device progress, and guest health.
+- Use Microsoft tooling as a bounded diagnostic oracle, not resize authority.
+- Automate false-growth, missed-pressure, cache-treatment, fallback, and
+  cancellation classification.
+
+### Likely files and modules
+
+- `windows/src/bin/virtio-mem-workload.rs`
+- `tools/xtask/src/qualification.rs`
+- `tools/xtask/src/main.rs`
+- shared qualification/evidence types
+- `docs/testing.md`
+- `docs/QA-roadmap.md`
+
+### Tests required
+
+- Deterministic analyzer fixtures for every workload phase and failure class.
+- Native Windows execution of every collector/workload capability.
+- Shadow and applied growth/reclaim runs with explicit run configuration.
+- Cache-heavy tests proving useful standby memory is not treated as application
+  demand or immediate reclaim permission.
+- Guest-health, cleanup, and final-state validation.
+
+### Success criteria
+
+- Every signal role is supported by correlated workload evidence.
+- Resident, commit-only, cache, and paging cases produce distinguishable
+  explanations.
+- No test harness becomes a competing resize authority.
+- All unsafe or unexplained classifications fail the milestone.
+
+### Dependencies
+
+WN6 and the maintained single-controller qualification workflow.
+
+### Explicitly not yet
+
+- No endurance claim from short functional runs.
+- No thresholds promoted from a single workload.
+- No multi-VM live actuation.
+
+## WN8 — Unattended qualification and endurance
+
+### Goal
+
+Demonstrate that pressure-aware growth, reclaim, degradation, and recovery stay
+safe across repeated cycles and long-running unattended operation.
+
+### Design changes
+
+- Define cycle count, duration, workload schedule, sampling, timeouts, and
+  acceptance criteria as explicit run inputs.
+- Preserve versioned status, append-only events, metrics, raw telemetry,
+  assessments, policy checkpoints, command journals, guest health, cleanup,
+  and final state.
+- Include service restart, telemetry interruption, counter degradation,
+  capacity limitation, partial progress, and renewed-pressure scenarios.
+- Make run status resumable and reviewable without chat context.
+
+### Likely files and modules
+
+- `tools/xtask/src/qualification.rs`
+- qualification analyzer and evidence types
+- controller status and event outputs
+- `docs/testing.md`
+- operational recovery documentation
+
+### Tests required
+
+- Detached-run lifecycle, crash recovery, artifact integrity, and review tests.
+- Repeated growth/reclaim cycles with no overlapping request.
+- Signal loss and recovery during converged and pending states.
+- Bounded zero/partial progress and command ambiguity.
+- An explicitly reviewed unattended run and evidence index.
+
+### Success criteria
+
+- The declared endurance plan completes without unexplained transition,
+  duplicate authority, replay, unsafe reclaim, or lost evidence.
+- Every warning and intervention is classified.
+- Cleanup and final allocation are explicit and independently verified.
+- Duration alone is never treated as success.
+
+### Dependencies
+
+WN7 functional qualification and complete observability.
+
+### Explicitly not yet
+
+- No default tuning freeze before endurance evidence is reviewed.
+- No production claim from one environment.
+- No automatic recovery that weakens explicit latch handling.
+
+## WN9 — Configuration, migration, and defaults
+
+### Goal
+
+Freeze a coherent pressure-policy configuration only after qualification has
+identified defensible defaults and failure behavior.
+
+### Design changes
+
+- Version policy configuration and fingerprints.
+- Define configurable minimum, maximum, physical reserve, commit reserve,
+  demand safety margin, normal and faster growth steps, shrink step,
+  hysteresis, history window, pressure thresholds where needed, sample bounds,
+  and fallback mode.
+- Deprecate fixed physical/commit reserves as primary sizing inputs; retain only
+  explicitly named fallback/safety semantics.
+- Define upgrade, downgrade, unsupported-signal, and older-schema behavior.
+- Reject ambiguous legacy settings instead of silently reinterpreting them.
+
+### Likely files and modules
+
+- `host/src/config.rs`
+- Windows configuration modules
+- pressure and target policy configuration types
+- policy fingerprint/checkpoint migration
+- deployment templates and typed deployment tooling
+- `docs/api-contract.md`
+- `docs/data-model.md`
+- `docs/target-controller.md`
+
+### Tests required
+
+- Configuration parsing, validation, boundary, and cross-field tests.
+- Policy fingerprint and checkpoint migration tests.
+- Upgrade, downgrade, rollback, and unsupported-capability tests.
+- Default-on shrink plus fail-closed evidence-gate tests.
+- Deployment-template validation with no embedded environment-specific values.
+
+### Success criteria
+
+- Every operational choice has one owner, unit, default policy, and validation
+  rule.
+- Defaults are justified by qualification evidence, not copied examples.
+- Legacy configuration has an explicit migration or hard rejection.
+- Installation and rollback preserve safe disabled/inactive behavior until
+  preflight passes.
+
+### Dependencies
+
+WN8 evidence review.
+
+### Explicitly not yet
+
+- No hidden compatibility aliases with changed meanings.
+- No environment-specific values in repository defaults.
+- No release until the exact frozen configuration is requalified.
+
+## WN10 — Production readiness and release decision
+
+### Goal
+
+Accept or reject an immutable candidate for the declared Windows, host,
+hypervisor, driver, and trust scope.
+
+### Design changes
+
+- Freeze artifacts, schemas, policy configuration, compatibility assumptions,
+  evidence formats, and operator procedures.
+- Provide structured health for raw signals, assessment reasons, fallback,
+  desired/requested/current, capacity limitation, pending age, command intent,
+  latch, and recovery state.
+- Complete least-privilege installation, monitoring, alerting, pause, recovery,
+  upgrade, downgrade, rollback, and support-boundary documentation.
+- Require one host-wide durable capacity authority before enabling more than one
+  controller; single-VM evidence cannot authorize competing allocation.
+- Publish known limitations and an indexed qualification record.
+
+### Likely files and modules
+
+- controller status and operational CLI
+- deployment and release tooling
+- global capacity/reservation modules if multi-VM is in the release scope
+- Windows event/resource packaging
+- all public contracts, support matrix, runbooks, and release checklist
+
+### Tests required
+
+- Full local and native Windows gates for the frozen revision.
+- Installed deployment, telemetry, compatibility, and no-actuation preflight.
+- Applied growth, reclaim, rate degradation, recovery, and endurance gates.
+- Installation, upgrade, downgrade, rollback, monitoring, and security review.
+- Multi-VM reservation and failure qualification when multi-VM is claimed.
+
+### Success criteria
+
+- Every required gate has current evidence for the exact candidate.
+- No unexplained warning, transition, fallback, or operator intervention remains.
+- Failures are bounded, observable, and covered by a rehearsed response.
+- The review records an explicit GO or NO-GO for a precisely stated support
+  profile.
+
+### Dependencies
+
+WN9 and every release-scope platform, security, operations, and capacity gate.
+
+### Explicitly not yet
+
+- No support outside the declared matrix.
+- No untrusted-guest claim without a separate threat review and hard isolation.
+- No multi-VM claim without durable atomic host reservation.
+- No release based on source tests, shadow results, or historical evidence
+  alone.
+
+## Superseded roadmap items
+
+The following items are obsolete as release gates and must not be resumed as
+if they still represented the target architecture:
+
+- fixed-headroom automatic-behavior qualification as the primary sizing-policy
+  proof;
+- the prior combined growth-and-reclaim milestone that introduced both policy
+  directions before pressure semantics were qualified;
+- prior qualification tasks tied only to fixed-reserve targets;
+- fixed physical and commit reserves as the main definition of demand;
+- the legacy threshold-based demand calculator and legacy demand-source mode,
+  after telemetry migration is complete;
+- hard-coded workload sizes, durations, counter thresholds, or reserve values
+  in roadmap acceptance criteria; and
+- any external balloon-driver algorithm, floor constants, or reporting cadence
+  as an implementation dependency.
+
+Historical evidence remains useful for transport, reconciliation, compatibility,
+platform progress, and failure analysis. It cannot qualify the new requirement,
+pressure, or shrink-safety decisions.
+
+## Execution rule
+
+`BACKLOG.md` owns the current task claim. `docs/QA-roadmap.md` owns applied
+qualification status. This document owns architecture order and milestone exit
+criteria.
+
+For each milestone, implement only its smallest coherent slice, run focused
+owning-crate tests, then `cargo xtask gate local`, followed by the applicable
+native Windows, deployment, live, recovery, or endurance gate. Update contracts,
+boards, feature status, and project status together. An unavailable or unrun
+layer remains open.

@@ -7,6 +7,12 @@ run libvirt commands, or choose a resize. The Linux host selects one explicit
 VM/device alias, joins telemetry with live libvirt state, calculates targets,
 and owns every mutation.
 
+The target architecture gives precedence to Microsoft-supported Windows
+memory-pressure notifications and performance data. Windows publishes their
+normalised state and availability; it does not publish a pressure-derived byte
+target. See
+[windows-native-pressure-controller.md](windows-native-pressure-controller.md).
+
 Alias-scoped live libvirt `current` is allocation authority. QGA and
 `dommemstat` are health/demand inputs only.
 
@@ -27,6 +33,12 @@ The optional custom QGA memory adapter is an experimental API boundary. Its
 operation deadline must be provided by its caller. Production telemetry does
 not depend on that command.
 
+The planned additive telemetry revision reports each pressure signal with
+support/error state, timestamps, and rate-sample readiness. Unsupported or
+unwarmed counters cannot be encoded as zero. A schema-v2 producer remains
+usable only under an explicit migration/fallback policy and can never acquire
+pressure-qualified reclaim authority by omission.
+
 ## Host service
 
 The host controller loads validated environment configuration and runs one
@@ -42,6 +54,11 @@ Automatic shrink is enabled by default. An explicit pause remains available.
 Same-target diagnostic re-notification is independently disabled by default.
 Any ambiguity, stale input, incompatible state, ownership conflict, or unsafe
 capacity condition fails closed.
+
+The existing fixed-headroom calculation is a compatibility fallback during
+the migration. It may conservatively request growth from fresh basic counters,
+but pressure-aware shrink requires the richer qualified signal set and its
+complete history.
 
 Production raw telemetry uses the explicitly selected `qga-file` transport.
 The host opens the configured protected Windows current-record path with the
@@ -88,6 +105,13 @@ convergence durations.
   restart-safe no-actuation `preflight`;
 - `live-resize`;
 - `qualification start|status|review`.
+
+Qualification requires explicit thresholds for initial growth, reclaim, and
+renewed-pressure growth. Its versioned result contains phase-specific extrema,
+telemetry continuity counts, and observed pending-request overlap violations.
+The optional pending-shrink acceptance flag is required when the run is meant
+to satisfy QA-T011; ordinary resident and committed runs need not manufacture
+an in-flight shrink.
 
 Cross-machine paths and deadlines are explicit configuration. Live resize is
 dry-run by default and delegates mutation to the product host CLI, so there is

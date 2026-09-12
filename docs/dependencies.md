@@ -55,6 +55,12 @@ The upstream guest agent does not guarantee the optional downstream
 default and treats alias-scoped live virtio-mem `current` as allocation
 authority.
 
+The pressure-aware collector is expected to use memory resource notifications
+and PDH/performance-counter APIs supplied by Windows. Exact counter
+availability, names, sampling behavior, and required privileges must be
+captured by the native capability gate before becoming release dependencies;
+no third-party pressure library is assumed.
+
 ## Live resize prerequisites
 
 Before mutation, resolve and record:

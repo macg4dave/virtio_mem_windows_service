@@ -4,6 +4,13 @@ This Rust crate collects native Windows memory telemetry and publishes
 versioned allocation-free records. It does not own libvirt, QGA, host policy,
 or resize actuation.
 
+The next collector revision is measurement-first: inventory and normalise
+Windows low/high memory-resource notifications and documented performance
+counters before the host policy changes. Unsupported, failed, and rate-counter
+warm-up states remain explicit. See
+`../docs/windows-native-pressure-controller.md`; the service still will not
+publish a resize recommendation.
+
 ## Build and test
 
 Build locally on a configured native Windows toolchain with Cargo. From the

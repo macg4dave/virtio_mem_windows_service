@@ -7,8 +7,11 @@ explicit virtio-mem device. Windows publishes native measurements. A Linux
 controller joins them with live device state, calculates an absolute target,
 and performs fail-closed actuation.
 
-The next architecture step is global host-capacity arbitration, not additional
-guest authority or another live-test implementation.
+The next architecture step is a Windows-native pressure measurement and shadow
+assessment layer, not additional guest authority. Global host-capacity
+arbitration remains required, but it must consume pressure-aware per-VM targets
+rather than freezing the fixed-headroom estimator into the multi-VM design.
+See [windows-native-pressure-controller.md](windows-native-pressure-controller.md).
 
 ## Global pool
 
@@ -31,14 +34,11 @@ uncertain results, cancellation, and durable latching.
 
 ## Delivery order
 
-1. Build deterministic multi-VM pool accounting and invariants.
-2. Exercise competing growth, reclaim, stale reports, host pressure, restart,
-   and uncertain command outcomes.
-3. Add controlled target grants through the existing reconciler.
-4. Qualify one coherent single-VM deployment before enabling live multi-target
-   actuation.
-5. Add operational metrics, fault injection, deployment, rollback, and
-   explicitly configured endurance evidence.
+The normative order is WN0 through WN10 in [roadmap.md](roadmap.md). Global-pool
+construction may proceed hermetically, but live multi-VM integration cannot
+precede the stable per-VM assessment, single-VM qualification, durable atomic
+reservation, and production-scope gates defined there. This document does not
+maintain a second delivery sequence.
 
 ## Security and support
 

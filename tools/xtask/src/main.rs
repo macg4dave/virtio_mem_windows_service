@@ -102,6 +102,8 @@ Qualification options:
   --controller-timeout-seconds N Required hard bound for controller ownership.
   --expect-growth-bytes N    Required minimum observed growth.
   --expect-reclaim-bytes N   Required minimum observed reclaim.
+  --expect-renewed-growth-bytes N Required minimum growth after settled reclaim.
+  --require-renewed-during-pending-shrink Require an observed pending shrink before renewed pressure.
   --remote-workload PATH     Required Windows workload executable path.
   --controller-unit UNIT     Required host systemd unit to archive.
   --guest-service NAME       Required Windows service identity.

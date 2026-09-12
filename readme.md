@@ -14,6 +14,13 @@ Windows measures and publishes allocation-free telemetry. The host joins fresh
 telemetry with alias-scoped live libvirt `current`, calculates the target,
 checks compatibility and headroom, journals intent, and owns actuation.
 
+The project is transitioning from a primarily fixed-headroom calculation to a
+Windows-native pressure-aware policy. Windows memory-resource notifications and
+supported memory-manager performance data will become the primary demand
+evidence; the host will continue to own sizing and actuation. The current fixed
+reserve model becomes a fallback/safety guard, not the intended demand
+predictor. See `docs/windows-native-pressure-controller.md`.
+
 ## Components
 
 - `windows/`: native telemetry, versioned atomic publication, SCM lifecycle,
@@ -76,19 +83,21 @@ and `docs/testing.md`; do not copy values from old evidence.
 
 Core telemetry, single-controller policy/reconciliation, native service
 lifecycle, host actuation, and Rust validation tooling are implemented. The
-development stack remains NO-GO for unattended automatic resizing until the
-current deployment is coherent and the applied qualification, recovery, and
-endurance gates in `docs/QA-roadmap.md` pass.
+implemented policy is now a compatibility baseline, not the release-candidate
+sizing algorithm. The stack remains NO-GO for unattended automatic resizing
+until the pressure-aware implementation and its applied qualification,
+recovery, and endurance gates in `docs/QA-roadmap.md` pass.
 
 ## Documentation
 
 | Document | Purpose |
 | --- | --- |
 | `BACKLOG.md` | Product execution board and current handoff |
-| `docs/roadmap.md` | Automatic-resizing release milestones and exit gates |
+| `docs/roadmap.md` | Windows-native controller milestones and exit gates |
 | `docs/architecture.md` | Component ownership and safety boundaries |
 | `docs/testing.md` | Current validation and deployment model |
 | `docs/target-controller.md` | Normative target and recovery contract |
+| `docs/windows-native-pressure-controller.md` | Windows signal audit, research, target architecture, and migration |
 | `docs/api-contract.md` | Wire and CLI behavior |
 | `docs/data-model.md` | Persistent and in-memory model |
 | `docs/feature-matrix.md` | Capability status |

@@ -54,7 +54,8 @@ shell or running Cargo as root.
 
 ## Current gaps
 
-- AR1 inventory, Windows/host installation, service lifecycle, diagnostics,
+- The completed coherent-deployment inventory, Windows/host installation,
+  service lifecycle, diagnostics,
   calibration, attestation, and no-actuation preflight now have typed xtask
   boundaries. They still need unification under the general versioned task
   manifest and common result model tracked by BT-T007 and BT-T011.
