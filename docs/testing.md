@@ -209,6 +209,9 @@ workflow. A start command must explicitly supply:
 - host sampling interval, external-command timeout, hard controller-ownership
   timeout, final observation window, and required observed growth/reclaim
   deltas; and
+- when the telemetry producer must begin a new session after controller
+  ownership starts, the explicit service-restart flag and its separate hard
+  timeout; and
 - output root when the repository artifact directory is not appropriate.
 
 Run `cargo xtask help` for the authoritative option spelling. Start without
@@ -217,9 +220,21 @@ Run `cargo xtask help` for the authoritative option spelling. Start without
 guard requires the named unit to begin disabled/inactive, starts only that
 unit, verifies automatic shrink is enabled in the running process, and returns
 it to inactive on completion, supervisor failure, or the explicit hard
-timeout. The detached supervisor remains unprivileged, reads the production
-telemetry record through bounded QGA guest-file operations, writes the durable
+timeout. That same long-lived elevated child performs the run's fixed,
+alias-scoped libvirt and QGA observations and publishes typed snapshots under
+`/run`; this prevents a detached run from opening repeated Polkit
+authorizations. The detached unprivileged supervisor runs the Windows
+workload, validates and correlates those snapshots, writes the durable
 evidence, and never issues a competing resize request.
+
+`--apply-service-restart --guest-service-cycle-timeout-seconds N` is an
+explicit live operation, not a preflight convenience. After the controller
+guard is active, it cycles only the named Windows telemetry service through the
+maintained authenticated SSH path and waits within `N` seconds for a matching
+`controller_decision` from the new session before launching the workload. This
+preserves the replay gate when telemetry advanced while the controller was
+inactive. The service-cycle timeout is included in the required controller
+ownership bound and its evidence is stored in the qualification event stream.
 
 ```bash
 cargo xtask qualification status RUN_ID

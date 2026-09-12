@@ -18,8 +18,14 @@ Task: `<tooling behavior to add, change, consolidate, or remove>`
 - Implement privileged boundaries as explicit typed `xtask` re-execution of
   the current prebuilt executable through one outer `sudo`; never generate a
   shell script or run Cargo as root.
+- Combine a task's ordered privileged operations and bounded waits beneath that
+  one elevation boundary. Do not create an unrestricted root shell or launch a
+  separate sudo process for each operation.
 - Add deterministic tests for parsing, command construction, failure,
   cancellation, cleanup, rollback, and result classification.
+- For timed or detached workflows, expose a process wait or durable completion
+  artifact and choose status intervals from the configured producer cadence;
+  avoid tight or unchanged-log polling.
 - Keep editor and Make entrypoints as policy-free delegates.
 
 Run focused tooling tests, `cargo xtask gate local`, and the changed workflow

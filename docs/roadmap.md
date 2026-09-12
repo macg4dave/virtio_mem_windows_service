@@ -45,10 +45,19 @@ The post-cleanup repository has one Rust implementation path:
 - `cargo xtask` owns maintained local, native-Windows, live-resize, and
   detached qualification workflows.
 
-The single-VM controller is implemented in code, but the installed candidate
-and production telemetry handoff are not yet proven coherent. Applied
-automatic growth/reclaim, recovery, and endurance evidence is incomplete, so
-unattended automatic resizing remains **NO-GO**.
+AR1 proved a coherent installed single-VM candidate and production telemetry
+handoff. AR2 exposed and corrected two qualification bootstrap failures: the
+detached observer's repeated Polkit authorization and a new telemetry session
+that had advanced before controller ownership. The guard now owns the complete
+bounded libvirt observation batch, and the workflow can explicitly restart the
+named telemetry producer only after controller start and wait for an accepted
+decision before workload pressure. The first run through that corrected path
+then rejected actuation because the reviewed live attestation predated the
+current VM process; a matching attestation has been regenerated from the
+unchanged explicit review and installed through the typed host deployment. A
+fresh applied resident rerun, committed workload, recovery, and endurance
+evidence are still incomplete, so unattended automatic resizing remains
+**NO-GO**.
 
 The shared `global_pool` module is a useful side-effect-free arbitration
 prototype with focused tests. It is not yet a host-wide controller: no runtime

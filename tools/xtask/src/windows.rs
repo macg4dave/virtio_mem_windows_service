@@ -277,6 +277,30 @@ impl Config {
         Ok(())
     }
 
+    fn for_qualification(
+        repo: &Path,
+        ssh_target: &str,
+        connect_timeout_seconds: u64,
+        operation_timeout_seconds: u64,
+    ) -> Result<Self, String> {
+        let config = Self {
+            ssh_target: ssh_target.to_owned(),
+            remote_dir: r"C:\".to_owned(),
+            artifact_dir: repo.to_path_buf(),
+            known_hosts_file: optional_path("VIRTIO_MEM_WINDOWS_KNOWN_HOSTS_FILE")?,
+            identity_file: optional_path("VIRTIO_MEM_WINDOWS_IDENTITY_FILE")?,
+            host_name: optional_env("VIRTIO_MEM_WINDOWS_HOST_NAME"),
+            host_key_alias: optional_env("VIRTIO_MEM_WINDOWS_HOST_KEY_ALIAS"),
+            connect_timeout_seconds,
+            operation_timeout_seconds,
+        };
+        if connect_timeout_seconds == 0 || operation_timeout_seconds == 0 {
+            return Err("qualification service-cycle timeouts must be positive".to_owned());
+        }
+        config.validate()?;
+        Ok(config)
+    }
+
     fn ssh_options(&self) -> Vec<OsString> {
         let mut options = vec![
             process::os("-o"),
@@ -794,6 +818,39 @@ fn service_cycle(
     output: &Path,
     apply: bool,
 ) -> Result<(), String> {
+    let value = service_cycle_value(repo, config, service, apply)?;
+    let output = resolve_local(repo, output);
+    persist_json(&output, &value)?;
+    println!(
+        "Windows service-cycle {} evidence written to {}",
+        if apply { "apply" } else { "dry-run" },
+        output.display()
+    );
+    Ok(())
+}
+
+pub(crate) fn apply_service_cycle_for_qualification(
+    repo: &Path,
+    ssh_target: &str,
+    service: &str,
+    connect_timeout_seconds: u64,
+    operation_timeout_seconds: u64,
+) -> Result<serde_json::Value, String> {
+    let config = Config::for_qualification(
+        repo,
+        ssh_target,
+        connect_timeout_seconds,
+        operation_timeout_seconds,
+    )?;
+    service_cycle_value(repo, &config, service, true)
+}
+
+fn service_cycle_value(
+    repo: &Path,
+    config: &Config,
+    service: &str,
+    apply: bool,
+) -> Result<serde_json::Value, String> {
     let service = ps_literal(service);
     let action = if apply {
         "if($before.State -ne 'Stopped'){Stop-Service -Name $service -Force; (Get-Service $service).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))}; Start-Service -Name $service; (Get-Service $service).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))"
@@ -812,15 +869,7 @@ $after=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''"
 "#,
         apply = if apply { "$true" } else { "$false" },
     );
-    let value = parse_last_json_line(&remote_powershell(config, repo, &script)?)?;
-    let output = resolve_local(repo, output);
-    persist_json(&output, &value)?;
-    println!(
-        "Windows service-cycle {} evidence written to {}",
-        if apply { "apply" } else { "dry-run" },
-        output.display()
-    );
-    Ok(())
+    parse_last_json_line(&remote_powershell(config, repo, &script)?)
 }
 
 fn diagnose_service(

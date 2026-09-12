@@ -243,8 +243,19 @@ The maintained qualification workflow is the sole resize authority for its
 run. It requires the installed unit to begin disabled and inactive, uses one
 bounded privileged guard to start only that unit, verifies automatic shrink is
 enabled in the running process, and restores the inactive state on completion,
-failure, or timeout. Its unprivileged observer reads the protected Windows
-record through the production QGA file path and never writes a resize target.
+failure, or timeout. The same elevated child owns the run's fixed libvirt and
+production QGA file reads, publishing typed alias-scoped snapshots without
+repeated Polkit authorization. Its unprivileged observer validates and
+correlates those snapshots with the workload evidence and never writes a
+resize target.
+
+When a new Windows telemetry session is required for a live run, qualification
+may explicitly cycle only the named telemetry service after controller
+ownership begins. It then requires a matching `controller_decision` from that
+new session before applying workload pressure. The restart and handoff wait
+have their own declared hard bound, are included in the controller ownership
+bound, and are recorded as evidence; durable acknowledgement is never edited
+or bypassed.
 
 The separate Windows `virtio-mem-workload` helper implements the bounded guest
 demand phases and versioned workload evidence. Its native build/tests pass;

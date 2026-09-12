@@ -68,3 +68,57 @@ The final no-actuation preflight proved fresh transport, durable replay
 handling across reader reconstruction, Windows session rollover, current
 attestation, sufficient host headroom, and unchanged allocation. The host
 controller remains disabled and inactive for AR2.
+
+## AR2 deployment correction and safe handoff
+
+QA-T009 exposed that an unquoted Windows path in the first AR2 host instance
+file was transformed by systemd before the controller received it. The typed
+deployment path was rerun with the required quoted QGA path. Applied evidence
+in `.artifacts/deployment/qa-t009-host-apply-final.json` records installed host
+binary SHA-256
+`30015edaac9659f1543a0b12431d6a53a0c95e9996398ea24640349ff3dd7d6d`,
+configuration SHA-256
+`e5d068a9824c1647466aaa432f50c7bab211d16eeb0d663530d3508564e4d539`,
+and the disabled/inactive fail-stop state.
+
+A subsequent resident attempt observed controller-issued growth from
+`2155872256` to `4297064448` bytes, but the detached observer then lost Polkit
+authorization and did not produce a terminal result. That attempt does not
+close QA-T009. The controller guard now owns the complete bounded libvirt/QGA
+observation batch beneath one elevation.
+
+Applied run `qualification-1789215769941-25346` subsequently completed all
+workload phases and 142 observation samples without observer warnings, then
+failed its predeclared growth criterion with requested/current remaining
+`1073741824` bytes. Its controller log recorded 149 fail-closed
+`demand_input_invalid` decisions because a new producer session had advanced
+past sequence zero while the controller was inactive. Cleanup succeeded and
+the unit returned disabled/inactive with converged live state. Qualification
+now supports an explicit bounded restart of only the named Windows telemetry
+service after controller ownership begins and requires the first matching
+accepted decision before workload launch. Durable acknowledgement remains
+untouched. A new applied resident run remains required.
+
+Applied run `qualification-1789217084408-38317` proved the corrected privilege
+and telemetry-session handoff: the service cycle completed, the controller
+accepted the new session, preflight passed, and all resident workload phases
+ran. The controller nevertheless failed closed before its first resize because
+the installed September 11 attestation's domain XML fingerprint did not match
+the VM process started September 12 at 12:54. Requested/current stayed
+converged at `1073741824` bytes, so no resize was issued. Fresh read-only
+evidence in
+`.artifacts/deployment/qa-t009-attestation-after-vm-restart.json`, generated
+from the unchanged explicit compatibility review, retains the same QEMU argv,
+libvirt version, QEMU version, and required virtio-mem properties; only the
+restart-bound domain XML and resulting document fingerprints changed. Its
+SHA-256 is
+`b07e56356487fd1c5863a448e38268f721275cb53634abb63ead07523a9fc9e1`.
+The typed deployment recorded in
+`.artifacts/deployment/qa-t009-host-apply-after-vm-restart.json` installed that
+exact attestation with matching candidate/installed host binary SHA-256
+`30015edaac9659f1543a0b12431d6a53a0c95e9996398ea24640349ff3dd7d6d`
+and matching source/installed configuration SHA-256
+`614ba3c31e34a48de3c452cf1739801877c9735419592b93c98584b5c93e435f`.
+It left the exact unit disabled/inactive with `Restart=no`. Qualification
+cleanup now also resets systemd's failed marker after a fail-stop so its
+terminal safe state is disabled and inactive.

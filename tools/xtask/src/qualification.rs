@@ -37,6 +37,10 @@ struct Config {
     connect_uri: String,
     controller_unit: String,
     guest_service: String,
+    #[serde(default)]
+    apply_service_restart: bool,
+    #[serde(default)]
+    guest_service_cycle_timeout_seconds: Option<u64>,
     remote_workload: String,
     telemetry_path: String,
     telemetry_max_age_seconds: u64,
@@ -76,7 +80,7 @@ struct StartOptions {
     apply: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ControllerGuardStatus {
     version: u32,
     run_id: String,
@@ -84,7 +88,7 @@ struct ControllerGuardStatus {
     message: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LiveStateEvidence {
     version: u32,
     run_id: String,
@@ -100,6 +104,23 @@ struct LiveStateEvidence {
     host_mem_available_bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PrivilegedSample {
+    version: u32,
+    run_id: String,
+    unix_millis: u128,
+    vm_state: String,
+    controller_active_state: String,
+    requested_bytes: u64,
+    current_bytes: u64,
+    device_size_bytes: u64,
+    block_size_bytes: u64,
+    host_mem_available_bytes: Option<u64>,
+    guest_dommemstat_kib: serde_json::Map<String, Value>,
+    windows_raw_telemetry: RawTelemetryEnvelope,
+    qga_reply: String,
+}
+
 #[derive(Debug, Default)]
 struct Observations {
     initial_current: Option<u64>,
@@ -110,6 +131,7 @@ struct Observations {
     sample_count: u64,
     warnings: u64,
     last_requested: Option<u64>,
+    last_privileged_sample_millis: Option<u128>,
 }
 
 pub fn execute(arguments: &[String], repo: &Path) -> Result<(), String> {
@@ -149,6 +171,8 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let mut remote_workload = None;
     let mut controller_unit = None;
     let mut guest_service = None;
+    let mut apply_service_restart = false;
+    let mut guest_service_cycle_timeout_seconds = None;
     let mut telemetry_path = None;
     let mut telemetry_max_age_seconds = None;
     let mut telemetry_future_tolerance_seconds = None;
@@ -216,6 +240,14 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
                 controller_unit = Some(value(args, &mut index, "--controller-unit")?)
             }
             "--guest-service" => guest_service = Some(value(args, &mut index, "--guest-service")?),
+            "--apply-service-restart" => apply_service_restart = true,
+            "--guest-service-cycle-timeout-seconds" => {
+                guest_service_cycle_timeout_seconds = Some(number(
+                    args,
+                    &mut index,
+                    "--guest-service-cycle-timeout-seconds",
+                )?)
+            }
             "--telemetry-path" => {
                 telemetry_path = Some(value(args, &mut index, "--telemetry-path")?)
             }
@@ -314,10 +346,29 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     if expect_growth_bytes == 0 || expect_reclaim_bytes == 0 {
         return Err("resize expectations must be positive".to_owned());
     }
+    match (apply_service_restart, guest_service_cycle_timeout_seconds) {
+        (true, Some(0)) => {
+            return Err("--guest-service-cycle-timeout-seconds must be positive".to_owned())
+        }
+        (true, None) => {
+            return Err(
+                "--apply-service-restart requires --guest-service-cycle-timeout-seconds".to_owned(),
+            )
+        }
+        (false, Some(_)) => {
+            return Err(
+                "--guest-service-cycle-timeout-seconds requires --apply-service-restart".to_owned(),
+            )
+        }
+        _ => {}
+    }
     let minimum_controller_seconds = peak_hold_seconds
         .checked_add(settled_hold_seconds)
         .and_then(|value| value.checked_add(renewed_hold_seconds))
         .and_then(|value| value.checked_add(post_hold_seconds))
+        .and_then(|value| {
+            value.checked_add(guest_service_cycle_timeout_seconds.unwrap_or_default())
+        })
         .and_then(|value| value.checked_add(command_timeout_seconds.checked_mul(10)?))
         .ok_or_else(|| "configured qualification duration overflows".to_owned())?;
     if controller_timeout_seconds < minimum_controller_seconds {
@@ -344,6 +395,8 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             connect_uri,
             controller_unit,
             guest_service,
+            apply_service_restart,
+            guest_service_cycle_timeout_seconds,
             remote_workload,
             telemetry_path,
             telemetry_max_age_seconds,
@@ -393,17 +446,7 @@ fn start(options: StartOptions, repo: &Path) -> Result<(), String> {
         message: "detached supervisor is starting".to_owned(),
     };
     write_json(&run_dir.join("status.json"), &initial_status)?;
-    let preparation = (|| {
-        let initial_state = capture_live_state(&options.config, repo, "before_controller")?;
-        if initial_state.requested_bytes != initial_state.current_bytes {
-            return Err(format!(
-                "qualification requires converged initial state; requested={} current={}",
-                initial_state.requested_bytes, initial_state.current_bytes
-            ));
-        }
-        write_json(&run_dir.join("initial-state.json"), &initial_state)?;
-        preflight_guest_health(&options.config, &run_dir, repo, "before_controller")
-    })();
+    let preparation = remote_guest_health(&options.config, repo, "before_controller");
     if let Err(error) = preparation {
         finish_start_failure(&run_dir, initial_status, &error)?;
         return Err(error);
@@ -413,6 +456,29 @@ fn start(options: StartOptions, repo: &Path) -> Result<(), String> {
     {
         finish_start_failure(&run_dir, initial_status, &error)?;
         return Err(error);
+    }
+    let preparation = persist_guard_initial_state(&options.config, &run_dir).and_then(|initial| {
+        preflight_guest_health(
+            &options.config,
+            &run_dir,
+            repo,
+            "before_controller",
+            &initial.qga_reply,
+        )
+    });
+    if let Err(error) = preparation {
+        let release = write_release(&run_dir);
+        let cleanup = wait_for_guard_stopped(
+            &run_dir,
+            &options.config,
+            Duration::from_secs(options.config.command_timeout_seconds)
+                .checked_mul(3)
+                .ok_or_else(|| "controller cleanup timeout overflowed".to_owned())?,
+            Duration::from_secs(options.config.interval_seconds),
+        );
+        let combined = format!("{error}; controller release={release:?}; cleanup={cleanup:?}");
+        finish_start_failure(&run_dir, initial_status, &combined)?;
+        return Err(combined);
     }
     let log = OpenOptions::new()
         .create(true)
@@ -534,6 +600,7 @@ fn launch_controller_guard_daemon(
     run_dir: &Path,
     repo: &Path,
 ) -> Result<(), String> {
+    ensure_guard_root()?;
     let properties = systemd_properties(
         &config.controller_unit,
         repo,
@@ -553,13 +620,14 @@ fn launch_controller_guard_daemon(
                 .map_or("missing", String::as_str)
         ));
     }
-    let live = capture_live_state(config, repo, "guard_revalidation")?;
-    if live.requested_bytes != live.current_bytes {
+    let initial = capture_privileged_sample(config, repo)?;
+    if initial.requested_bytes != initial.current_bytes {
         return Err(format!(
             "qualification guard found divergent live state; requested={} current={}",
-            live.requested_bytes, live.current_bytes
+            initial.requested_bytes, initial.current_bytes
         ));
     }
+    write_json(&guard_initial_path(config), &initial)?;
     write_root_guard_status(
         run_dir,
         config,
@@ -622,8 +690,30 @@ fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Resul
         .checked_add(Duration::from_secs(config.controller_timeout_seconds))
         .ok_or_else(|| "controller guard deadline exceeds the platform clock range".to_owned())?;
     let release = run_dir.join("controller-release");
+    let sample_interval = Duration::from_secs(config.interval_seconds);
+    let mut sampling_error = None;
+    let mut first_sampling_failure = None;
+    let sampling_failure_bound = Duration::from_secs(config.command_timeout_seconds)
+        .checked_mul(3)
+        .ok_or_else(|| "sampling failure bound overflowed".to_owned())?;
     while !release.is_file() && Instant::now() < deadline {
-        thread::sleep(Duration::from_secs(config.interval_seconds).min(Duration::from_secs(5)));
+        match capture_privileged_sample(config, repo) {
+            Ok(sample) => {
+                if let Err(error) = write_json(&guard_sample_path(config), &sample) {
+                    sampling_error = Some(error);
+                    break;
+                }
+                first_sampling_failure = None;
+            }
+            Err(error) => {
+                let first_failure = first_sampling_failure.get_or_insert_with(Instant::now);
+                if first_failure.elapsed() >= sampling_failure_bound {
+                    sampling_error = Some(error);
+                    break;
+                }
+            }
+        }
+        thread::sleep(sample_interval.min(deadline.saturating_duration_since(Instant::now())));
     }
     let timed_out = !release.is_file();
     let cleanup = systemctl_action(
@@ -632,6 +722,23 @@ fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Resul
         repo,
         config.command_timeout_seconds,
     );
+    let reset_failed = systemd_properties(
+        &config.controller_unit,
+        repo,
+        config.command_timeout_seconds,
+    )
+    .and_then(|values| {
+        if values.get("ActiveState").map(String::as_str) == Some("failed") {
+            systemctl_action(
+                "reset-failed",
+                &config.controller_unit,
+                repo,
+                config.command_timeout_seconds,
+            )
+        } else {
+            Ok(())
+        }
+    });
     let inactive = systemd_properties(
         &config.controller_unit,
         repo,
@@ -642,16 +749,25 @@ fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Resul
             .then_some(())
             .ok_or_else(|| "controller did not return to inactive state".to_owned())
     });
-    match (timed_out, cleanup, inactive) {
-        (false, Ok(()), Ok(())) => write_root_guard_status(
+    let final_state = capture_live_state_direct(config, repo, "after_controller")
+        .and_then(|state| write_json(&guard_final_path(config), &state));
+    match (
+        timed_out,
+        sampling_error,
+        cleanup,
+        reset_failed,
+        inactive,
+        final_state,
+    ) {
+        (false, None, Ok(()), Ok(()), Ok(()), Ok(())) => write_root_guard_status(
             run_dir,
             config,
             "stopped",
             "controller stopped and the pre-run inactive state was restored",
         ),
-        (deadline_elapsed, stop, state) => {
+        (deadline_elapsed, sampling, stop, reset, state, final_state) => {
             let message = format!(
-                "controller cleanup failed: deadline_elapsed={deadline_elapsed} stop={stop:?} inactive={state:?}"
+                "controller guard failed: deadline_elapsed={deadline_elapsed} sampling={sampling:?} stop={stop:?} reset_failed={reset:?} inactive={state:?} final_state={final_state:?}"
             );
             write_root_guard_status(run_dir, config, "failed", &message)?;
             Err(message)
@@ -726,8 +842,7 @@ fn supervise(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), String>
         Duration::from_secs(config.interval_seconds),
     );
     archive_controller_log(config, run_dir, repo);
-    let final_state = capture_live_state(config, repo, "after_controller")
-        .and_then(|state| write_json(&run_dir.join("final-state.json"), &state));
+    let final_state = persist_guard_final_state(config, run_dir);
     match (result, release, cleanup, final_state) {
         (Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
         (Err(error), _, Ok(()), Ok(())) => Err(error),
@@ -742,6 +857,27 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
         if !process::command_exists(command) {
             return Err(format!("missing prerequisite: {command}"));
         }
+    }
+    if config.apply_service_restart {
+        let started = now_millis()?;
+        let timeout = config
+            .guest_service_cycle_timeout_seconds
+            .ok_or_else(|| "guest service-cycle timeout is missing".to_owned())?;
+        let service_cycle = crate::windows::apply_service_cycle_for_qualification(
+            repo,
+            &config.ssh_target,
+            &config.guest_service,
+            config.command_timeout_seconds,
+            timeout,
+        )?;
+        event(run_dir, "info", "guest_service_restarted", service_cycle)?;
+        let decision = wait_for_controller_decision(config, repo, started, timeout)?;
+        event(
+            run_dir,
+            "info",
+            "controller_telemetry_handoff",
+            json!({"controller_log": decision}),
+        )?;
     }
     preflight_health(config, run_dir, repo, "before_workload")?;
     let mut observations = Observations::default();
@@ -916,46 +1052,68 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
     classify(config, &observations)
 }
 
+fn wait_for_controller_decision(
+    config: &Config,
+    repo: &Path,
+    since_unix_millis: u128,
+    timeout_seconds: u64,
+) -> Result<String, String> {
+    let timeout = Duration::from_secs(timeout_seconds);
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "controller handoff deadline exceeds the platform clock range".to_owned())?;
+    let since = format!("@{}", since_unix_millis / 1000);
+    let vm = format!("vm={}", config.vm_name);
+    let alias = format!("alias={}", config.device_alias);
+    loop {
+        let output = process::bounded_text(
+            "journalctl",
+            &[
+                OsString::from("--no-pager"),
+                OsString::from("--output=cat"),
+                OsString::from("--unit"),
+                OsString::from(&config.controller_unit),
+                OsString::from("--since"),
+                OsString::from(&since),
+            ],
+            repo,
+            Duration::from_secs(config.command_timeout_seconds),
+        )?;
+        if let Some(line) = output.lines().rev().find(|line| {
+            line.contains("event=controller_decision")
+                && line.contains(&vm)
+                && line.contains(&alias)
+        }) {
+            return Ok(line.to_owned());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "controller did not accept the restarted telemetry session within {timeout:?}"
+            ));
+        }
+        thread::sleep(
+            Duration::from_secs(config.interval_seconds)
+                .min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
 fn sample_host(
     config: &Config,
     run_dir: &Path,
-    repo: &Path,
+    _repo: &Path,
     phase: &str,
     observations: &mut Observations,
 ) -> Result<(), String> {
-    let xml = virsh(config, repo, &["dumpxml", &config.vm_name])?;
-    let memory = parse_virtio_mem_xml_for_alias(&xml, &config.device_alias)
-        .map_err(|e| format!("parse virtio-mem state: {e}"))?
-        .memory;
-    let domstate = virsh(config, repo, &["domstate", &config.vm_name])?;
-    if !domstate.to_ascii_lowercase().contains("running") {
-        return Err(format!("VM is not running: {}", domstate.trim()));
+    let sample = read_privileged_sample(config, observations.last_privileged_sample_millis)?;
+    observations.last_privileged_sample_millis = Some(sample.unix_millis);
+    if !sample.vm_state.to_ascii_lowercase().contains("running") {
+        return Err(format!("VM is not running: {}", sample.vm_state.trim()));
     }
-    let dommemstat = virsh(config, repo, &["dommemstat", &config.vm_name])?;
-    let host = process::read_file(Path::new("/proc/meminfo"))?;
-    let host_available_bytes = meminfo_value(&host, "MemAvailable:");
-    let guest_stats = whitespace_pairs(&dommemstat);
-    let reader = VirshQgaFileReader::new(
-        Virsh::with_connection(
-            "virsh",
-            Duration::from_secs(config.command_timeout_seconds),
-            &config.connect_uri,
-        ),
-        &config.vm_name,
-    );
-    let bytes = reader.read_file(
-        &config.telemetry_path,
-        virtio_mem_host::raw_telemetry::MAX_RAW_TELEMETRY_FILE_BYTES as usize,
-    )?;
-    let contents = String::from_utf8(bytes)
-        .map_err(|error| format!("QGA raw telemetry is not valid UTF-8: {error}"))?;
-    let line = last_complete_record(&contents)
-        .ok_or_else(|| "configured Windows telemetry has no complete record".to_owned())?;
-    let telemetry: RawTelemetryEnvelope = serde_json::from_str(line)
-        .map_err(|error| format!("configured Windows telemetry is invalid JSON: {error}"))?;
     let now = u64::try_from(now_millis()?)
         .map_err(|_| "current Unix timestamp does not fit in u64 milliseconds".to_owned())?;
-    telemetry
+    sample
+        .windows_raw_telemetry
         .validate_for(
             &config.vm_name,
             &config.guest_service,
@@ -964,38 +1122,38 @@ fn sample_host(
             seconds_millis(config.telemetry_future_tolerance_seconds)?,
         )
         .map_err(|error| format!("configured Windows telemetry failed validation: {error}"))?;
-    let sample = json!({"version": SCHEMA_VERSION, "run_id": config.run_id, "unix_millis": now_millis()?, "workload_phase": phase, "vm_state": domstate.trim(), "requested_bytes": memory.requested_bytes, "current_bytes": memory.current_bytes, "device_size_bytes": memory.size_bytes, "block_size_bytes": memory.block_size_bytes, "host_mem_available_bytes": host_available_bytes, "guest_dommemstat_kib": guest_stats, "windows_raw_telemetry": telemetry});
-    append_json(&run_dir.join("host-metrics.jsonl"), &sample)?;
+    let evidence = json!({"version": SCHEMA_VERSION, "run_id": config.run_id, "unix_millis": sample.unix_millis, "workload_phase": phase, "vm_state": sample.vm_state.trim(), "requested_bytes": sample.requested_bytes, "current_bytes": sample.current_bytes, "device_size_bytes": sample.device_size_bytes, "block_size_bytes": sample.block_size_bytes, "host_mem_available_bytes": sample.host_mem_available_bytes, "guest_dommemstat_kib": sample.guest_dommemstat_kib, "windows_raw_telemetry": sample.windows_raw_telemetry});
+    append_json(&run_dir.join("host-metrics.jsonl"), &evidence)?;
     if let Some(previous) = observations.last_requested {
-        if previous != memory.requested_bytes {
+        if previous != sample.requested_bytes {
             event(
                 run_dir,
                 "info",
                 "resize_request_observed",
                 json!({
                     "previous_requested_bytes": previous,
-                    "requested_bytes": memory.requested_bytes,
-                    "current_bytes": memory.current_bytes,
+                    "requested_bytes": sample.requested_bytes,
+                    "current_bytes": sample.current_bytes,
                     "workload_phase": phase,
                 }),
             )?;
         }
     }
-    observations.last_requested = Some(memory.requested_bytes);
+    observations.last_requested = Some(sample.requested_bytes);
     observations
         .initial_current
-        .get_or_insert(memory.current_bytes);
-    observations.maximum_current = observations.maximum_current.max(memory.current_bytes);
+        .get_or_insert(sample.current_bytes);
+    observations.maximum_current = observations.maximum_current.max(sample.current_bytes);
     if phase == "peak" {
         observations.maximum_peak_current =
-            observations.maximum_peak_current.max(memory.current_bytes);
+            observations.maximum_peak_current.max(sample.current_bytes);
     }
     if matches!(phase, "settled" | "post_workload" | "complete") {
         observations.minimum_settled_current = Some(
             observations
                 .minimum_settled_current
-                .map_or(memory.current_bytes, |value| {
-                    value.min(memory.current_bytes)
+                .map_or(sample.current_bytes, |value| {
+                    value.min(sample.current_bytes)
                 }),
         );
     }
@@ -1009,22 +1167,19 @@ fn preflight_health(
     repo: &Path,
     stage: &str,
 ) -> Result<(), String> {
-    let timeout = Duration::from_secs(config.command_timeout_seconds);
-    let controller = process::bounded_text(
-        "systemctl",
-        &[
-            OsString::from("is-active"),
-            OsString::from(&config.controller_unit),
-        ],
-        repo,
-        timeout,
-    )?;
-    let guest = guest_health(config, repo, stage)?;
+    let privileged = read_privileged_sample(config, None)?;
+    if privileged.controller_active_state != "active" {
+        return Err(format!(
+            "controller {} is not active: {}",
+            config.controller_unit, privileged.controller_active_state
+        ));
+    }
+    let guest = remote_guest_health(config, repo, stage)?;
     event(
         run_dir,
         "info",
         "preflight_health_passed",
-        json!({"controller": controller.trim(), "guest": guest}),
+        json!({"controller": privileged.controller_active_state, "qga_reply": privileged.qga_reply, "guest": guest}),
     )
 }
 
@@ -1033,21 +1188,18 @@ fn preflight_guest_health(
     run_dir: &Path,
     repo: &Path,
     stage: &str,
+    qga_reply: &str,
 ) -> Result<(), String> {
-    let guest = guest_health(config, repo, stage)?;
-    event(run_dir, "info", "guest_health_passed", guest)
+    let guest = remote_guest_health(config, repo, stage)?;
+    event(
+        run_dir,
+        "info",
+        "guest_health_passed",
+        json!({"qga_reply": qga_reply, "guest": guest}),
+    )
 }
 
-fn guest_health(config: &Config, repo: &Path, stage: &str) -> Result<Value, String> {
-    let ping = virsh(
-        config,
-        repo,
-        &[
-            "qemu-agent-command",
-            &config.vm_name,
-            r#"{"execute":"guest-ping"}"#,
-        ],
-    )?;
+fn remote_guest_health(config: &Config, repo: &Path, stage: &str) -> Result<Value, String> {
     let service = remote_text(config, repo, &format!("sc query {}", config.guest_service))?;
     if !service.contains("RUNNING") {
         return Err(format!(
@@ -1074,7 +1226,6 @@ fn guest_health(config: &Config, repo: &Path, stage: &str) -> Result<Value, Stri
     }
     Ok(json!({
         "stage": stage,
-        "qga_reply": ping.trim(),
         "guest_service": config.guest_service,
         "authenticated_guest_command": true,
         "installer_running": false,
@@ -1267,7 +1418,7 @@ fn systemctl_action(
     .map(|_| ())
 }
 
-fn capture_live_state(
+fn capture_live_state_direct(
     config: &Config,
     repo: &Path,
     stage: &str,
@@ -1306,6 +1457,184 @@ fn capture_live_state(
         block_size_bytes: memory.block_size_bytes,
         host_mem_available_bytes: meminfo_value(&host, "MemAvailable:"),
     })
+}
+
+fn capture_privileged_sample(config: &Config, repo: &Path) -> Result<PrivilegedSample, String> {
+    let live = capture_live_state_direct(config, repo, "privileged_sample")?;
+    let dommemstat = virsh(config, repo, &["dommemstat", &config.vm_name])?;
+    let qga_reply = virsh(
+        config,
+        repo,
+        &[
+            "qemu-agent-command",
+            &config.vm_name,
+            r#"{"execute":"guest-ping"}"#,
+        ],
+    )?;
+    let reader = VirshQgaFileReader::new(
+        Virsh::with_connection(
+            "virsh",
+            Duration::from_secs(config.command_timeout_seconds),
+            &config.connect_uri,
+        ),
+        &config.vm_name,
+    );
+    let bytes = reader.read_file(
+        &config.telemetry_path,
+        virtio_mem_host::raw_telemetry::MAX_RAW_TELEMETRY_FILE_BYTES as usize,
+    )?;
+    let contents = String::from_utf8(bytes)
+        .map_err(|error| format!("QGA raw telemetry is not valid UTF-8: {error}"))?;
+    let line = last_complete_record(&contents)
+        .ok_or_else(|| "configured Windows telemetry has no complete record".to_owned())?;
+    let windows_raw_telemetry: RawTelemetryEnvelope = serde_json::from_str(line)
+        .map_err(|error| format!("configured Windows telemetry is invalid JSON: {error}"))?;
+    Ok(PrivilegedSample {
+        version: SCHEMA_VERSION,
+        run_id: config.run_id.clone(),
+        unix_millis: live.unix_millis,
+        vm_state: live.vm_state,
+        controller_active_state: live.controller_active_state,
+        requested_bytes: live.requested_bytes,
+        current_bytes: live.current_bytes,
+        device_size_bytes: live.device_size_bytes,
+        block_size_bytes: live.block_size_bytes,
+        host_mem_available_bytes: live.host_mem_available_bytes,
+        guest_dommemstat_kib: whitespace_pairs(&dommemstat),
+        windows_raw_telemetry,
+        qga_reply: qga_reply.trim().to_owned(),
+    })
+}
+
+fn read_privileged_sample(
+    config: &Config,
+    after_millis: Option<u128>,
+) -> Result<PrivilegedSample, String> {
+    let wait = Duration::from_secs(config.command_timeout_seconds)
+        .checked_mul(8)
+        .and_then(|value| value.checked_add(Duration::from_secs(config.interval_seconds)))
+        .ok_or_else(|| "privileged sample wait overflows".to_owned())?;
+    let deadline = Instant::now()
+        .checked_add(wait)
+        .ok_or_else(|| "privileged sample deadline exceeds the platform clock range".to_owned())?;
+    loop {
+        let guard = read_root_guard_status(config)?;
+        if guard.state != "running" {
+            return Err(format!(
+                "privileged controller guard is {}: {}",
+                guard.state, guard.message
+            ));
+        }
+        if let Ok(value) = process::read_file(&guard_sample_path(config)) {
+            if let Ok(sample) = serde_json::from_str::<PrivilegedSample>(&value) {
+                let is_new = after_millis.is_none_or(|previous| sample.unix_millis > previous);
+                let is_fresh = now_millis()?
+                    .checked_sub(sample.unix_millis)
+                    .is_some_and(|age| age <= wait.as_millis());
+                if sample.version == SCHEMA_VERSION
+                    && sample.run_id == config.run_id
+                    && is_new
+                    && is_fresh
+                {
+                    return Ok(sample);
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(
+                "privileged controller guard did not publish a new sample before the bound"
+                    .to_owned(),
+            );
+        }
+        thread::sleep(
+            Duration::from_secs(config.interval_seconds)
+                .min(deadline.saturating_duration_since(Instant::now())),
+        );
+    }
+}
+
+fn persist_guard_initial_state(
+    config: &Config,
+    run_dir: &Path,
+) -> Result<PrivilegedSample, String> {
+    let value = process::read_file(&guard_initial_path(config))?;
+    let sample: PrivilegedSample = serde_json::from_str(&value)
+        .map_err(|error| format!("parse privileged initial state: {error}"))?;
+    if sample.version != SCHEMA_VERSION || sample.run_id != config.run_id {
+        return Err("privileged initial state identity does not match the run".to_owned());
+    }
+    let state = live_state_from_sample(config, &sample, "before_controller", "inactive")?;
+    write_json(&run_dir.join("initial-state.json"), &state)?;
+    Ok(sample)
+}
+
+fn persist_guard_final_state(config: &Config, run_dir: &Path) -> Result<(), String> {
+    let value = process::read_file(&guard_final_path(config))?;
+    let state: LiveStateEvidence = serde_json::from_str(&value)
+        .map_err(|error| format!("parse privileged final state: {error}"))?;
+    if state.version != SCHEMA_VERSION || state.run_id != config.run_id {
+        return Err("privileged final state identity does not match the run".to_owned());
+    }
+    write_json(&run_dir.join("final-state.json"), &state)
+}
+
+fn live_state_from_sample(
+    config: &Config,
+    sample: &PrivilegedSample,
+    stage: &str,
+    expected_controller_state: &str,
+) -> Result<LiveStateEvidence, String> {
+    if sample.controller_active_state != expected_controller_state {
+        return Err(format!(
+            "controller state is {}; expected {expected_controller_state}",
+            sample.controller_active_state
+        ));
+    }
+    Ok(LiveStateEvidence {
+        version: SCHEMA_VERSION,
+        run_id: config.run_id.clone(),
+        stage: stage.to_owned(),
+        unix_millis: sample.unix_millis,
+        vm_state: sample.vm_state.clone(),
+        controller_active_state: sample.controller_active_state.clone(),
+        controller_unit_file_state: "disabled".to_owned(),
+        requested_bytes: sample.requested_bytes,
+        current_bytes: sample.current_bytes,
+        device_size_bytes: sample.device_size_bytes,
+        block_size_bytes: sample.block_size_bytes,
+        host_mem_available_bytes: sample.host_mem_available_bytes,
+    })
+}
+
+fn ensure_guard_root() -> Result<(), String> {
+    std::fs::create_dir_all(CONTROLLER_GUARD_ROOT)
+        .map_err(|error| format!("create controller guard state directory: {error}"))
+}
+
+fn read_root_guard_status(config: &Config) -> Result<ControllerGuardStatus, String> {
+    let value = process::read_file(
+        &Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}.json", config.run_id)),
+    )?;
+    let status: ControllerGuardStatus = serde_json::from_str(&value)
+        .map_err(|error| format!("parse privileged controller guard status: {error}"))?;
+    if status.version != SCHEMA_VERSION || status.run_id != config.run_id {
+        return Err(
+            "privileged controller guard status identity does not match the run".to_owned(),
+        );
+    }
+    Ok(status)
+}
+
+fn guard_initial_path(config: &Config) -> PathBuf {
+    Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-initial.json", config.run_id))
+}
+
+fn guard_sample_path(config: &Config) -> PathBuf {
+    Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-sample.json", config.run_id))
+}
+
+fn guard_final_path(config: &Config) -> PathBuf {
+    Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-final.json", config.run_id))
 }
 
 fn systemd_properties(
@@ -1722,6 +2051,25 @@ mod tests {
     }
 
     #[test]
+    fn explicit_service_restart_requires_its_own_bound() {
+        let mut arguments = valid_start_arguments();
+        arguments.push("--apply-service-restart".to_owned());
+        let error = parse_start(&arguments, Path::new("/repo"))
+            .expect_err("service restart without a bound");
+        assert!(error.contains("requires --guest-service-cycle-timeout-seconds"));
+
+        arguments.extend(strings(&["--guest-service-cycle-timeout-seconds", "90"]));
+        let controller_timeout = arguments
+            .iter()
+            .position(|value| value == "--controller-timeout-seconds")
+            .expect("controller timeout");
+        arguments[controller_timeout + 1] = "180".to_owned();
+        let options = parse_start(&arguments, Path::new("/repo")).expect("bounded restart");
+        assert!(options.config.apply_service_restart);
+        assert_eq!(options.config.guest_service_cycle_timeout_seconds, Some(90));
+    }
+
+    #[test]
     fn rejects_short_controller_ownership_bound_and_non_windows_telemetry_path() {
         let mut arguments = valid_start_arguments();
         let timeout = arguments
@@ -1760,6 +2108,25 @@ mod tests {
     }
 
     #[test]
+    fn privileged_snapshot_paths_are_scoped_to_the_run() {
+        let options = parse_start(&valid_start_arguments(), Path::new("/repo"))
+            .expect("qualification configuration");
+        let run_id = &options.config.run_id;
+        assert_eq!(
+            guard_initial_path(&options.config),
+            Path::new(CONTROLLER_GUARD_ROOT).join(format!("{run_id}-initial.json"))
+        );
+        assert_eq!(
+            guard_sample_path(&options.config),
+            Path::new(CONTROLLER_GUARD_ROOT).join(format!("{run_id}-sample.json"))
+        );
+        assert_eq!(
+            guard_final_path(&options.config),
+            Path::new(CONTROLLER_GUARD_ROOT).join(format!("{run_id}-final.json"))
+        );
+    }
+
+    #[test]
     fn result_requires_all_phases_and_resize_thresholds() {
         let mut options =
             parse_start(&valid_start_arguments(), Path::new("/repo")).expect("options");
@@ -1777,6 +2144,7 @@ mod tests {
             sample_count: 5,
             warnings: 0,
             last_requested: Some(1_100),
+            last_privileged_sample_millis: None,
         };
         assert!(classify(&options.config, &observations).is_ok());
         options.config.expect_growth_bytes = 201;

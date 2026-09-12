@@ -87,7 +87,7 @@ Qualification commands:
 
 Qualification options:
   --apply                    Start the workload; otherwise validate only.
-  --elevate                  Use one sudo boundary for bounded controller start/stop.
+  --elevate                  Use one sudo boundary for controller and libvirt observation.
   --mode MODE                Required resident or committed workload behavior.
   --peak-bytes N             Required peak allocation.
   --retained-bytes N         Required allocation retained between peaks.
@@ -105,6 +105,8 @@ Qualification options:
   --remote-workload PATH     Required Windows workload executable path.
   --controller-unit UNIT     Required host systemd unit to archive.
   --guest-service NAME       Required Windows service identity.
+  --apply-service-restart    Restart the named service after the controller is active.
+  --guest-service-cycle-timeout-seconds N Required bound for that explicit restart.
   --telemetry-path PATH      Required protected Windows telemetry path read through QGA.
   --telemetry-max-age-seconds N Required telemetry freshness bound.
   --telemetry-future-tolerance-seconds N Required future-clock tolerance.

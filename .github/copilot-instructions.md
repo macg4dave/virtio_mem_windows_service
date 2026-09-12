@@ -69,6 +69,22 @@ invoke its current prebuilt executable through one outer `sudo`, collect typed
 output, and persist evidence as the invoking user. Never run Cargo as root,
 accept open-ended privileged commands, or automate credentials.
 
+When one task needs several privileged steps, model the complete ordered batch
+as one reviewed typed xtask workflow and keep the single elevated child alive
+for its bounded duration. The operator enters the password once for that outer
+`sudo`; do not open `sudo -s`, start one sudo process per step, rely on a cached
+credential, or use nested elevation. Resolve all targets, arguments, effects,
+timeouts, cleanup, and rollback before requesting elevation.
+
+When a command or detached workflow is waiting for a declared time bound or a
+durable result, wait on that process or its documented completion artifact.
+Do not spend agent turns repeatedly analysing elapsed time, emitting unchanged
+status updates, or rereading unchanged logs. Resume processing only when the
+process exits, relevant output changes, a completion artifact is committed, or
+the declared deadline requires timeout handling. Choose a wait interval no
+shorter than the producer's configured polling or sampling interval, while
+still providing the user-facing progress updates required by the agent host.
+
 Explicit current-turn approval is still required for reboot or shutdown,
 deleting pre-existing resources, persistent VM/firmware/driver/network/storage/
 ACL/security changes, disabling safeguards, non-reversible resize, or unrelated

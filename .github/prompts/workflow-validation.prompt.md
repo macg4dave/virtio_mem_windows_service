@@ -16,6 +16,11 @@ Task: `<behavior and acceptance criterion to validate>`
   state.
 - Diagnose recorded failure stages without bypassing checks through ad hoc
   remote commands.
+- After starting a bounded command, wait on that process or its documented
+  durable completion artifact. Do not consume agent turns rereading unchanged
+  logs or narrating elapsed time; inspect again only on output change, process
+  exit, artifact completion, or the declared timeout boundary, and never poll
+  faster than the configured producer interval.
 
 Report focused tests, local gate, native platform result, workflow mode and
 target, configured timing, evidence location, cleanup/rollback, and blockers as

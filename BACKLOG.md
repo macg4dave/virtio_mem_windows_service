@@ -20,6 +20,26 @@ The installed host controller remains intentionally disabled and inactive
 after AR1. AR2 qualification may start it only through the explicit bounded
 `cargo xtask qualification` workflow with one resize authority.
 
+Current QA-T009 handoff: the corrected production QGA path is deployed. One
+resident attempt observed automatic growth before its detached observer lost
+Polkit authorization; a later complete run
+`qualification-1789215769941-25346` then correctly failed closed because the
+telemetry producer's new session had already advanced beyond sequence zero
+while the controller was inactive. Neither attempt is qualification evidence.
+The guard now owns all fixed libvirt/QGA observation under one bounded
+elevation, and qualification can explicitly restart only the named telemetry
+service after controller ownership begins and wait for the first accepted
+controller decision before workload launch. Applied run
+`qualification-1789217084408-38317` proved that handoff and completed every
+resident workload phase, but its first resize was rejected before actuation
+because the September 11 compatibility attestation predates the VM process
+started on September 12. A fresh attestation generated from the unchanged
+explicit review now matches the current evidence and was installed by the
+typed host deployment recorded in
+`.artifacts/deployment/qa-t009-host-apply-after-vm-restart.json`. Source and
+installed hashes match, requested/current remain converged at 1 GiB, and the
+unit is disabled/inactive. A fresh applied resident run remains required.
+
 ## Ready
 
 | ID | Work | Depends on |
