@@ -122,6 +122,11 @@ configuration path. Missing or invalid configuration fails startup; a VM name,
 service identity, telemetry path, polling interval, and shutdown timeout are
 never inferred from a previous test guest.
 
+Host instance files use systemd `EnvironmentFile=` syntax. Values containing
+Windows backslashes must be single-quoted so systemd preserves them; the typed
+host deployment validator rejects an unquoted backslash instead of installing
+a path that changes at service start.
+
 Build and hash the candidate with `cargo xtask windows all`. The typed `cargo
 xtask windows deploy MANIFEST --output EVIDENCE [--apply]` workflow owns
 candidate replacement, versioned configuration, product service lifecycle,
@@ -197,17 +202,24 @@ critical failure; do not issue ad hoc follow-up requests.
 workflow. A start command must explicitly supply:
 
 - VM, device alias, SSH target, libvirt URI, controller unit, guest service,
-  workload executable, and raw-telemetry path;
+  workload executable, protected Windows raw-telemetry path, and telemetry
+  freshness/future-clock bounds;
 - workload mode, peak/retained/cap byte counts, all hold durations, and the
   resident refresh interval;
-- host sampling interval, external-command timeout, final observation window,
-  and required observed growth/reclaim deltas; and
+- host sampling interval, external-command timeout, hard controller-ownership
+  timeout, final observation window, and required observed growth/reclaim
+  deltas; and
 - output root when the repository artifact directory is not appropriate.
 
 Run `cargo xtask help` for the authoritative option spelling. Start without
 `--apply` to validate and print the complete versioned configuration. With
-`--apply`, the detached supervisor observes the installed controller and does
-not issue competing resize requests.
+`--apply --elevate`, one outer sudo launches a bounded controller guard. The
+guard requires the named unit to begin disabled/inactive, starts only that
+unit, verifies automatic shrink is enabled in the running process, and returns
+it to inactive on completion, supervisor failure, or the explicit hard
+timeout. The detached supervisor remains unprivileged, reads the production
+telemetry record through bounded QGA guest-file operations, writes the durable
+evidence, and never issues a competing resize request.
 
 ```bash
 cargo xtask qualification status RUN_ID

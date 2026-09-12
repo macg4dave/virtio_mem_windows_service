@@ -243,7 +243,7 @@ fn validate_identity(value: &str, name: &str) -> Result<(), String> {
     }
 }
 
-fn validate_windows_path(value: &str) -> Result<(), String> {
+pub(crate) fn validate_windows_path(value: &str) -> Result<(), String> {
     let bytes = value.as_bytes();
     if bytes.len() < 4
         || !bytes[0].is_ascii_alphabetic()

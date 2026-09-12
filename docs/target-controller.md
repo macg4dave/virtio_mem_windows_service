@@ -239,6 +239,13 @@ bound, and required observed deltas. It records zero/partial/full progress,
 desired/requested/current, Windows telemetry, controller actions, host
 headroom, and workload identity.
 
+The maintained qualification workflow is the sole resize authority for its
+run. It requires the installed unit to begin disabled and inactive, uses one
+bounded privileged guard to start only that unit, verifies automatic shrink is
+enabled in the running process, and restores the inactive state on completion,
+failure, or timeout. Its unprivileged observer reads the protected Windows
+record through the production QGA file path and never writes a resize target.
+
 The separate Windows `virtio-mem-workload` helper implements the bounded guest
 demand phases and versioned workload evidence. Its native build/tests pass;
 that does not qualify the platform until a production-controller run supplies

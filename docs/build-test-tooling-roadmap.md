@@ -37,7 +37,7 @@ shell or running Cargo as root.
 | --- | --- |
 | BT-T001–BT-T006 | Replaced maintained shell wrappers with capability-named Rust commands and routed repository entrypoints to them |
 | BT-T013 | Separated code-level tests, tooling development, and higher-level workflow prompts |
-| BT-T014 | Added detached resident/committed automatic-controller qualification with durable JSON/JSONL evidence |
+| BT-T014 | Added detached resident/committed automatic-controller qualification with durable JSON/JSONL evidence, production QGA telemetry observation, and a bounded exclusive controller guard |
 | BT-T015 | Removed experiment-derived workflow and policy defaults, milestone/VM-specific command profiles, obsolete editor/debug artifacts, generated build output, duplicated AI instructions, historical test procedures, and unused guest-side resize compatibility code; live mutation now delegates to the attestation-aware product CLI |
 | BT-T016 | Replaced the QA-T002 privileged Bash inventory with typed `cargo xtask deployment inventory`, bounded fixed-vector inspection, unprivileged atomic JSON evidence, and focused parser/elevation tests |
 
@@ -59,7 +59,9 @@ shell or running Cargo as root.
   boundaries. They still need unification under the general versioned task
   manifest and common result model tracked by BT-T007 and BT-T011.
 - Guest lifecycle evidence is captured by current qualification preflight but
-  is not yet a reusable typed command.
+  is not yet a reusable typed command. The qualification-specific privileged
+  guard is typed and bounded but still awaits unification under BT-T007's
+  general task manifest.
 - Some external effects remain covered only at parser/unit boundaries rather
   than through injected end-to-end fixtures.
 

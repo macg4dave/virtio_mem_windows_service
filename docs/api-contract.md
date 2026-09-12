@@ -34,6 +34,10 @@ controller/device. It requires fresh telemetry, live device state, compatibility
 attestation, host headroom, convergence or a qualified upward supersession,
 and unlatched command ownership before mutation.
 
+Host instance files follow systemd `EnvironmentFile=` parsing. Windows paths
+containing backslashes are single-quoted; typed deployment rejects unquoted
+backslashes so the installed value cannot silently differ from review input.
+
 Automatic shrink is enabled by default. An explicit pause remains available.
 Same-target diagnostic re-notification is independently disabled by default.
 Any ambiguity, stale input, incompatible state, ownership conflict, or unsafe
@@ -81,8 +85,9 @@ convergence durations.
 
 Cross-machine paths and deadlines are explicit configuration. Live resize is
 dry-run by default and delegates mutation to the product host CLI, so there is
-one safety implementation. Qualification observes the installed controller and
-never creates a competing resize authority.
+one safety implementation. Qualification uses one bounded elevated guard to
+start and stop the disabled controller, while its unprivileged observer reads
+production QGA telemetry and never creates a competing resize authority.
 
 Current syntax is emitted by `cargo xtask help`; documentation must not copy a
 historical invocation as a default profile.

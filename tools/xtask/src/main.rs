@@ -87,6 +87,7 @@ Qualification commands:
 
 Qualification options:
   --apply                    Start the workload; otherwise validate only.
+  --elevate                  Use one sudo boundary for bounded controller start/stop.
   --mode MODE                Required resident or committed workload behavior.
   --peak-bytes N             Required peak allocation.
   --retained-bytes N         Required allocation retained between peaks.
@@ -98,12 +99,15 @@ Qualification options:
   --post-hold-seconds N      Required final observation window; may be zero.
   --interval-seconds N       Required host sampling interval.
   --command-timeout-seconds N  Required bound for external commands.
+  --controller-timeout-seconds N Required hard bound for controller ownership.
   --expect-growth-bytes N    Required minimum observed growth.
   --expect-reclaim-bytes N   Required minimum observed reclaim.
   --remote-workload PATH     Required Windows workload executable path.
   --controller-unit UNIT     Required host systemd unit to archive.
   --guest-service NAME       Required Windows service identity.
-  --telemetry-path PATH      Required host-side raw Windows telemetry file.
+  --telemetry-path PATH      Required protected Windows telemetry path read through QGA.
+  --telemetry-max-age-seconds N Required telemetry freshness bound.
+  --telemetry-future-tolerance-seconds N Required future-clock tolerance.
   --connect URI              Libvirt URI; default qemu:///system.
   --output-root PATH         Default .artifacts/qualification.
 

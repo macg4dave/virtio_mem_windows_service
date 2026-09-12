@@ -588,6 +588,17 @@ where
                 }
             };
             let decision = demand.decision;
+            eprintln!(
+                "virtio-mem-host: event=controller_decision vm={} alias={} desired_bytes={} safe_floor_bytes={} effective_maximum_bytes={} history_ready={} requested_bytes={} current_bytes={} decision={decision:?}",
+                self.config.vm_name,
+                self.config.alias,
+                demand.desired_bytes,
+                demand.safe_floor_bytes,
+                demand.effective_maximum_bytes,
+                demand.history_ready,
+                state.requested_bytes,
+                state.current_bytes,
+            );
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if actuation_latched {
                     wait_interruptibly(stop, self.config.poll_interval);

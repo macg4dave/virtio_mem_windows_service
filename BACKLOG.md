@@ -14,6 +14,7 @@ not from completed task notes.
 | ID | Work | Exit condition |
 | --- | --- | --- |
 | TASK-028 | Qualify the single-VM target controller | An explicitly configured `cargo xtask qualification` run proves or disproves growth, reclaim, renewed pressure, fault handling, restart safety, and cleanup without a second resize authority. |
+| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | Durable evidence satisfies the run's predeclared resident growth, falling-demand, reclaim or constrained-state, guest-health, timing, and cleanup criteria. |
 
 The installed host controller remains intentionally disabled and inactive
 after AR1. AR2 qualification may start it only through the explicit bounded
@@ -23,7 +24,7 @@ after AR1. AR2 qualification may start it only through the explicit bounded
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | QA-T008 |
+| _None_ |  |  |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation
@@ -39,7 +40,7 @@ they do not replace executable task cards.
 | --- | --- | --- | --- |
 | AR0 | Complete | Verify the post-cleanup source, documentation, local gate, and native-Windows gate as one candidate | Current cleaned tree |
 | AR1 | Complete | Deploy one coherent least-privilege single-VM candidate | AR0, QA-T002, TASK-009 |
-| AR2 | Planned | Prove automatic single-VM growth and reclaim under resident and committed workloads | AR1, TASK-028 |
+| AR2 | In Progress | Prove automatic single-VM growth and reclaim under resident and committed workloads | AR1, TASK-028 |
 | AR3 | Planned | Prove bounded fault recovery and actionable observability | AR2 |
 | AR4 | Planned | Pass single-VM repeated-cycle/endurance gates and record the scoped decision | AR3 |
 | AR5 | Prototype only | Complete the deterministic durable global controller and atomic reservation model | AR4 |

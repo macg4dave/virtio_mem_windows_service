@@ -69,7 +69,7 @@ historical evidence.
 | --- | --- | --- | --- |
 | AR0 | Complete | Verify the post-cleanup repository as one coherent candidate source tree | `BACKLOG.md`, tooling board |
 | AR1 | Complete | Deploy one coherent, least-privilege single-VM stack | QA-G1 / QA-T002–QA-T008 |
-| AR2 | Planned | Prove automatic single-VM growth and reclaim under real workloads | QA-G2 / QA-T009–QA-T012 |
+| AR2 | In Progress | Prove automatic single-VM growth and reclaim under real workloads | QA-G2 / QA-T009–QA-T012 |
 | AR3 | Planned | Prove bounded failure recovery and actionable observability | QA-G3 / QA-T013–QA-T018 |
 | AR4 | Planned | Pass single-VM endurance and record the scoped qualification decision | QA-G4–QA-G5 / QA-T019–QA-T024 |
 | AR5 | Prototype only | Complete the deterministic, durable global controller | Product backlog |

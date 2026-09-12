@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -9,11 +10,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use virtio_mem_core::parse_virtio_mem_xml_for_alias;
+use virtio_mem_core::{parse_virtio_mem_xml_for_alias, RawTelemetryEnvelope};
+use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
+use virtio_mem_host::virsh::Virsh;
+use wait_timeout::ChildExt;
 
 use crate::process;
 
 const SCHEMA_VERSION: u32 = 2;
+const CONTROLLER_GUARD_ROOT: &str = "/run/virtio-mem-qualification";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -33,7 +38,9 @@ struct Config {
     controller_unit: String,
     guest_service: String,
     remote_workload: String,
-    telemetry_path: PathBuf,
+    telemetry_path: String,
+    telemetry_max_age_seconds: u64,
+    telemetry_future_tolerance_seconds: u64,
     mode: WorkloadMode,
     peak_bytes: u64,
     retained_bytes: u64,
@@ -45,6 +52,7 @@ struct Config {
     post_hold_seconds: u64,
     interval_seconds: u64,
     command_timeout_seconds: u64,
+    controller_timeout_seconds: u64,
     expect_growth_bytes: u64,
     expect_reclaim_bytes: u64,
 }
@@ -68,6 +76,30 @@ struct StartOptions {
     apply: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ControllerGuardStatus {
+    version: u32,
+    run_id: String,
+    state: String,
+    message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LiveStateEvidence {
+    version: u32,
+    run_id: String,
+    stage: String,
+    unix_millis: u128,
+    vm_state: String,
+    controller_active_state: String,
+    controller_unit_file_state: String,
+    requested_bytes: u64,
+    current_bytes: u64,
+    device_size_bytes: u64,
+    block_size_bytes: u64,
+    host_mem_available_bytes: Option<u64>,
+}
+
 #[derive(Debug, Default)]
 struct Observations {
     initial_current: Option<u64>,
@@ -84,6 +116,7 @@ pub fn execute(arguments: &[String], repo: &Path) -> Result<(), String> {
     match arguments.first().map(String::as_str) {
         Some("start") => start(parse_start(&arguments[1..], repo)?, repo),
         Some("run") => run_internal(&arguments[1..], repo),
+        Some("guard") => guard_internal(&arguments[1..], repo),
         Some("status") => show_status(&arguments[1..], repo),
         Some("review") => review(&arguments[1..], repo),
         _ => Err("qualification requires start, status, or review".to_owned()),
@@ -110,19 +143,24 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let mut post_hold_seconds = None;
     let mut interval_seconds = None;
     let mut command_timeout_seconds = None;
+    let mut controller_timeout_seconds = None;
     let mut expect_growth_bytes = None;
     let mut expect_reclaim_bytes = None;
     let mut remote_workload = None;
     let mut controller_unit = None;
     let mut guest_service = None;
     let mut telemetry_path = None;
+    let mut telemetry_max_age_seconds = None;
+    let mut telemetry_future_tolerance_seconds = None;
     let mut connect_uri = "qemu:///system".to_owned();
     let mut output_root = repo.join(".artifacts/qualification");
     let mut apply = false;
+    let mut elevate = false;
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
             "--apply" => apply = true,
+            "--elevate" => elevate = true,
             "--ssh-target" => ssh_target = Some(value(args, &mut index, "--ssh-target")?),
             "--mode" => {
                 mode = Some(match value(args, &mut index, "--mode")?.as_str() {
@@ -161,6 +199,10 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
                 command_timeout_seconds =
                     Some(number(args, &mut index, "--command-timeout-seconds")?)
             }
+            "--controller-timeout-seconds" => {
+                controller_timeout_seconds =
+                    Some(number(args, &mut index, "--controller-timeout-seconds")?)
+            }
             "--expect-growth-bytes" => {
                 expect_growth_bytes = Some(number(args, &mut index, "--expect-growth-bytes")?)
             }
@@ -175,7 +217,18 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             }
             "--guest-service" => guest_service = Some(value(args, &mut index, "--guest-service")?),
             "--telemetry-path" => {
-                telemetry_path = Some(PathBuf::from(value(args, &mut index, "--telemetry-path")?))
+                telemetry_path = Some(value(args, &mut index, "--telemetry-path")?)
+            }
+            "--telemetry-max-age-seconds" => {
+                telemetry_max_age_seconds =
+                    Some(number(args, &mut index, "--telemetry-max-age-seconds")?)
+            }
+            "--telemetry-future-tolerance-seconds" => {
+                telemetry_future_tolerance_seconds = Some(number(
+                    args,
+                    &mut index,
+                    "--telemetry-future-tolerance-seconds",
+                )?)
             }
             "--connect" => connect_uri = value(args, &mut index, "--connect")?,
             "--output-root" => {
@@ -203,12 +256,20 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let post_hold_seconds = required(post_hold_seconds, "--post-hold-seconds")?;
     let interval_seconds = required(interval_seconds, "--interval-seconds")?;
     let command_timeout_seconds = required(command_timeout_seconds, "--command-timeout-seconds")?;
+    let controller_timeout_seconds =
+        required(controller_timeout_seconds, "--controller-timeout-seconds")?;
     let expect_growth_bytes = required(expect_growth_bytes, "--expect-growth-bytes")?;
     let expect_reclaim_bytes = required(expect_reclaim_bytes, "--expect-reclaim-bytes")?;
     let remote_workload = required(remote_workload, "--remote-workload")?;
     let controller_unit = required(controller_unit, "--controller-unit")?;
     let guest_service = required(guest_service, "--guest-service")?;
     let telemetry_path = required(telemetry_path, "--telemetry-path")?;
+    let telemetry_max_age_seconds =
+        required(telemetry_max_age_seconds, "--telemetry-max-age-seconds")?;
+    let telemetry_future_tolerance_seconds = required(
+        telemetry_future_tolerance_seconds,
+        "--telemetry-future-tolerance-seconds",
+    )?;
     if remote_workload.is_empty()
         || remote_workload.chars().any(char::is_control)
         || remote_workload.chars().any(|c| "&|<>^%!\"".contains(c))
@@ -218,6 +279,13 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     scope(&connect_uri, "--connect")?;
     identifier(&controller_unit, "--controller-unit")?;
     identifier(&guest_service, "--guest-service")?;
+    let expected_controller_unit = format!("virtio-mem-host@{vm_name}.service");
+    if controller_unit != expected_controller_unit {
+        return Err(format!(
+            "--controller-unit must be {expected_controller_unit} for the selected VM"
+        ));
+    }
+    crate::calibration::validate_windows_path(&telemetry_path)?;
     if max_allocation_bytes == 0
         || peak_bytes == 0
         || peak_bytes > max_allocation_bytes
@@ -235,18 +303,36 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             return Err(format!("{name} hold must be positive"));
         }
     }
-    if resident_refresh_seconds == 0 || interval_seconds == 0 || command_timeout_seconds == 0 {
+    if resident_refresh_seconds == 0
+        || interval_seconds == 0
+        || command_timeout_seconds == 0
+        || controller_timeout_seconds == 0
+        || telemetry_max_age_seconds == 0
+    {
         return Err("refresh, sampling, and command timeout values must be positive".to_owned());
     }
     if expect_growth_bytes == 0 || expect_reclaim_bytes == 0 {
         return Err("resize expectations must be positive".to_owned());
     }
-    peak_hold_seconds
+    let minimum_controller_seconds = peak_hold_seconds
         .checked_add(settled_hold_seconds)
         .and_then(|value| value.checked_add(renewed_hold_seconds))
         .and_then(|value| value.checked_add(post_hold_seconds))
-        .and_then(|value| value.checked_add(command_timeout_seconds))
+        .and_then(|value| value.checked_add(command_timeout_seconds.checked_mul(10)?))
         .ok_or_else(|| "configured qualification duration overflows".to_owned())?;
+    if controller_timeout_seconds < minimum_controller_seconds {
+        return Err(format!(
+            "--controller-timeout-seconds must be at least {minimum_controller_seconds} for the configured run"
+        ));
+    }
+    if apply && !elevate {
+        return Err(
+            "qualification --apply requires --elevate for bounded controller ownership".to_owned(),
+        );
+    }
+    if elevate && !apply {
+        return Err("qualification --elevate requires --apply".to_owned());
+    }
     let run_id = new_run_id()?;
     Ok(StartOptions {
         config: Config {
@@ -260,6 +346,8 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             guest_service,
             remote_workload,
             telemetry_path,
+            telemetry_max_age_seconds,
+            telemetry_future_tolerance_seconds,
             mode,
             peak_bytes,
             retained_bytes,
@@ -271,6 +359,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             post_hold_seconds,
             interval_seconds,
             command_timeout_seconds,
+            controller_timeout_seconds,
             expect_growth_bytes,
             expect_reclaim_bytes,
         },
@@ -304,6 +393,27 @@ fn start(options: StartOptions, repo: &Path) -> Result<(), String> {
         message: "detached supervisor is starting".to_owned(),
     };
     write_json(&run_dir.join("status.json"), &initial_status)?;
+    let preparation = (|| {
+        let initial_state = capture_live_state(&options.config, repo, "before_controller")?;
+        if initial_state.requested_bytes != initial_state.current_bytes {
+            return Err(format!(
+                "qualification requires converged initial state; requested={} current={}",
+                initial_state.requested_bytes, initial_state.current_bytes
+            ));
+        }
+        write_json(&run_dir.join("initial-state.json"), &initial_state)?;
+        preflight_guest_health(&options.config, &run_dir, repo, "before_controller")
+    })();
+    if let Err(error) = preparation {
+        finish_start_failure(&run_dir, initial_status, &error)?;
+        return Err(error);
+    }
+    if let Err(error) =
+        launch_controller_guard(&run_dir, repo, options.config.command_timeout_seconds)
+    {
+        finish_start_failure(&run_dir, initial_status, &error)?;
+        return Err(error);
+    }
     let log = OpenOptions::new()
         .create(true)
         .append(true)
@@ -314,7 +424,7 @@ fn start(options: StartOptions, repo: &Path) -> Result<(), String> {
         .map_err(|e| format!("clone supervisor log: {e}"))?;
     let executable =
         std::env::current_exe().map_err(|e| format!("locate xtask executable: {e}"))?;
-    let child = ProcessCommand::new("setsid")
+    let child = match ProcessCommand::new("setsid")
         .arg(executable)
         .args(["qualification", "run", "--run-dir"])
         .arg(&run_dir)
@@ -323,7 +433,25 @@ fn start(options: StartOptions, repo: &Path) -> Result<(), String> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(error_log))
         .spawn()
-        .map_err(|e| format!("start detached supervisor: {e}"))?;
+    {
+        Ok(child) => child,
+        Err(error) => {
+            let launch_error = format!("start detached supervisor: {error}");
+            let release = write_release(&run_dir);
+            let cleanup = wait_for_guard_stopped(
+                &run_dir,
+                &options.config,
+                Duration::from_secs(options.config.command_timeout_seconds)
+                    .checked_mul(3)
+                    .ok_or_else(|| "controller cleanup timeout overflowed".to_owned())?,
+                Duration::from_secs(options.config.interval_seconds),
+            );
+            let combined =
+                format!("{launch_error}; controller release={release:?}; cleanup={cleanup:?}");
+            finish_start_failure(&run_dir, initial_status, &combined)?;
+            return Err(combined);
+        }
+    };
     let mut status = initial_status;
     status.pid = Some(child.id());
     status.message = "detached supervisor launched".to_owned();
@@ -335,6 +463,200 @@ fn start(options: StartOptions, repo: &Path) -> Result<(), String> {
         child.id()
     );
     Ok(())
+}
+
+fn launch_controller_guard(
+    run_dir: &Path,
+    repo: &Path,
+    timeout_seconds: u64,
+) -> Result<(), String> {
+    let executable =
+        std::env::current_exe().map_err(|error| format!("locate xtask executable: {error}"))?;
+    let mut child = ProcessCommand::new("sudo")
+        .arg("--")
+        .arg(executable)
+        .args(["qualification", "guard", "--run-dir"])
+        .arg(run_dir)
+        .arg("--launch")
+        .current_dir(repo)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("start elevated qualification controller guard: {error}"))?;
+    let timeout = Duration::from_secs(timeout_seconds)
+        .checked_mul(4)
+        .ok_or_else(|| "controller guard launch timeout overflowed".to_owned())?;
+    let status = child
+        .wait_timeout(timeout)
+        .map_err(|error| format!("wait for elevated qualification controller guard: {error}"))?
+        .ok_or_else(|| {
+            let _ = child.kill();
+            let _ = child.wait();
+            format!("elevated qualification controller guard timed out after {timeout:?}")
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "elevated qualification controller guard failed with {status}"
+        ))
+    }
+}
+
+fn guard_internal(args: &[String], repo: &Path) -> Result<(), String> {
+    if args.len() != 3
+        || args[0] != "--run-dir"
+        || !matches!(args[2].as_str(), "--launch" | "--serve")
+    {
+        return Err(
+            "qualification guard is internal and requires --run-dir PATH --launch|--serve"
+                .to_owned(),
+        );
+    }
+    if unsafe { libc_geteuid() } != 0 {
+        return Err("qualification controller guard requires effective uid 0".to_owned());
+    }
+    let run_dir = PathBuf::from(&args[1]);
+    let config: Config = serde_json::from_str(&process::read_file(&run_dir.join("config.json"))?)
+        .map_err(|error| format!("parse qualification config: {error}"))?;
+    if run_dir.file_name().and_then(|value| value.to_str()) != Some(config.run_id.as_str()) {
+        return Err("qualification run directory does not match the configured run ID".to_owned());
+    }
+    if args[2] == "--serve" {
+        return serve_controller_guard(&config, &run_dir, repo);
+    }
+    launch_controller_guard_daemon(&config, &run_dir, repo)
+}
+
+fn launch_controller_guard_daemon(
+    config: &Config,
+    run_dir: &Path,
+    repo: &Path,
+) -> Result<(), String> {
+    let properties = systemd_properties(
+        &config.controller_unit,
+        repo,
+        config.command_timeout_seconds,
+    )?;
+    if properties.get("ActiveState").map(String::as_str) != Some("inactive")
+        || properties.get("UnitFileState").map(String::as_str) != Some("disabled")
+    {
+        return Err(format!(
+            "qualification requires disabled/inactive {}; got UnitFileState={} ActiveState={}",
+            config.controller_unit,
+            properties
+                .get("UnitFileState")
+                .map_or("missing", String::as_str),
+            properties
+                .get("ActiveState")
+                .map_or("missing", String::as_str)
+        ));
+    }
+    let live = capture_live_state(config, repo, "guard_revalidation")?;
+    if live.requested_bytes != live.current_bytes {
+        return Err(format!(
+            "qualification guard found divergent live state; requested={} current={}",
+            live.requested_bytes, live.current_bytes
+        ));
+    }
+    write_root_guard_status(
+        run_dir,
+        config,
+        "starting",
+        "starting the exclusive controller",
+    )?;
+    if let Err(error) = systemctl_action(
+        "start",
+        &config.controller_unit,
+        repo,
+        config.command_timeout_seconds,
+    )
+    .and_then(|_| require_controller_active_and_shrink(config, repo))
+    {
+        let cleanup = systemctl_action(
+            "stop",
+            &config.controller_unit,
+            repo,
+            config.command_timeout_seconds,
+        );
+        write_root_guard_status(
+            run_dir,
+            config,
+            "failed",
+            &format!("{error}; cleanup={cleanup:?}"),
+        )?;
+        return Err(error);
+    }
+    let executable =
+        std::env::current_exe().map_err(|error| format!("locate xtask executable: {error}"))?;
+    if let Err(error) = ProcessCommand::new("setsid")
+        .arg(executable)
+        .args(["qualification", "guard", "--run-dir"])
+        .arg(run_dir)
+        .arg("--serve")
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        let _ = systemctl_action(
+            "stop",
+            &config.controller_unit,
+            repo,
+            config.command_timeout_seconds,
+        );
+        return Err(format!("start detached controller guard: {error}"));
+    }
+    write_root_guard_status(
+        run_dir,
+        config,
+        "running",
+        "exclusive controller is active under the bounded guard",
+    )
+}
+
+fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), String> {
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(config.controller_timeout_seconds))
+        .ok_or_else(|| "controller guard deadline exceeds the platform clock range".to_owned())?;
+    let release = run_dir.join("controller-release");
+    while !release.is_file() && Instant::now() < deadline {
+        thread::sleep(Duration::from_secs(config.interval_seconds).min(Duration::from_secs(5)));
+    }
+    let timed_out = !release.is_file();
+    let cleanup = systemctl_action(
+        "stop",
+        &config.controller_unit,
+        repo,
+        config.command_timeout_seconds,
+    );
+    let inactive = systemd_properties(
+        &config.controller_unit,
+        repo,
+        config.command_timeout_seconds,
+    )
+    .and_then(|values| {
+        (values.get("ActiveState").map(String::as_str) == Some("inactive"))
+            .then_some(())
+            .ok_or_else(|| "controller did not return to inactive state".to_owned())
+    });
+    match (timed_out, cleanup, inactive) {
+        (false, Ok(()), Ok(())) => write_root_guard_status(
+            run_dir,
+            config,
+            "stopped",
+            "controller stopped and the pre-run inactive state was restored",
+        ),
+        (deadline_elapsed, stop, state) => {
+            let message = format!(
+                "controller cleanup failed: deadline_elapsed={deadline_elapsed} stop={stop:?} inactive={state:?}"
+            );
+            write_root_guard_status(run_dir, config, "failed", &message)?;
+            Err(message)
+        }
+    }
 }
 
 fn run_internal(args: &[String], repo: &Path) -> Result<(), String> {
@@ -394,8 +716,25 @@ fn run_internal(args: &[String], repo: &Path) -> Result<(), String> {
 
 fn supervise(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), String> {
     let result = supervise_inner(config, run_dir, repo);
+    let release = write_release(run_dir);
+    let cleanup = wait_for_guard_stopped(
+        run_dir,
+        config,
+        Duration::from_secs(config.command_timeout_seconds)
+            .checked_mul(3)
+            .ok_or_else(|| "controller cleanup timeout overflowed".to_owned())?,
+        Duration::from_secs(config.interval_seconds),
+    );
     archive_controller_log(config, run_dir, repo);
-    result
+    let final_state = capture_live_state(config, repo, "after_controller")
+        .and_then(|state| write_json(&run_dir.join("final-state.json"), &state));
+    match (result, release, cleanup, final_state) {
+        (Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
+        (Err(error), _, Ok(()), Ok(())) => Err(error),
+        (result, release, cleanup, final_state) => Err(format!(
+            "qualification result={result:?}; controller release={release:?}; cleanup={cleanup:?}; final_state={final_state:?}"
+        )),
+    }
 }
 
 fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), String> {
@@ -584,7 +923,7 @@ fn sample_host(
     phase: &str,
     observations: &mut Observations,
 ) -> Result<(), String> {
-    let xml = virsh(config, repo, &["dumpxml", "--live", &config.vm_name])?;
+    let xml = virsh(config, repo, &["dumpxml", &config.vm_name])?;
     let memory = parse_virtio_mem_xml_for_alias(&xml, &config.device_alias)
         .map_err(|e| format!("parse virtio-mem state: {e}"))?
         .memory;
@@ -596,18 +935,35 @@ fn sample_host(
     let host = process::read_file(Path::new("/proc/meminfo"))?;
     let host_available_bytes = meminfo_value(&host, "MemAvailable:");
     let guest_stats = whitespace_pairs(&dommemstat);
-    let line = last_complete_line(&config.telemetry_path).ok_or_else(|| {
-        format!(
-            "configured Windows telemetry {} has no complete record",
-            config.telemetry_path.display()
+    let reader = VirshQgaFileReader::new(
+        Virsh::with_connection(
+            "virsh",
+            Duration::from_secs(config.command_timeout_seconds),
+            &config.connect_uri,
+        ),
+        &config.vm_name,
+    );
+    let bytes = reader.read_file(
+        &config.telemetry_path,
+        virtio_mem_host::raw_telemetry::MAX_RAW_TELEMETRY_FILE_BYTES as usize,
+    )?;
+    let contents = String::from_utf8(bytes)
+        .map_err(|error| format!("QGA raw telemetry is not valid UTF-8: {error}"))?;
+    let line = last_complete_record(&contents)
+        .ok_or_else(|| "configured Windows telemetry has no complete record".to_owned())?;
+    let telemetry: RawTelemetryEnvelope = serde_json::from_str(line)
+        .map_err(|error| format!("configured Windows telemetry is invalid JSON: {error}"))?;
+    let now = u64::try_from(now_millis()?)
+        .map_err(|_| "current Unix timestamp does not fit in u64 milliseconds".to_owned())?;
+    telemetry
+        .validate_for(
+            &config.vm_name,
+            &config.guest_service,
+            now,
+            seconds_millis(config.telemetry_max_age_seconds)?,
+            seconds_millis(config.telemetry_future_tolerance_seconds)?,
         )
-    })?;
-    let telemetry = serde_json::from_str::<Value>(&line).map_err(|error| {
-        format!(
-            "configured Windows telemetry {} is invalid JSON: {error}",
-            config.telemetry_path.display()
-        )
-    })?;
+        .map_err(|error| format!("configured Windows telemetry failed validation: {error}"))?;
     let sample = json!({"version": SCHEMA_VERSION, "run_id": config.run_id, "unix_millis": now_millis()?, "workload_phase": phase, "vm_state": domstate.trim(), "requested_bytes": memory.requested_bytes, "current_bytes": memory.current_bytes, "device_size_bytes": memory.size_bytes, "block_size_bytes": memory.block_size_bytes, "host_mem_available_bytes": host_available_bytes, "guest_dommemstat_kib": guest_stats, "windows_raw_telemetry": telemetry});
     append_json(&run_dir.join("host-metrics.jsonl"), &sample)?;
     if let Some(previous) = observations.last_requested {
@@ -663,6 +1019,26 @@ fn preflight_health(
         repo,
         timeout,
     )?;
+    let guest = guest_health(config, repo, stage)?;
+    event(
+        run_dir,
+        "info",
+        "preflight_health_passed",
+        json!({"controller": controller.trim(), "guest": guest}),
+    )
+}
+
+fn preflight_guest_health(
+    config: &Config,
+    run_dir: &Path,
+    repo: &Path,
+    stage: &str,
+) -> Result<(), String> {
+    let guest = guest_health(config, repo, stage)?;
+    event(run_dir, "info", "guest_health_passed", guest)
+}
+
+fn guest_health(config: &Config, repo: &Path, stage: &str) -> Result<Value, String> {
     let ping = virsh(
         config,
         repo,
@@ -696,20 +1072,14 @@ fn preflight_health(
             return Err(format!("Windows pending-reboot marker exists: {key}"));
         }
     }
-    event(
-        run_dir,
-        "info",
-        "preflight_health_passed",
-        json!({
-            "stage": stage,
-            "controller": controller.trim(),
-            "qga_reply": ping.trim(),
-            "guest_service": config.guest_service,
-            "authenticated_guest_command": true,
-            "installer_running": false,
-            "pending_reboot": false,
-        }),
-    )
+    Ok(json!({
+        "stage": stage,
+        "qga_reply": ping.trim(),
+        "guest_service": config.guest_service,
+        "authenticated_guest_command": true,
+        "installer_running": false,
+        "pending_reboot": false,
+    }))
 }
 
 fn remote_text(config: &Config, repo: &Path, command: &str) -> Result<String, String> {
@@ -840,10 +1210,13 @@ fn review(args: &[String], repo: &Path) -> Result<(), String> {
     println!("{summary}\noutput_dir={}", run_dir.display());
     for name in [
         "result.json",
+        "initial-state.json",
+        "final-state.json",
         "events.jsonl",
         "host-metrics.jsonl",
         "workload.jsonl",
         "controller.log",
+        "controller-guard.json",
         "supervisor.log",
     ] {
         let path = run_dir.join(name);
@@ -877,6 +1250,207 @@ fn virsh(config: &Config, repo: &Path, args: &[&str]) -> Result<String, String> 
         repo,
         Duration::from_secs(config.command_timeout_seconds),
     )
+}
+
+fn systemctl_action(
+    action: &str,
+    unit: &str,
+    repo: &Path,
+    timeout_seconds: u64,
+) -> Result<(), String> {
+    process::bounded_text(
+        "systemctl",
+        &[OsString::from(action), OsString::from(unit)],
+        repo,
+        Duration::from_secs(timeout_seconds),
+    )
+    .map(|_| ())
+}
+
+fn capture_live_state(
+    config: &Config,
+    repo: &Path,
+    stage: &str,
+) -> Result<LiveStateEvidence, String> {
+    let xml = virsh(config, repo, &["dumpxml", &config.vm_name])?;
+    let memory = parse_virtio_mem_xml_for_alias(&xml, &config.device_alias)
+        .map_err(|error| format!("parse virtio-mem state: {error}"))?
+        .memory;
+    let vm_state = virsh(config, repo, &["domstate", &config.vm_name])?;
+    if !vm_state.to_ascii_lowercase().contains("running") {
+        return Err(format!("VM is not running: {}", vm_state.trim()));
+    }
+    let properties = systemd_properties(
+        &config.controller_unit,
+        repo,
+        config.command_timeout_seconds,
+    )?;
+    let host = process::read_file(Path::new("/proc/meminfo"))?;
+    Ok(LiveStateEvidence {
+        version: SCHEMA_VERSION,
+        run_id: config.run_id.clone(),
+        stage: stage.to_owned(),
+        unix_millis: now_millis()?,
+        vm_state: vm_state.trim().to_owned(),
+        controller_active_state: properties
+            .get("ActiveState")
+            .cloned()
+            .ok_or_else(|| "systemctl did not report ActiveState".to_owned())?,
+        controller_unit_file_state: properties
+            .get("UnitFileState")
+            .cloned()
+            .ok_or_else(|| "systemctl did not report UnitFileState".to_owned())?,
+        requested_bytes: memory.requested_bytes,
+        current_bytes: memory.current_bytes,
+        device_size_bytes: memory.size_bytes,
+        block_size_bytes: memory.block_size_bytes,
+        host_mem_available_bytes: meminfo_value(&host, "MemAvailable:"),
+    })
+}
+
+fn systemd_properties(
+    unit: &str,
+    repo: &Path,
+    timeout_seconds: u64,
+) -> Result<BTreeMap<String, String>, String> {
+    let output = process::bounded_text(
+        "systemctl",
+        &[
+            OsString::from("show"),
+            OsString::from(unit),
+            OsString::from("--property=ActiveState,UnitFileState,MainPID"),
+            OsString::from("--no-pager"),
+        ],
+        repo,
+        Duration::from_secs(timeout_seconds),
+    )?;
+    let mut properties = BTreeMap::new();
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        let (key, value) = line
+            .split_once('=')
+            .ok_or_else(|| format!("systemctl returned malformed property: {line}"))?;
+        if properties
+            .insert(key.to_owned(), value.to_owned())
+            .is_some()
+        {
+            return Err(format!("systemctl returned repeated property: {key}"));
+        }
+    }
+    Ok(properties)
+}
+
+fn require_controller_active_and_shrink(config: &Config, repo: &Path) -> Result<(), String> {
+    let properties = systemd_properties(
+        &config.controller_unit,
+        repo,
+        config.command_timeout_seconds,
+    )?;
+    if properties.get("ActiveState").map(String::as_str) != Some("active") {
+        return Err(format!(
+            "controller {} did not become active",
+            config.controller_unit
+        ));
+    }
+    let pid = properties
+        .get("MainPID")
+        .ok_or_else(|| "systemctl did not report MainPID".to_owned())?
+        .parse::<u32>()
+        .map_err(|_| "systemctl returned an invalid MainPID".to_owned())?;
+    if pid == 0 {
+        return Err("controller has no running MainPID".to_owned());
+    }
+    let environment = std::fs::read(format!("/proc/{pid}/environ"))
+        .map_err(|error| format!("read controller environment: {error}"))?;
+    let shrink = environment.split(|byte| *byte == 0).find_map(|entry| {
+        entry
+            .strip_prefix(b"VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=")
+            .map(|value| String::from_utf8_lossy(value).into_owned())
+    });
+    if shrink.as_deref().is_some_and(|value| value != "true") {
+        return Err(format!(
+            "automatic Windows shrink is not enabled for qualification: {shrink:?}"
+        ));
+    }
+    Ok(())
+}
+
+fn write_root_guard_status(
+    _run_dir: &Path,
+    config: &Config,
+    state: &str,
+    message: &str,
+) -> Result<(), String> {
+    let root = Path::new(CONTROLLER_GUARD_ROOT);
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("create controller guard state directory: {error}"))?;
+    write_json(
+        &root.join(format!("{}.json", config.run_id)),
+        &ControllerGuardStatus {
+            version: SCHEMA_VERSION,
+            run_id: config.run_id.clone(),
+            state: state.to_owned(),
+            message: message.to_owned(),
+        },
+    )
+}
+
+fn write_release(run_dir: &Path) -> Result<(), String> {
+    let mut file = File::create(run_dir.join("controller-release"))
+        .map_err(|error| format!("create controller release marker: {error}"))?;
+    file.write_all(b"release\n")
+        .and_then(|_| file.sync_all())
+        .map_err(|error| format!("publish controller release marker: {error}"))
+}
+
+fn finish_start_failure(run_dir: &Path, mut status: Status, error: &str) -> Result<(), String> {
+    status.state = "finished".to_owned();
+    status.finished_unix_millis = Some(now_millis()?);
+    status.final_result = Some("fail".to_owned());
+    status.message = error.to_owned();
+    write_json(&run_dir.join("status.json"), &status)
+}
+
+fn wait_for_guard_stopped(
+    run_dir: &Path,
+    config: &Config,
+    timeout: Duration,
+    interval: Duration,
+) -> Result<(), String> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| "controller cleanup wait exceeds the platform clock range".to_owned())?;
+    loop {
+        if let Ok(value) = process::read_file(
+            &Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}.json", config.run_id)),
+        ) {
+            if let Ok(status) = serde_json::from_str::<ControllerGuardStatus>(&value) {
+                if let Some(result) = guard_status_result(&status) {
+                    write_json(&run_dir.join("controller-guard.json"), &status)?;
+                    return result;
+                }
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err("controller guard did not confirm cleanup before the bound".to_owned());
+        }
+        thread::sleep(interval.min(deadline.saturating_duration_since(Instant::now())));
+    }
+}
+
+fn guard_status_result(status: &ControllerGuardStatus) -> Option<Result<(), String>> {
+    match status.state.as_str() {
+        "stopped" => Some(Ok(())),
+        "failed" => Some(Err(status.message.clone())),
+        _ => None,
+    }
+}
+
+unsafe extern "C" {
+    fn geteuid() -> u32;
+}
+
+unsafe fn libc_geteuid() -> u32 {
+    unsafe { geteuid() }
 }
 
 fn spawn_reader(
@@ -999,12 +1573,17 @@ fn whitespace_pairs(input: &str) -> serde_json::Map<String, Value> {
         })
         .collect()
 }
-fn last_complete_line(path: &Path) -> Option<String> {
-    let value = std::fs::read_to_string(path).ok()?;
+fn last_complete_record(value: &str) -> Option<&str> {
     if !value.ends_with('\n') {
         return None;
     }
-    value.lines().next_back().map(str::to_owned)
+    value.lines().rev().find(|line| !line.trim().is_empty())
+}
+
+fn seconds_millis(seconds: u64) -> Result<u64, String> {
+    seconds
+        .checked_mul(1000)
+        .ok_or_else(|| "telemetry time bound overflows milliseconds".to_owned())
 }
 
 fn available_artifacts(run_dir: &Path) -> Vec<&'static str> {
@@ -1014,10 +1593,13 @@ fn available_artifacts(run_dir: &Path) -> Vec<&'static str> {
             "config.json",
             "status.json",
             "result.json",
+            "initial-state.json",
+            "final-state.json",
             "events.jsonl",
             "host-metrics.jsonl",
             "workload.jsonl",
             "controller.log",
+            "controller-guard.json",
             "supervisor.log",
         ]
         .into_iter()
@@ -1086,6 +1668,8 @@ mod tests {
             "1",
             "--command-timeout-seconds",
             "4",
+            "--controller-timeout-seconds",
+            "60",
             "--expect-growth-bytes",
             "2048",
             "--expect-reclaim-bytes",
@@ -1097,7 +1681,11 @@ mod tests {
             "--guest-service",
             "ConfiguredService",
             "--telemetry-path",
-            "/run/qualification/telemetry.jsonl",
+            r"C:\ProgramData\VirtioMemService\telemetry.json",
+            "--telemetry-max-age-seconds",
+            "30",
+            "--telemetry-future-tolerance-seconds",
+            "5",
         ])
     }
 
@@ -1121,6 +1709,54 @@ mod tests {
             .expect("timeout option");
         invalid[position + 1] = "0".to_owned();
         assert!(parse_start(&invalid, Path::new("/repo")).is_err());
+    }
+
+    #[test]
+    fn apply_requires_the_typed_elevation_boundary() {
+        let mut arguments = valid_start_arguments();
+        arguments.push("--apply".to_owned());
+        let error = parse_start(&arguments, Path::new("/repo")).expect_err("missing elevation");
+        assert!(error.contains("requires --elevate"));
+        arguments.push("--elevate".to_owned());
+        assert!(parse_start(&arguments, Path::new("/repo")).is_ok());
+    }
+
+    #[test]
+    fn rejects_short_controller_ownership_bound_and_non_windows_telemetry_path() {
+        let mut arguments = valid_start_arguments();
+        let timeout = arguments
+            .iter()
+            .position(|value| value == "--controller-timeout-seconds")
+            .expect("controller timeout");
+        arguments[timeout + 1] = "47".to_owned();
+        assert!(parse_start(&arguments, Path::new("/repo")).is_err());
+
+        let mut arguments = valid_start_arguments();
+        let telemetry = arguments
+            .iter()
+            .position(|value| value == "--telemetry-path")
+            .expect("telemetry path");
+        arguments[telemetry + 1] = "/run/telemetry.jsonl".to_owned();
+        assert!(parse_start(&arguments, Path::new("/repo")).is_err());
+    }
+
+    #[test]
+    fn guard_completion_is_a_required_cleanup_signal() {
+        let status = |state: &str, message: &str| ControllerGuardStatus {
+            version: SCHEMA_VERSION,
+            run_id: "run".to_owned(),
+            state: state.to_owned(),
+            message: message.to_owned(),
+        };
+        assert_eq!(guard_status_result(&status("running", "active")), None);
+        assert_eq!(
+            guard_status_result(&status("stopped", "restored")),
+            Some(Ok(()))
+        );
+        assert_eq!(
+            guard_status_result(&status("failed", "stop failed")),
+            Some(Err("stop failed".to_owned()))
+        );
     }
 
     #[test]

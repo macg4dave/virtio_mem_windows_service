@@ -456,22 +456,42 @@ fn parse_environment(text: &str) -> Result<BTreeMap<String, String>, String> {
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
     {
-        let (name, value) = line
+        let (name, encoded_value) = line
             .split_once('=')
             .ok_or_else(|| format!("malformed host environment line: {line}"))?;
+        let value = parse_environment_value(encoded_value)?;
         if name.is_empty()
             || !name
                 .bytes()
                 .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
-            || value.is_empty()
         {
             return Err(format!("unsafe host environment line: {line}"));
         }
-        if values.insert(name.to_owned(), value.to_owned()).is_some() {
+        if values.insert(name.to_owned(), value).is_some() {
             return Err(format!("duplicate host environment variable: {name}"));
         }
     }
     Ok(values)
+}
+
+fn parse_environment_value(value: &str) -> Result<String, String> {
+    if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
+        let decoded = &value[1..value.len() - 1];
+        if decoded.is_empty() || decoded.contains('\'') || decoded.chars().any(char::is_control) {
+            return Err("unsafe single-quoted host environment value".to_owned());
+        }
+        return Ok(decoded.to_owned());
+    }
+    if value.is_empty()
+        || value.contains(['\\', '\'', '"'])
+        || value.chars().any(char::is_whitespace)
+    {
+        return Err(
+            "host environment values containing backslashes or whitespace must use single quotes"
+                .to_owned(),
+        );
+    }
+    Ok(value.to_owned())
 }
 
 fn properties(
@@ -681,5 +701,11 @@ mod tests {
         assert!(parse_environment("A=1\nB=two\n").is_ok());
         assert!(parse_environment("A=1\nA=2\n").is_err());
         assert!(parse_environment("export A=1\n").is_err());
+        assert!(parse_environment(r"PATH=C:\ProgramData\telemetry.json").is_err());
+        assert_eq!(
+            parse_environment(r"PATH='C:\ProgramData\telemetry.json'")
+                .expect("quoted Windows path")["PATH"],
+            r"C:\ProgramData\telemetry.json"
+        );
     }
 }

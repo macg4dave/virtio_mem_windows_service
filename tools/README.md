@@ -41,9 +41,14 @@ explicitly authorized `--keep-target` is supplied.
 
 `qualification start` observes the installed automatic controller; it never
 issues a competing resize. It requires an explicit workload binary, workload
-sizes and holds, telemetry path, services, timing, and acceptance deltas. With
-`--apply`, a detached supervisor writes versioned JSON/JSONL evidence beneath
-the selected output root for later `status` and `review` calls.
+sizes and holds, protected Windows telemetry path, freshness bounds, services,
+timing, controller-ownership bound, and acceptance deltas. With `--apply
+--elevate`, one reviewed sudo boundary launches a bounded privileged guard that
+requires the controller to begin disabled/inactive, verifies default-on shrink
+in the running process, and restores the inactive state. The detached
+unprivileged supervisor reads telemetry through the production QGA file path
+and writes versioned JSON/JSONL evidence beneath the selected output root for
+later `status` and `review` calls.
 
 Editor and Make entrypoints are convenience delegates only. Repeatable logic
 belongs here. A privileged workflow validates its exact scope in the

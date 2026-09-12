@@ -66,7 +66,7 @@ control are outside this gate.
 
 | ID | Task | Status |
 | --- | --- | --- |
-| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | Ready |
+| QA-T009 | Run an explicitly configured resident-memory qualification through the production path | In Progress |
 | QA-T010 | Run an explicitly configured committed-memory qualification through the same path | Blocked by QA-T009 |
 | QA-T011 | Prove renewed pressure during an owned pending shrink without lower-request overlap | Blocked by QA-T009 |
 | QA-T012 | Record an explicit cleanup/recovery result for the captured initial target | Blocked by QA-T009 |

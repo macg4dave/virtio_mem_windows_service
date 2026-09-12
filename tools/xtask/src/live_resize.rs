@@ -275,7 +275,7 @@ fn wait_for_target(
 }
 
 fn read_sample(options: &Options, repo: &Path) -> Result<Sample, String> {
-    let xml = virsh(options, repo, &["dumpxml", "--live", &options.vm])?;
+    let xml = virsh(options, repo, &["dumpxml", &options.vm])?;
     let snapshot = parse_virtio_mem_xml_for_alias(&xml, &options.alias)
         .map_err(|error| format!("failed to parse live virtio-mem state: {error}"))?;
     let domstate = virsh(options, repo, &["domstate", &options.vm])?;
