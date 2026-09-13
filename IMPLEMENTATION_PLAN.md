@@ -10,9 +10,14 @@ WN2 / TASK-037 is complete. The Windows service now publishes authoritative
 low/neutral/high memory-resource notification state with explicit failure and
 cleanup behavior. Focused, local, and native Windows gates passed, including a
 real native API capability probe. Workload correlation, installed-service
-evidence, target-policy use, and actuation remain outstanding. TASK-030 is the
-next Ready dependency for WN3. The installed controller remains disabled and
-inactive.
+evidence, target-policy use, and actuation remain outstanding. TASK-030 has a
+passing versioned read-only status contract, product command, and typed
+privileged workflow. Its live read passed on 2026-09-13 with converged
+alias-scoped state, no command owner or latch, and the unit still inactive and
+disabled. TASK-038 is now claimed for WN3 shadow assessment; it must not actuate
+or enable reclaim. Its shared-core assessment and history contracts pass
+focused and aggregate local tests; host persistence, status exposure, and
+shadow comparison emission are the next implementation slice.
 
 ## Ordered implementation slices
 

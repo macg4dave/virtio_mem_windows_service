@@ -1,5 +1,6 @@
 mod attestation;
 mod calibration;
+mod controller_status;
 mod deployment;
 mod host_deploy;
 mod live_resize;
@@ -20,6 +21,7 @@ Usage:
   cargo xtask doctor host
   cargo xtask deployment inventory INSTANCE [OPTIONS]
   cargo xtask calibration VM_NAME ALIAS [OPTIONS]
+  cargo xtask controller-status INSTANCE [OPTIONS]
   cargo xtask attestation VM_NAME ALIAS REVIEW --output PATH [OPTIONS]
   cargo xtask host-deploy INSTANCE --config PATH --attestation PATH [OPTIONS]
   cargo xtask preflight VM_NAME ALIAS [OPTIONS]
@@ -60,6 +62,13 @@ Host deployment options:
   --output PATH                 Required structured JSON evidence path.
   --command-timeout-seconds N   Required external-command bound.
   --apply                       Install; otherwise validate only.
+  --elevate                     Invoke this prebuilt xtask once through sudo.
+
+Controller status options:
+  --host-cli PATH               Required absolute candidate host executable.
+  --output PATH                 Required structured JSON evidence path.
+  --command-timeout-seconds N   Required external-command bound.
+  --connect URI                 Libvirt URI; default qemu:///system.
   --elevate                     Invoke this prebuilt xtask once through sudo.
 
 No-actuation preflight options:
@@ -168,6 +177,9 @@ fn execute(arguments: &[String]) -> Result<(), String> {
         Some("doctor") => Err("doctor requires exactly: host".to_owned()),
         Some("deployment") => deployment::run(&deployment::parse(&arguments[1..])?, &repo),
         Some("calibration") => calibration::run(&calibration::parse(&arguments[1..])?, &repo),
+        Some("controller-status") => {
+            controller_status::run(&controller_status::parse(&arguments[1..])?, &repo)
+        }
         Some("attestation") => attestation::run(&attestation::parse(&arguments[1..])?, &repo),
         Some("host-deploy") => host_deploy::run(&host_deploy::parse(&arguments[1..])?, &repo),
         Some("preflight") => preflight::run(&preflight::parse(&arguments[1..])?, &repo),

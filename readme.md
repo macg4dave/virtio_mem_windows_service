@@ -26,7 +26,8 @@ predictor. See `docs/windows-native-pressure-controller.md`.
 - `windows/`: native telemetry, versioned atomic publication, SCM lifecycle,
   configuration, ACLs, and a separate qualification workload binary.
 - `host/`: telemetry validation/join, target controller, compatibility
-  attestation, libvirt state, actuation, convergence, and durable recovery.
+  attestation, libvirt state, versioned read-only status, actuation,
+  convergence, and durable recovery.
 - `crates/virtio-mem-core/`: shared units, XML, policy, reconciliation, and
   evidence contracts.
 - `tools/xtask/`: repository gates, remote native-Windows validation, artifact

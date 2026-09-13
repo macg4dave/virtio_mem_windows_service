@@ -58,6 +58,17 @@ and unknown fields, bounds, timestamps, warm-up, session changes, and replay
 remain distinct cases; successful fallback decoding is not pressure-qualified
 reclaim evidence.
 
+The host status surface is implemented by `virtio-mem-host status`. Live
+validation uses `cargo xtask controller-status INSTANCE` with an explicit
+current prebuilt host binary, output path, command bound, connection, and
+`--elevate`. The unprivileged parent validates scope and persists evidence; one
+elevated child reads the protected instance configuration/checkpoint and makes
+one bounded alias-scoped live read. Focused fixtures prove cold, warmed,
+capacity, owned-command, unowned/conflicting-command, latch, and recovery
+classifications without creating or mutating the policy checkpoint. A status
+pass is observability evidence only; it does not establish controller
+actuation, availability, recovery, or endurance.
+
 ## Native Windows gate
 
 Configure every remote input explicitly:

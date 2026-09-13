@@ -449,7 +449,7 @@ fn validate_live_attestation(
     .map_err(|error| format!("validate live compatibility attestation: {error}"))
 }
 
-fn parse_environment(text: &str) -> Result<BTreeMap<String, String>, String> {
+pub(crate) fn parse_environment(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut values = BTreeMap::new();
     for line in text
         .lines()

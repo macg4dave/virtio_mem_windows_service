@@ -123,6 +123,69 @@ pub fn bounded_output(
     })
 }
 
+pub fn bounded_output_with_env<I, K, V>(
+    program: &Path,
+    args: &[OsString],
+    cwd: &Path,
+    timeout: Duration,
+    environment: I,
+) -> Result<Output, String>
+where
+    I: IntoIterator<Item = (K, V)>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    let mut child = Command::new(program)
+        .args(args)
+        .current_dir(cwd)
+        .env_clear()
+        .env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
+        .envs(environment)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start {}: {error}", program.display()))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| format!("failed to capture {} stdout", program.display()))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| format!("failed to capture {} stderr", program.display()))?;
+    let stdout_reader = std::thread::spawn(move || read_all(stdout));
+    let stderr_reader = std::thread::spawn(move || read_all(stderr));
+    let status = if let Some(status) = child
+        .wait_timeout(timeout)
+        .map_err(|error| format!("failed while waiting for {}: {error}", program.display()))?
+    {
+        status
+    } else {
+        child
+            .kill()
+            .map_err(|error| format!("failed to terminate {}: {error}", program.display()))?;
+        let _ = child.wait();
+        let _ = stdout_reader.join();
+        let _ = stderr_reader.join();
+        return Err(format!("{} timed out after {timeout:?}", program.display()));
+    };
+    let stdout = stdout_reader
+        .join()
+        .map_err(|_| format!("{} stdout reader panicked", program.display()))??;
+    let stderr = stderr_reader
+        .join()
+        .map_err(|_| format!("{} stderr reader panicked", program.display()))??;
+    Ok(Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 fn read_all(mut input: impl Read) -> Result<Vec<u8>, String> {
     let mut output = Vec::new();
     input

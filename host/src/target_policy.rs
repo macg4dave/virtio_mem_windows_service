@@ -179,7 +179,11 @@ fn read_controller_status_at(
             },
         )
     } else {
-        (TargetEstimatorState::cold(), false, CheckpointControl::default())
+        (
+            TargetEstimatorState::cold(),
+            false,
+            CheckpointControl::default(),
+        )
     };
     let desired_bytes = if estimator_state.desired_bytes == 0 {
         live.current_bytes
@@ -191,14 +195,13 @@ fn read_controller_status_at(
     } else {
         estimator_state.safe_floor_bytes
     };
-    let accepted_telemetry = (!estimator_state.session_id.is_empty()).then(|| {
-        AcceptedTelemetryIdentity {
+    let accepted_telemetry =
+        (!estimator_state.session_id.is_empty()).then_some(AcceptedTelemetryIdentity {
             session_id: estimator_state.session_id,
             sequence: estimator_state.last_sequence,
             monotonic_millis: estimator_state.last_monotonic_millis,
             observed_unix_millis: estimator_state.last_observed_unix_millis,
-        }
-    });
+        });
     let command = control
         .command_intent
         .as_ref()
@@ -243,7 +246,11 @@ fn read_controller_status_at(
     } else if recovery_reason.is_some() {
         ControlHealth::RecoveryRequired
     } else if matches!(command_ownership, CommandOwnership::OwnedPending) {
-        match control.command_intent.as_ref().map(|intent| intent.direction) {
+        match control
+            .command_intent
+            .as_ref()
+            .map(|intent| intent.direction)
+        {
             Some(virtio_mem_core::ReconcileDirection::Grow) => ControlHealth::Growing,
             _ => ControlHealth::Shrinking,
         }
@@ -314,10 +321,7 @@ fn classify_command_ownership(
     }
 }
 
-fn recovery_reason(
-    ownership: CommandOwnership,
-    latch_reason: Option<&str>,
-) -> Option<String> {
+fn recovery_reason(ownership: CommandOwnership, latch_reason: Option<&str>) -> Option<String> {
     if let Some(reason) = latch_reason {
         return Some(format!("actuation_latched: {reason}"));
     }
@@ -1477,5 +1481,145 @@ mod tests {
         );
         fs::remove_file(state_path).expect("remove checkpoint");
         fs::remove_file(attestation_path).expect("remove attestation");
+    }
+
+    #[test]
+    fn status_reads_cold_checkpoint_without_writing_or_actuating() {
+        let (state_path, attestation_path) = paths("status-cold");
+        let config = config(&state_path, &attestation_path);
+        write_attestation(&attestation_path);
+        let live = VirtioMemState {
+            size_bytes: 24 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 8 * GIB,
+            current_bytes: 8 * GIB,
+        };
+
+        let status = read_controller_status_at(&config, live, 2_000_000)
+            .expect("cold status must remain readable");
+
+        assert_eq!(status.version, CONTROLLER_STATUS_VERSION);
+        assert_eq!(status.observed_unix_millis, 2_000_000);
+        assert_eq!(status.desired_bytes, 8 * GIB);
+        assert_eq!(status.safe_floor_bytes, 8 * GIB);
+        assert_eq!(status.effective_maximum_bytes, 20 * GIB);
+        assert_eq!(status.accepted_telemetry, None);
+        assert_eq!(status.reclaim_readiness, ReclaimReadiness::Cold);
+        assert_eq!(status.capacity_state, CapacityState::Unknown);
+        assert_eq!(status.command_ownership, CommandOwnership::None);
+        assert_eq!(status.control_health, ControlHealth::Converged);
+        assert_eq!(status.recovery_state, RecoveryState::NotRequired);
+        assert!(!state_path.exists(), "status must not create a checkpoint");
+        fs::remove_file(attestation_path).expect("remove attestation");
+    }
+
+    #[test]
+    fn status_exposes_accepted_identity_ready_history_and_capacity_ceiling() {
+        let (state_path, attestation_path) = paths("status-populated");
+        let config = config(&state_path, &attestation_path);
+        let compatibility_fingerprint_sha256 = write_attestation(&attestation_path);
+        let mut estimator = TargetEstimatorState::cold();
+        estimator.desired_bytes = 20 * GIB;
+        estimator.safe_floor_bytes = 19 * GIB;
+        estimator.session_id = "session-status".to_owned();
+        estimator.last_observed_unix_millis = 1_600_000;
+        estimator.last_monotonic_millis = 600_000;
+        estimator.last_sequence = 10;
+        for index in 0..=10 {
+            estimator
+                .history
+                .push_back(virtio_mem_core::CandidateHistoryEntry {
+                    observed_unix_millis: 1_000_000 + index * 60_000,
+                    desired_now_bytes: 20 * GIB,
+                    floor_now_bytes: 19 * GIB,
+                });
+        }
+        let checkpoint = PolicyCheckpoint {
+            version: POLICY_CHECKPOINT_VERSION,
+            vm_name: config.vm_name.clone(),
+            device_alias: config.alias.clone(),
+            policy_fingerprint_sha256: policy_fingerprint(
+                &target_policy_config(&config).expect("policy"),
+            )
+            .expect("policy fingerprint"),
+            compatibility_fingerprint_sha256,
+            estimator,
+            actuation_latched: false,
+            actuation_latch_reason: None,
+            command_intent: None,
+            last_latch_clear_reason: Some("prior review".to_owned()),
+        };
+        persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
+        let live = VirtioMemState {
+            size_bytes: 24 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 20 * GIB,
+            current_bytes: 20 * GIB,
+        };
+
+        let status = read_controller_status_at(&config, live, 2_000_000)
+            .expect("populated status must be valid");
+
+        assert_eq!(
+            status.accepted_telemetry,
+            Some(AcceptedTelemetryIdentity {
+                session_id: "session-status".to_owned(),
+                sequence: 10,
+                monotonic_millis: 600_000,
+                observed_unix_millis: 1_600_000,
+            })
+        );
+        assert!(status.history_ready);
+        assert_eq!(status.reclaim_readiness, ReclaimReadiness::Ready);
+        assert_eq!(status.capacity_state, CapacityState::AtEffectiveMaximum);
+        assert_eq!(
+            status.last_latch_clear_reason.as_deref(),
+            Some("prior review")
+        );
+        fs::remove_file(state_path).expect("remove checkpoint");
+        fs::remove_file(attestation_path).expect("remove attestation");
+    }
+
+    #[test]
+    fn status_classifies_command_ownership_and_recovery_without_resolving_intent() {
+        let intent = CommandIntent {
+            operation_id: "operation-status".to_owned(),
+            direction: virtio_mem_core::ReconcileDirection::Shrink,
+            prior_requested_bytes: 8 * GIB,
+            prior_current_bytes: 8 * GIB,
+            target_bytes: 6 * GIB,
+            telemetry_identity: "session:4:40:1000".to_owned(),
+            policy_fingerprint_sha256: "a".repeat(64),
+            compatibility_fingerprint_sha256: "b".repeat(64),
+        };
+        let live = |requested_bytes, current_bytes| VirtioMemState {
+            size_bytes: 24 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes,
+            current_bytes,
+        };
+
+        assert_eq!(
+            classify_command_ownership(Some(&intent), live(6 * GIB, 7 * GIB)),
+            CommandOwnership::OwnedPending
+        );
+        assert_eq!(
+            classify_command_ownership(Some(&intent), live(6 * GIB, 6 * GIB)),
+            CommandOwnership::OwnedConvergedUnresolved
+        );
+        assert_eq!(
+            classify_command_ownership(Some(&intent), live(8 * GIB, 8 * GIB)),
+            CommandOwnership::RecordedNotApplied
+        );
+        assert_eq!(
+            classify_command_ownership(Some(&intent), live(7 * GIB, 8 * GIB)),
+            CommandOwnership::Conflict
+        );
+        assert_eq!(
+            classify_command_ownership(None, live(7 * GIB, 8 * GIB)),
+            CommandOwnership::UnownedPending
+        );
+        assert!(recovery_reason(CommandOwnership::OwnedPending, None).is_none());
+        assert!(recovery_reason(CommandOwnership::Conflict, None).is_some());
     }
 }

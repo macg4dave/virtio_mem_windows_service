@@ -176,6 +176,13 @@ mismatch also fails closed when a latch or command intent is present. Safely
 mismatched estimator-only state restarts reclaim warm-up. A new Windows producer
 session also restarts reclaim warm-up.
 
+`virtio-mem-host status` reads that checkpoint and a fresh alias-scoped live
+state to emit the versioned status contract. It is observational only: it does
+not read a new telemetry sample, update estimator history, resolve an intent,
+clear a latch, or send a resize command. A missing checkpoint is reported as a
+cold status around current allocation. Malformed or mismatched durable control
+state remains an error rather than being summarized as healthy.
+
 ## Reconciliation
 
 The reconciler consumes one fresh estimator result plus fresh live `Q` and `C`. `current`

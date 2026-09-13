@@ -87,6 +87,27 @@ accepted raw telemetry and the estimator. It records an explainable class
 `unavailable`) plus contributing evidence. It is not allocation authority and
 does not remove `desired`, `requested`, or `current` from the model.
 
+## Controller status
+
+`ControllerStatusSnapshot` version 1 is a bounded read-only operational view.
+It joins a fresh alias-selected `VirtioMemState` with the matching policy
+checkpoint and exposes:
+
+- device size/block geometry and desired, safe-floor, effective-maximum,
+  requested, and current byte counts;
+- the accepted telemetry session, sequence, monotonic time, and wall-clock
+  time, or explicit cold state;
+- history readiness and reclaim state (`cold`, `warming`, `ready`, `paused`,
+  `blocked_in_flight`, `blocked_latched`, or `blocked_recovery`);
+- capacity state (`unknown`, `available`, or `at_effective_maximum`);
+- command ownership and immutable command details when an intent exists; and
+- control health, latch/recovery reasons, fingerprints, and the last reviewed
+  latch-clear reason.
+
+The snapshot is not persisted by the status command and is not control state.
+Malformed, oversized, newer-version, contradictory, unaligned, or
+identity/fingerprint-mismatched inputs fail closed.
+
 ## Live device state
 
 The alias-selected live XML record contains device `size`, `block`,

@@ -7,6 +7,7 @@ pub mod controller_status;
 pub mod demand;
 pub mod error;
 pub mod global_pool;
+pub mod pressure_assessment;
 pub mod reconciler;
 pub mod shrink_recovery;
 pub mod stats;
@@ -41,6 +42,14 @@ pub use error::{MemoryStatsError, PollError, ServiceLoopError, VirtioMemError};
 pub use global_pool::{
     arbitrate_global_pool, GlobalPoolConfig, GlobalPoolDecision, GlobalPoolError, GlobalPoolPlan,
     HostPressureState, VmPoolInput,
+};
+pub use pressure_assessment::{
+    assess_windows_pressure, AssessmentAllocation, AssessmentAvailability, AssessmentConfidence,
+    AssessmentInputIdentity, AssessmentReason, MemoryRequirementAssessment,
+    PressureAssessmentError, PressureHistoryEntry, PressureHistoryState, PressureHistorySummary,
+    PressurePolicyConfig, PressureState, PressureStateAssessment, ShrinkSafetyAssessment,
+    ShrinkSafetyState, WindowsPressureAssessment, MAX_PRESSURE_HISTORY_ENTRIES,
+    PRESSURE_ASSESSMENT_VERSION, PRESSURE_HISTORY_VERSION, PRESSURE_POLICY_VERSION,
 };
 pub use reconciler::{
     reconcile, ControlHealth, ReconcileAction, ReconcileDecision, ReconcileDirection,

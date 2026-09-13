@@ -120,11 +120,24 @@ The service manager does not blindly restart a failed controller. Recovery and
 resumption are explicit operator decisions made after current live state and
 durable command state are reviewed.
 
+The version-1 controller status snapshot is a read-only join of one fresh,
+alias-scoped live device read with the matching durable policy checkpoint. It
+contains device geometry, desired/safe-floor/effective-maximum and live
+requested/current bytes, the last accepted telemetry identity, history and
+reclaim readiness, capacity state, command ownership/detail, control health,
+latch reason, recovery reason, fingerprints, and the last latch-clear reason.
+Unknown fields, unsupported versions, oversized input, invalid geometry,
+misaligned targets, inconsistent ownership/detail, or inconsistent
+latch/recovery state are rejected. Reading status does not consume telemetry,
+advance history, resolve command intent, clear a latch, write a checkpoint, or
+reach the resize sink.
+
 ## Host CLI
 
 The Rust host binary is the implementation behind maintained operations:
 
 - compatibility-attestation generation;
+- versioned read-only controller status;
 - live snapshot and validation;
 - dry-run-default one-shot resize;
 - abandon-to-current recovery;
@@ -141,6 +154,8 @@ convergence durations.
 - `gate local|all`;
 - `doctor host`;
 - `qga`;
+- `controller-status` for a bounded privileged read with unprivileged evidence
+  persistence;
 - `windows build|test|all|verify|deploy|service-cycle|diagnose-service`;
 - `deployment inventory`, `host-deploy`, `calibration`, `attestation`, and
   restart-safe no-actuation `preflight`;

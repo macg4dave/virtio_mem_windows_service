@@ -17,7 +17,7 @@ use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSo
 use crate::qga::VirshGuestAgent;
 use crate::resize_sink::VirshResizeSink;
 use crate::runtime::{evaluate_memory_decision, GuestStatsSource, MemoryStateSource};
-use crate::target_policy::clear_actuation_latch;
+use crate::target_policy::{clear_actuation_latch, read_controller_status};
 use crate::virsh::{Virsh, VirshCommand};
 use crate::xml_source::VirshXmlSource;
 
@@ -25,6 +25,9 @@ const DEFAULT_CONNECTION: &str = "qemu:///system";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    Status {
+        connection: String,
+    },
     Decision {
         connection: String,
     },
@@ -84,7 +87,8 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     };
     if !matches!(
         mode,
-        "decision"
+        "status"
+            | "decision"
             | "evidence"
             | "attest"
             | "snapshot"
@@ -103,13 +107,17 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             path: args[1].clone(),
         }));
     }
-    if mode == "decision" {
+    if matches!(mode, "status" | "decision") {
         let connection = match args {
             [_] => DEFAULT_CONNECTION.to_owned(),
             [_, option, value] if option == "--connect" && !value.is_empty() => value.clone(),
             _ => return Err(usage().to_owned()),
         };
-        return Ok(Some(CliCommand::Decision { connection }));
+        return Ok(Some(if mode == "status" {
+            CliCommand::Status { connection }
+        } else {
+            CliCommand::Decision { connection }
+        }));
     }
     if mode == "clear-latch" {
         if args.len() < 2 || args.len() > 5 || args[1].trim().is_empty() {
@@ -353,7 +361,7 @@ fn required_option<T>(value: Option<T>, name: &str) -> Result<T, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host decision [--connect URI]\n       virtio-mem-host clear-latch REASON [--apply] [--connect URI]\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
+    "Usage: virtio-mem-host status [--connect URI]\n       virtio-mem-host decision [--connect URI]\n       virtio-mem-host clear-latch REASON [--apply] [--connect URI]\n       virtio-mem-host evidence FILE\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -367,6 +375,7 @@ fn run_with<H: HostMemorySource, W: Write>(
     output: &mut W,
 ) -> Result<(), String> {
     match command {
+        CliCommand::Status { connection } => run_configured_status(&connection, output),
         CliCommand::Decision { connection } => run_configured_decision(&connection, output),
         CliCommand::ClearLatch {
             reason,
@@ -522,6 +531,21 @@ fn run_with<H: HostMemorySource, W: Write>(
             )
         }
     }
+}
+
+fn run_configured_status<W: Write>(connection: &str, output: &mut W) -> Result<(), String> {
+    let config = HostConfig::from_env().map_err(|error| error.to_string())?;
+    let virsh = Virsh::with_connection(
+        config.virsh_binary.clone(),
+        config.command_timeout,
+        connection,
+    );
+    let live =
+        VirshXmlSource::new(virsh, config.vm_name.clone(), config.alias.clone()).memory_state()?;
+    let status = read_controller_status(&config, live)?;
+    serde_json::to_writer_pretty(&mut *output, &status)
+        .map_err(|error| format!("encode controller status: {error}"))?;
+    writeln!(output).map_err(|error| error.to_string())
 }
 
 fn run_configured_decision<W: Write>(connection: &str, output: &mut W) -> Result<(), String> {
@@ -884,6 +908,12 @@ mod tests {
 
     #[test]
     fn parses_snapshot_and_resize_modes() {
+        assert_eq!(
+            parse_args(&args(&["status", "--connect", "test:///default"])).expect("status"),
+            Some(CliCommand::Status {
+                connection: "test:///default".to_owned(),
+            })
+        );
         assert_eq!(
             parse_args(&args(&[
                 "clear-latch",

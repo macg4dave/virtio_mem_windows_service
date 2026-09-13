@@ -9,6 +9,7 @@ their owning crates.
 cargo xtask help
 cargo xtask gate local
 cargo xtask deployment inventory INSTANCE REQUIRED_OPTIONS
+cargo xtask controller-status INSTANCE --host-cli ABSOLUTE_CANDIDATE --output PATH --command-timeout-seconds SECONDS --elevate
 cargo xtask windows all
 cargo xtask windows verify SHA256:EXPECTED_HOST_FINGERPRINT --runs RUN_COUNT
 cargo xtask qga VM_NAME --attempts COUNT --command-timeout-seconds SECONDS

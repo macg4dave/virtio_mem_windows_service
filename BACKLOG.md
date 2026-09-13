@@ -11,8 +11,13 @@ not from completed task notes.
 
 ## In progress
 
-TASK-030 is claimed: expose a versioned, read-only controller status snapshot
-before WN3 adds shadow assessments. TASK-037 completed WN2.
+TASK-038 is claimed for WN3 shadow assessment. TASK-030 and TASK-037 are
+complete, so its construction dependencies are satisfied. This task must keep
+actuation and reclaim disabled while it separates memory requirement, pressure
+state, and shrink safety and exposes their inputs and reasons. The shared-core
+assessment contract and durable history model now pass seven focused tests and
+the aggregate local gate; host persistence, status exposure, and shadow
+comparison emission remain in progress.
 
 ## Paused fixed-headroom qualification
 
@@ -42,7 +47,6 @@ evidence here when it completes.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| TASK-038 | Complete WN3: implement separate memory-requirement, pressure-state, and shrink-safety assessments in shadow mode | TASK-037, TASK-030 |
 | TASK-039 | Complete WN4: enable pressure-aware bounded growth while reclaim remains disabled | TASK-038, QA-T025–QA-T027 |
 | TASK-040 | Complete WN5: add fail-closed shrink blockers and conservative reclaim from sustained qualified evidence | TASK-039, QA-T028 |
 | TASK-041 | Complete WN6: add only rate/trend signals that demonstrate value in shadow qualification | TASK-040, QA-T029 |
@@ -70,7 +74,7 @@ they do not replace executable task cards.
 | WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
 | WN1 | Complete | Define the Windows-native telemetry contract | WN0 |
 | WN2 | Complete | Add authoritative Windows pressure notifications | WN1 |
-| WN3 | Planned | Separate requirement, pressure, and shrink-safety assessment | WN2 |
+| WN3 | In progress | Separate requirement, pressure, and shrink-safety assessment | WN2 |
 | WN4 | Planned | Integrate pressure-aware growth | WN3 |
 | WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
 | WN6 | Planned | Add qualified trend/rate evidence | WN5 |
@@ -116,6 +120,12 @@ record replaces historical command transcripts and machine-specific evidence:
   Focused host tests, the local aggregate gate, and the native Windows gate
   including a real API capability probe passed on 2026-09-13; no installed
   service, workload correlation, target-policy change, or actuation was run.
+- TASK-030: added the versioned read-only controller-status contract, product
+  command, and typed single-elevation inspection workflow. Focused, local, and
+  native Windows gates passed. A live `win11_gpu` read on 2026-09-13 recorded
+  converged alias-scoped state with no command owner or latch while the unit
+  remained inactive and disabled; this is observability evidence, not
+  actuation qualification.
 - TASK-009 and QA-T001 through QA-T008: native Windows deployment, safe
   baseline, coherent least-privilege host deployment, calibration, current
   attestation, and restart-safe no-actuation preflight.

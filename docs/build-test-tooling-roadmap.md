@@ -40,6 +40,7 @@ shell or running Cargo as root.
 | BT-T014 | Added detached resident/committed automatic-controller qualification with durable JSON/JSONL evidence, production QGA telemetry observation, and a bounded exclusive controller guard |
 | BT-T015 | Removed experiment-derived workflow and policy defaults, milestone/VM-specific command profiles, obsolete editor/debug artifacts, generated build output, duplicated AI instructions, historical test procedures, and unused guest-side resize compatibility code; live mutation now delegates to the attestation-aware product CLI |
 | BT-T016 | Replaced the QA-T002 privileged Bash inventory with typed `cargo xtask deployment inventory`, bounded fixed-vector inspection, unprivileged atomic JSON evidence, and focused parser/elevation tests |
+| BT-T017 | Added typed `cargo xtask controller-status` with exact prebuilt-candidate validation, one bounded outer elevation, restricted instance configuration, read-only live inspection, and unprivileged atomic evidence persistence; focused and local gates passed, and a live `win11_gpu` read on 2026-09-13 left the unit inactive and disabled |
 
 ## Ready queue
 
