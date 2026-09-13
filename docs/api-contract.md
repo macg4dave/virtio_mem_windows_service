@@ -7,6 +7,20 @@ run libvirt commands, or choose a resize. The Linux host selects one explicit
 VM/device alias, joins telemetry with live libvirt state, calculates targets,
 and owns every mutation.
 
+In the destination architecture, an OS-specific host adapter produces a
+versioned per-VM `GuestDemandReport`. One host RAM pool manager joins all member
+reports with configured total-RAM pool bytes and member bounds, priorities,
+host-derived non-reclaimable base allocations, live `requested`/`current`, and
+durable reservations. Its total-RAM `pool_grant` is converted to the only
+device-scoped `desired` a per-VM reconciler may pursue. Guest telemetry and
+per-VM assessment never allocate directly.
+
+Priority creates no standing capacity entitlement above a minimum. The pool
+grants every eligible growth request that fits. Only when capacity is
+insufficient does priority order contenders, and only unmet higher-priority
+demand may trigger reclaim from a strictly lower-priority shrink-safe VM. If no
+such donor can release memory, the recipient remains waiting/constrained.
+
 The target architecture gives precedence to Microsoft-supported Windows
 memory-pressure notifications and performance data. Windows publishes their
 normalised state and availability; it does not publish a pressure-derived byte
@@ -68,6 +82,10 @@ session at sequence zero. Fallback supplies basic-counter context only and
 cannot acquire pressure-qualified reclaim authority. Rate evidence remains
 optional for the baseline policy.
 
+Schema-v2 acceptance exists only for the declared producer/consumer migration
+and rollback window. WN9 removes the decoder after supported deployments use
+the current schema; it is not a permanent selectable protocol mode.
+
 The WN2 collector creates one low-memory and one high-memory resource
 notification handle for the worker lifetime and queries both on each existing
 poll. Exactly low signalled becomes `low`, exactly high signalled becomes
@@ -96,10 +114,13 @@ Same-target diagnostic re-notification is independently disabled by default.
 Any ambiguity, stale input, incompatible state, ownership conflict, or unsafe
 capacity condition fails closed.
 
-The existing fixed-headroom calculation is a compatibility fallback during
-the migration. It may conservatively request growth from fresh basic counters,
-but pressure-aware shrink requires the richer qualified signal set and its
-complete history.
+The existing fixed-headroom calculation is a temporary migration and
+qualification baseline. If explicitly selected during its bounded rollback
+window, it may conservatively request growth from fresh basic counters, but it
+never authorizes pressure-aware shrink. WN9 removes this estimator and its
+dedicated configuration after replacement qualification. Any retained
+fail-safe is specified as new current policy rather than an indefinite legacy
+mode.
 
 Production raw telemetry uses the explicitly selected `qga-file` transport.
 The host opens the configured protected Windows current-record path with the

@@ -1,15 +1,44 @@
-# Windows-Native Memory Controller Roadmap
+# Host VM RAM Manager Roadmap
 
 ## Destination and authority
 
-The destination is a supported controller that sizes Windows guest memory from
-Microsoft-supported Windows memory-management evidence instead of primarily
-maintaining fixed physical and commit headroom.
+The destination is one host-wide RAM manager that arbitrates a configured
+memory pool across managed VMs. Each VM has an explicit minimum guarantee,
+maximum bound, priority, device identity, and guest-demand provider. The host
+knows every member's assessed demand, qualified reclaim floor, authoritative
+current allocation, and in-flight request before it grants any target.
 
-Windows remains measurement-only. The Windows service collects and normalises
-native APIs, notifications, and counters. The host joins that evidence with
-authoritative live virtio-mem allocation and converts it into bounded targets.
-Only the host owns capacity allocation and resize actuation.
+Windows-native pressure work is the first guest-demand provider, not the
+top-level allocation architecture. Windows remains measurement-only: its
+service collects and normalises native APIs, notifications, and counters. A
+host adapter turns that evidence into a per-VM demand/pressure assessment. A
+future Linux adapter can use Linux-native evidence to produce the same host
+assessment contract without adopting Windows counters or schemas.
+
+The host-pool manager joins all per-VM assessments with live allocation,
+reserves minimum guarantees, arbitrates scarce discretionary capacity by
+priority, and emits one granted target per VM. Only the host owns pool
+allocation and resize actuation. Per-VM reconcilers safely pursue those grants;
+they do not independently spend host memory.
+
+Priority is dormant while the pool can satisfy all eligible growth. It neither
+reserves capacity above a VM's minimum nor prevents a lower-priority VM from
+growing into free RAM. It becomes active only when requests contend for
+insufficient free capacity or when unmet higher-priority demand may justify
+safe reclaim from a strictly lower-priority VM.
+
+The target data flow is:
+
+```text
+guest-OS-native telemetry
+    -> OS-specific host validation and per-VM demand assessment
+    -> host-wide VM RAM pool and durable reservation ledger
+    -> minimum guarantees + priorities + demand + safe reclaimability
+    -> per-VM total-RAM `pool_grant`
+    -> device-scoped per-VM target (`desired`)
+    -> per-VM desired/requested/current reconciliation
+    -> journaled virtio-mem actuation
+```
 
 The following safety mechanisms remain architectural invariants:
 
@@ -17,8 +46,8 @@ The following safety mechanisms remain architectural invariants:
 - fresh, ordered, versioned telemetry with replay protection;
 - alias-scoped live `current` as allocation authority;
 - distinct `desired`, `requested`, and `current` state;
-- configured minimum, maximum, reserve, safety margin, growth step, shrink
-  step, hysteresis, and history window;
+- configured total-RAM pool/member minimums and maximums plus provider safety
+  margins, growth step, shrink step, hysteresis, and history window;
 - device alignment, compatibility attestation, and host headroom;
 - no ordinary resize while `requested != current`;
 - write-before-command intent, immediate live reread, no blind replay, and
@@ -26,8 +55,47 @@ The following safety mechanisms remain architectural invariants:
 - fail-closed shrink whenever required evidence is missing or ambiguous.
 
 The current fixed-headroom estimator remains implemented during migration. It
-is a comparison baseline and conservative fallback-growth guard, not the target
-release policy. It cannot authorize fallback shrink.
+is a temporary comparison baseline and qualification bridge, not a second
+supported policy. It cannot authorize fallback shrink. Once the replacement
+pressure path has passed its named qualification and rollback window, the old
+estimator and its dedicated configuration are removed.
+
+## Where the previous roadmap diverged
+
+The previous WN0-WN10 sequence correctly protected host actuation authority and
+separated Windows measurement from policy, but it still described a smarter
+single-VM controller as the destination. In particular:
+
+- per-VM assessment flowed directly to `desired` instead of first requesting a
+  host-pool grant;
+- pool size, member minimums, and priorities were not a first-class
+  configuration model;
+- the existing pure `global_pool` planner and durable reservation work appeared
+  as optional later multi-VM safety work rather than the mandatory parent
+  controller;
+- that prototype derives an allocatable amount from host-physical baseline,
+  cache, and emergency reserves and carries separate growth/reclaim priorities;
+  it does not yet implement the intended explicit VM-pool limit plus one
+  per-member priority policy;
+- the prototype accounts the managed allocation input without defining how
+  non-reclaimable base RAM contributes to a VM's total pool charge, so its
+  minimum is not yet the total-RAM guarantee expressed by the target model;
+- cross-VM contention and reclaim-for-transfer had no end-to-end milestone;
+- the prototype's host-pressure reclaim can run without an unmet
+  higher-priority recipient, which is not the intended demand-driven transfer
+  model;
+- Windows raw telemetry was the architectural input, with no OS-neutral
+  per-guest demand-provider boundary;
+- WN10 could reach a release decision while multi-VM pool qualification was
+  conditional; and
+- fallback and legacy migration language did not give every obsolete path a
+  firm deletion gate.
+
+This roadmap keeps WN3 as the current bounded implementation slice. WN0-WN10
+now qualify the Windows demand-provider and per-VM safety components. HPM0-HPM6
+then make the host pool the only allocation authority and deliver the complete
+multi-VM product. These are dependent component and system tracks within one
+roadmap, not alternative controller designs.
 
 ## Decision model
 
@@ -35,12 +103,12 @@ The new controller has three deliberately separate outputs.
 
 ### Memory requirement
 
-This is a byte estimate used to construct `desired`. Its first shadow policy is
-based on current Windows committed memory plus a configurable demand safety
-margin. The host converts the total visible-memory requirement into a
-virtio-mem requirement using the configured visible base, then applies the
-configured minimum, maximum, device geometry, alignment, and host-capacity
-bounds.
+This is a byte estimate used to construct the provider's eventual total-RAM
+`demand_target`. Its first shadow policy is based on current Windows committed
+memory plus a configurable demand safety margin. The current single-VM host
+converts the total visible-memory requirement into a virtio-mem requirement
+using the configured visible base, then applies the configured minimum,
+maximum, device geometry, alignment, and host-capacity bounds.
 
 The initial shadow formula is fixed by this roadmap:
 
@@ -65,6 +133,11 @@ Every operation is checked. Invalid bounds, overflow, inconsistent counters,
 or alignment failure rejects the assessment. This formula remains shadow-only
 until commit-only, resident, cache, and paging qualification demonstrates that
 it is a defensible physical-allocation baseline.
+
+WN3 retains the existing device-scoped shadow result so it can be compared with
+the current controller. HPM0 defines the checked adapter that combines the
+host-derived non-reclaimable base and that result into the total-RAM
+`GuestDemandReport.demand_target`; guest telemetry is not allocation authority.
 
 Physical available memory, notification state, and paging activity do not get
 added to committed memory as independent demand. They qualify the state and
@@ -91,6 +164,24 @@ Low, neutral, unavailable, stale, discontinuous, or contradictory evidence
 blocks shrink. Paging or hard-page activity may become an additional blocker
 only after its rate semantics have passed the trend milestone.
 
+### Host-pool grant
+
+The OS-specific host adapter exports total-RAM `demand_target` and `safe_floor`
+with pressure and shrink eligibility. It does not export `desired`. The
+host-pool manager protects every enabled VM's aligned minimum, then grants all
+eligible growth that fits without consulting priority. When requests exceed
+free capacity, priority orders the contenders for the remainder. A still-unmet
+higher-priority request may trigger reclaim only from a strictly lower-priority
+VM whose demand evidence is shrink-safe, and only to
+`max(minimum, safe_floor)`. Underutilisation without contention does not trigger
+priority reclaim.
+
+The pool's per-VM total-RAM grant is converted, using the host-derived base and
+fresh geometry, into device-scoped `desired`. Growth consumes a durable
+reservation before command dispatch. Reclaim does not become spendable capacity
+until live `current` confirms it. If sufficient safe capacity is unavailable,
+the unmet demand remains explicitly constrained.
+
 ## Signal roles
 
 | Signal or input | Initial role | Must not do |
@@ -110,6 +201,8 @@ only after its rate semantics have passed the trend milestone.
 
 ## Milestone summary
 
+### Windows demand-provider track
+
 | Milestone | Status | Outcome | Depends on |
 | --- | --- | --- | --- |
 | WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
@@ -121,8 +214,20 @@ only after its rate semantics have passed the trend milestone.
 | WN6 | Planned | Add only qualified trend and rate evidence | WN5 |
 | WN7 | Planned | Qualify realistic Windows memory behavior and automate the workload matrix | WN6 |
 | WN8 | Planned | Run unattended repeated-cycle and endurance qualification | WN7 |
-| WN9 | Planned | Stabilise configuration, migration, and defaults | WN8 |
-| WN10 | Planned | Satisfy the production-readiness and release decision | WN9 |
+| WN9 | Planned | Stabilise Windows provider configuration and remove superseded demand paths | WN8 |
+| WN10 | Planned | Record the Windows demand-provider readiness decision | WN9 |
+
+### Host-pool manager track
+
+| Milestone | Status | Outcome | Depends on |
+| --- | --- | --- | --- |
+| HPM0 | Planned | Define the host-pool, member-policy, and OS-neutral demand-report contracts | WN3 contract |
+| HPM1 | Planned | Add one durable atomic reservation ledger around the pure pool planner | HPM0 |
+| HPM2 | Planned | Run one host-wide coordinator in shadow mode across configured members | HPM1, WN3 |
+| HPM3 | Planned | Require a durable pool grant for every growth action | HPM2, qualified provider growth |
+| HPM4 | Planned | Reclaim safely from donors and transfer released capacity under contention | HPM3, qualified provider reclaim |
+| HPM5 | Planned | Add and qualify another guest-OS provider through the common demand contract | HPM4 |
+| HPM6 | Planned | Remove superseded paths and make the multi-VM host manager release decision | HPM5 |
 
 ## WN0 — Audit and controller-direction cleanup
 
@@ -298,6 +403,9 @@ the fixed-headroom policy without actuation.
 - Join every assessment with live `requested` and `current`; never treat
   in-flight or unavailable allocation as guest slack.
 - Emit shadow comparisons against the fixed-headroom candidate.
+- Preserve the visible requirement and device-scoped shadow target distinctly
+  so HPM0 can define a checked total-RAM `demand_target` without mistaking a
+  guest request for granted capacity.
 
 ### Likely files and modules
 
@@ -323,6 +431,8 @@ the fixed-headroom policy without actuation.
 - Notification state cannot invent a byte target.
 - Requirement calculation cannot bypass shrink-safety gates.
 - Shadow mode cannot reach the resize sink.
+- The assessment contract is independent of Windows raw-schema details at the
+  host-pool boundary.
 
 ### Dependencies
 
@@ -338,7 +448,9 @@ WN2 and the read-only controller status surface.
 
 ### Goal
 
-Allow the new assessment to grow memory safely while keeping reclaim disabled.
+Qualify that the new Windows assessment can drive safe bounded growth for one
+VM while keeping reclaim disabled. This is component evidence for later
+pool-authorized growth, not permission for independent multi-VM allocation.
 
 ### Design changes
 
@@ -351,6 +463,8 @@ Allow the new assessment to grow memory safely while keeping reclaim disabled.
 - Preserve journaling, fresh attestation, live reread, no-overlap,
   capacity-limited health, and durable latches.
 - Expose normal, urgent, fallback, held, and capacity-limited growth reasons.
+- Treat direct single-VM wiring as temporary qualification scaffolding; HPM3
+  replaces it with a required durable pool grant.
 
 The initial movement rule is:
 
@@ -389,6 +503,7 @@ exact target.
 - Low-memory state reduces response delay without bypassing any safety gate.
 - No scenario produces a lower request.
 - Fixed-headroom behavior is no longer the primary growth policy.
+- The evidence is reusable by HPM3 but does not qualify shared-pool allocation.
 
 ### Dependencies
 
@@ -404,8 +519,10 @@ WN3 shadow evidence and the applicable native/deployment preflight.
 
 ### Goal
 
-Enable reclaim only when Windows-native evidence shows sustained safety and
-prove that renewed pressure stops or reverses it.
+Qualify the per-VM shrink-safety and bounded actuation behavior only when
+Windows-native evidence shows sustained safety, and prove that renewed pressure
+stops or reverses it. The output establishes how far this VM may safely shrink;
+HPM4 decides whether shared-pool contention requires that reclaim.
 
 ### Design changes
 
@@ -419,6 +536,11 @@ prove that renewed pressure stops or reverses it.
   safe floor, configured minimum, or owned in-flight intent.
 - Preserve upward freeze, cancellation, and supersession when pressure returns.
 - Disable reclaim in fallback mode.
+- Export shrink eligibility and `safe_floor` to the host-pool contract; do not
+  let the guest-specific policy choose a cross-VM donor or recipient.
+- Keep direct single-VM reclaim as bounded qualification scaffolding. In the
+  destination, no per-VM loop schedules reclaim without a host-pool plan for a
+  waiting higher-priority recipient.
 
 The lower movement goal is:
 
@@ -457,7 +579,10 @@ This goal is eligible only after the complete shrink-safety decision passes.
 - Reclaim occurs only from a complete, explainable Windows-native evidence set.
 - Missing richer evidence always holds or grows; it never shrinks.
 - Renewed pressure cannot leave an unowned lower request progressing.
-- Default-on reclaim remains subject to all qualification and pause gates.
+- Default-on reclaim capability remains subject to all qualification and pause
+  gates; it does not mean proactive shrink without pool contention.
+- HPM4 can consume the qualified safe floor without duplicating Windows signal
+  semantics in the global arbiter.
 
 ### Dependencies
 
@@ -630,24 +755,30 @@ WN7 functional qualification and complete observability.
 - No production claim from one environment.
 - No automatic recovery that weakens explicit latch handling.
 
-## WN9 — Configuration, migration, and defaults
+## WN9 — Windows provider configuration and legacy-demand removal
 
 ### Goal
 
-Freeze a coherent pressure-policy configuration only after qualification has
-identified defensible defaults and failure behavior.
+Freeze a coherent Windows demand-provider configuration only after
+qualification has identified defensible defaults and failure behavior, and
+remove the demand algorithms and options it supersedes.
 
 ### Design changes
 
 - Version policy configuration and fingerprints.
-- Define configurable minimum, maximum, physical reserve, commit reserve,
-  demand safety margin, normal and faster growth steps, shrink step,
-  hysteresis, history window, pressure thresholds where needed, sample bounds,
-  and fallback mode.
+- Define configurable minimum, maximum, demand safety margin, normal and faster
+  growth steps, shrink step, hysteresis, history window, pressure thresholds
+  where needed, sample bounds, and any newly specified fail-safe.
 - Deprecate fixed physical/commit reserves as primary sizing inputs; retain only
-  explicitly named fallback/safety semantics.
+  a newly specified fail-safe if qualification proves one is needed. Do not
+  retain the full fixed-headroom estimator as the permanent fallback.
 - Define upgrade, downgrade, unsupported-signal, and older-schema behavior.
 - Reject ambiguous legacy settings instead of silently reinterpreting them.
+- Remove the legacy threshold `DemandCalculator`, `guest-stats` demand mode,
+  fixed-headroom primary estimator, and their configuration after the
+  replacement growth/reclaim gates and declared rollback window pass.
+- Give any temporarily retained older-schema decoder an owner, deployment
+  window, removal gate, and deletion task.
 
 ### Likely files and modules
 
@@ -673,7 +804,8 @@ identified defensible defaults and failure behavior.
 - Every operational choice has one owner, unit, default policy, and validation
   rule.
 - Defaults are justified by qualification evidence, not copied examples.
-- Legacy configuration has an explicit migration or hard rejection.
+- Legacy configuration has completed its bounded migration window and is
+  removed or hard-rejected; it is not a second supported policy.
 - Installation and rollback preserve safe disabled/inactive behavior until
   preflight passes.
 
@@ -687,12 +819,14 @@ WN8 evidence review.
 - No environment-specific values in repository defaults.
 - No release until the exact frozen configuration is requalified.
 
-## WN10 — Production readiness and release decision
+## WN10 — Windows demand-provider readiness decision
 
 ### Goal
 
-Accept or reject an immutable candidate for the declared Windows, host,
-hypervisor, driver, and trust scope.
+Accept or reject an immutable Windows demand-provider and per-VM reconciler
+candidate for the declared Windows, host, hypervisor, driver, and trust scope.
+This is a required component checkpoint for HPM3/HPM4, not the final host RAM
+manager release.
 
 ### Design changes
 
@@ -703,15 +837,12 @@ hypervisor, driver, and trust scope.
   latch, and recovery state.
 - Complete least-privilege installation, monitoring, alerting, pause, recovery,
   upgrade, downgrade, rollback, and support-boundary documentation.
-- Require one host-wide durable capacity authority before enabling more than one
-  controller; single-VM evidence cannot authorize competing allocation.
 - Publish known limitations and an indexed qualification record.
 
 ### Likely files and modules
 
 - controller status and operational CLI
 - deployment and release tooling
-- global capacity/reservation modules if multi-VM is in the release scope
 - Windows event/resource packaging
 - all public contracts, support matrix, runbooks, and release checklist
 
@@ -721,27 +852,457 @@ hypervisor, driver, and trust scope.
 - Installed deployment, telemetry, compatibility, and no-actuation preflight.
 - Applied growth, reclaim, rate degradation, recovery, and endurance gates.
 - Installation, upgrade, downgrade, rollback, monitoring, and security review.
-- Multi-VM reservation and failure qualification when multi-VM is claimed.
+- Contract fixtures proving the provider output can be consumed without
+  Windows-specific fields at the HPM boundary.
 
 ### Success criteria
 
 - Every required gate has current evidence for the exact candidate.
 - No unexplained warning, transition, fallback, or operator intervention remains.
 - Failures are bounded, observable, and covered by a rehearsed response.
-- The review records an explicit GO or NO-GO for a precisely stated support
-  profile.
+- The review records an explicit GO or NO-GO for the Windows provider and
+  single-VM safety profile, without claiming host-pool readiness.
 
 ### Dependencies
 
-WN9 and every release-scope platform, security, operations, and capacity gate.
+WN9 and every Windows-provider platform, security, operations, and safety gate.
 
 ### Explicitly not yet
 
 - No support outside the declared matrix.
 - No untrusted-guest claim without a separate threat review and hard isolation.
-- No multi-VM claim without durable atomic host reservation.
-- No release based on source tests, shadow results, or historical evidence
-  alone.
+- No shared-pool or multi-VM release claim; those require HPM0-HPM6.
+- No component-readiness decision based on source tests, shadow results, or
+  historical evidence alone.
+
+## HPM0 — Host-pool and guest-demand contracts
+
+### Goal
+
+Define the host-wide allocation model and the OS-neutral boundary it consumes,
+without changing runtime actuation or selecting a final configuration syntax.
+
+### Design changes
+
+- Define a versioned host-pool policy containing total VM-pool bytes, member
+  identity, minimum, maximum, priority, provider kind, and arbitration version.
+- Define pool/member quantities as total guest RAM and specify the checked
+  conversion between host-derived non-reclaimable base, live virtio-mem
+  `current`, pool charge, and device target.
+- Define `GuestDemandReport` with total-RAM `demand_target` and safe floor,
+  pressure, shrink eligibility, freshness, continuity, provider identity, and
+  reason codes.
+- Define total-RAM `pool_grant` as the pool output and the checked conversion to
+  device-scoped per-VM `desired`.
+- Require aligned minimums to fit within the pool and define explicit lifecycle
+  semantics for enabled, inactive, unavailable, and removed members.
+- Specify that priority is consulted only under contention, creates no
+  above-minimum reservation, and permits reclaim only for unmet
+  higher-priority demand from strictly lower-priority donors.
+- Specify deterministic same-priority contention behavior without creating a
+  same-priority donor relationship, embedding deployment values, or committing
+  to a file format.
+- Audit the existing pure `global_pool` prototype against these semantics;
+  preserve useful checked arithmetic and replace mismatched policy concepts.
+
+### Likely files and modules
+
+- `crates/virtio-mem-core/src/global_pool.rs`
+- pressure-assessment and versioned evidence types
+- new host-pool contract/config types
+- `docs/architecture.md`
+- `docs/data-model.md`
+- `docs/api-contract.md`
+- `docs/target-controller.md`
+
+### Tests required
+
+- Contract serialization and validation fixtures.
+- Pool smaller than aligned total-RAM minimums, base memory above a member
+  bound, duplicate identity, invalid priority, stale provider report, overflow,
+  geometry, and lifecycle cases.
+- Provider-neutral fixtures proving Windows-specific fields do not leak into
+  arbitration.
+- Lower-priority growth while capacity is free; identical unconstrained grants
+  under different priority values; deterministic contention and input-order
+  independence.
+- No reclaim without unmet higher-priority demand, and no equal- or
+  higher-priority donor selection.
+
+### Success criteria
+
+- Pool bytes, minimum guarantees, priorities, demand, safe reclaimability, and
+  grants each have one named owner and unit.
+- Priority changes only a constrained plan; it never creates a standing share
+  or strands free capacity.
+- A per-VM demand report cannot authorize allocation.
+- The current pure planner either conforms to the contract or has explicit
+  replacement tasks; its prototype thresholds are not silently promoted.
+- No runtime or live target changes.
+
+### Dependencies
+
+The stable WN3 assessment boundary; contract work may proceed alongside its
+remaining host shadow integration.
+
+### Explicitly not yet
+
+- No durable reservation.
+- No coordinator process or actuation.
+- No final configuration file syntax or defaults.
+
+## HPM1 — Durable atomic pool accounting
+
+### Goal
+
+Make host-pool grants restart-safe and impossible to double-spend before more
+than one reconciler can act.
+
+### Design changes
+
+- Add one versioned, bounded, atomically replaced pool ledger bound to the
+  complete member and policy fingerprint.
+- Record plan generation, observed `current`, owned `requested`, granted target,
+  reserved growth, pending reclaim, and per-VM command ownership.
+- Reserve growth before dispatch and release it only after failure resolution
+  or authoritative observation.
+- Count reclaim as free only after live `current` falls.
+- Define cold start, stale member, removed member, corrupt ledger, restart,
+  partial progress, and ambiguous command recovery.
+- Fail closed when a complete coherent accounting snapshot cannot be built.
+
+### Likely files and modules
+
+- `crates/virtio-mem-core/src/global_pool.rs`
+- new pool-ledger/checkpoint module
+- shared status/evidence types
+- host state persistence and fault-injection helpers
+- `docs/data-model.md`
+- `docs/target-controller.md`
+
+### Tests required
+
+- Atomic-replace, checksum/version, size-bound, fingerprint, and corruption
+  cases.
+- Crash at every reserve/dispatch/observe boundary.
+- No double allocation across concurrent demand, restart, partial progress, or
+  ambiguous command outcomes.
+- Reclaim remains unavailable until observed in `current`.
+
+### Success criteria
+
+- Every pool byte is either free, currently allocated, or durably reserved
+  exactly once.
+- Restart reconstructs accounting without replaying a resize.
+- Corrupt or incomplete state blocks allocation and reclaim visibly.
+- The implementation remains side-effect-free or shadow-only at runtime.
+
+### Dependencies
+
+HPM0.
+
+### Explicitly not yet
+
+- No live multi-VM coordinator.
+- No pool-authorized actuation.
+- No reclaim-for-transfer.
+
+## HPM2 — Host-wide shadow coordinator
+
+### Goal
+
+Run one coordinator over the full configured member set and compare pool grants
+with current per-VM decisions without changing any target.
+
+### Design changes
+
+- Introduce one host-wide service/process as the exclusive future allocation
+  authority; it owns membership, provider adapters, snapshots, arbitration,
+  the ledger, and dispatch ordering.
+- Adapt Windows pressure assessment to `GuestDemandReport`.
+- Read fresh alias-scoped `requested`/`current` for every configured member and
+  reject incomplete or mixed-generation snapshots.
+- Emit per-cycle pool totals, minimum reservations, demand, priority, planned
+  donors/recipients, grants, constraints, and reason codes.
+- Compare shadow grants with the existing direct per-VM targets and expose all
+  divergence; do not make the per-instance services a second pool authority.
+
+### Likely files and modules
+
+- new host coordinator and provider-adapter modules
+- host configuration/status/runtime surfaces
+- pool ledger and planner
+- `tools/xtask` shadow evidence collection
+- deployment unit/templates
+
+### Tests required
+
+- One-VM degenerate pool, multiple lower-priority VMs growing while capacity is
+  available, and multi-VM contention fixtures.
+- Aggregate demand below, equal to, and above pool capacity.
+- Priority-dormant unconstrained plans, constrained ordering, equal-priority
+  tie/no-preemption, minimum reservation, stale member, inactive member, and
+  provider degradation.
+- Process exclusivity, complete-snapshot, status, restart, and evidence tests.
+
+### Success criteria
+
+- A single coherent shadow plan explains every configured VM and every pool
+  byte.
+- Aggregate demand exceeding the pool yields deterministic constrained grants.
+- Every eligible VM can grow when capacity is available regardless of priority.
+- Missing or unsafe donor evidence never appears as reclaimable capacity.
+- Shadow mode has no path to the resize sink.
+
+### Dependencies
+
+HPM1 and WN3 host shadow output.
+
+### Explicitly not yet
+
+- No pool-authorized growth or reclaim.
+- No removal of the active single-VM path.
+- No multi-VM release claim.
+
+## HPM3 — Pool-authorized growth
+
+### Goal
+
+Require every growth action to hold a durable grant from the host-wide pool,
+first for one VM and then under concurrent multi-VM demand, while reclaim stays
+disabled.
+
+### Design changes
+
+- Make the pool's total-RAM `pool_grant` the only source of per-VM `desired` for
+  managed members.
+- Atomically reserve discretionary pool capacity before dispatching a growth
+  grant.
+- Grant every eligible request when capacity is sufficient. Only when free
+  capacity is insufficient, order simultaneous contenders by configured
+  priority with deterministic same-priority handling.
+- Preserve every member's minimum reservation without pre-reserving any
+  priority-based share above it.
+- Revalidate host physical headroom independently; a host constraint can reduce
+  a grant but never expand the configured pool.
+- Serialize or otherwise coordinate dispatch so no reconciler bypasses the
+  ledger or overlaps an in-flight request.
+- Remove direct per-VM host-capacity allocation after the pool path passes its
+  one-VM and multi-VM growth gates.
+
+### Likely files and modules
+
+- host coordinator/runtime and service topology
+- pool planner and ledger
+- per-VM target-policy/reconciler adapter
+- controller and pool status/event contracts
+- deployment and qualification tooling
+
+### Tests required
+
+- One-VM equivalence and rollback fixtures.
+- Lower-priority growth to demand when pool capacity is available.
+- Concurrent higher/lower/equal-priority demand with insufficient pool space.
+- Reservation, command failure, ambiguity, partial progress, cancellation,
+  restart, and host-headroom failure.
+- Applied growth with reclaim disabled and no oversubscription at any sample.
+
+### Success criteria
+
+- No managed VM grows without a durable pool grant.
+- The sum of observed allocation and outstanding growth reservations never
+  exceeds the pool.
+- Priority affects only discretionary bytes and never consumes another member's
+  minimum.
+- Priority has no effect on unconstrained outcomes and does not strand usable
+  pool capacity.
+- The superseded direct-growth capacity path is deleted after qualification.
+
+### Dependencies
+
+HPM2 and WN4/WN10 growth evidence for every enabled provider.
+
+### Explicitly not yet
+
+- No automatic donor reclaim or transfer.
+- No provider-specific policy inside the arbiter.
+- No final endurance or release decision.
+
+## HPM4 — Safe reclaim and capacity transfer
+
+### Goal
+
+When a higher-priority VM has unmet demand after free capacity is exhausted,
+safely reclaim from eligible strictly lower-priority VMs and make the observed
+release available to that waiting recipient.
+
+### Design changes
+
+- Require a concrete waiting recipient with unmet demand before selecting any
+  donor; never reclaim merely to maintain idle pool headroom.
+- Select donors only when they are strictly lower priority than the recipient,
+  underutilised, shrink-eligible, above safe floor/minimum, geometrically valid,
+  and free of conflicting in-flight state.
+- Do not shrink an equal- or higher-priority VM to satisfy the recipient.
+- Never grant a donor target below `max(minimum, safe_floor)`.
+- Dispatch bounded reclaim first; hold the recipient constrained until released
+  bytes are confirmed by authoritative `current` and committed to the ledger.
+- Cancel or freeze reclaim when donor pressure returns, without promising those
+  bytes to a recipient.
+- Handle insufficient reclaimable capacity, zero/partial progress, donor or
+  recipient restart, stale evidence, and command ambiguity explicitly.
+- Remove independent periodic per-VM reclaim after pool-owned reclaim passes
+  qualification.
+
+### Likely files and modules
+
+- global planner and ledger state machines
+- host coordinator scheduling/dispatch
+- per-VM shrink recovery and reconciler integration
+- pool status/events and qualification analyzer
+- `docs/target-controller.md`
+
+### Tests required
+
+- Higher-priority recipient versus lower-priority donor, equal-priority
+  no-preemption, lower-priority recipient, underutilised-without-contention,
+  and no-safe-donor cases.
+- Minimum/safe-floor enforcement and alignment across different device blocks.
+- Renewed donor pressure before, during, and after partial reclaim.
+- Recipient demand disappearance, zero progress, restart, stale input,
+  ambiguous outcome, and ledger recovery.
+- Applied contention runs proving reclaim-before-transfer and no oversubscription.
+
+### Success criteria
+
+- Reclaimed capacity is never double-counted or granted before observation.
+- No VM crosses its minimum or qualified safe floor.
+- No donor reclaim occurs without unmet demand from a strictly higher-priority
+  recipient.
+- Higher-priority demand receives available discretionary capacity according to
+  policy, while unsafe or unavailable reclaim leaves it visibly waiting and
+  constrained.
+- The superseded independent-reclaim path is deleted after qualification.
+
+### Dependencies
+
+HPM3 and WN5/WN10 reclaim evidence for every enabled donor provider.
+
+### Explicitly not yet
+
+- No claim for an unimplemented guest-OS provider.
+- No forced reclaim from stale, unavailable, or shrink-unsafe guests.
+- No host overcommit or guest swapping policy outside the declared pool model.
+
+## HPM5 — Additional guest-OS provider
+
+### Goal
+
+Prove that guest demand is extensible by adding a second operating-system
+provider without changing pool arbitration or giving the guest allocation
+authority.
+
+### Design changes
+
+- Select one supported Linux-native demand/pressure source and define its
+  provider-specific collection, validation, continuity, and reason semantics.
+- Adapt it to the same `GuestDemandReport` contract used by Windows.
+- Keep Linux raw evidence and thresholds out of the Windows schema and out of
+  global arbitration.
+- Add provider capability/version negotiation and explicit unsupported or
+  degraded behavior.
+- Exercise homogeneous and mixed-provider pool membership.
+
+### Likely files and modules
+
+- new Linux guest provider/adapter modules
+- common provider trait and demand-report types
+- host coordinator configuration and status
+- guest/provider qualification tooling and documentation
+
+### Tests required
+
+- Provider contract conformance and malformed/stale/discontinuous evidence.
+- Linux-native workload correlation before granting policy authority.
+- Mixed Windows/Linux contention, priority, minimum, reclaim, degradation, and
+  restart cases.
+- Proof that adding a provider does not change the arbiter's policy semantics.
+
+### Success criteria
+
+- At least two guest OS implementations feed the same pool contract.
+- Provider failure constrains only the affected safe actions and never becomes
+  fabricated free capacity.
+- Pool planning remains deterministic and free of OS-specific branches.
+- Support claims name the exact qualified provider/platform combinations.
+
+### Dependencies
+
+HPM4 and a separately reviewed Linux provider design/qualification plan.
+
+### Explicitly not yet
+
+- No promise that every guest OS is supported.
+- No generic raw telemetry schema shared by unrelated operating systems.
+- No provider loaded without explicit configuration and capability evidence.
+
+## HPM6 — Multi-VM endurance, cleanup, and release decision
+
+### Goal
+
+Accept or reject an immutable host RAM manager candidate after multi-VM
+contention, recovery, endurance, operations, and legacy-removal gates pass.
+
+### Design changes
+
+- Freeze the host-pool and member configuration schema, priority semantics,
+  provider versions, ledger format, status, alerts, and operator procedures.
+- Qualify repeated simultaneous demand, reclaim-for-transfer, provider loss,
+  host pressure, restart, partial progress, ambiguity, membership lifecycle,
+  upgrade, downgrade, and rollback.
+- Remove remaining direct per-instance allocation entrypoints, old controller
+  modes, compatibility aliases, and expired schema decoders.
+- Keep only current per-VM assessment/reconciliation/safety components beneath
+  the single coordinator.
+- Publish the precise supported guest/provider/host matrix and evidence index.
+
+### Likely files and modules
+
+- all host coordinator, provider, pool, reconciler, status, and deployment code
+- `tools/xtask` multi-VM qualification and release evidence
+- public contracts, configuration templates, runbooks, and status documents
+
+### Tests required
+
+- Full focused, local, and applicable native guest gates for the frozen commit.
+- Installed multi-VM growth, reclaim-transfer, recovery, and endurance runs.
+- Crash/restart at every ledger/dispatch boundary and loss of each provider.
+- Configuration validation, membership change, upgrade/downgrade/rollback,
+  monitoring, security, and least-privilege review.
+- Repository search proving named superseded modes and settings are gone.
+
+### Success criteria
+
+- One host-wide authority accounts for every managed allocation and reservation.
+- Aggregate demand above the pool is resolved or constrained without violating
+  minimums, safe floors, priorities, or host safety.
+- At least the declared provider combinations pass current qualification.
+- No temporary compatibility path remains without a separately approved,
+  time-bounded exception and deletion task.
+- The review records an explicit GO or NO-GO for a precise support profile.
+
+### Dependencies
+
+HPM5, WN10 for each Windows provider version in scope, and every applicable
+deployment, recovery, endurance, security, and operations gate.
+
+### Explicitly not yet
+
+- No untrusted-guest support without a separate threat model and isolation
+  milestone.
+- No dynamic overcommit, NUMA placement, migration, or cluster-wide pooling
+  unless separately designed.
+- No release from single-VM, shadow-only, or historical evidence.
 
 ## Superseded roadmap items
 
@@ -765,6 +1326,22 @@ Historical evidence remains useful for transport, reconciliation, compatibility,
 platform progress, and failure analysis. It cannot qualify the new requirement,
 pressure, or shrink-safety decisions.
 
+### Retirement gates
+
+| Superseded path | Temporary purpose | Removal gate |
+| --- | --- | --- |
+| Fixed-headroom estimator and reserve-as-demand settings | WN3 shadow comparison and, only if explicitly selected, bounded WN4/WN5 rollback evidence | Delete in WN9 after replacement growth, reclaim, degradation, and rollback evidence passes |
+| Threshold `DemandCalculator` and `guest-stats` demand mode | No new architecture role | Delete when the pressure assessment owns applied single-VM decisions; do not route HPM through it |
+| Schema-v2 telemetry decoder | Bounded producer/consumer rollout only | Delete after deployed producers use the current schema and the declared rollback window closes |
+| Direct per-VM host-capacity decision | Single-VM component qualification | Delete when HPM3 pool-authorized growth passes |
+| Independent per-VM automatic reclaim | Single-VM shrink-safety qualification | Delete when HPM4 pool-owned reclaim passes |
+| Per-instance allocation-authority service topology | Incremental deployment scaffold | Delete when the exclusive HPM coordinator and rollback have qualified |
+
+An item that misses its removal gate blocks the corresponding milestone. A new
+generic `legacy`, version-selection, or compatibility mode requires a concrete
+deployment need, named owner, expiry condition, and deletion task; convenience
+alone is not sufficient.
+
 ## Execution rule
 
 `BACKLOG.md` owns the current task claim. `docs/QA-roadmap.md` owns applied
@@ -776,3 +1353,8 @@ owning-crate tests, then `cargo xtask gate local`, followed by the applicable
 native Windows, deployment, live, recovery, or endurance gate. Update contracts,
 boards, feature status, and project status together. An unavailable or unrun
 layer remains open.
+
+WN work may qualify one guest provider and its per-VM safety machinery before
+the coordinator is active. HPM work must then consume those outputs rather than
+reimplement their OS-specific semantics. No final automatic-resizing release
+decision is possible until HPM6; WN10 is a component checkpoint only.

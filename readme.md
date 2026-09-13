@@ -6,20 +6,29 @@ coordinating bounded virtio-mem changes from a RHEL/libvirt host.
 ## Scope
 
 The current supported development scope is one explicitly configured, fully
-trusted Windows guest and one host controller/device. Windows virtio-mem is
-technology preview; this repository does not claim production, untrusted-guest,
-or multi-VM support.
+trusted Windows guest and one host controller/device. The destination is one
+host-wide manager for a configured total-guest-RAM pool with per-VM minimums,
+priorities, demand-provider adapters, and safe cross-VM arbitration. Windows
+virtio-mem is technology preview; this repository does not yet claim
+production, untrusted-guest, or multi-VM support.
+
+All managed VMs may grow into available pool RAM. Priority creates no standing
+share above a minimum; it matters only when growth requests contend. An unmet
+higher-priority request may reclaim only from a strictly lower-priority VM that
+the guest-demand provider says can shrink safely. Otherwise the requester
+waits.
 
 Windows measures and publishes allocation-free telemetry. The host joins fresh
 telemetry with alias-scoped live libvirt `current`, calculates the target,
 checks compatibility and headroom, journals intent, and owns actuation.
 
 The project is transitioning from a primarily fixed-headroom calculation to a
-Windows-native pressure-aware policy. Windows memory-resource notifications and
-supported memory-manager performance data will become the primary demand
-evidence; the host will continue to own sizing and actuation. The current fixed
-reserve model becomes a fallback/safety guard, not the intended demand
-predictor. See `docs/windows-native-pressure-controller.md`.
+Windows-native pressure-aware demand provider beneath that host manager.
+Windows memory-resource notifications and supported memory-manager performance
+data will become its primary demand evidence; the host will continue to own
+pool allocation, sizing, and actuation. The current fixed-reserve model is a
+temporary qualification/migration baseline and will be removed after its
+replacement gates pass. See `docs/windows-native-pressure-controller.md`.
 
 ## Components
 
@@ -34,10 +43,12 @@ predictor. See `docs/windows-native-pressure-controller.md`.
   verification, QGA readiness, reversible live resize, and unattended
   qualification.
 
-Automatic reclaim is a default-on product capability with an explicit pause
-override. The normative target, quanta, history, hysteresis, convergence,
-retry, and latch rules live in `docs/target-controller.md`; operational docs do
-not copy those values into test profiles.
+Reclaim capability is default-on with an explicit pause override. In the
+destination, only the host-pool manager schedules it for unmet higher-priority
+demand; lower-priority or underutilised status alone is not a shrink command.
+The normative target, quanta, history, hysteresis, convergence, retry, and latch
+rules live in `docs/target-controller.md`; operational docs do not copy those
+values into test profiles.
 
 ## Development validation
 
@@ -84,19 +95,20 @@ and `docs/testing.md`; do not copy values from old evidence.
 
 Core telemetry, Windows low/high memory-resource notification collection,
 single-controller policy/reconciliation, native service lifecycle, host
-actuation, and Rust validation tooling are implemented. Notification state is
-measurement-only and not yet used by target policy. The implemented sizing
-policy remains a compatibility baseline, not the release candidate. The stack
-remains NO-GO for unattended automatic resizing until the pressure-aware
-implementation and its applied qualification, recovery, and endurance gates in
-`docs/QA-roadmap.md` pass.
+actuation, a pure non-actuating pool planner, and Rust validation tooling are
+implemented. Notification state is measurement-only and not yet used by target
+policy. The implemented sizing policy remains a temporary baseline, not the
+release candidate. Durable host-wide configuration/reservation, runtime
+arbitration, reclaim-for-transfer, and additional guest providers are not yet
+implemented. The stack remains NO-GO for unattended automatic resizing until
+the WN component gates and HPM system gates in `docs/QA-roadmap.md` pass.
 
 ## Documentation
 
 | Document | Purpose |
 | --- | --- |
 | `BACKLOG.md` | Product execution board and current handoff |
-| `docs/roadmap.md` | Windows-native controller milestones and exit gates |
+| `docs/roadmap.md` | Windows-provider and host-pool manager milestones and exit gates |
 | `docs/architecture.md` | Component ownership and safety boundaries |
 | `docs/testing.md` | Current validation and deployment model |
 | `docs/target-controller.md` | Normative target and recovery contract |

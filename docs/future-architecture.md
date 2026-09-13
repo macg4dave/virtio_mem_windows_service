@@ -4,41 +4,62 @@
 
 The implemented system supports one trusted Windows development guest and one
 explicit virtio-mem device. Windows publishes native measurements. A Linux
-controller joins them with live device state, calculates an absolute target,
-and performs fail-closed actuation.
+host controller joins them with live device state, calculates an absolute
+single-VM target, and performs fail-closed actuation.
 
 The next architecture step is a Windows-native pressure measurement and shadow
 assessment layer, not additional guest authority. Global host-capacity
-arbitration remains required, but it must consume pressure-aware per-VM targets
-rather than freezing the fixed-headroom estimator into the multi-VM design.
+arbitration is the product destination, not optional follow-up work. It consumes
+OS-neutral per-VM demand reports rather than freezing the fixed-headroom
+estimator or Windows raw schema into the multi-VM design.
 See [windows-native-pressure-controller.md](windows-native-pressure-controller.md).
 
 ## Global pool
 
-The global controller will consume, per VM:
+One configured host-wide VM RAM pool declares total guest-RAM pool bytes and,
+per member, total-RAM minimum/maximum, priority, exact VM/device identity, and
+demand-provider kind. Each VM's charge includes host-derived non-reclaimable
+base RAM plus live virtio-mem `current` and outstanding growth reservations;
+only the device portion is actuated.
+The pool manager consumes, per VM:
 
 - authoritative current allocation;
-- desired target and safe floor;
+- provider-assessed `demand_target`, shrink eligibility, and safe floor;
 - demand freshness and pressure state;
-- allocation and reclaim priority;
+- configured priority;
 - controller health and command ownership.
 
-It will also consume host available capacity and configured reserve. It must
+It reserves every enabled member's minimum before assigning discretionary
+capacity. Host available capacity and reserve remain independent safety gates;
+they can constrain but never expand the configured pool. The manager must
 atomically reserve capacity before granting growth, account reclaimed capacity
-only after observing lower current allocation, and revoke stale demand without
+only after observing lower current allocation, and reject stale demand without
 inventing new targets.
+
+Priority is unused while all eligible growth fits, so lower-priority VMs may
+consume available pool RAM up to demand. When growth requests contend for
+insufficient capacity, priority orders the remaining grants. If a
+higher-priority request remains unmet, only a strictly lower-priority,
+underutilised, shrink-safe VM may donate, never below
+`max(minimum, safe_floor)`. No waiting higher-priority recipient means no
+priority reclaim; an unsafe donor means the recipient waits.
 
 The single-VM reconciler remains responsible for device alignment,
 desired/requested/current transitions, command journaling, partial progress,
 uncertain results, cancellation, and durable latching.
 
+Windows and future Linux providers retain OS-native telemetry and validation.
+Host adapters translate their evidence to one versioned `GuestDemandReport`;
+the pool planner contains no Windows- or Linux-specific branches.
+
 ## Delivery order
 
-The normative order is WN0 through WN10 in [roadmap.md](roadmap.md). Global-pool
-construction may proceed hermetically, but live multi-VM integration cannot
-precede the stable per-VM assessment, single-VM qualification, durable atomic
-reservation, and production-scope gates defined there. This document does not
-maintain a second delivery sequence.
+The normative order is the WN0-WN10 guest-provider track followed by the
+dependent HPM0-HPM6 system track in [roadmap.md](roadmap.md). Pool construction
+may proceed hermetically, but live multi-VM integration cannot precede stable
+per-VM assessment, provider qualification, and durable atomic reservation.
+WN10 is a component checkpoint; HPM6 owns the final release decision. This
+document does not maintain a second delivery sequence.
 
 ## Security and support
 
@@ -57,6 +78,8 @@ and kept advisory.
 - Windows-side libvirt or resize commands;
 - allocation inferred from Windows totals, QGA, or balloon counters;
 - independent controller instances racing for a shared host pool;
+- direct per-VM allocation or reclaim remaining as a compatibility mode after
+  pool-owned replacements qualify;
 - replaying commands after restart;
 - embedding release-specific VM names, sizes, durations, or paths in design
   documentation.

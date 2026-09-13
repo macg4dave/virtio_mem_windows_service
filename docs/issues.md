@@ -12,6 +12,7 @@ run directory or the deployment manifest.
 | ISSUE-011 | Accepted limitation | The signed Windows virtio-mem driver has no supported user-mode status query used by this project. | Keep optional diagnostics separate from allocation authority; driver work requires a separately approved design and external ownership. |
 | ISSUE-016 | Open redesign | The implemented fixed-headroom controller is not a Windows memory-pressure model and has not completed live reclaim qualification. | Complete the native signal probe, shadow assessment, and revised applied qualification before enabling unattended actuation. |
 | ISSUE-017 | Open | Supported Windows APIs expose pressure state and evidence but no general KVM-ready recommended-RAM byte target. | Validate a minimal host mapping from committed demand plus proportional buffer, with native pressure signals controlling urgency and reclaim eligibility. |
+| ISSUE-018 | Open architecture gap | The runtime is still a per-VM controller, and the pure pool prototype has separate growth/reclaim priorities plus host-pressure reclaim rather than contention-only priority and named-recipient transfer. | Complete HPM0-HPM6: let all fitting demand grow, reclaim only for unmet higher-priority demand from strictly lower-priority safe donors, and delete direct per-VM allocation/independent reclaim after replacement qualification. |
 
 ## Standing risk controls
 
@@ -23,8 +24,8 @@ run directory or the deployment manifest.
   Windows telemetry do not replace it.
 - The custom QGA memory command is experimental and absent from upstream QGA;
   maintained probes use QGA only for health and identity.
-- One controller/device is supported until the global pool provides atomic
-  reservation.
+- One controller/device is supported until the host pool provides atomic
+  reservation. This is an incremental checkpoint, not the final architecture.
 
 Resolved implementation work is summarized in `BACKLOG.md` and covered by
 focused regression tests. Do not reintroduce completed incident timelines as

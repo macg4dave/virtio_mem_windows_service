@@ -288,9 +288,10 @@ journal review.
 
 ## Windows-native pressure validation
 
-The fixed-headroom qualification path is retained as historical platform and
-reconciler evidence; it cannot qualify the replacement demand policy. Follow
-QA-T025 onward before enabling pressure-aware actuation.
+Fixed-headroom results are retained as historical platform and reconciler
+evidence; that path cannot qualify the replacement demand policy. Follow
+QA-T025 onward before enabling pressure-aware actuation, and remove the old
+estimator/configuration at its WN9 retirement gate.
 
 The first pressure work is measurement-only. On the supported native Windows
 build, record API/counter availability, required privileges, low/high resource
@@ -322,6 +323,48 @@ shadow review shows sustained high/healthy Windows evidence, adequate commit
 headroom, no paging blocker, complete continuity, and an accepted fallback
 contract. Existing attestation, host headroom, journaling, convergence,
 no-overlap, and recovery checks continue unchanged.
+
+## Host-pool manager validation
+
+QA-T036 and QA-T037 are non-actuating contract, fault-injection, and shadow
+gates. Their evidence must cover the complete configured member set and account
+for total pool bytes, aligned minimum reservations, priorities, per-provider
+demand/safe-floor reports, authoritative `requested`/`current`, ledger
+generation, free bytes, reservations, planned reclaim, granted targets, and
+constraints. A set of independent single-VM traces is not a coherent pool
+snapshot.
+
+Shadow cases must prove that priority is observationally irrelevant whenever
+all eligible growth fits: lower-priority VMs reach the same demand target they
+would have reached without a higher-priority member, and no free capacity is
+withheld as a priority reserve. Separate constrained cases prove priority
+ordering and deterministic same-priority handling.
+
+Applied pool qualification begins with growth while reclaim is disabled. Prove
+that every growth has a prior durable reservation and that current allocation
+plus outstanding reservations never exceeds the configured pool. Host
+`MemAvailable` remains an independent safety gate; it cannot enlarge the pool.
+
+Reclaim-for-transfer qualification must show this ordered evidence:
+
+1. recipient demand cannot be satisfied from free pool capacity;
+2. the recipient is strictly higher priority than the proposed donor;
+3. the donor is fresh, underutilised, shrink-eligible, and remains above both
+   minimum and safe floor;
+4. the donor's bounded lower request is owned and observed in live `current`;
+5. the ledger commits the released bytes; and
+6. only then is recipient growth reserved and dispatched.
+
+Renewed donor pressure, stale evidence, partial/no progress, ambiguity, or
+restart must prevent unobserved capacity from reaching the recipient. Final
+HPM qualification also covers homogeneous and mixed provider pools, complete
+membership lifecycle, coordinator exclusivity, recovery, endurance, monitoring,
+upgrade/downgrade/rollback, and repository evidence that superseded controller
+paths were deleted.
+
+Also test the negative cases: no unmet recipient, equal- or lower-priority
+recipient, and no safe strictly lower-priority donor. Each must hold without a
+donor shrink and report the waiting demand explicitly.
 
 ## Privilege and live health
 

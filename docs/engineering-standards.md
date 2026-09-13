@@ -52,20 +52,34 @@
 
 ## Host controller
 
-- One explicitly configured controller manages one VM and device alias until
-  global arbitration is implemented.
+- One explicitly configured controller currently manages one VM and device
+  alias. The destination is one exclusive host-wide coordinator with a
+  configured VM RAM pool, explicit members, minimums, priorities, provider
+  adapters, and durable grants; per-VM reconcilers then act only within those
+  grants.
 - Use fixed argument vectors and configured finite command bounds; never invoke
   a shell for `virsh`.
 - Refresh live XML and compatibility immediately before mutation. Never issue
   an ordinary request while requested and current differ.
 - Preserve telemetry provenance, freshness, replay, headroom, alignment,
   retention-floor, intent-journal, and latch gates.
-- Automatic reclaim remains default-on with an explicit pause override.
+- Reclaim capability remains default-on with an explicit pause override. After
+  HPM4 only the pool manager schedules it for unmet higher-priority demand.
   Detailed target, quantum, history, hysteresis, retry, and recovery behavior
   is normative only in `target-controller.md` and the owning Rust modules.
 - Keep pressure classification separate from byte-target construction. Missing
   required pressure evidence blocks shrink, and fixed headroom is a fallback
   safety input rather than the primary release demand model.
+- Keep total-RAM per-VM `demand_target` and `pool_grant` separate from the
+  device-scoped `desired`. Reserve growth before dispatch and do not count
+  reclaim until live `current` confirms release. Priority cannot override a
+  member's total-RAM minimum or qualified safe floor.
+- Do not use priority as an above-minimum reservation. Grant all eligible growth
+  that fits; consult priority only under contention. Reclaim requires unmet
+  higher-priority demand and a strictly lower-priority shrink-safe donor.
+- Remove direct per-VM allocation and independent reclaim after their pool-owned
+  replacements qualify. Temporary migration paths require an owner, exit gate,
+  and deletion task.
 - A service failure is fail-stop in the checked-in unit. Deployment monitoring
   owns any reviewed restart policy.
 

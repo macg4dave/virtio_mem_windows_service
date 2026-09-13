@@ -4,26 +4,43 @@ Updated: 2026-09-13
 
 ## Summary
 
-The project has redirected its single-VM controller toward Windows-native
-memory pressure. Basic Windows telemetry, the host-side allocation join,
-compatibility attestation, fixed-headroom targets, durable reconciliation, and
-bounded recovery are implemented. The target formula is now a compatibility
-baseline rather than the intended release policy. The completed coherent
-deployment evidence remains valid. The controller remains disabled/inactive,
-and automatic resizing remains NO-GO until the new pressure-aware path is
-implemented and qualified.
+The product destination is now explicit: one host-wide VM RAM manager owns a
+configured total-guest-RAM pool, per-VM minimum guarantees and priorities,
+durable reservations, contention arbitration, and safe reclaim-for-transfer.
+Guest operating systems only report native demand/pressure through host-side
+provider adapters. The Windows-native work is the first provider beneath that
+manager, not the final allocation architecture.
+
+The intended priority policy is contention-only. Lower-priority VMs may use
+available pool RAM normally. Reclaim occurs only for unmet higher-priority
+demand, only from strictly lower-priority shrink-safe donors, and never creates
+recipient capacity before the release is observed.
+
+Basic Windows telemetry, the host-side allocation join, compatibility
+attestation, fixed-headroom targets, durable per-VM reconciliation, bounded
+recovery, and a pure non-actuating pool-planner prototype are implemented. The
+fixed-headroom formula is a temporary migration baseline, not a supported
+long-term policy. The completed coherent deployment evidence remains valid.
+The controller remains disabled/inactive, and automatic resizing remains
+NO-GO until the pressure-aware provider and host-pool paths are implemented and
+qualified.
 
 ## Current work
 
 - TASK-035 completed the implementation/document audit, Microsoft-native signal
   research, target architecture, obsolete-item classification, and WN0 cleanup.
-- TASK-036 / WN1 is next: define and test the additive telemetry, capability,
-  warm-up, and fallback contract without changing collection or actuation.
+- TASK-038 / WN3 remains the claimed implementation slice: finish host
+  persistence, status exposure, and shadow comparison for separate demand,
+  pressure, and shrink-safety outputs without actuation.
 - TASK-028 and QA-T009 are paused as fixed-headroom qualification. Their
   evidence remains useful for reconciliation and platform behavior but cannot
   qualify the replacement demand policy.
+- The roadmap now preserves WN3 as the current implementation slice, treats
+  WN0-WN10 as Windows-provider/per-VM component qualification, and makes
+  HPM0-HPM6 the mandatory system path to a final release decision.
 
-No live mutation was performed for the current source change.
+No product code, deployment, or live mutation was performed for this
+architecture/roadmap change.
 
 ## Implemented
 
@@ -52,10 +69,21 @@ compression do not currently influence `desired`.
 - Windows does not expose a general recommended-RAM byte target for KVM; the
   host's minimal mapping from pressure evidence to bytes still requires shadow
   calibration and validation.
+- There is no host-wide configuration for total VM-pool bytes, members,
+  minimums, priorities, or provider kinds.
+- Existing pool inputs do not yet charge each VM's host-derived non-reclaimable
+  base RAM alongside live virtio-mem allocation and reservations.
+- The pure `global_pool` planner has no durable reservation ledger, exclusive
+  coordinator, provider-neutral demand-report input, or runtime integration.
+- Its current separate growth/reclaim priorities and host-pressure-driven
+  reclaim do not implement the contention-only, named-recipient transfer model.
+- Concurrent demand, reclaim-before-transfer, mixed guest-OS providers, and
+  multi-VM recovery/endurance remain unimplemented and unqualified.
 - Classic Windows Event Log text rendering still needs a packaged message
   resource; structured EventData remains available.
-- Multi-controller actuation is deferred until WN10's release scope has durable
-  atomic host-pool reservation and live multi-guest qualification.
+- Direct per-VM capacity selection, independent reclaim, fixed-headroom demand,
+  threshold demand, and temporary schema fallback still require deletion at
+  their named WN/HPM retirement gates.
 
 ## Evidence policy
 

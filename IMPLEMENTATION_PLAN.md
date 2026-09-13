@@ -19,6 +19,11 @@ or enable reclaim. Its shared-core assessment and history contracts pass
 focused and aggregate local tests; host persistence, status exposure, and
 shadow comparison emission are the next implementation slice.
 
+The Windows sequence produces one guest-demand provider and preserves the
+per-VM safety machinery. It is not the top-level product. HPM0-HPM6 add the
+mandatory host-wide VM RAM pool, minimum guarantees, priorities, arbitration,
+reclaim-for-transfer, additional guest-OS providers, and final release gate.
+
 ## Ordered implementation slices
 
 1. **WN1 — Contract.** Add versioned types and validation for notification
@@ -29,8 +34,8 @@ shadow comparison emission are the next implementation slice.
    through the existing atomic transport. Keep policy unchanged.
 3. **WN3 — Shadow decisions.** Implement separate memory-requirement,
    pressure-state, and shrink-safety results. Join them with live
-   `requested`/`current`, expose reasons, and compare them with the legacy
-   candidate without actuation.
+   `requested`/`current`, expose `demand_target` and reasons, and compare them
+   with the temporary fixed-headroom baseline without actuation.
 4. **WN4 — Growth.** Enable bounded normal and faster-growth modes using the
    pressure-aware assessment. Keep reclaim disabled and preserve every current
    host-capacity, attestation, journal, convergence, and latch gate.
@@ -45,18 +50,60 @@ shadow comparison emission are the next implementation slice.
    burst, steady-state, and recovery behavior.
 8. **WN8 — Endurance.** Run the reviewed detached repeated-cycle and unattended
    plans with resumable, immutable evidence and explicit final-state handling.
-9. **WN9 — Configuration.** Freeze validated configuration, defaults,
-   fingerprints, schema migration, fallback behavior, deployment templates,
-   upgrade, downgrade, and rollback.
-10. **WN10 — Release decision.** Freeze an immutable candidate and execute the
-    complete code, native Windows, deployment, live, recovery, endurance,
-    security, operations, and applicable host-capacity gates.
+9. **WN9 — Provider configuration and cleanup.** Freeze validated Windows
+   provider settings, fingerprints, migration, deployment templates, upgrade,
+   downgrade, and rollback. Remove the threshold demand mode, fixed-headroom
+   estimator/configuration, and expired decoder after their named gates close.
+10. **WN10 — Provider decision.** Freeze an immutable Windows demand-provider
+    and per-VM reconciler candidate and execute its code, native Windows,
+    deployment, live, recovery, endurance, security, and operations gates. This
+    is component readiness, not the final host-manager release.
+11. **HPM0 — Pool contract.** Define total VM-pool bytes, explicit membership,
+    total-RAM per-VM minimum/maximum/priority/provider, OS-neutral
+    `GuestDemandReport`, non-reclaimable base accounting, and pool-grant/device
+    target conversion. Define priority as contention-only: it creates no
+    above-minimum reservation, and reclaim requires unmet higher-priority demand
+    plus a strictly lower-priority safe donor. Audit the existing pure planner;
+    do not change runtime behavior or freeze file syntax.
+12. **HPM1 — Durable ledger.** Persist one atomic member-bound ledger in which
+    current allocation, growth reservation, and observed reclaim account for
+    every byte exactly once. Prove restart and ambiguity behavior without live
+    actuation.
+13. **HPM2 — Shadow coordinator.** Run one exclusive host process over a
+    complete member snapshot, adapt Windows assessment into the common report,
+    and emit deterministic grants/constraints without reaching a resize sink.
+14. **HPM3 — Pool growth.** Make the pool grant the only source of per-VM
+    `desired`, grant all growth that fits regardless of priority, use priority
+    only for constrained contenders, reserve before dispatch, qualify one-VM
+    and concurrent growth, then delete direct per-VM capacity allocation.
+15. **HPM4 — Reclaim and transfer.** For an unmet higher-priority request,
+    select only strictly lower-priority underutilised shrink-safe donors,
+    reclaim no lower than `max(minimum, safe_floor)`, wait for observed release
+    before recipient growth, then delete independent reclaim.
+16. **HPM5 — Additional provider.** Add a Linux-native provider through the
+    common demand report and qualify homogeneous and mixed-provider pools
+    without OS-specific branches in arbitration.
+17. **HPM6 — System release.** Freeze pool/member configuration and operations,
+    complete multi-VM recovery/endurance, delete expired compatibility paths,
+    and record the final host RAM manager GO or NO-GO decision.
 
 ## Cross-cutting implementation rules
 
-- Windows collects and normalises only. The host calculates targets and acts.
+- Guest services collect and normalise only. Host provider adapters assess
+  demand; the host-pool manager grants targets and the host reconciler acts.
 - Keep required-memory bytes, pressure state, and shrink safety separate in
   types, tests, status, and evidence.
+- Keep total-RAM `demand_target` and `pool_grant` distinct from device-scoped
+  `desired`.
+- Reserve every enabled VM's minimum and all accepted growth before dispatch;
+  do not count reclaim until authoritative live `current` confirms release.
+- Let all VMs grow while capacity is available. Priority affects only
+  contention and never creates an above-minimum reservation or proactive
+  reclaim.
+- Require a named unmet higher-priority recipient before reclaiming a strictly
+  lower-priority donor. If none can release safely, keep the recipient waiting.
+- Keep guest-OS-specific evidence behind provider adapters. Global arbitration
+  uses demand, priority, minimum, safe floor, allocation, and freshness only.
 - Prefer supported Windows APIs and counters. Do not synthesize a composite
   score when a native state exists.
 - Keep every operational size, threshold, step, margin, window, and timeout in
@@ -66,8 +113,11 @@ shadow comparison emission are the next implementation slice.
 - Preserve telemetry identity/freshness/replay, compatibility, host reserve,
   alignment, desired/requested/current reconciliation, intent journaling,
   partial-progress accounting, and durable latches.
-- Remove deprecated fixed-headroom and legacy demand paths only after the new
-  schema, fallback, migration, and rollback behavior are proved.
+- Use temporary fallback or decoder paths only for a named qualification or
+  rollback window. Delete them when their replacement gate passes; do not add
+  permanent legacy/version-selection modes.
+- Delete direct per-VM capacity allocation at HPM3 and independent per-VM
+  reclaim at HPM4 after their respective qualification gates pass.
 
 ## Validation rule
 

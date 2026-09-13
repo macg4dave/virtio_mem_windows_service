@@ -37,7 +37,7 @@ no historical result authorizes automatic resizing under the new policy.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| TASK-032 | Define the global-controller contract and implement a versioned durable reservation ledger around the existing pure pool planner | Existing `global_pool` prototype |
+| TASK-032 | Complete HPM0: define total-RAM pool/member accounting, contention-only priority, and OS-neutral `GuestDemandReport` contracts, then audit the existing pure planner against them; no runtime change | Stable WN3 assessment boundary and existing `global_pool` prototype |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation
@@ -53,10 +53,15 @@ evidence here when it completes.
 | TASK-042 | Complete WN7: automate the realistic Windows workload and decision-classification matrix | TASK-041, QA-T030 |
 | TASK-043 | Complete WN8: run and review resumable unattended repeated-cycle and endurance qualification | TASK-042, QA-T031–QA-T032 |
 | TASK-044 | Complete WN9: freeze versioned configuration, evidence-backed defaults, and migration behavior | TASK-043, QA-T033 |
-| TASK-045 | Complete WN10 construction: freeze the candidate and production-readiness evidence index for final review | TASK-044, QA-T034 |
+| TASK-045 | Complete WN10 construction: freeze the Windows demand-provider candidate and component evidence index | TASK-044, QA-T034 |
 | TASK-031 | Add deterministic fault-scenario execution and machine-readable results for telemetry loss, restart, rejection, ambiguity, and partial progress | TASK-030 |
-| TASK-033 | Build the configured host-wide coordinator that applies durable pool grants through per-VM reconcilers without live actuation | TASK-032, WN3 assessment contract |
-| TASK-034 | Add release artifact, configuration migration, install/upgrade/rollback, and monitoring surfaces required before packaging qualification | TASK-030, TASK-033 |
+| TASK-033 | Complete HPM1: add the versioned durable atomic pool ledger and restart-safe accounting without live actuation | TASK-032 |
+| TASK-046 | Complete HPM2: build the exclusive host-wide coordinator, Windows provider adapter, full-member snapshot, and shadow grants | TASK-033, TASK-038 |
+| TASK-047 | Complete HPM3: grant all growth that fits, apply priority only to constrained contenders, require durable reservations, then remove direct per-VM capacity allocation | TASK-046, TASK-039, WN10 growth evidence |
+| TASK-048 | Complete HPM4: reclaim only for unmet higher-priority demand from strictly lower-priority safe donors, qualify wait/cancellation/recovery, then remove independent per-VM reclaim | TASK-047, TASK-040, WN10 reclaim evidence |
+| TASK-049 | Complete HPM5: implement and qualify a Linux-native demand provider through the common report contract and mixed-provider pool | TASK-048, reviewed Linux provider design |
+| TASK-050 | Complete HPM6 construction: freeze host-pool configuration and operations, add multi-VM recovery/endurance support, remove expired legacy paths, and prepare the final release evidence index | TASK-049 |
+| TASK-034 | Add release artifact, configuration migration, install/upgrade/rollback, and monitoring surfaces required before packaging qualification | TASK-030, TASK-046; final acceptance at HPM6 |
 
 These are construction tasks, not qualification passes. They may proceed while
 the revised pressure QA gates are pending, but their milestone remains open
@@ -80,14 +85,31 @@ they do not replace executable task cards.
 | WN6 | Planned | Add qualified trend/rate evidence | WN5 |
 | WN7 | Planned | Automate realistic Windows behavior qualification | WN6 |
 | WN8 | Planned | Complete unattended endurance qualification | WN7 |
-| WN9 | Planned | Stabilise configuration, migration, and defaults | WN8 |
-| WN10 | Planned | Record the production-readiness decision | WN9 |
+| WN9 | Planned | Stabilise Windows provider configuration and remove superseded demand paths | WN8 |
+| WN10 | Planned | Record the Windows demand-provider readiness decision | WN9 |
+
+## Host-pool manager milestones
+
+These milestones are the mandatory system path above the WN guest-provider
+track. The final product release decision belongs to HPM6, not WN10.
+
+| Milestone | Status | Work | Depends on |
+| --- | --- | --- | --- |
+| HPM0 | Planned | Define pool/member and OS-neutral demand-report contracts | WN3 contract |
+| HPM1 | Planned | Add durable atomic reservation and restart-safe pool accounting | HPM0 |
+| HPM2 | Planned | Run one full-member host coordinator in shadow mode | HPM1, WN3 |
+| HPM3 | Planned | Let every VM grow when capacity is free; arbitrate only constrained growth and remove direct capacity allocation | HPM2, qualified provider growth |
+| HPM4 | Planned | Reclaim from strictly lower-priority safe donors for unmet higher-priority demand, then transfer and remove independent reclaim | HPM3, qualified provider reclaim |
+| HPM5 | Planned | Add and qualify another guest-OS provider | HPM4 |
+| HPM6 | Planned | Complete multi-VM endurance, legacy cleanup, and the host-manager release decision | HPM5 |
 
 The QA roadmap owns the ordered native, shadow, live, recovery, endurance, and
 GO/NO-GO tasks. It requires run-specific workload duration, cycle count,
 timeouts, configurable thresholds, and target identity rather than repository
-examples. Multi-VM work remains separate until WN3 stabilises the per-VM
-assessment and durable host-wide reservation is proved.
+examples. WN milestones qualify the Windows demand-provider component;
+HPM milestones integrate it beneath the required host-wide allocation
+authority. Multi-VM actuation remains blocked until durable reservation is
+proved.
 
 ## Completed foundations
 
@@ -139,15 +161,28 @@ time. It does not substitute for current deployment or qualification evidence.
 
 ## Standing decisions
 
-- Windows publishes measurement only. The host owns allocation and resize.
+- Guest services publish measurement only. OS-specific host adapters produce
+  per-VM demand reports; the host-pool manager owns allocation and resize.
 - Microsoft-supported Windows pressure facilities are the primary demand
   evidence. Current fixed reserves become configurable fallback/safety guards,
   not the release sizing algorithm.
 - Alias-scoped live libvirt `current` is authoritative allocation state.
 - Automatic shrink is enabled by default, but stale input, ambiguity,
   incompatibility, missing headroom, or a recovery latch fails closed.
-- One controller/device is supported until the global pool can reserve host
-  capacity atomically.
+- The destination configuration has one total VM RAM pool plus explicit
+  per-VM minimums, maximums, priorities, identities, and provider kinds.
+- One controller/device remains the supported implementation until the pool can
+  reserve host capacity atomically; this is a migration checkpoint, not the
+  final architecture.
+- Priority is dormant while eligible growth fits and never reserves an
+  above-minimum share. Under contention it orders requests; reclaim requires a
+  waiting higher-priority recipient and a strictly lower-priority safe donor.
+- No reclaim crosses a VM's minimum or qualified safe floor, and released bytes
+  are unavailable until live `current` confirms them. If no donor is safe, the
+  recipient waits.
+- Superseded demand, direct-allocation, and independent-reclaim paths are
+  deleted at their roadmap retirement gates instead of becoming permanent
+  compatibility modes.
 - Upstream QGA is a health and identity channel. The experimental custom
   memory command is not a production dependency.
 - The Windows driver status interface is deferred; optional diagnostics cannot

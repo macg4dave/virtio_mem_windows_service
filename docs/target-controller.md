@@ -2,13 +2,16 @@
 
 ## Status and scope
 
-This is the normative contract for absolute per-VM target estimation,
-asynchronous virtio-mem reconciliation, and qualification. It replaces
-directional demand estimates with an explicit desired target.
+This is the normative contract for per-VM demand assessment, asynchronous
+virtio-mem reconciliation, and qualification. The current implementation
+replaces directional demand estimates with an explicit desired target. In the
+destination architecture, the provider assessment produces a total-RAM
+`demand_target`, the host-wide pool manager issues a total-RAM `pool_grant`, and
+this reconciler pursues only the derived device-scoped `desired`.
 
 The project direction has changed. The fixed-reserve estimator documented
-below describes the currently implemented compatibility policy, not the
-intended release sizing algorithm. Its replacement will use Windows-native
+below describes the currently implemented temporary migration baseline, not
+the intended release sizing algorithm. Its replacement will use Windows-native
 memory-resource notifications, commit evidence, reusable-memory lists, and
 paging evidence as described in
 [windows-native-pressure-controller.md](windows-native-pressure-controller.md).
@@ -16,7 +19,7 @@ Until that replacement is implemented and qualified, the installed controller
 remains disabled outside explicitly bounded tests, and fixed reserves must not
 be presented as a Windows pressure prediction.
 
-Automatic Windows shrink is a default-on product capability. A deployment may
+Automatic Windows shrink is currently a default-on product capability. A deployment may
 set `VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false` for diagnosis or a deliberate
 rollout pause, but absence of that setting means enabled. Enabled reclaim still
 requires fresh continuous telemetry, a warmed history window, a valid safe
@@ -24,10 +27,17 @@ floor, compatible device geometry, current compatibility attestation, and an
 unlatched reconciler. Same-target re-notification remains a separate default-
 off diagnostic feature and is not part of normal target reconciliation.
 
-This contract remains single-VM until the global controller supplies atomic
-reservation.
-Windows publishes measurements only; the RHEL controller owns calculation,
-host safety, reconciliation, and actuation.
+After HPM4, default-on means the host-pool manager may execute qualified
+reclaim when unmet higher-priority demand requires a transfer. It does not mean
+that a per-VM loop proactively shrinks an underutilised VM when the pool is
+unconstrained. The current direct single-VM shrink path is qualification
+scaffolding and is removed after pool-owned reclaim qualifies.
+
+This contract remains single-VM until the host RAM pool manager supplies atomic
+reservation. Its single-VM target wiring is qualification scaffolding, not a
+second long-term capacity authority. Windows publishes measurements only; the
+RHEL host owns assessment, pool allocation, host safety, reconciliation, and
+actuation.
 
 ## Authoritative inputs and terminology
 
@@ -46,7 +56,11 @@ cannot silently wrap.
   the selected virtio-mem device contributes zero current allocation. It is
   not inferred from QGA, balloon `actual`, aggregate host RAM, or the configured
   virtio-mem maximum.
-- `desired`: the stable absolute policy target produced by the estimator.
+- `demand_target`: the bounded total-guest-RAM request produced by the
+  replacement guest-demand provider before host-wide arbitration.
+- `pool_grant`: the total guest RAM granted by the host RAM pool manager.
+- `desired`: after pool integration, the stable alias-scoped device target
+  derived from `pool_grant` and consumed by this reconciler.
 - `safe_floor`: the lowest target that pressure arbitration may consider from
   the current qualified history. It is not an actuation command.
 
@@ -167,6 +181,13 @@ safe floor conservatively around live allocation: `desired = max(C,
 desired_now)` and `safe_floor = C`. This permits immediate growth and prohibits
 shrink until the complete warm-up window exists.
 
+These `desired` calculations describe the current single-VM implementation.
+The replacement assessment retains the same checked geometry and history
+safety but is adapted to total-RAM `demand_target` and `safe_floor`. Once HPM3
+is qualified, the host RAM pool ledger is the only component that can turn that
+request into `pool_grant` and device-scoped `desired`; this direct assignment is
+removed.
+
 The host stores a versioned, bounded, durably flushed and atomically replaced policy checkpoint
 containing the VM/alias, policy and compatibility fingerprints, desired,
 qualified candidate history, telemetry identity/order, and durable actuation
@@ -185,9 +206,20 @@ state remains an error rather than being summarized as healthy.
 
 ## Reconciliation
 
-The reconciler consumes one fresh estimator result plus fresh live `Q` and `C`. `current`
-remains accounting authority; `requested` is device intent; `desired` is policy
-intent. The control state is separate from all three values.
+The reconciler consumes one fresh granted target plus fresh live `Q` and `C`.
+Before host-pool integration, the single-VM estimator supplies that target for
+bounded qualification. After HPM3, only the durable host-pool grant may supply
+it. `current` remains accounting authority; `requested` is device intent;
+`desired` is granted policy intent. The control state is separate from all
+three values.
+
+The per-VM reconciler does not compare priorities, choose donors, or infer free
+pool capacity. A growth command requires an owned pool reservation. A reclaim
+command requires a pool plan naming an unmet higher-priority recipient plus the
+guest-specific shrink-safe floor. The pool does not request reclaim merely
+because a VM is lower priority or currently underutilised.
+Released bytes remain unavailable to another VM until authoritative live
+`current` confirms them and the pool ledger records the observation.
 
 | Live state | Reconciler action |
 | --- | --- |
@@ -306,11 +338,19 @@ handled correctly. Platform reclaim qualification requires a predeclared set
 of repeated representative shrink operations to converge without unsafe
 overlap, target undershoot, stale-data actuation, or manual guest restart.
 
-## Global-controller handoff
+## Host-pool handoff
 
-The global controller consumes `desired` and `safe_floor` plus authoritative `current`; it
-does not reproduce guest-demand calculation. Global arbitration reserves host
-capacity atomically and may grant a target no greater than desired or reclaim
-toward safe floor. Controlled reclaim passes that grant through the reconciler,
-which continues to enforce the configured quanta, upward supersession,
-convergence, journal, and latch rules.
+The host-pool manager consumes total-RAM `demand_target` and `safe_floor`,
+pressure, and shrink eligibility plus authoritative `requested`/`current`; it does
+not reproduce guest-demand calculation. Pool arbitration reserves capacity
+atomically and grants every eligible request that fits without using priority.
+Under contention it may grant total RAM no greater than demand or reclaim for
+an unmet higher-priority recipient from a strictly lower-priority donor toward
+no lower than `max(minimum, safe_floor)`. Equal- or higher-priority members are
+not donors for that request. The host converts the total-RAM
+`pool_grant` to an alias-scoped device target using its non-reclaimable base and
+fresh geometry. Controlled growth or reclaim passes that target through the
+reconciler, which continues to enforce configured quanta, upward supersession,
+convergence, journal, and latch rules. Released capacity is not available to
+another VM until live `current` confirms it and the ledger records the
+observation.

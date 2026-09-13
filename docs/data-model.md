@@ -50,6 +50,10 @@ incomplete observations cannot provide pressure-qualified reclaim evidence.
 These additions remain measurements and never contain a desired target. See
 [windows-native-pressure-controller.md](windows-native-pressure-controller.md).
 
+That schema-v2 decoder is a bounded producer/consumer migration path, not an
+indefinite compatibility promise. WN9 removes it after every supported deployed
+producer uses the current schema and the declared rollback window closes.
+
 WN2 populates only `memory_resource_notifications`. Its capability is
 `supported` on the Windows build even when a handle creation or query attempt
 reports `failed`; this distinguishes API availability from an observation
@@ -64,9 +68,19 @@ device:
 
 - `current`: authoritative allocation exposed to the guest;
 - `requested`: device target currently being pursued;
-- `desired`: stable absolute policy target;
+- `demand_target`: the provider adapter's bounded total-guest-RAM request before
+  host-wide arbitration;
+- `pool_grant`: the total guest RAM granted to a member by the host pool;
+- `desired`: the alias-scoped device target derived from `pool_grant` that the
+  per-VM reconciler may pursue;
 - `safe_floor`: lowest target permitted by qualified recent demand;
 - `effective_max`: configured/device upper bound after safety headroom.
+
+The current single-VM implementation still calculates device-scoped `desired`
+directly. This is incremental qualification scaffolding: after host-pool
+integration, a provider produces total-RAM `demand_target`, the pool manager
+produces total-RAM `pool_grant`, the host converts it to device-scoped `desired`,
+and no per-VM path may bypass that grant.
 
 Control health is separate from those values. It records convergence, growth,
 shrink, constrained progress, uncertain command outcome, recovery-required
@@ -86,6 +100,84 @@ accepted raw telemetry and the estimator. It records an explainable class
 (`urgent_grow`, `grow_or_hold`, `neutral_hold`, `reclaim_eligible`, or
 `unavailable`) plus contributing evidence. It is not allocation authority and
 does not remove `desired`, `requested`, or `current` from the model.
+
+## Guest demand provider
+
+The host-pool boundary consumes a versioned OS-neutral `GuestDemandReport`, not
+a Windows raw-telemetry record. A provider adapter derives it from evidence
+native to one guest operating system. The report contains:
+
+- exact VM and provider identity, schema/policy version, observation time, and
+  freshness/continuity state;
+- a bounded quantitative total-RAM `demand_target` and effective maximum;
+- pressure/urgency and an explainable reason set;
+- shrink eligibility and a qualified total-RAM `safe_floor`; and
+- explicit unavailable, warming, invalid, or degraded state.
+
+The report contains neither pool capacity nor a granted target. Windows uses
+`WindowsPressureAssessment` as its adapter input. A future Linux provider may
+use Linux-native pressure and memory evidence without copying the Windows raw
+schema or algorithms. Provider-specific evidence stays behind the adapter;
+arbitration sees one common demand contract.
+
+## Host RAM pool
+
+The destination `HostPoolConfig` is one versioned host-wide policy with a total
+VM-pool byte limit and an explicit member set. Each member binds VM/device
+identity to a minimum guarantee, maximum bound, priority, provider kind, and
+provider configuration. The exact serialization format is intentionally
+deferred, but these semantics are not.
+
+Pool and member bounds are total guest-RAM bytes. For each member:
+
+- `base_allocation`: host-derived non-reclaimable RAM outside the selected
+  virtio-mem device;
+- `current`: authoritative live allocation contributed by that device;
+- `pool_charge`: `base_allocation + current` plus any outstanding growth
+  reservation not already visible in `current`; and
+- `minimum`/`maximum`: total guest-RAM bounds converted to device targets only
+  at the reconciler boundary.
+
+These values are checked and geometry-aware. Windows/Linux totals may validate
+topology but never replace host allocation authority. QEMU overhead and other
+host use remain covered by host safety reserves rather than being presented as
+guest RAM.
+
+The sum of aligned total-RAM minimum guarantees must fit within the pool.
+Minimums are reserved for every enabled member according to explicit lifecycle
+state. Priority does not reserve discretionary capacity or define a permanent
+share. When all eligible growth fits, each VM may grow toward demand regardless
+of priority. Priority ordering and deterministic same-priority behavior become
+active only when eligible requests exceed currently free capacity.
+
+One arbitration snapshot joins every fresh `GuestDemandReport` with live
+`requested` and authoritative `current`. Its versioned plan records, per VM:
+
+- assessed demand and safe floor;
+- current allocation and owned in-flight intent;
+- total-RAM pool grant, derived device target, and
+  hold/grow/reclaim/constrained reason;
+- unmet demand and, when applicable, the higher-priority recipient and strictly
+  lower-priority donor dependency;
+- reserved growth bytes or reclaim bytes awaiting observation; and
+- the pool totals before and after the plan.
+
+The durable reservation ledger binds the complete member/configuration
+fingerprint, plan generation, per-VM grant, command ownership, and observed
+total-RAM allocation. A growth grant consumes pool capacity before dispatch. A reclaim
+plan does not create free capacity until live `current` confirms the decrease.
+Restart reconstructs the same accounting from the ledger and fresh live state;
+it never lets separate per-VM services recalculate the same free bytes.
+
+When aggregate eligible growth fits in free pool capacity, the arbiter grants
+it without consulting priority. When requests contend for insufficient free
+capacity, priority orders use of the remainder. A still-unmet higher-priority
+request may select only a strictly lower-priority donor that is underutilised,
+shrink-eligible, and above `max(minimum, safe_floor)`. Equal- or
+higher-priority members are not donors for that request. Underutilisation
+without contention causes no priority reclaim. If enough safe capacity cannot
+be released, remaining demand is reported as waiting/constrained rather than
+violating a guarantee or inventing capacity.
 
 ## Controller status
 
@@ -165,13 +257,20 @@ profile.
 
 ## Host configuration
 
-The host reads an explicit VM, device alias, memory bounds, thresholds,
+The current host reads one explicit VM, device alias, memory bounds, thresholds,
 durations, source modes, telemetry identity/path, policy-state path, attestation
 path, transport-specific host acknowledgement path, host reserve, resize
-quanta, policy reserves, history, and hysteresis.
-Only the maximum sample gap may be derived from the polling interval.
-Deployment examples use placeholders rather than machine values.
+quanta, policy reserves, history, and hysteresis. Only the maximum sample gap
+may be derived from the polling interval. Deployment examples use placeholders
+rather than machine values.
+
+The replacement host-wide configuration adds the pool byte limit, explicit
+membership, per-VM minimum/maximum/priority/provider, arbitration policy, and
+durable pool-ledger path. Per-instance policy files cease to own allocation
+once their member has moved behind the coordinator.
 
 Pressure-aware settings require a versioned migration. Existing fixed
-physical/commit reserves become fallback safety inputs rather than silently
-changing meaning in place.
+physical/commit reserves may remain only for a named qualification or rollback
+window. After the replacement pressure assessment is qualified, remove their
+primary-policy and compatibility paths rather than silently changing meaning
+or supporting both algorithms indefinitely.

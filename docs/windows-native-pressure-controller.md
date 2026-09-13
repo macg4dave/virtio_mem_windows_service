@@ -213,7 +213,7 @@ The Windows service normalises units and counter semantics only. It does not
 publish `desired` or infer host capacity. Reusable-memory and rate groups remain
 explicitly unavailable until their later milestones.
 
-### Host assessment and target construction
+### Host assessment and pool request
 
 Add a versioned `WindowsPressureAssessment` between raw telemetry validation and
 target estimation. It classifies each accepted sample as urgent grow, grow/hold,
@@ -228,7 +228,17 @@ commit to virtio-mem bytes is a hypothesis to validate in shadow mode, not a
 Microsoft-prescribed formula. Categorical notification and paging signals set
 urgency and block reclaim; they do not invent independent byte estimates.
 
-The present fixed physical and commit reserves become:
+The Windows assessment exposes its visible-memory requirement and
+device-scoped shadow target, not a final allocation. The host-side Windows
+adapter combines them with the host-derived non-reclaimable base to export a
+total-RAM `demand_target` and safe floor, plus pressure and shrink eligibility,
+through the OS-neutral `GuestDemandReport` contract. The host RAM pool manager
+considers all member reports, total-RAM minimums, priorities, pool charges,
+in-flight reservations, and available pool capacity. Its total-RAM `pool_grant`
+is converted to the per-VM device-scoped `desired` consumed by reconciliation.
+
+During qualification, the present fixed physical and commit reserves may serve
+as:
 
 1. an emergency growth/fail-safe fallback when richer supported signals are
    temporarily unavailable;
@@ -236,8 +246,12 @@ The present fixed physical and commit reserves become:
 3. migration inputs with explicit deprecation and configuration-version rules.
 
 Fallback mode permits conservative growth from fresh basic counters but never
-authorizes shrink. The configured minimum and safe floor remain independent of
-any historical reserve setting.
+authorizes shrink. It is a bounded qualification/rollback bridge, not a second
+long-term controller. After replacement growth, reclaim, degradation, and
+rollback behavior qualify, remove the fixed-headroom estimator and its
+dedicated settings. If a fail-safe remains necessary, specify the smallest new
+guard directly instead of retaining the obsolete estimator. The configured
+minimum and safe floor remain independent of any historical reserve setting.
 
 ### Preserved safety and ownership
 
@@ -245,7 +259,15 @@ Keep the existing raw transport, topology validation, compatibility
 attestation, host headroom, alignment, `desired`/`requested`/`current`
 separation, no-overlap reconciler, intent journal, restart recovery, latches,
 bounded steps, and automatic-shrink safety gates. The global pool continues to
-reserve host capacity before eventual multi-VM growth.
+reserve host capacity before multi-VM growth. In the destination architecture,
+one host-wide coordinator owns the configured VM RAM pool and durable
+reservations; per-VM assessment never allocates independently.
+
+Priority is contention-only at that layer. It does not reserve an
+above-minimum share or prevent lower-priority growth while capacity is
+available. Only an unmet higher-priority request may trigger reclaim from a
+strictly lower-priority VM whose Windows or other provider evidence says shrink
+is safe; otherwise the requester waits.
 
 Redesign or retire after migration:
 
