@@ -4,12 +4,15 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use virtio_mem_core::{
-    ResizeDecision, TargetEstimator, TargetEstimatorState, TargetGeometry, TargetPolicyConfig,
-    TargetSample, VirtioMemState,
+    calculate_effective_maximum, AcceptedTelemetryIdentity, CapacityState, CommandOwnership,
+    ControlHealth, ControllerCommandStatus, ControllerStatusSnapshot, ReclaimReadiness,
+    RecoveryState, ResizeDecision, TargetEstimator, TargetEstimatorState, TargetGeometry,
+    TargetPolicyConfig, TargetSample, VirtioMemState, CONTROLLER_STATUS_VERSION,
 };
 
 use crate::attestation::CompatibilityAttestation;
@@ -117,6 +120,221 @@ impl<R> TargetDemandSource<R> {
             shrink_step_bytes: config.shrink_step_bytes,
             control: Mutex::new(control),
         })
+    }
+}
+
+/// Reads the durable controller checkpoint and joins it with one fresh
+/// alias-scoped live state. This function never evaluates demand, resolves an
+/// intent, writes the checkpoint, or invokes a resize sink.
+pub fn read_controller_status(
+    config: &HostConfig,
+    live: VirtioMemState,
+) -> Result<ControllerStatusSnapshot, String> {
+    let observed_unix_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "system clock is before the Unix epoch".to_owned())?
+        .as_millis()
+        .try_into()
+        .map_err(|_| "system clock does not fit controller status".to_owned())?;
+    read_controller_status_at(config, live, observed_unix_millis)
+}
+
+fn read_controller_status_at(
+    config: &HostConfig,
+    live: VirtioMemState,
+    observed_unix_millis: u64,
+) -> Result<ControllerStatusSnapshot, String> {
+    live.validate().map_err(|error| error.to_string())?;
+    let policy = target_policy_config(config)?;
+    let effective_maximum_bytes = calculate_effective_maximum(
+        &policy,
+        TargetGeometry {
+            device_size_bytes: live.size_bytes,
+            block_size_bytes: live.block_size_bytes,
+            current_bytes: live.current_bytes,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+    let policy_fingerprint_sha256 = policy_fingerprint(&policy)?;
+    let compatibility_fingerprint_sha256 =
+        compatibility_fingerprint(&config.compatibility_attestation_path)?;
+    let checkpoint = load_matching_checkpoint(
+        Path::new(&config.policy_state_path),
+        &config.vm_name,
+        &config.alias,
+        &policy_fingerprint_sha256,
+        &compatibility_fingerprint_sha256,
+    )?;
+    let (estimator_state, history_ready, control) = if let Some(checkpoint) = checkpoint {
+        let estimator = TargetEstimator::restore(policy, checkpoint.estimator.clone())
+            .map_err(|error| format!("target policy checkpoint state is invalid: {error}"))?;
+        (
+            checkpoint.estimator,
+            estimator.history_ready(),
+            CheckpointControl {
+                actuation_latched: checkpoint.actuation_latched,
+                actuation_latch_reason: checkpoint.actuation_latch_reason,
+                command_intent: checkpoint.command_intent,
+                last_latch_clear_reason: checkpoint.last_latch_clear_reason,
+            },
+        )
+    } else {
+        (TargetEstimatorState::cold(), false, CheckpointControl::default())
+    };
+    let desired_bytes = if estimator_state.desired_bytes == 0 {
+        live.current_bytes
+    } else {
+        estimator_state.desired_bytes
+    };
+    let safe_floor_bytes = if estimator_state.safe_floor_bytes == 0 {
+        live.current_bytes.min(desired_bytes)
+    } else {
+        estimator_state.safe_floor_bytes
+    };
+    let accepted_telemetry = (!estimator_state.session_id.is_empty()).then(|| {
+        AcceptedTelemetryIdentity {
+            session_id: estimator_state.session_id,
+            sequence: estimator_state.last_sequence,
+            monotonic_millis: estimator_state.last_monotonic_millis,
+            observed_unix_millis: estimator_state.last_observed_unix_millis,
+        }
+    });
+    let command = control
+        .command_intent
+        .as_ref()
+        .map(|intent| ControllerCommandStatus {
+            operation_id: intent.operation_id.clone(),
+            direction: intent.direction,
+            prior_requested_bytes: intent.prior_requested_bytes,
+            prior_current_bytes: intent.prior_current_bytes,
+            target_bytes: intent.target_bytes,
+            telemetry_identity: intent.telemetry_identity.clone(),
+        });
+    let command_ownership = classify_command_ownership(control.command_intent.as_ref(), live);
+    let latch_reason = control.actuation_latched.then(|| {
+        control
+            .actuation_latch_reason
+            .clone()
+            .unwrap_or_else(|| "durable actuation latch has no recorded reason".to_owned())
+    });
+    let recovery_reason = recovery_reason(command_ownership, latch_reason.as_deref());
+    let recovery_state = if recovery_reason.is_some() {
+        RecoveryState::ReviewRequired
+    } else {
+        RecoveryState::NotRequired
+    };
+    let reclaim_readiness = if control.actuation_latched {
+        ReclaimReadiness::BlockedLatched
+    } else if recovery_reason.is_some() {
+        ReclaimReadiness::BlockedRecovery
+    } else if live.requested_bytes != live.current_bytes {
+        ReclaimReadiness::BlockedInFlight
+    } else if !config.automatic_windows_shrink {
+        ReclaimReadiness::Paused
+    } else if history_ready {
+        ReclaimReadiness::Ready
+    } else if accepted_telemetry.is_none() {
+        ReclaimReadiness::Cold
+    } else {
+        ReclaimReadiness::Warming
+    };
+    let control_health = if control.actuation_latched {
+        ControlHealth::Latched
+    } else if recovery_reason.is_some() {
+        ControlHealth::RecoveryRequired
+    } else if matches!(command_ownership, CommandOwnership::OwnedPending) {
+        match control.command_intent.as_ref().map(|intent| intent.direction) {
+            Some(virtio_mem_core::ReconcileDirection::Grow) => ControlHealth::Growing,
+            _ => ControlHealth::Shrinking,
+        }
+    } else {
+        ControlHealth::Converged
+    };
+    let capacity_state = if accepted_telemetry.is_none() {
+        CapacityState::Unknown
+    } else if desired_bytes == effective_maximum_bytes {
+        CapacityState::AtEffectiveMaximum
+    } else {
+        CapacityState::Available
+    };
+    let snapshot = ControllerStatusSnapshot {
+        version: CONTROLLER_STATUS_VERSION,
+        observed_unix_millis,
+        vm_name: config.vm_name.clone(),
+        device_alias: config.alias.clone(),
+        device_size_bytes: live.size_bytes,
+        block_size_bytes: live.block_size_bytes,
+        desired_bytes,
+        safe_floor_bytes,
+        effective_maximum_bytes,
+        requested_bytes: live.requested_bytes,
+        current_bytes: live.current_bytes,
+        accepted_telemetry,
+        history_ready,
+        reclaim_readiness,
+        capacity_state,
+        command_ownership,
+        command,
+        control_health,
+        actuation_latched: control.actuation_latched,
+        latch_reason,
+        recovery_state,
+        recovery_reason,
+        last_latch_clear_reason: control.last_latch_clear_reason,
+        policy_fingerprint_sha256,
+        compatibility_fingerprint_sha256,
+    };
+    snapshot.validate().map_err(|error| error.to_string())?;
+    Ok(snapshot)
+}
+
+fn classify_command_ownership(
+    intent: Option<&CommandIntent>,
+    live: VirtioMemState,
+) -> CommandOwnership {
+    let Some(intent) = intent else {
+        return if live.requested_bytes == live.current_bytes {
+            CommandOwnership::None
+        } else {
+            CommandOwnership::UnownedPending
+        };
+    };
+    if live.requested_bytes == intent.target_bytes {
+        if live.current_bytes == intent.target_bytes {
+            CommandOwnership::OwnedConvergedUnresolved
+        } else {
+            CommandOwnership::OwnedPending
+        }
+    } else if live.requested_bytes == intent.prior_requested_bytes
+        && live.current_bytes == intent.prior_current_bytes
+    {
+        CommandOwnership::RecordedNotApplied
+    } else {
+        CommandOwnership::Conflict
+    }
+}
+
+fn recovery_reason(
+    ownership: CommandOwnership,
+    latch_reason: Option<&str>,
+) -> Option<String> {
+    if let Some(reason) = latch_reason {
+        return Some(format!("actuation_latched: {reason}"));
+    }
+    match ownership {
+        CommandOwnership::None | CommandOwnership::OwnedPending => None,
+        CommandOwnership::OwnedConvergedUnresolved => Some(
+            "recorded command has converged but its durable intent remains unresolved".to_owned(),
+        ),
+        CommandOwnership::UnownedPending => {
+            Some("live requested/current divergence has no durable command owner".to_owned())
+        }
+        CommandOwnership::RecordedNotApplied => {
+            Some("recorded command is not reflected in live state".to_owned())
+        }
+        CommandOwnership::Conflict => {
+            Some("live state conflicts with the durable command intent".to_owned())
+        }
     }
 }
 

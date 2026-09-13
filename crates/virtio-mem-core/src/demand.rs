@@ -251,7 +251,7 @@ pub struct WindowsNativeTelemetry {
 }
 
 impl WindowsNativeTelemetry {
-    /// Explicit fallback emitted until WN2 adds native signal collection.
+    /// Explicit fallback for producers that cannot supply native signals.
     pub fn unavailable(observed_monotonic_millis: u64) -> Self {
         Self {
             version: WINDOWS_NATIVE_TELEMETRY_VERSION,

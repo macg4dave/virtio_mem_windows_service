@@ -3,6 +3,7 @@
 pub mod behavior_evidence;
 pub mod compatibility;
 pub mod controller;
+pub mod controller_status;
 pub mod demand;
 pub mod error;
 pub mod global_pool;
@@ -22,6 +23,11 @@ pub use compatibility::{
     CompatibilityEvidence, VirtioMemCompatibility, VirtioMemCompatibilityError,
 };
 pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
+pub use controller_status::{
+    parse_controller_status, AcceptedTelemetryIdentity, CapacityState, CommandOwnership,
+    ControllerCommandStatus, ControllerStatusError, ControllerStatusSnapshot, ReclaimReadiness,
+    RecoveryState, CONTROLLER_STATUS_VERSION, MAX_CONTROLLER_STATUS_BYTES,
+};
 pub use demand::{
     AllocationProvenance, DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig,
     DemandRecommendation, DemandReport, DemandState, MemoryResourceNotificationState,
@@ -46,9 +52,10 @@ pub use shrink_recovery::{
 };
 pub use stats::{parse_memory_stats, parse_memory_stats_with_id, MemoryStats};
 pub use target_controller::{
-    calculate_instantaneous, CandidateHistoryEntry, InstantaneousTarget, TargetEstimate,
-    TargetEstimator, TargetEstimatorError, TargetEstimatorState, TargetGeometry,
-    TargetPolicyConfig, TargetSample, MAX_TARGET_HISTORY_ENTRIES, TARGET_ESTIMATOR_STATE_VERSION,
+    calculate_effective_maximum, calculate_instantaneous, CandidateHistoryEntry,
+    InstantaneousTarget, TargetEstimate, TargetEstimator, TargetEstimatorError,
+    TargetEstimatorState, TargetGeometry, TargetPolicyConfig, TargetSample,
+    MAX_TARGET_HISTORY_ENTRIES, TARGET_ESTIMATOR_STATE_VERSION,
 };
 pub use units::{bytes_to_kibibytes, kibibytes_to_bytes, BYTES_PER_KIB};
 pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES, MIN_HEADROOM_BYTES};

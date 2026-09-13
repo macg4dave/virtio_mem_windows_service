@@ -233,6 +233,16 @@ impl TargetEstimator {
         &self.state
     }
 
+    /// Reports whether the persisted candidate history spans the configured
+    /// window without an excessive sample gap.
+    pub fn history_ready(&self) -> bool {
+        history_is_ready(
+            &self.state.history,
+            self.config.history_window_millis,
+            self.config.maximum_gap_millis,
+        )
+    }
+
     /// Clears reclaim readiness when the producer input fails before a target
     /// sample can be constructed.
     pub fn invalidate_history(&mut self) {
@@ -371,57 +381,10 @@ pub fn calculate_instantaneous(
     memory: &MemoryTelemetrySnapshot,
     geometry: TargetGeometry,
 ) -> Result<InstantaneousTarget, TargetEstimatorError> {
-    config.validate()?;
+    let effective_maximum_bytes = calculate_effective_maximum(config, geometry)?;
     memory
         .validate()
         .map_err(|error| TargetEstimatorError::InvalidTelemetry(error.to_string()))?;
-    if geometry.device_size_bytes <= MIN_HEADROOM_BYTES {
-        return Err(TargetEstimatorError::InvalidGeometry(
-            "device size does not leave one GiB of headroom",
-        ));
-    }
-    if geometry.block_size_bytes == 0 || !geometry.block_size_bytes.is_power_of_two() {
-        return Err(TargetEstimatorError::InvalidGeometry(
-            "block size must be a non-zero power of two",
-        ));
-    }
-    if !geometry
-        .current_bytes
-        .is_multiple_of(geometry.block_size_bytes)
-    {
-        return Err(TargetEstimatorError::InvalidGeometry(
-            "current allocation is not block aligned",
-        ));
-    }
-    let effective_maximum_bytes = align_down(
-        config
-            .configured_maximum_bytes
-            .min(geometry.device_size_bytes - MIN_HEADROOM_BYTES),
-        geometry.block_size_bytes,
-    );
-    if config.configured_minimum_bytes > effective_maximum_bytes
-        || !config
-            .configured_minimum_bytes
-            .is_multiple_of(geometry.block_size_bytes)
-        || geometry.current_bytes > effective_maximum_bytes
-    {
-        return Err(TargetEstimatorError::InvalidGeometry(
-            "minimum or current allocation exceeds the aligned effective maximum",
-        ));
-    }
-    for value in [
-        config.physical_reserve_bytes,
-        config.commit_reserve_bytes,
-        config.safe_floor_physical_reserve_bytes,
-        config.safe_floor_commit_reserve_bytes,
-        config.downward_hysteresis_bytes,
-    ] {
-        if !value.is_multiple_of(geometry.block_size_bytes) {
-            return Err(TargetEstimatorError::InvalidGeometry(
-                "reserves and hysteresis must be block aligned",
-            ));
-        }
-    }
 
     let observed_base = memory
         .physical_total_bytes
@@ -477,6 +440,63 @@ pub fn calculate_instantaneous(
         effective_maximum_bytes,
         capacity_limited,
     })
+}
+
+/// Returns the aligned usable target ceiling after validating policy and live
+/// device geometry, without consuming telemetry or changing estimator state.
+pub fn calculate_effective_maximum(
+    config: &TargetPolicyConfig,
+    geometry: TargetGeometry,
+) -> Result<u64, TargetEstimatorError> {
+    config.validate()?;
+    if geometry.device_size_bytes <= MIN_HEADROOM_BYTES {
+        return Err(TargetEstimatorError::InvalidGeometry(
+            "device size does not leave one GiB of headroom",
+        ));
+    }
+    if geometry.block_size_bytes == 0 || !geometry.block_size_bytes.is_power_of_two() {
+        return Err(TargetEstimatorError::InvalidGeometry(
+            "block size must be a non-zero power of two",
+        ));
+    }
+    if !geometry
+        .current_bytes
+        .is_multiple_of(geometry.block_size_bytes)
+    {
+        return Err(TargetEstimatorError::InvalidGeometry(
+            "current allocation is not block aligned",
+        ));
+    }
+    let effective_maximum_bytes = align_down(
+        config
+            .configured_maximum_bytes
+            .min(geometry.device_size_bytes - MIN_HEADROOM_BYTES),
+        geometry.block_size_bytes,
+    );
+    if config.configured_minimum_bytes > effective_maximum_bytes
+        || !config
+            .configured_minimum_bytes
+            .is_multiple_of(geometry.block_size_bytes)
+        || geometry.current_bytes > effective_maximum_bytes
+    {
+        return Err(TargetEstimatorError::InvalidGeometry(
+            "minimum or current allocation exceeds the aligned effective maximum",
+        ));
+    }
+    for value in [
+        config.physical_reserve_bytes,
+        config.commit_reserve_bytes,
+        config.safe_floor_physical_reserve_bytes,
+        config.safe_floor_commit_reserve_bytes,
+        config.downward_hysteresis_bytes,
+    ] {
+        if !value.is_multiple_of(geometry.block_size_bytes) {
+            return Err(TargetEstimatorError::InvalidGeometry(
+                "reserves and hysteresis must be block aligned",
+            ));
+        }
+    }
+    Ok(effective_maximum_bytes)
 }
 
 fn candidate(

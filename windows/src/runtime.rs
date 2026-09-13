@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(
             envelope.contract_mode(),
             Ok(RawTelemetryContractMode::WindowsNativeFallback),
-            "WN1 publishes an explicit fallback until WN2 collects native pressure"
+            "a worker without a native notification collector publishes explicit fallback"
         );
         assert_eq!(worker.publisher().0, vec![envelope]);
         assert!(worker.poll_once().is_err(), "monotonic time must advance");

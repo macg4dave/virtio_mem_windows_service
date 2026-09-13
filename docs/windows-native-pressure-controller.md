@@ -66,7 +66,7 @@ They are fixed safety margins, not predictions by the Windows memory manager.
 | System cache | Yes | No | Diagnostic only |
 | Kernel paged/nonpaged pools | Yes | No | Diagnostic only |
 | Standby-list classes, free/zero and modified lists | No | No | Not represented separately |
-| Low/high memory resource notification | No | No | Not used |
+| Low/high memory resource notification | Yes | No | Published as categorical measurement; workload correlation and policy use remain pending |
 | Pagefile writes, pages output, hard-fault rates | No | No | Not used |
 | Memory compression | No | No | Not used |
 

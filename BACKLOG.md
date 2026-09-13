@@ -11,8 +11,8 @@ not from completed task notes.
 
 ## In progress
 
-No implementation task is claimed. TASK-037 completed WN2; TASK-030 is the
-next Ready task and is required before WN3 can begin.
+TASK-030 is claimed: expose a versioned, read-only controller status snapshot
+before WN3 adds shadow assessments. TASK-037 completed WN2.
 
 ## Paused fixed-headroom qualification
 
@@ -32,7 +32,6 @@ no historical result authorizes automatic resizing under the new policy.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| TASK-030 | Expose a versioned, read-only controller status snapshot containing live desired/requested/current, accepted telemetry identity, reclaim readiness, capacity state, command ownership, and latch/recovery details | TASK-029 |
 | TASK-032 | Define the global-controller contract and implement a versioned durable reservation ledger around the existing pure pool planner | Existing `global_pool` prototype |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
