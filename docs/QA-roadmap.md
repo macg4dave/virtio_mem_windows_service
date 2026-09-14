@@ -128,7 +128,7 @@ a QA task's status until the corresponding applied gate is run and reviewed.
 
 | ID | Task | Status |
 | --- | --- | --- |
-| QA-T036 | Validate pool/member and OS-neutral demand-report contracts plus durable ledger accounting, corruption, and restart behavior without actuation | Contract tests pass; blocked by TASK-033 durable ledger work |
+| QA-T036 | Validate pool/member and OS-neutral demand-report contracts plus durable ledger accounting, corruption, and restart behavior without actuation | Complete; focused core and aggregate local gates passed 2026-09-14; no native, deployment, live, recovery, endurance, or actuation work |
 | QA-T037 | Review full-member shadow plans proving all fitting demand may grow regardless of priority, priority applies only under contention, and donor plans require unmet higher-priority demand | Blocked by QA-T036 and TASK-046 |
 | QA-T038 | Prove all fitting one-VM and concurrent multi-VM growth is pool-granted without priority withholding, while constrained grants are durable, deterministic, host-headroom checked, and never oversubscribed with reclaim disabled | Blocked by QA-T037, TASK-047, and applicable provider growth evidence |
 | QA-T039 | Prove reclaim occurs only for a named unmet higher-priority recipient from a strictly lower-priority shrink-safe donor, remains bounded by minimum/safe floor, cancels on renewed pressure, and is observed before transfer | Blocked by QA-T038, TASK-048, and applicable provider reclaim evidence |

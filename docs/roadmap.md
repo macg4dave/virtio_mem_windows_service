@@ -222,7 +222,7 @@ the unmet demand remains explicitly constrained.
 | Milestone | Status | Outcome | Depends on |
 | --- | --- | --- | --- |
 | HPM0 | Complete | Define the host-pool, member-policy, and OS-neutral demand-report contracts | WN3 contract |
-| HPM1 | Planned | Add one durable atomic reservation ledger around the pure pool planner | HPM0 |
+| HPM1 | Complete | Add one durable atomic reservation ledger around the pure pool planner | HPM0 |
 | HPM2 | Planned | Run one host-wide coordinator in shadow mode across configured members | HPM1, WN3 |
 | HPM3 | Planned | Require a durable pool grant for every growth action | HPM2, qualified provider growth |
 | HPM4 | Planned | Reclaim safely from donors and transfer released capacity under contention | HPM3, qualified provider reclaim |

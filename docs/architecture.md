@@ -113,6 +113,16 @@ without priority, and emits only named reclaim-for-transfer dependencies. It
 does not reserve durably, coordinate processes, or actuate. Pure logic remains
 independent of live systems.
 
+HPM1 adds the version-1 durable `PoolLedger` beside that planner. The ledger is
+bound to a canonical complete pool-policy fingerprint, accounts observed
+total-RAM allocation plus growth reservations exactly once, retains pending
+reclaim as charged until `current` falls, and gives each staged resize one
+unique plan-generation owner. Its bounded checksum-protected file is flushed
+and atomically replaced. Restart recovery classifies fresh live state without
+replaying commands; incomplete, drifted, corrupt, over-capacity, or ambiguous
+state fails closed. This is a shared state machine and persistence primitive,
+not the HPM2 coordinator or an actuation path.
+
 ### Build and validation control plane
 
 `cargo xtask` owns aggregate repository gates, remote native-Windows

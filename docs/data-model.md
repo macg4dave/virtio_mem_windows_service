@@ -176,13 +176,35 @@ per VM:
   and observation; and
 - the pool totals before and after the plan.
 
-HPM0 plans have no runtime authority and cannot be dispatched. The HPM1 durable
-reservation ledger will bind the complete member/configuration fingerprint,
-plan generation, per-VM grant, command ownership, and observed total-RAM
-allocation. A growth grant consumes pool capacity before dispatch. A reclaim
-plan does not create free capacity until live `current` confirms the decrease.
-Restart reconstructs the same accounting from the ledger and fresh live state;
-it never lets separate per-VM services recalculate the same free bytes.
+HPM0 plans have no runtime authority and cannot be dispatched. The version-1
+HPM1 `PoolLedger` binds a canonical complete member/policy fingerprint, pool
+size, monotonically increasing plan generation and revision, and for each VM:
+
+- total-RAM minimum and maximum;
+- authoritative observed `current` and host-owned `requested`;
+- granted target, reserved growth, and pending reclaim; and
+- an optional unique command owner containing operation ID, generation,
+  growth/reclaim direction, reserved/dispatched/ambiguous phase, prior state,
+  and target.
+
+The bounded ledger file contains a SHA-256 checksum and is durably flushed and
+atomically replaced. A complete settled cold-start snapshot is required when
+no ledger exists. A command batch is staged against an expected revision and
+persisted before dispatch; the batch fails without mutation if any member is
+already owned, any target is outside its bounds, or allocated plus reserved
+growth exceeds the pool. Growth reservations remain charged until
+authoritative observation replaces them with current allocation or an
+explicitly resolved not-applied outcome releases them. Pending reclaim never
+reduces the charge: free bytes increase only when observed `current` falls.
+
+Restart loads the same ownership and classifies fresh live state as
+reserved-not-dispatched, not-applied, in-progress, converged, or ambiguous. It
+never replays a recorded command. An ambiguous result retains ownership and
+its full conservative accounting. An incomplete member set, unsettled cold
+start, checksum/version/size failure, policy or membership drift, stale
+revision, or invalid transition blocks new accounting rather than inventing
+capacity. HPM2 will supply the coherent fresh full-member runtime snapshot;
+the HPM1 module has no coordinator or resize sink.
 
 When aggregate eligible growth fits in free pool capacity, the arbiter grants
 it without consulting priority. When requests contend for insufficient free

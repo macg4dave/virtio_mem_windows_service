@@ -11,8 +11,8 @@ not from completed task notes.
 
 ## In progress
 
-No task is currently claimed. HPM0/TASK-032 is complete as a source-level
-contract and pure-planner milestone; it made no runtime or live-system change.
+No task is currently claimed. HPM1/TASK-033 is complete as a source-level
+durable-accounting milestone; it made no runtime or live-system change.
 
 ## Paused fixed-headroom qualification
 
@@ -33,7 +33,6 @@ no historical result authorizes automatic resizing under the new policy.
 | ID | Work | Depends on |
 | --- | --- | --- |
 | TASK-039 | Complete WN4: enable pressure-aware bounded growth while reclaim remains disabled | Completed WN3 checkpoint |
-| TASK-033 | Complete HPM1: add the versioned durable atomic pool ledger and restart-safe accounting without live actuation | Completed HPM0 contract |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation
@@ -90,7 +89,7 @@ track. The final product release decision belongs to HPM6, not WN10.
 | Milestone | Status | Work | Depends on |
 | --- | --- | --- | --- |
 | HPM0 | Complete | Define pool/member and OS-neutral demand-report contracts | WN3 contract |
-| HPM1 | Planned | Add durable atomic reservation and restart-safe pool accounting | HPM0 |
+| HPM1 | Complete | Add durable atomic reservation and restart-safe pool accounting | HPM0 |
 | HPM2 | Planned | Run one full-member host coordinator in shadow mode | HPM1, WN3 |
 | HPM3 | Planned | Let every VM grow when capacity is free; arbitrate only constrained growth and remove direct capacity allocation | HPM2, qualified provider growth |
 | HPM4 | Planned | Reclaim from strictly lower-priority safe donors for unmet higher-priority demand, then transfer and remove independent reclaim | HPM3, qualified provider reclaim |
@@ -157,6 +156,15 @@ record replaces historical command transcripts and machine-specific evidence:
   lower-priority safe donor. Focused core tests and the aggregate local gate
   passed on 2026-09-14; no native, deployment, live, recovery, endurance, or
   actuation work applied.
+- TASK-033: added a versioned, bounded, checksum-protected and atomically
+  replaced pool ledger bound to the canonical complete policy/member
+  fingerprint. Revision-checked command batches reserve all growth before
+  dispatch, retain pending reclaim until authoritative `current` falls, and
+  preserve unique command ownership through reserved, dispatched, partial,
+  ambiguous, converged, and explicitly resolved restart states without replay.
+  Focused core tests and the aggregate local gate passed on 2026-09-14; no
+  native, deployment, live, recovery, endurance, coordinator, or actuation work
+  applied.
 - TASK-009 and QA-T001 through QA-T008: native Windows deployment, safe
   baseline, coherent least-privilege host deployment, calibration, current
   attestation, and restart-safe no-actuation preflight.

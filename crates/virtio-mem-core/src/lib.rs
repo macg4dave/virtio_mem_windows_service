@@ -7,6 +7,7 @@ pub mod controller_status;
 pub mod demand;
 pub mod error;
 pub mod global_pool;
+pub mod pool_ledger;
 pub mod pressure_assessment;
 pub mod reconciler;
 pub mod shrink_recovery;
@@ -48,6 +49,12 @@ pub use global_pool::{
     PoolSnapshotBlocker, PoolSnapshotBlockerReason, ReclaimForTransfer,
     GUEST_DEMAND_REPORT_VERSION, HOST_POOL_ARBITRATION_VERSION, HOST_POOL_PLAN_VERSION,
     HOST_POOL_POLICY_VERSION, MAX_DEMAND_REASON_CODES, MAX_POOL_MEMBERS,
+};
+pub use pool_ledger::{
+    host_pool_policy_fingerprint, CommandRecovery, FilePoolLedgerStore, PoolCommandDirection,
+    PoolCommandOwner, PoolCommandPhase, PoolLedger, PoolLedgerAccounting, PoolLedgerCommand,
+    PoolLedgerError, PoolLedgerMember, PoolLedgerObservation, HOST_POOL_LEDGER_VERSION,
+    MAX_HOST_POOL_LEDGER_BYTES,
 };
 pub use pressure_assessment::{
     assess_windows_pressure, AssessmentAllocation, AssessmentAvailability, AssessmentConfidence,

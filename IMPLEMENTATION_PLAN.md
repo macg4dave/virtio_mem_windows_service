@@ -18,12 +18,14 @@ remaining schema-v3 workload correlation and classification breadth moves to
 later pressure-policy qualification. It is not a test pass or release evidence.
 WN4 / TASK-039 is the next ready Windows construction slice.
 
-HPM0 / TASK-032 is complete. Shared core now owns version-1 semantic
-`HostPoolPolicy`, OS-neutral `GuestDemandReport`, checked total-RAM/device
-conversion, lifecycle charging, deterministic contention, and named
-strictly-lower-priority reclaim dependencies in a pure non-durable plan. The
-focused core suite and aggregate local gate pass. HPM1 / TASK-033 is the next
-ready host-pool slice; no runtime or live behavior changed in HPM0.
+HPM1 / TASK-033 is complete as a source-level durable-accounting milestone.
+Shared core now owns the version-1 bounded, checksum-protected atomic pool
+ledger, canonical complete-policy fingerprint, revision-checked plan ownership,
+pre-dispatch growth reservation, observed reclaim accounting, and no-replay
+restart classification. The focused core suite and aggregate local gate pass.
+HPM2 / TASK-046 is the next host-pool slice after its WN3 dependency; no
+runtime coordinator, resize dispatch, native, deployment, or live behavior
+changed in HPM1.
 
 The Windows sequence produces one guest-demand provider and preserves the
 per-VM safety machinery. It is not the top-level product. HPM0-HPM6 add the

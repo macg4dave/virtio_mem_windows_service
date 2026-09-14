@@ -29,8 +29,25 @@ identity, versions, availability, continuity, total-RAM demand/effective
 maximum/safe floor, pressure, shrink eligibility, and bounded reason codes. A
 `HostPoolPlan` version 1 contains total-RAM grants, derived device targets,
 unmet demand, and named reclaim-for-transfer dependencies. The plan is
-side-effect-free and non-durable; it cannot authorize actuation before the HPM1
-ledger and later coordinator milestones.
+side-effect-free and has no dispatch authority.
+
+HPM1 adds `PoolLedger` version 1 as the durable accounting boundary. Its
+checksum-protected, size-bounded atomic file is bound to a canonical fingerprint
+of the complete pool policy and member set. Each member records its bounds,
+observed total-RAM `current`, host-owned `requested`, granted target, reserved
+growth, pending reclaim, and optional operation owner with plan generation,
+direction, phase, prior state, and target. A caller stages a complete set of
+commands against an expected ledger revision and must persist that state before
+dispatch. Revision conflicts, over-capacity plans, duplicate ownership,
+fingerprint drift, malformed data, or ambiguous live state fail closed.
+
+The ledger itself never dispatches. On restart an owned command is classified
+as reserved-not-dispatched, not-applied, in-progress, converged, or ambiguous
+from authoritative live state. It is observed or explicitly resolved, never
+replayed. Growth remains charged as a reservation until observation replaces
+it with current allocation. Pending reclaim is informational and creates free
+capacity only as authoritative `current` falls. HPM2 still owns the first
+runtime shadow coordinator; HPM3 and HPM4 own pool-authorized actuation.
 
 The target architecture gives precedence to Microsoft-supported Windows
 memory-pressure notifications and performance data. Windows publishes their

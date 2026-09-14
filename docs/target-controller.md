@@ -376,9 +376,11 @@ overlap, target undershoot, stale-data actuation, or manual guest restart.
 
 The HPM0 shared-core contract consumes total-RAM `demand_target` and `safe_floor`,
 pressure, and shrink eligibility plus authoritative `requested`/`current`; it
-does not reproduce guest-demand calculation. Pool arbitration reserves
-capacity atomically only after HPM1; the current pure plan has no dispatch
-authority. It grants every eligible request that fits without using priority.
+does not reproduce guest-demand calculation. Its pure plan has no dispatch
+authority. HPM1 provides the durable ledger that stages revision-checked growth
+reservations and command ownership before dispatch, but no runtime coordinator
+or resize sink uses it yet. The planner grants every eligible request that fits
+without using priority.
 Under contention it may grant total RAM no greater than demand or
 reclaim for an unmet higher-priority recipient from a strictly lower-priority
 donor toward no lower than `max(minimum, safe_floor)`. Equal- or
@@ -389,4 +391,6 @@ Controlled growth or reclaim later passes
 that target through the reconciler, which continues to enforce configured
 quanta, upward supersession, convergence, journal, and latch rules. Released
 capacity is not available to another VM until live `current` confirms it and
-the ledger records the observation.
+the ledger records the observation. Restart recovery retains an owned command
+and classifies fresh live state without replay; ambiguous state remains charged
+and blocks replacement ownership until explicit resolution.
