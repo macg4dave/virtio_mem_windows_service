@@ -19,8 +19,15 @@ or enable reclaim. Its assessment and history contracts are integrated with
 accepted telemetry and live allocation. Shadow mode requires explicit
 margin/evidence inputs, persists a separate fingerprint/history/latest result,
 appends comparisons, extends status, and always returns `NoChange`. Focused,
-aggregate local, and native Windows gates pass; inactive deployment/status and
-QA-T026–QA-T027 gates remain.
+aggregate local, and native Windows gates passed for the host integration. The
+qualification workflow now supports an explicit no-resize shadow run with
+protected comparison capture; its focused and aggregate local gates pass.
+Native revalidation also passes. The shadow candidate deployment now has
+matching installed hashes and a disabled/inactive final state. Status refresh
+and QA-T026–QA-T027 gates remain. A resident schema-v2 fallback shadow run
+passed with unchanged allocation and retained comparisons. The native-gated
+schema-v3 Windows candidate is now installed with advancing production
+telemetry; notification workload correlation remains.
 
 The Windows sequence produces one guest-demand provider and preserves the
 per-VM safety machinery. It is not the top-level product. HPM0-HPM6 add the

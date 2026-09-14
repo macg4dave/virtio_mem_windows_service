@@ -18,9 +18,18 @@ state, and shrink safety and exposes their inputs and reasons. The assessment is
 now wired to accepted raw telemetry and fresh alias-scoped allocation in an
 explicit no-actuation shadow mode. Separate policy fingerprinting,
 checkpointed history/latest assessment, append-only comparisons, and
-controller-status exposure are implemented. Focused tests, the aggregate local
-gate, and the native Windows aggregate gate pass. The inactive deployment/live
-status refresh and QA-T026–QA-T027 evidence remain in progress.
+controller-status exposure are implemented. The typed qualification workflow
+now has an explicit no-resize shadow contract that verifies the running mode,
+unchanged allocation, and archived comparisons. Earlier focused, aggregate
+local, and native Windows gates passed; the new focused and aggregate local
+gates plus native Windows revalidation also pass. The shadow host candidate is
+installed with matching hashes and the unit remains disabled/inactive. The
+live status/workload refresh and QA-T026–QA-T027 evidence remain in progress;
+after two launches stopped before elevation, resident schema-v2 fallback
+qualification passed with 119 samples, zero warnings, unchanged allocation,
+and 136 unavailable/blocked comparisons. The native-gated schema-v3 Windows
+candidate is now installed with advancing telemetry and protected ACLs;
+schema-v3 workload correlation remains.
 
 ## Paused fixed-headroom qualification
 

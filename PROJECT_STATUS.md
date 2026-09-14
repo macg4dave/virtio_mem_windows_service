@@ -32,9 +32,15 @@ qualified.
 - TASK-038 / WN3 remains the claimed implementation slice: qualify the
   implemented host persistence, version-2 status, and append-only comparison
   path. Explicit shadow mode joins accepted telemetry to live allocation and
-  always suppresses actuation.
-  Focused, aggregate local, and native Windows gates pass; the privileged live
-  status refresh did not run because the one outer sudo prompt was not entered.
+  always suppresses actuation. The qualification workflow now has an explicit
+  no-resize shadow contract and retains protected comparisons.
+  The new focused, aggregate local, and native Windows gates pass. The shadow
+  candidate is installed with matching hashes while the unit remains
+  disabled/inactive. Resident schema-v2 fallback qualification subsequently
+  passed with 119 samples, zero warnings, unchanged allocation, and retained
+  unavailable/blocked comparisons. The native-gated schema-v3 Windows service
+  is now installed with protected ACLs and advancing telemetry; notification
+  workload correlation remains.
 - TASK-028 and QA-T009 are paused as fixed-headroom qualification. Their
   evidence remains useful for reconciliation and platform behavior but cannot
   qualify the replacement demand policy.

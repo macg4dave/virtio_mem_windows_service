@@ -245,6 +245,14 @@ workflow. A start command must explicitly supply:
   timeout; and
 - output root when the repository artifact directory is not appropriate.
 
+For QA-T025 through QA-T027, replace the three applied-resize expectations
+with `--expect-no-resize`. The guard then requires the running controller to be
+in explicit `shadow` mode, rejects any sampled or final `requested`/`current`
+change, and archives only the run's protected append-only comparisons as
+`pressure-shadow.jsonl`. This mode still exercises automatic-shrink-enabled
+configuration so the shadow suppression boundary, rather than a disabled
+capability, prevents actuation.
+
 Run `cargo xtask help` for the authoritative option spelling. Start without
 `--apply` to validate and print the complete versioned configuration. With
 `--apply --elevate`, one outer sudo launches a bounded controller guard. The
@@ -274,6 +282,7 @@ cargo xtask qualification review RUN_ID
 
 Each run records configuration, status, events, host metrics, workload phases,
 controller logs, observations, and summary as durable JSON/JSONL artifacts.
+Shadow runs additionally record the versioned pressure comparisons.
 A successful workload process alone is not qualification success; both guest
 health and the configured resize acceptance criteria must pass.
 

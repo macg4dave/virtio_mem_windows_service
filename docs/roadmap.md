@@ -414,6 +414,7 @@ the fixed-headroom policy without actuation.
 - `host/src/target_policy.rs`
 - `host/src/runtime.rs`
 - controller status/evidence types
+- `tools/xtask` no-actuation workload qualification and comparison capture
 - `docs/target-controller.md`
 
 ### Tests required
@@ -423,6 +424,8 @@ the fixed-headroom policy without actuation.
 - Low/neutral/high/unavailable and contradictory-state tests.
 - Cold start, history gaps, producer restart, and in-flight allocation tests.
 - Golden shadow-decision fixtures with stable reason codes.
+- Bounded live shadow tests proving the running mode is explicit, every sampled
+  and final allocation is unchanged, and the run's comparisons are retained.
 
 ### Success criteria
 

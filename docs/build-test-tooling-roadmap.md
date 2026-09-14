@@ -41,6 +41,7 @@ shell or running Cargo as root.
 | BT-T015 | Removed experiment-derived workflow and policy defaults, milestone/VM-specific command profiles, obsolete editor/debug artifacts, generated build output, duplicated AI instructions, historical test procedures, and unused guest-side resize compatibility code; live mutation now delegates to the attestation-aware product CLI |
 | BT-T016 | Replaced the QA-T002 privileged Bash inventory with typed `cargo xtask deployment inventory`, bounded fixed-vector inspection, unprivileged atomic JSON evidence, and focused parser/elevation tests |
 | BT-T017 | Added typed `cargo xtask controller-status` with exact prebuilt-candidate validation, one bounded outer elevation, restricted instance configuration, read-only live inspection, and unprivileged atomic evidence persistence; focused and local gates passed, and a live `win11_gpu` read on 2026-09-13 left the unit inactive and disabled |
+| BT-T018 | Extended the existing bounded qualification guard with an explicit shadow no-resize contract, running-mode verification, sampled/final allocation invariants, and protected per-run comparison capture; focused, local, and native Windows gates passed |
 
 ## Ready queue
 

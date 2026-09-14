@@ -180,3 +180,42 @@ remained active and both QEMU processes remained present. No libvirt daemon
 restart or direct resize was performed. Restoring the captured initial target
 and rerunning with a low-demand window robust to one late transient reset
 remain pending.
+
+## WN3 shadow deployment
+
+The WN3 measurement-only host candidate was installed from the reviewed
+run-specific shadow configuration on 2026-09-14. Applied evidence in
+`.artifacts/deployment/wn3-shadow-host-apply.json` records matching candidate
+and installed binary SHA-256
+`f62f7dc8bc65449fbbbac4110eb7a7058f5726031aaec10cd71ebbe766e50a14`,
+configuration SHA-256
+`e78e7aa39e6dd1de0dcfd6dad0ccf85bc679dc23478df5d084b8fbf841369990`,
+and current attestation SHA-256
+`b07e56356487fd1c5863a448e38268f721275cb53634abb63ead07523a9fc9e1`.
+The unit remained disabled/inactive with `Restart=no`; installation did not
+start the controller or issue a resize.
+
+Two subsequent resident-shadow launch attempts ended before the elevated guard
+started because their terminal-scoped sudo prompts received no input. Their
+status artifacts are launch-failure evidence only, not workload or
+shadow-policy evidence.
+
+The first completed resident shadow run,
+`qualification-1789397355740-391254`, used the still-installed schema-v2
+producer and therefore qualifies fallback behavior only. Across 119 host
+samples it recorded zero warnings, no requested/current change, no convergence
+violation, stable telemetry continuity, and disabled/inactive cleanup. Its 136
+versioned comparisons classified pressure unavailable and shrink blocked while
+preserving distinct pressure-aware and legacy byte candidates.
+
+The current native-gated Windows schema-v3 candidate was then installed through
+the typed deployment workflow. Evidence in
+`.artifacts/deployment/wn3-windows-schema-v3-apply.json` records candidate and
+installed SHA-256
+`3c4e180263989bf11252c8e51e1ce690c2142b5b3385372c3e9911be9a7fc872`,
+the `LocalService` identity, normal error control, protected binary/config/raw
+telemetry ACLs, an automatic/running service, and advancing same-session
+telemetry. Its rollback backup is named in that evidence. A fresh QGA
+calibration in `.artifacts/deployment/wn3-schema-v3-calibration.json` confirmed
+converged allocation and the established visible base without starting the
+host controller.

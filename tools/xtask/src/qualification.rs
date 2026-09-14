@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc;
@@ -10,14 +10,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use virtio_mem_core::{parse_virtio_mem_xml_for_alias, RawTelemetryEnvelope};
+use virtio_mem_core::{
+    parse_virtio_mem_xml_for_alias, PressureShadowComparison, RawTelemetryEnvelope,
+    PRESSURE_SHADOW_COMPARISON_VERSION,
+};
 use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
 use virtio_mem_host::virsh::Virsh;
 use wait_timeout::ChildExt;
 
 use crate::process;
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 const CONTROLLER_GUARD_ROOT: &str = "/run/virtio-mem-qualification";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -61,6 +64,8 @@ struct Config {
     expect_reclaim_bytes: u64,
     expect_renewed_growth_bytes: u64,
     #[serde(default)]
+    expect_no_resize: bool,
+    #[serde(default)]
     require_renewed_during_pending_shrink: bool,
 }
 
@@ -89,6 +94,12 @@ struct ControllerGuardStatus {
     run_id: String,
     state: String,
     message: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ShadowArchiveSource {
+    path: PathBuf,
+    initial_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +174,9 @@ struct QualificationAnalysis {
     lower_request_while_pending_violations: u64,
     telemetry_session_changes: u64,
     telemetry_sequence_regressions: u64,
+    requested_change_violations: u64,
+    current_change_violations: u64,
+    unconverged_sample_violations: u64,
 }
 
 pub fn execute(arguments: &[String], repo: &Path) -> Result<(), String> {
@@ -200,6 +214,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let mut expect_growth_bytes = None;
     let mut expect_reclaim_bytes = None;
     let mut expect_renewed_growth_bytes = None;
+    let mut expect_no_resize = false;
     let mut require_renewed_during_pending_shrink = false;
     let mut remote_workload = None;
     let mut controller_unit = None;
@@ -270,6 +285,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
                 expect_renewed_growth_bytes =
                     Some(number(args, &mut index, "--expect-renewed-growth-bytes")?)
             }
+            "--expect-no-resize" if !expect_no_resize => expect_no_resize = true,
             "--require-renewed-during-pending-shrink" => {
                 require_renewed_during_pending_shrink = true
             }
@@ -330,10 +346,24 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let command_timeout_seconds = required(command_timeout_seconds, "--command-timeout-seconds")?;
     let controller_timeout_seconds =
         required(controller_timeout_seconds, "--controller-timeout-seconds")?;
-    let expect_growth_bytes = required(expect_growth_bytes, "--expect-growth-bytes")?;
-    let expect_reclaim_bytes = required(expect_reclaim_bytes, "--expect-reclaim-bytes")?;
-    let expect_renewed_growth_bytes =
-        required(expect_renewed_growth_bytes, "--expect-renewed-growth-bytes")?;
+    let (expect_growth_bytes, expect_reclaim_bytes, expect_renewed_growth_bytes) =
+        if expect_no_resize {
+            if expect_growth_bytes.is_some()
+                || expect_reclaim_bytes.is_some()
+                || expect_renewed_growth_bytes.is_some()
+            {
+                return Err(
+                    "--expect-no-resize conflicts with resize expectation options".to_owned(),
+                );
+            }
+            (0, 0, 0)
+        } else {
+            (
+                required(expect_growth_bytes, "--expect-growth-bytes")?,
+                required(expect_reclaim_bytes, "--expect-reclaim-bytes")?,
+                required(expect_renewed_growth_bytes, "--expect-renewed-growth-bytes")?,
+            )
+        };
     let remote_workload = required(remote_workload, "--remote-workload")?;
     let controller_unit = required(controller_unit, "--controller-unit")?;
     let guest_service = required(guest_service, "--guest-service")?;
@@ -385,8 +415,17 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     {
         return Err("refresh, sampling, and command timeout values must be positive".to_owned());
     }
-    if expect_growth_bytes == 0 || expect_reclaim_bytes == 0 || expect_renewed_growth_bytes == 0 {
+    if !expect_no_resize
+        && (expect_growth_bytes == 0
+            || expect_reclaim_bytes == 0
+            || expect_renewed_growth_bytes == 0)
+    {
         return Err("resize expectations must be positive".to_owned());
+    }
+    if expect_no_resize && require_renewed_during_pending_shrink {
+        return Err(
+            "--expect-no-resize conflicts with --require-renewed-during-pending-shrink".to_owned(),
+        );
     }
     match (apply_service_restart, guest_service_cycle_timeout_seconds) {
         (true, Some(0)) => {
@@ -458,6 +497,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             expect_growth_bytes,
             expect_reclaim_bytes,
             expect_renewed_growth_bytes,
+            expect_no_resize,
             require_renewed_during_pending_shrink,
         },
         output_root,
@@ -766,6 +806,7 @@ fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Resul
         repo,
         config.command_timeout_seconds,
     );
+    let shadow_archive = archive_guard_shadow(config);
     let reset_failed = systemd_properties(
         &config.controller_unit,
         repo,
@@ -802,16 +843,17 @@ fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Resul
         reset_failed,
         inactive,
         final_state,
+        shadow_archive,
     ) {
-        (false, None, Ok(()), Ok(()), Ok(()), Ok(())) => write_root_guard_status(
+        (false, None, Ok(()), Ok(()), Ok(()), Ok(()), Ok(())) => write_root_guard_status(
             run_dir,
             config,
             "stopped",
             "controller stopped and the pre-run inactive state was restored",
         ),
-        (deadline_elapsed, sampling, stop, reset, state, final_state) => {
+        (deadline_elapsed, sampling, stop, reset, state, final_state, shadow_archive) => {
             let message = format!(
-                "controller guard failed: deadline_elapsed={deadline_elapsed} sampling={sampling:?} stop={stop:?} reset_failed={reset:?} inactive={state:?} final_state={final_state:?}"
+                "controller guard failed: deadline_elapsed={deadline_elapsed} sampling={sampling:?} stop={stop:?} reset_failed={reset:?} inactive={state:?} final_state={final_state:?} shadow_archive={shadow_archive:?}"
             );
             write_root_guard_status(run_dir, config, "failed", &message)?;
             Err(message)
@@ -887,11 +929,13 @@ fn supervise(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), String>
     );
     archive_controller_log(config, run_dir, repo);
     let final_state = persist_guard_final_state(config, run_dir);
-    match (result, release, cleanup, final_state) {
-        (Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
-        (Err(error), _, Ok(()), Ok(())) => Err(error),
-        (result, release, cleanup, final_state) => Err(format!(
-            "qualification result={result:?}; controller release={release:?}; cleanup={cleanup:?}; final_state={final_state:?}"
+    let shadow_archive = persist_guard_shadow(config, run_dir);
+    let final_no_resize = validate_final_no_resize(config, run_dir);
+    match (result, release, cleanup, final_state, shadow_archive, final_no_resize) {
+        (Ok(()), Ok(()), Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
+        (Err(error), _, Ok(()), Ok(()), Ok(()), Ok(())) => Err(error),
+        (result, release, cleanup, final_state, shadow_archive, final_no_resize) => Err(format!(
+            "qualification result={result:?}; controller release={release:?}; cleanup={cleanup:?}; final_state={final_state:?}; shadow_archive={shadow_archive:?}; final_no_resize={final_no_resize:?}"
         )),
     }
 }
@@ -1088,6 +1132,7 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
             "required_reclaim_bytes": config.expect_reclaim_bytes,
             "observed_renewed_growth_bytes": analysis.observed_renewed_growth_bytes,
             "required_renewed_growth_bytes": config.expect_renewed_growth_bytes,
+            "expect_no_resize": config.expect_no_resize,
             "require_renewed_during_pending_shrink": config.require_renewed_during_pending_shrink,
             "analysis": analysis,
             "workload_phases": observations.workload_phases,
@@ -1344,6 +1389,20 @@ fn analyze(observations: &Observations) -> QualificationAnalysis {
     let mut lower_request_while_pending_violations = 0;
     let mut telemetry_session_changes = 0;
     let mut telemetry_sequence_regressions = 0;
+    let mut requested_change_violations = 0;
+    let mut current_change_violations = 0;
+    let mut unconverged_sample_violations = 0;
+    for sample in &observations.memory_samples {
+        if sample.requested_bytes != initial {
+            requested_change_violations += 1;
+        }
+        if sample.current_bytes != initial {
+            current_change_violations += 1;
+        }
+        if sample.requested_bytes != sample.current_bytes {
+            unconverged_sample_violations += 1;
+        }
+    }
     for pair in observations.memory_samples.windows(2) {
         let previous = &pair[0];
         let next = &pair[1];
@@ -1372,6 +1431,9 @@ fn analyze(observations: &Observations) -> QualificationAnalysis {
         lower_request_while_pending_violations,
         telemetry_session_changes,
         telemetry_sequence_regressions,
+        requested_change_violations,
+        current_change_violations,
+        unconverged_sample_violations,
     }
 }
 
@@ -1393,19 +1455,33 @@ fn classify(
     if analysis.initial_current_bytes.is_none() {
         return Err("no initial memory sample".to_owned());
     }
-    if analysis.observed_growth_bytes < config.expect_growth_bytes {
+    if config.expect_no_resize
+        && (analysis.requested_change_violations != 0
+            || analysis.current_change_violations != 0
+            || analysis.unconverged_sample_violations != 0)
+    {
+        return Err(format!(
+            "shadow no-resize invariant failed: requested_changes={} current_changes={} unconverged_samples={}",
+            analysis.requested_change_violations,
+            analysis.current_change_violations,
+            analysis.unconverged_sample_violations
+        ));
+    }
+    if !config.expect_no_resize && analysis.observed_growth_bytes < config.expect_growth_bytes {
         return Err(format!(
             "observed growth {} bytes is below required {}",
             analysis.observed_growth_bytes, config.expect_growth_bytes
         ));
     }
-    if analysis.observed_reclaim_bytes < config.expect_reclaim_bytes {
+    if !config.expect_no_resize && analysis.observed_reclaim_bytes < config.expect_reclaim_bytes {
         return Err(format!(
             "observed reclaim {} bytes is below required {}",
             analysis.observed_reclaim_bytes, config.expect_reclaim_bytes
         ));
     }
-    if analysis.observed_renewed_growth_bytes < config.expect_renewed_growth_bytes {
+    if !config.expect_no_resize
+        && analysis.observed_renewed_growth_bytes < config.expect_renewed_growth_bytes
+    {
         return Err(format!(
             "observed renewed growth {} bytes is below required {}",
             analysis.observed_renewed_growth_bytes, config.expect_renewed_growth_bytes
@@ -1512,6 +1588,7 @@ fn review(args: &[String], repo: &Path) -> Result<(), String> {
         "final-state.json",
         "events.jsonl",
         "host-metrics.jsonl",
+        "pressure-shadow.jsonl",
         "workload.jsonl",
         "controller.log",
         "controller-guard.json",
@@ -1784,6 +1861,113 @@ fn guard_final_path(config: &Config) -> PathBuf {
     Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-final.json", config.run_id))
 }
 
+fn guard_shadow_source_path(config: &Config) -> PathBuf {
+    Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-shadow-source.json", config.run_id))
+}
+
+fn guard_shadow_archive_path(config: &Config) -> PathBuf {
+    Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-pressure-shadow.jsonl", config.run_id))
+}
+
+fn archive_guard_shadow(config: &Config) -> Result<(), String> {
+    if !config.expect_no_resize {
+        return Ok(());
+    }
+    let metadata: ShadowArchiveSource =
+        serde_json::from_str(&process::read_file(&guard_shadow_source_path(config))?)
+            .map_err(|error| format!("parse shadow comparison source: {error}"))?;
+    let mut source = File::open(&metadata.path)
+        .map_err(|error| format!("open shadow comparison log: {error}"))?;
+    let current_bytes = source
+        .metadata()
+        .map_err(|error| format!("inspect shadow comparison log: {error}"))?
+        .len();
+    if current_bytes <= metadata.initial_bytes {
+        return Err("shadow controller emitted no comparison during the run".to_owned());
+    }
+    let mut destination = File::create(guard_shadow_archive_path(config))
+        .map_err(|error| format!("create run shadow archive: {error}"))?;
+    let starts_at_record_boundary = if metadata.initial_bytes == 0 {
+        true
+    } else {
+        source
+            .seek(SeekFrom::Start(metadata.initial_bytes - 1))
+            .map_err(|error| format!("seek shadow comparison boundary: {error}"))?;
+        let mut previous = [0_u8; 1];
+        source
+            .read_exact(&mut previous)
+            .map_err(|error| format!("read shadow comparison boundary: {error}"))?;
+        previous[0] == b'\n'
+    };
+    source
+        .seek(SeekFrom::Start(metadata.initial_bytes))
+        .map_err(|error| format!("seek shadow comparison log: {error}"))?;
+    if starts_at_record_boundary {
+        std::io::copy(&mut source, &mut destination)
+            .map_err(|error| format!("archive shadow comparisons: {error}"))?;
+    } else {
+        let mut buffered = BufReader::new(source);
+        let mut partial = Vec::new();
+        buffered
+            .read_until(b'\n', &mut partial)
+            .map_err(|error| format!("skip partial shadow comparison: {error}"))?;
+        std::io::copy(&mut buffered, &mut destination)
+            .map_err(|error| format!("archive shadow comparisons: {error}"))?;
+    }
+    destination
+        .sync_all()
+        .map_err(|error| format!("flush run shadow archive: {error}"))
+}
+
+fn persist_guard_shadow(config: &Config, run_dir: &Path) -> Result<(), String> {
+    if !config.expect_no_resize {
+        return Ok(());
+    }
+    let value = process::read_file(&guard_shadow_archive_path(config))?;
+    let mut comparisons = 0_u64;
+    for line in value.lines().filter(|line| !line.trim().is_empty()) {
+        let comparison: PressureShadowComparison = serde_json::from_str(line)
+            .map_err(|error| format!("parse archived shadow comparison: {error}"))?;
+        if comparison.version != PRESSURE_SHADOW_COMPARISON_VERSION
+            || comparison.vm_name != config.vm_name
+            || comparison.device_alias != config.device_alias
+        {
+            return Err("archived shadow comparison identity is invalid".to_owned());
+        }
+        comparisons = comparisons.saturating_add(1);
+    }
+    if comparisons == 0 {
+        return Err("archived shadow comparison log is empty".to_owned());
+    }
+    std::fs::write(run_dir.join("pressure-shadow.jsonl"), value)
+        .map_err(|error| format!("persist shadow comparison evidence: {error}"))
+}
+
+fn validate_final_no_resize(config: &Config, run_dir: &Path) -> Result<(), String> {
+    if !config.expect_no_resize {
+        return Ok(());
+    }
+    let initial: LiveStateEvidence =
+        serde_json::from_str(&process::read_file(&run_dir.join("initial-state.json"))?)
+            .map_err(|error| format!("parse initial live state: {error}"))?;
+    let final_state: LiveStateEvidence =
+        serde_json::from_str(&process::read_file(&run_dir.join("final-state.json"))?)
+            .map_err(|error| format!("parse final live state: {error}"))?;
+    if initial.requested_bytes != initial.current_bytes
+        || final_state.requested_bytes != initial.requested_bytes
+        || final_state.current_bytes != initial.current_bytes
+    {
+        return Err(format!(
+            "shadow run changed allocation: initial requested/current={}/{} final requested/current={}/{}",
+            initial.requested_bytes,
+            initial.current_bytes,
+            final_state.requested_bytes,
+            final_state.current_bytes
+        ));
+    }
+    Ok(())
+}
+
 fn systemd_properties(
     unit: &str,
     repo: &Path,
@@ -1837,15 +2021,42 @@ fn require_controller_active_and_shrink(config: &Config, repo: &Path) -> Result<
     }
     let environment = std::fs::read(format!("/proc/{pid}/environ"))
         .map_err(|error| format!("read controller environment: {error}"))?;
-    let shrink = environment.split(|byte| *byte == 0).find_map(|entry| {
-        entry
-            .strip_prefix(b"VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=")
-            .map(|value| String::from_utf8_lossy(value).into_owned())
-    });
+    let environment_value = |name: &[u8]| {
+        environment.split(|byte| *byte == 0).find_map(|entry| {
+            entry
+                .strip_prefix(name)
+                .map(|value| String::from_utf8_lossy(value).into_owned())
+        })
+    };
+    let shrink = environment_value(b"VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=");
     if shrink.as_deref().is_some_and(|value| value != "true") {
         return Err(format!(
             "automatic Windows shrink is not enabled for qualification: {shrink:?}"
         ));
+    }
+    if config.expect_no_resize {
+        let mode = environment_value(b"VIRTIO_MEM_PRESSURE_POLICY_MODE=");
+        if mode.as_deref() != Some("shadow") {
+            return Err(format!(
+                "--expect-no-resize requires the running controller in shadow mode: {mode:?}"
+            ));
+        }
+        let value = environment_value(b"VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH=")
+            .ok_or_else(|| "shadow controller has no comparison-log path".to_owned())?;
+        let path = Path::new(&value);
+        if !path.is_absolute() || !path.starts_with("/var/lib/virtio-mem-host/") {
+            return Err(format!(
+                "shadow comparison log must be beneath /var/lib/virtio-mem-host: {value}"
+            ));
+        }
+        let initial_bytes = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
+        write_json(
+            &guard_shadow_source_path(config),
+            &ShadowArchiveSource {
+                path: path.to_owned(),
+                initial_bytes,
+            },
+        )?;
     }
     Ok(())
 }
@@ -2073,6 +2284,7 @@ fn available_artifacts(run_dir: &Path) -> Vec<&'static str> {
             "final-state.json",
             "events.jsonl",
             "host-metrics.jsonl",
+            "pressure-shadow.jsonl",
             "workload.jsonl",
             "controller.log",
             "controller-guard.json",
@@ -2176,6 +2388,31 @@ mod tests {
         assert_eq!(parsed.config.peak_bytes, 8192);
         assert_eq!(parsed.config.expect_reclaim_bytes, 1024);
         assert_eq!(parsed.config.expect_renewed_growth_bytes, 50);
+    }
+
+    #[test]
+    fn shadow_configuration_requires_no_resize_instead_of_resize_thresholds() {
+        let mut arguments = valid_start_arguments();
+        for option in [
+            "--expect-growth-bytes",
+            "--expect-reclaim-bytes",
+            "--expect-renewed-growth-bytes",
+        ] {
+            let position = arguments
+                .iter()
+                .position(|value| value == option)
+                .expect("resize expectation option");
+            arguments.drain(position..=position + 1);
+        }
+        arguments.push("--expect-no-resize".to_owned());
+        let options = parse_start(&arguments, Path::new("/repo")).expect("shadow options");
+        assert!(options.config.expect_no_resize);
+        assert_eq!(options.config.expect_growth_bytes, 0);
+
+        arguments.extend(strings(&["--expect-growth-bytes", "1"]));
+        let error = parse_start(&arguments, Path::new("/repo"))
+            .expect_err("shadow and resize expectations conflict");
+        assert!(error.contains("conflicts"));
     }
 
     #[test]
@@ -2319,6 +2556,49 @@ mod tests {
         assert!(analysis.renewed_during_observed_pending_shrink);
         options.config.expect_growth_bytes = 201;
         assert!(classify(&options.config, &observations, &analysis).is_err());
+    }
+
+    #[test]
+    fn shadow_result_requires_every_sample_to_preserve_allocation() {
+        let mut options =
+            parse_start(&valid_start_arguments(), Path::new("/repo")).expect("options");
+        options.config.expect_no_resize = true;
+        let samples = ["baseline", "peak", "settled", "renewed", "complete"]
+            .iter()
+            .enumerate()
+            .map(|(index, phase)| MemorySample {
+                phase: (*phase).to_owned(),
+                requested_bytes: 1_000,
+                current_bytes: 1_000,
+                telemetry_session_id: "session-a".to_owned(),
+                telemetry_sequence: index as u64,
+            })
+            .collect::<Vec<_>>();
+        let mut observations = Observations {
+            initial_current: Some(1_000),
+            maximum_current: 1_000,
+            maximum_peak_current: 1_000,
+            minimum_settled_current: Some(1_000),
+            minimum_settled_phase_current: Some(1_000),
+            maximum_renewed_current: Some(1_000),
+            workload_phases: ["baseline", "peak", "settled", "renewed", "complete"]
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            sample_count: 5,
+            warnings: 0,
+            last_requested: Some(1_000),
+            last_privileged_sample_millis: None,
+            memory_samples: samples,
+        };
+        let analysis = analyze(&observations);
+        assert!(classify(&options.config, &observations, &analysis).is_ok());
+
+        observations.memory_samples[2].requested_bytes = 999;
+        let analysis = analyze(&observations);
+        let error = classify(&options.config, &observations, &analysis)
+            .expect_err("shadow allocation change");
+        assert!(error.contains("no-resize invariant"));
     }
 
     #[test]
