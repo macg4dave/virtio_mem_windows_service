@@ -23,6 +23,15 @@ VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES=REQUIRED_HOST_HEADROOM_BYTES
 # Persistent and transported state paths must be absolute, instance-scoped,
 # and provisioned with the documented least-privilege ownership and ACLs.
 VIRTIO_MEM_POLICY_STATE_PATH=/var/lib/virtio-mem-host/state/REQUIRED_INSTANCE-policy.json
+VIRTIO_MEM_PRESSURE_POLICY_MODE=legacy
+# WN3 shadow mode suppresses every resize decision. When selecting `shadow`,
+# supply all four reviewed margin inputs and an append-only evidence path; the
+# repository intentionally provides no numeric shadow-policy defaults.
+# VIRTIO_MEM_PRESSURE_MARGIN_RATIO_NUMERATOR=REQUIRED_MARGIN_RATIO_NUMERATOR
+# VIRTIO_MEM_PRESSURE_MARGIN_RATIO_DENOMINATOR=REQUIRED_MARGIN_RATIO_DENOMINATOR
+# VIRTIO_MEM_PRESSURE_MARGIN_MINIMUM_BYTES=REQUIRED_MARGIN_MINIMUM_BYTES
+# VIRTIO_MEM_PRESSURE_MARGIN_MAXIMUM_BYTES=REQUIRED_MARGIN_MAXIMUM_BYTES
+# VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH=/var/lib/virtio-mem-host/evidence/REQUIRED_INSTANCE-pressure-shadow.jsonl
 VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT=qga-file
 # Keep Windows backslashes inside systemd single quotes.
 VIRTIO_MEM_RAW_TELEMETRY_PATH='REQUIRED_ABSOLUTE_WINDOWS_TELEMETRY_PATH'

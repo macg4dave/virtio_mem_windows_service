@@ -13,7 +13,15 @@ use crate::{MemoryResourceNotificationState, RawTelemetryEnvelope, TelemetrySign
 pub const PRESSURE_ASSESSMENT_VERSION: u16 = 1;
 pub const PRESSURE_POLICY_VERSION: u16 = 1;
 pub const PRESSURE_HISTORY_VERSION: u16 = 1;
+pub const PRESSURE_SHADOW_COMPARISON_VERSION: u16 = 1;
 pub const MAX_PRESSURE_HISTORY_ENTRIES: usize = 4096;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressurePolicyMode {
+    Legacy,
+    Shadow,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -160,7 +168,7 @@ impl PressureHistoryState {
                 && self
                     .entries
                     .iter()
-                    .all(|entry| entry.state == PressureState::High),
+                    .all(|entry| entry.state == PressureState::HighMemory),
         })
     }
 }
@@ -196,9 +204,9 @@ pub enum AssessmentConfidence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PressureState {
-    Low,
+    LowMemory,
     Neutral,
-    High,
+    HighMemory,
     Unavailable,
 }
 
@@ -282,6 +290,16 @@ pub struct WindowsPressureAssessment {
     pub fixed_headroom_candidate_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PressureShadowComparison {
+    pub version: u16,
+    pub vm_name: String,
+    pub device_alias: String,
+    pub policy_fingerprint_sha256: String,
+    pub assessment: WindowsPressureAssessment,
+}
+
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum PressureAssessmentError {
     #[error("pressure policy is invalid: {0}")]
@@ -353,9 +371,9 @@ pub fn assess_windows_pressure(
     let (state, availability, mut confidence, mut reasons) = pressure_from_notification(envelope);
     if requirement_bytes > allocation.current_bytes {
         reasons.push(AssessmentReason::RequirementExceedsCurrent);
-        if state == PressureState::High {
+        if state == PressureState::HighMemory {
             confidence = AssessmentConfidence::Contradicted;
-        } else if state == PressureState::Low {
+        } else if state == PressureState::LowMemory {
             confidence = AssessmentConfidence::Corroborated;
         }
     } else if requirement_bytes < allocation.current_bytes {
@@ -363,17 +381,17 @@ pub fn assess_windows_pressure(
     }
     if commit_low {
         reasons.push(AssessmentReason::CommitHeadroomBelowMargin);
-        if state == PressureState::High {
+        if state == PressureState::HighMemory {
             confidence = AssessmentConfidence::Contradicted;
-        } else if state == PressureState::Low {
+        } else if state == PressureState::LowMemory {
             confidence = AssessmentConfidence::Corroborated;
         }
     }
     if physical_low {
         reasons.push(AssessmentReason::PhysicalAvailableBelowMargin);
-        if state == PressureState::High {
+        if state == PressureState::HighMemory {
             confidence = AssessmentConfidence::Contradicted;
-        } else if state == PressureState::Low {
+        } else if state == PressureState::LowMemory {
             confidence = AssessmentConfidence::Corroborated;
         }
     }
@@ -400,7 +418,7 @@ pub fn assess_windows_pressure(
     if !history.all_high {
         shrink_reasons.push(AssessmentReason::HistoryNotSustainedHigh);
     }
-    if state != PressureState::High {
+    if state != PressureState::HighMemory {
         shrink_reasons.push(AssessmentReason::PressureNotHigh);
     }
     if requirement_bytes >= allocation.current_bytes {
@@ -519,7 +537,7 @@ fn pressure_from_notification(
     let signal = &native.memory_resource_notifications;
     match (signal.status, signal.value) {
         (TelemetrySignalStatus::Supported, Some(MemoryResourceNotificationState::Low)) => (
-            PressureState::Low,
+            PressureState::LowMemory,
             AssessmentAvailability::Available,
             AssessmentConfidence::Authoritative,
             vec![AssessmentReason::NotificationLow],
@@ -531,7 +549,7 @@ fn pressure_from_notification(
             vec![AssessmentReason::NotificationNeutral],
         ),
         (TelemetrySignalStatus::Supported, Some(MemoryResourceNotificationState::High)) => (
-            PressureState::High,
+            PressureState::HighMemory,
             AssessmentAvailability::Available,
             AssessmentConfidence::Authoritative,
             vec![AssessmentReason::NotificationHigh],
@@ -704,7 +722,7 @@ mod tests {
             0,
         )
         .expect("low");
-        assert_eq!(low.pressure.state, PressureState::Low);
+        assert_eq!(low.pressure.state, PressureState::LowMemory);
         assert_eq!(low.pressure.confidence, AssessmentConfidence::Authoritative);
 
         let mut stressed = envelope(Some(MemoryResourceNotificationState::High));
@@ -712,12 +730,20 @@ mod tests {
         stressed.memory.commit_peak_bytes = 15 * GIB;
         let high =
             assess_windows_pressure(&stressed, policy(), allocation(), history(), 0).expect("high");
-        assert_eq!(high.pressure.state, PressureState::High);
+        assert_eq!(high.pressure.state, PressureState::HighMemory);
         assert_eq!(high.pressure.confidence, AssessmentConfidence::Contradicted);
         assert!(high
             .pressure
             .reasons
             .contains(&AssessmentReason::CommitHeadroomBelowMargin));
+        assert_eq!(
+            serde_json::to_string(&PressureState::LowMemory).expect("low state JSON"),
+            "\"low_memory\""
+        );
+        assert_eq!(
+            serde_json::to_string(&PressureState::HighMemory).expect("high state JSON"),
+            "\"high_memory\""
+        );
     }
 
     #[test]

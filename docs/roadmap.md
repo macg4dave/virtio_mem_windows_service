@@ -1112,8 +1112,8 @@ disabled.
 - No managed VM grows without a durable pool grant.
 - The sum of observed allocation and outstanding growth reservations never
   exceeds the pool.
-- Priority affects only discretionary bytes and never consumes another member's
-  minimum.
+- Under contention, priority affects only discretionary bytes and never
+  consumes another member's minimum.
 - Priority has no effect on unconstrained outcomes and does not strand usable
   pool capacity.
 - The superseded direct-growth capacity path is deleted after qualification.
@@ -1286,6 +1286,9 @@ contention, recovery, endurance, operations, and legacy-removal gates pass.
 - One host-wide authority accounts for every managed allocation and reservation.
 - Aggregate demand above the pool is resolved or constrained without violating
   minimums, safe floors, priorities, or host safety.
+- All fitting demand can grow without priority withholding; every priority-based
+  reclaim names a waiting higher-priority recipient and a strictly
+  lower-priority safe donor.
 - At least the declared provider combinations pass current qualification.
 - No temporary compatibility path remains without a separately approved,
   time-bounded exception and deletion task.

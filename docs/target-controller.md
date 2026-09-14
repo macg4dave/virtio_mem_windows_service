@@ -114,6 +114,16 @@ configured polling interval. The host exposes these settings:
 - `VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES`;
 - `VIRTIO_MEM_POLICY_STATE_PATH` for the protected host checkpoint/journal.
 
+WN3 adds a bounded migration selector. `VIRTIO_MEM_PRESSURE_POLICY_MODE` is
+`legacy` when absent or explicitly selected. Selecting `shadow` requires
+`VIRTIO_MEM_PRESSURE_MARGIN_RATIO_NUMERATOR`,
+`VIRTIO_MEM_PRESSURE_MARGIN_RATIO_DENOMINATOR`,
+`VIRTIO_MEM_PRESSURE_MARGIN_MINIMUM_BYTES`,
+`VIRTIO_MEM_PRESSURE_MARGIN_MAXIMUM_BYTES`, and
+`VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH`; none has a production numeric default.
+The existing visible-base, history-window, maximum-gap, hysteresis, and live
+geometry settings are shared inputs rather than copied shadow settings.
+
 The fixed base and state path are required. A derived maximum-gap value is
 materialized and validated at startup so a later poll-interval change cannot
 silently alter an active history policy.
@@ -124,6 +134,30 @@ reserves do not exceed normal reserves, and configurable in canonical bytes.
 These reserves are fixed policy margins. They are not derived from low-memory
 notifications, paging activity, standby/cache pressure, hard faults, memory
 compression, or another Windows memory-manager recommendation.
+
+### WN3 shadow assessment
+
+For every fresh accepted raw sample in `shadow` mode, the host first evaluates
+the unchanged fixed-headroom estimator as the comparison baseline. It then
+calculates committed demand plus the configured bounded proportional margin,
+converts visible demand to a device-scoped requirement with the host-derived
+visible base, and records independent pressure and shrink-safety results joined
+to fresh alias-scoped `requested` and `current`.
+
+Notification states are named `low_memory`, `neutral`, `high_memory`, and
+`unavailable`. They qualify pressure but cannot invent requirement bytes.
+Pressure history and the latest assessment are stored in the existing atomic
+checkpoint under a separate pressure-policy fingerprint. A changed pressure
+fingerprint clears only the shadow history/latest result; it does not discard a
+valid legacy estimator or pending command record. Older checkpoints without
+shadow state load with cold pressure history.
+
+Each successful assessment is also appended as one versioned JSON line at the
+configured shadow evidence path. Invalid evidence clears both estimator and
+pressure history; transport unavailability preserves both until the next
+accepted sample applies the maximum-gap rule. Shadow evaluation returns
+`NoChange` regardless of either candidate, so it cannot create command intent
+or reach the resize sink. Applied pressure-aware growth begins only in WN4.
 
 For reserve pair `(Rphysical, Rcommit)`, calculate:
 
@@ -341,16 +375,16 @@ overlap, target undershoot, stale-data actuation, or manual guest restart.
 ## Host-pool handoff
 
 The host-pool manager consumes total-RAM `demand_target` and `safe_floor`,
-pressure, and shrink eligibility plus authoritative `requested`/`current`; it does
-not reproduce guest-demand calculation. Pool arbitration reserves capacity
-atomically and grants every eligible request that fits without using priority.
-Under contention it may grant total RAM no greater than demand or reclaim for
-an unmet higher-priority recipient from a strictly lower-priority donor toward
-no lower than `max(minimum, safe_floor)`. Equal- or higher-priority members are
-not donors for that request. The host converts the total-RAM
-`pool_grant` to an alias-scoped device target using its non-reclaimable base and
-fresh geometry. Controlled growth or reclaim passes that target through the
-reconciler, which continues to enforce configured quanta, upward supersession,
-convergence, journal, and latch rules. Released capacity is not available to
-another VM until live `current` confirms it and the ledger records the
-observation.
+pressure, and shrink eligibility plus authoritative `requested`/`current`; it
+does not reproduce guest-demand calculation. Pool arbitration reserves
+capacity atomically and grants every eligible request that fits without using
+priority. Under contention it may grant total RAM no greater than demand or
+reclaim for an unmet higher-priority recipient from a strictly lower-priority
+donor toward no lower than `max(minimum, safe_floor)`. Equal- or
+higher-priority members are not donors for that request. The host converts the
+total-RAM `pool_grant` to an alias-scoped device target using its
+non-reclaimable base and fresh geometry. Controlled growth or reclaim passes
+that target through the reconciler, which continues to enforce configured
+quanta, upward supersession, convergence, journal, and latch rules. Released
+capacity is not available to another VM until live `current` confirms it and
+the ledger records the observation.

@@ -95,11 +95,14 @@ conservatively; malformed control state fails closed.
 The exact formulas and required policy inputs live only in
 [target-controller.md](target-controller.md).
 
-The replacement design inserts a versioned `WindowsPressureAssessment` between
-accepted raw telemetry and the estimator. It records an explainable class
-(`urgent_grow`, `grow_or_hold`, `neutral_hold`, `reclaim_eligible`, or
-`unavailable`) plus contributing evidence. It is not allocation authority and
-does not remove `desired`, `requested`, or `current` from the model.
+WN3 inserts a versioned `WindowsPressureAssessment` beside the fixed-headroom
+estimator. It keeps committed-memory requirement, notification-led pressure
+(`low_memory`, `neutral`, `high_memory`, or `unavailable`), and shrink safety
+as separate results with stable reasons and input identity. Its history and
+latest result are checkpointed under a separate policy fingerprint, and each
+comparison is appended as versioned JSON-lines evidence. In shadow mode it
+always produces `NoChange`; it is not allocation authority and does not remove
+`desired`, `requested`, or `current` from the model.
 
 ## Guest demand provider
 
@@ -181,7 +184,7 @@ violating a guarantee or inventing capacity.
 
 ## Controller status
 
-`ControllerStatusSnapshot` version 1 is a bounded read-only operational view.
+`ControllerStatusSnapshot` version 2 is a bounded read-only operational view.
 It joins a fresh alias-selected `VirtioMemState` with the matching policy
 checkpoint and exposes:
 
@@ -194,7 +197,9 @@ checkpoint and exposes:
 - capacity state (`unknown`, `available`, or `at_effective_maximum`);
 - command ownership and immutable command details when an intent exists; and
 - control health, latch/recovery reasons, fingerprints, and the last reviewed
-  latch-clear reason.
+  latch-clear reason; and
+- the pressure-policy mode plus, in shadow mode, its policy fingerprint,
+  history-entry count, and latest assessment or cold state.
 
 The snapshot is not persisted by the status command and is not control state.
 Malformed, oversized, newer-version, contradictory, unaligned, or

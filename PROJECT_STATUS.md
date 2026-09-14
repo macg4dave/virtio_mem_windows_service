@@ -1,6 +1,6 @@
 # Project Status
 
-Updated: 2026-09-13
+Updated: 2026-09-14
 
 ## Summary
 
@@ -29,9 +29,12 @@ qualified.
 
 - TASK-035 completed the implementation/document audit, Microsoft-native signal
   research, target architecture, obsolete-item classification, and WN0 cleanup.
-- TASK-038 / WN3 remains the claimed implementation slice: finish host
-  persistence, status exposure, and shadow comparison for separate demand,
-  pressure, and shrink-safety outputs without actuation.
+- TASK-038 / WN3 remains the claimed implementation slice: qualify the
+  implemented host persistence, version-2 status, and append-only comparison
+  path. Explicit shadow mode joins accepted telemetry to live allocation and
+  always suppresses actuation.
+  Focused, aggregate local, and native Windows gates pass; the privileged live
+  status refresh did not run because the one outer sudo prompt was not entered.
 - TASK-028 and QA-T009 are paused as fixed-headroom qualification. Their
   evidence remains useful for reconciliation and platform behavior but cannot
   qualify the replacement demand policy.
@@ -39,8 +42,8 @@ qualified.
   WN0-WN10 as Windows-provider/per-VM component qualification, and makes
   HPM0-HPM6 the mandatory system path to a final release decision.
 
-No product code, deployment, or live mutation was performed for this
-architecture/roadmap change.
+The current slice changes host/shared-core code and documentation. Deployment
+and live mutation have not yet been performed.
 
 ## Implemented
 
@@ -63,9 +66,9 @@ compression do not currently influence `desired`.
 
 ## Known gaps
 
-- Windows-native pressure collection, semantic workload evidence, shadow target
-  comparison, pressure-aware actuation, and its recovery/endurance evidence are
-  not implemented or qualified.
+- Windows-native notification collection and host shadow comparison are
+  implemented, but semantic workload evidence, pressure-aware actuation, and
+  recovery/endurance evidence are not qualified.
 - Windows does not expose a general recommended-RAM byte target for KVM; the
   host's minimal mapping from pressure evidence to bytes still requires shadow
   calibration and validation.

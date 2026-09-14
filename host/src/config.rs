@@ -2,6 +2,7 @@ use std::env;
 use std::time::Duration;
 
 use thiserror::Error;
+use virtio_mem_core::{PressurePolicyConfig, PressurePolicyMode};
 
 /// Automatic reclaim is a core product capability unless explicitly paused.
 pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = true;
@@ -42,6 +43,10 @@ pub enum HostConfigError {
     InvalidRawTelemetryAckPath,
     #[error("VIRTIO_MEM_POLICY_STATE_PATH must be non-empty")]
     InvalidPolicyStatePath,
+    #[error("VIRTIO_MEM_PRESSURE_POLICY_MODE must be 'legacy' or 'shadow': {0}")]
+    InvalidPressurePolicyMode(String),
+    #[error("VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH must be non-empty")]
+    InvalidPressureShadowLogPath,
     #[error("safe-floor reserves must not exceed normal reserves")]
     InvalidReserveOrder,
     #[error("target policy configuration is invalid: {0}")]
@@ -74,6 +79,12 @@ pub enum DemandSourceMode {
 pub enum RawTelemetryTransport {
     File,
     QgaFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PressureShadowConfig {
+    pub policy: PressurePolicyConfig,
+    pub comparison_log_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +125,8 @@ pub struct HostConfig {
     pub automatic_windows_shrink: bool,
     pub shrink_renotification: bool,
     pub shrink_retry_delays: Vec<Duration>,
+    pub pressure_policy_mode: PressurePolicyMode,
+    pub pressure_shadow: Option<PressureShadowConfig>,
 }
 
 impl HostConfig {
@@ -136,6 +149,31 @@ impl HostConfig {
         };
         let raw_telemetry_transport =
             parse_raw_telemetry_transport(required("VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT")?)?;
+        let pressure_policy_mode = parse_pressure_policy_mode(
+            env::var("VIRTIO_MEM_PRESSURE_POLICY_MODE").unwrap_or_else(|_| "legacy".to_owned()),
+        )?;
+        let pressure_shadow = if pressure_policy_mode == PressurePolicyMode::Shadow {
+            Some(PressureShadowConfig {
+                policy: PressurePolicyConfig {
+                    demand_margin_ratio_numerator: positive(
+                        "VIRTIO_MEM_PRESSURE_MARGIN_RATIO_NUMERATOR",
+                    )?,
+                    demand_margin_ratio_denominator: positive(
+                        "VIRTIO_MEM_PRESSURE_MARGIN_RATIO_DENOMINATOR",
+                    )?,
+                    demand_margin_minimum_bytes: unsigned(
+                        "VIRTIO_MEM_PRESSURE_MARGIN_MINIMUM_BYTES",
+                    )?,
+                    demand_margin_maximum_bytes: positive(
+                        "VIRTIO_MEM_PRESSURE_MARGIN_MAXIMUM_BYTES",
+                    )?,
+                    downward_hysteresis_bytes: positive("VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES")?,
+                },
+                comparison_log_path: required("VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH")?,
+            })
+        } else {
+            None
+        };
         let shrink_renotification = optional_bool(
             "VIRTIO_MEM_SHRINK_RENOTIFICATION",
             DEFAULT_SHRINK_RENOTIFICATION,
@@ -208,6 +246,8 @@ impl HostConfig {
             )?,
             shrink_renotification,
             shrink_retry_delays,
+            pressure_policy_mode,
+            pressure_shadow,
         };
         config.validate()?;
         Ok(config)
@@ -296,6 +336,27 @@ impl HostConfig {
         if self.policy_state_path.trim().is_empty() {
             return Err(HostConfigError::InvalidPolicyStatePath);
         }
+        if self.pressure_policy_mode == PressurePolicyMode::Shadow {
+            let Some(shadow) = &self.pressure_shadow else {
+                return Err(HostConfigError::InvalidPressureShadowLogPath);
+            };
+            if shadow.comparison_log_path.trim().is_empty() {
+                return Err(HostConfigError::InvalidPressureShadowLogPath);
+            }
+            if shadow.policy.demand_margin_ratio_denominator == 0
+                || shadow.policy.demand_margin_minimum_bytes
+                    > shadow.policy.demand_margin_maximum_bytes
+                || shadow.policy.downward_hysteresis_bytes == 0
+            {
+                return Err(HostConfigError::InvalidTargetPolicy(
+                    "pressure-shadow margin policy is invalid",
+                ));
+            }
+        } else if self.pressure_shadow.is_some() {
+            return Err(HostConfigError::InvalidTargetPolicy(
+                "legacy pressure mode contains shadow configuration",
+            ));
+        }
         Ok(())
     }
 }
@@ -316,6 +377,14 @@ fn parse_raw_telemetry_transport(value: String) -> Result<RawTelemetryTransport,
         "file" => Ok(RawTelemetryTransport::File),
         "qga-file" => Ok(RawTelemetryTransport::QgaFile),
         _ => Err(HostConfigError::InvalidRawTelemetryTransport(value)),
+    }
+}
+
+fn parse_pressure_policy_mode(value: String) -> Result<PressurePolicyMode, HostConfigError> {
+    match value.as_str() {
+        "legacy" => Ok(PressurePolicyMode::Legacy),
+        "shadow" => Ok(PressurePolicyMode::Shadow),
+        _ => Err(HostConfigError::InvalidPressurePolicyMode(value)),
     }
 }
 
@@ -449,6 +518,24 @@ mod tests {
             ))
         );
     }
+
+    #[test]
+    fn pressure_shadow_mode_is_explicit_and_closed() {
+        assert_eq!(
+            parse_pressure_policy_mode("legacy".to_owned()),
+            Ok(PressurePolicyMode::Legacy)
+        );
+        assert_eq!(
+            parse_pressure_policy_mode("shadow".to_owned()),
+            Ok(PressurePolicyMode::Shadow)
+        );
+        assert_eq!(
+            parse_pressure_policy_mode("active".to_owned()),
+            Err(HostConfigError::InvalidPressurePolicyMode(
+                "active".to_owned()
+            ))
+        );
+    }
     #[test]
     fn rejects_unsafe_aliases() {
         let config = HostConfig {
@@ -489,6 +576,8 @@ mod tests {
             automatic_windows_shrink: false,
             shrink_renotification: false,
             shrink_retry_delays: Vec::new(),
+            pressure_policy_mode: PressurePolicyMode::Legacy,
+            pressure_shadow: None,
         };
         assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
     }
@@ -532,6 +621,8 @@ mod tests {
             automatic_windows_shrink: false,
             shrink_renotification: false,
             shrink_retry_delays: Vec::new(),
+            pressure_policy_mode: PressurePolicyMode::Legacy,
+            pressure_shadow: None,
         };
         config.compatibility_attestation_path = " ".to_owned();
         assert_eq!(
@@ -579,6 +670,8 @@ mod tests {
             automatic_windows_shrink: false,
             shrink_renotification: false,
             shrink_retry_delays: Vec::new(),
+            pressure_policy_mode: PressurePolicyMode::Legacy,
+            pressure_shadow: None,
         };
         config.raw_telemetry_path = " ".to_owned();
         assert_eq!(

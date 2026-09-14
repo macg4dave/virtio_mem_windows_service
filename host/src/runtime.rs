@@ -310,6 +310,19 @@ where
                     .durable_control_state()
                     .map_err(HostRuntimeError::Controller)?;
             }
+            if self.config.pressure_policy_mode == virtio_mem_core::PressurePolicyMode::Shadow
+                && (durable.intent.is_some() || state.requested_bytes != state.current_bytes)
+            {
+                eprintln!(
+                    "virtio-mem-host: event=pressure_shadow_non_actuating vm={} alias={} requested_bytes={} current_bytes={} reason=existing_or_unowned_live_intent",
+                    self.config.vm_name,
+                    self.config.alias,
+                    state.requested_bytes,
+                    state.current_bytes
+                );
+                wait_interruptibly(stop, self.config.poll_interval);
+                continue;
+            }
             let owned_durable_shrink = durable.intent.as_ref().is_some_and(|intent| {
                 matches!(
                     intent.direction,
@@ -599,6 +612,19 @@ where
                 state.requested_bytes,
                 state.current_bytes,
             );
+            if self.config.pressure_policy_mode == virtio_mem_core::PressurePolicyMode::Shadow
+                && matches!(decision, ResizeDecision::Request { .. })
+            {
+                eprintln!(
+                    "virtio-mem-host: event=pressure_shadow_non_actuating vm={} alias={} requested_bytes={} current_bytes={} reason=resize_decision_suppressed",
+                    self.config.vm_name,
+                    self.config.alias,
+                    state.requested_bytes,
+                    state.current_bytes
+                );
+                wait_interruptibly(stop, self.config.poll_interval);
+                continue;
+            }
             if let ResizeDecision::Request { requested_bytes } = decision {
                 if actuation_latched {
                     wait_interruptibly(stop, self.config.poll_interval);
@@ -808,6 +834,8 @@ mod tests {
             automatic_windows_shrink: false,
             shrink_renotification: false,
             shrink_retry_delays: Vec::new(),
+            pressure_policy_mode: virtio_mem_core::PressurePolicyMode::Legacy,
+            pressure_shadow: None,
         }
     }
 
@@ -891,6 +919,48 @@ mod tests {
         runtime
             .run(&stop)
             .expect("invalid demand fails closed without restarting the service");
+    }
+
+    struct StopWithResizeDecision<'a>(&'a AtomicBool);
+
+    impl DemandSource for StopWithResizeDecision<'_> {
+        fn evaluate(
+            &self,
+            state: VirtioMemState,
+            _config: &HostConfig,
+        ) -> Result<DemandDecision, String> {
+            self.0.store(true, Ordering::Release);
+            Ok(DemandDecision {
+                decision: ResizeDecision::Request {
+                    requested_bytes: state.current_bytes + GIB,
+                },
+                desired_bytes: state.current_bytes + GIB,
+                safe_floor_bytes: state.current_bytes,
+                effective_maximum_bytes: 32 * GIB,
+                history_ready: false,
+                telemetry_identity: None,
+            })
+        }
+    }
+
+    #[test]
+    fn shadow_runtime_blocks_a_resize_decision_before_the_sink() {
+        let stop = AtomicBool::new(false);
+        let sink = AmbiguousShrinkSink(Cell::new(0));
+        let mut runtime_config = config();
+        runtime_config.pressure_policy_mode = virtio_mem_core::PressurePolicyMode::Shadow;
+        runtime_config.poll_interval = Duration::from_millis(1);
+        let runtime = HostRuntime::new(
+            StopWithResizeDecision(&stop),
+            ConvergedState,
+            &sink,
+            UnusedHostMemory,
+            runtime_config,
+        );
+
+        runtime.run(&stop).expect("shadow runtime stops cleanly");
+
+        assert_eq!(sink.0.get(), 0);
     }
 
     struct RepeatedShrinkDemand<'a> {

@@ -14,10 +14,13 @@ not from completed task notes.
 TASK-038 is claimed for WN3 shadow assessment. TASK-030 and TASK-037 are
 complete, so its construction dependencies are satisfied. This task must keep
 actuation and reclaim disabled while it separates memory requirement, pressure
-state, and shrink safety and exposes their inputs and reasons. The shared-core
-assessment contract and durable history model now pass seven focused tests and
-the aggregate local gate; host persistence, status exposure, and shadow
-comparison emission remain in progress.
+state, and shrink safety and exposes their inputs and reasons. The assessment is
+now wired to accepted raw telemetry and fresh alias-scoped allocation in an
+explicit no-actuation shadow mode. Separate policy fingerprinting,
+checkpointed history/latest assessment, append-only comparisons, and
+controller-status exposure are implemented. Focused tests, the aggregate local
+gate, and the native Windows aggregate gate pass. The inactive deployment/live
+status refresh and QA-T026–QA-T027 evidence remain in progress.
 
 ## Paused fixed-headroom qualification
 

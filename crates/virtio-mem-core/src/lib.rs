@@ -26,8 +26,8 @@ pub use compatibility::{
 pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 pub use controller_status::{
     parse_controller_status, AcceptedTelemetryIdentity, CapacityState, CommandOwnership,
-    ControllerCommandStatus, ControllerStatusError, ControllerStatusSnapshot, ReclaimReadiness,
-    RecoveryState, CONTROLLER_STATUS_VERSION, MAX_CONTROLLER_STATUS_BYTES,
+    ControllerCommandStatus, ControllerStatusError, ControllerStatusSnapshot, PressureShadowStatus,
+    ReclaimReadiness, RecoveryState, CONTROLLER_STATUS_VERSION, MAX_CONTROLLER_STATUS_BYTES,
 };
 pub use demand::{
     AllocationProvenance, DemandCalculator, DemandError, DemandLimits, DemandPolicyConfig,
@@ -47,9 +47,10 @@ pub use pressure_assessment::{
     assess_windows_pressure, AssessmentAllocation, AssessmentAvailability, AssessmentConfidence,
     AssessmentInputIdentity, AssessmentReason, MemoryRequirementAssessment,
     PressureAssessmentError, PressureHistoryEntry, PressureHistoryState, PressureHistorySummary,
-    PressurePolicyConfig, PressureState, PressureStateAssessment, ShrinkSafetyAssessment,
-    ShrinkSafetyState, WindowsPressureAssessment, MAX_PRESSURE_HISTORY_ENTRIES,
-    PRESSURE_ASSESSMENT_VERSION, PRESSURE_HISTORY_VERSION, PRESSURE_POLICY_VERSION,
+    PressurePolicyConfig, PressurePolicyMode, PressureShadowComparison, PressureState,
+    PressureStateAssessment, ShrinkSafetyAssessment, ShrinkSafetyState, WindowsPressureAssessment,
+    MAX_PRESSURE_HISTORY_ENTRIES, PRESSURE_ASSESSMENT_VERSION, PRESSURE_HISTORY_VERSION,
+    PRESSURE_POLICY_VERSION, PRESSURE_SHADOW_COMPARISON_VERSION,
 };
 pub use reconciler::{
     reconcile, ControlHealth, ReconcileAction, ReconcileDecision, ReconcileDirection,

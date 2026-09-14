@@ -1203,6 +1203,8 @@ mod tests {
             automatic_windows_shrink: false,
             shrink_renotification: false,
             shrink_retry_delays: Vec::new(),
+            pressure_policy_mode: virtio_mem_core::PressurePolicyMode::Legacy,
+            pressure_shadow: None,
         };
         let mut output = Vec::new();
         run_decision_with(

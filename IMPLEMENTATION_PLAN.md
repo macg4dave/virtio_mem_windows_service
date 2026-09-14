@@ -15,9 +15,12 @@ passing versioned read-only status contract, product command, and typed
 privileged workflow. Its live read passed on 2026-09-13 with converged
 alias-scoped state, no command owner or latch, and the unit still inactive and
 disabled. TASK-038 is now claimed for WN3 shadow assessment; it must not actuate
-or enable reclaim. Its shared-core assessment and history contracts pass
-focused and aggregate local tests; host persistence, status exposure, and
-shadow comparison emission are the next implementation slice.
+or enable reclaim. Its assessment and history contracts are integrated with
+accepted telemetry and live allocation. Shadow mode requires explicit
+margin/evidence inputs, persists a separate fingerprint/history/latest result,
+appends comparisons, extends status, and always returns `NoChange`. Focused,
+aggregate local, and native Windows gates pass; inactive deployment/status and
+QA-T026–QA-T027 gates remain.
 
 The Windows sequence produces one guest-demand provider and preserves the
 per-VM safety machinery. It is not the top-level product. HPM0-HPM6 add the
