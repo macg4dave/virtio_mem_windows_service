@@ -105,7 +105,13 @@ device's own lower bound and geometry.
 
 The shared crate owns checked byte units, virtio-mem XML parsing and geometry,
 memory policy, target estimation, reconciliation, recovery state machines, and
-versioned evidence types. Pure logic remains independent of live systems.
+versioned evidence types. HPM0 adds the version-1 semantic `HostPoolPolicy`,
+OS-neutral `GuestDemandReport`, and deterministic `HostPoolPlan` contracts. Its
+pure planner accepts an explicit total-guest-RAM pool, charges host-derived
+non-reclaimable base plus live device allocation, grants unconstrained growth
+without priority, and emits only named reclaim-for-transfer dependencies. It
+does not reserve durably, coordinate processes, or actuate. Pure logic remains
+independent of live systems.
 
 ### Build and validation control plane
 

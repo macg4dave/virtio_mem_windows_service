@@ -374,16 +374,18 @@ overlap, target undershoot, stale-data actuation, or manual guest restart.
 
 ## Host-pool handoff
 
-The host-pool manager consumes total-RAM `demand_target` and `safe_floor`,
+The HPM0 shared-core contract consumes total-RAM `demand_target` and `safe_floor`,
 pressure, and shrink eligibility plus authoritative `requested`/`current`; it
 does not reproduce guest-demand calculation. Pool arbitration reserves
-capacity atomically and grants every eligible request that fits without using
-priority. Under contention it may grant total RAM no greater than demand or
+capacity atomically only after HPM1; the current pure plan has no dispatch
+authority. It grants every eligible request that fits without using priority.
+Under contention it may grant total RAM no greater than demand or
 reclaim for an unmet higher-priority recipient from a strictly lower-priority
 donor toward no lower than `max(minimum, safe_floor)`. Equal- or
 higher-priority members are not donors for that request. The host converts the
 total-RAM `pool_grant` to an alias-scoped device target using its
-non-reclaimable base and fresh geometry. Controlled growth or reclaim passes
+non-reclaimable base with checked subtraction and fresh block/device geometry.
+Controlled growth or reclaim later passes
 that target through the reconciler, which continues to enforce configured
 quanta, upward supersession, convergence, journal, and latch rules. Released
 capacity is not available to another VM until live `current` confirms it and

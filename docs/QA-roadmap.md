@@ -113,9 +113,9 @@ a QA task's status until the corresponding applied gate is run and reviewed.
 | ID | Task | Status |
 | --- | --- | --- |
 | QA-T025 | Validate the additive schema, capability, warm-up, fallback, compatibility, and fail-closed contract without actuation | Complete; focused, local, and native Windows gates passed 2026-09-13; no deployment or actuation |
-| QA-T026 | Record native support and failure behavior for Windows memory notifications, then correlate their states with distinct memory workloads | In progress; native API capability and schema-v3 installed-service evidence pass, workload correlation outstanding |
-| QA-T027 | Review commit-centred shadow classifications and byte candidates for false growth, missed pressure, cache treatment, capability/warm-up handling, in-flight allocation treatment, continuity, and fallback behavior | In progress; resident schema-v2 fallback/no-actuation evidence passes, schema-v3 workload evidence blocked by QA-T026 |
-| QA-T028 | Prove pressure-aware bounded growth under low-memory, commit-stress, and paging scenarios with reclaim disabled | Blocked by QA-T027 and TASK-039 |
+| QA-T026 | Record native support and failure behavior for Windows memory notifications, then correlate their states with distinct memory workloads | Closed for the WN3 checkpoint by operator decision on 2026-09-14; native API and schema-v3 deployment pass, broader workload correlation deferred to QA-T031 and is not release evidence |
+| QA-T027 | Review commit-centred shadow classifications and byte candidates for false growth, missed pressure, cache treatment, capability/warm-up handling, in-flight allocation treatment, continuity, and fallback behavior | Closed for the WN3 checkpoint by operator decision on 2026-09-14; schema-v2 fallback/no-actuation evidence passes, broader schema-v3 classification review deferred to QA-T031 and is not release evidence |
+| QA-T028 | Prove pressure-aware bounded growth under low-memory, commit-stress, and paging scenarios with reclaim disabled | Blocked by TASK-039 |
 | QA-T029 | Prove conservative reclaim requires sustained high/healthy evidence and stops or reverses under renewed pressure | Blocked by QA-T028 and TASK-040 |
 | QA-T030 | Prove each proposed rate/trend signal adds value, has correct interval/warm-up semantics, and degrades without unsafe shrink | Blocked by QA-T029 and TASK-041 |
 | QA-T031 | Run the automated resident, commit-only, cache/standby, modified, paging, burst, steady-state, and recovery workload matrix | Blocked by QA-T030 and TASK-042 |
@@ -128,7 +128,7 @@ a QA task's status until the corresponding applied gate is run and reviewed.
 
 | ID | Task | Status |
 | --- | --- | --- |
-| QA-T036 | Validate pool/member and OS-neutral demand-report contracts plus durable ledger accounting, corruption, and restart behavior without actuation | Blocked by TASK-032–TASK-033 |
+| QA-T036 | Validate pool/member and OS-neutral demand-report contracts plus durable ledger accounting, corruption, and restart behavior without actuation | Contract tests pass; blocked by TASK-033 durable ledger work |
 | QA-T037 | Review full-member shadow plans proving all fitting demand may grow regardless of priority, priority applies only under contention, and donor plans require unmet higher-priority demand | Blocked by QA-T036 and TASK-046 |
 | QA-T038 | Prove all fitting one-VM and concurrent multi-VM growth is pool-granted without priority withholding, while constrained grants are durable, deterministic, host-headroom checked, and never oversubscribed with reclaim disabled | Blocked by QA-T037, TASK-047, and applicable provider growth evidence |
 | QA-T039 | Prove reclaim occurs only for a named unmet higher-priority recipient from a strictly lower-priority shrink-safe donor, remains bounded by minimum/safe floor, cancels on renewed pressure, and is observed before transfer | Blocked by QA-T038, TASK-048, and applicable provider reclaim evidence |
@@ -156,6 +156,13 @@ QA-T026 records notification semantics without inventing a numeric pressure
 score. QA-T030 derives any proposed reusable-memory or paging-rate threshold
 from supported guest and workload evidence. Diagnostic examples are not
 product defaults and cannot authorize actuation before review.
+
+The 2026-09-14 WN3 checkpoint decision closes QA-T026 and QA-T027 only as
+dependencies for continued construction. The unrun schema-v3 workload breadth,
+notification correlation, false-growth/missed-pressure review, and cache/paging
+classification move to QA-T031. This deferral is neither a test pass nor
+permission for unattended or release use; QA-T028 and later applied gates must
+still supply their own required evidence.
 
 QA-T036 and QA-T037 are contract/shadow gates and must not actuate. HPM applied
 runs must record the complete pool configuration, every member's host-derived

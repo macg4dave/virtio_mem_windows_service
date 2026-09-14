@@ -219,3 +219,9 @@ telemetry. Its rollback backup is named in that evidence. A fresh QGA
 calibration in `.artifacts/deployment/wn3-schema-v3-calibration.json` confirmed
 converged allocation and the established visible base without starting the
 host controller.
+
+On 2026-09-14 the operator accepted this evidence as the WN3 construction
+checkpoint and deferred the remaining schema-v3 workload correlation and
+classification breadth to later pressure qualification. This closes WN3 for
+continued coding only; it is not a claim that the deferred tests passed and it
+does not authorize unattended resizing or release use.

@@ -21,6 +21,17 @@ insufficient does priority order contenders, and only unmet higher-priority
 demand may trigger reclaim from a strictly lower-priority shrink-safe VM. If no
 such donor can release memory, the recipient remains waiting/constrained.
 
+HPM0 implements these as shared-core semantic contracts, not a deployment file
+or runtime API. `HostPoolPolicy` version 1 declares explicit VM/device members,
+total-RAM bounds, one contention priority, provider kind, report freshness, and
+the explicit total pool. `GuestDemandReport` version 1 carries provider-neutral
+identity, versions, availability, continuity, total-RAM demand/effective
+maximum/safe floor, pressure, shrink eligibility, and bounded reason codes. A
+`HostPoolPlan` version 1 contains total-RAM grants, derived device targets,
+unmet demand, and named reclaim-for-transfer dependencies. The plan is
+side-effect-free and non-durable; it cannot authorize actuation before the HPM1
+ledger and later coordinator milestones.
+
 The target architecture gives precedence to Microsoft-supported Windows
 memory-pressure notifications and performance data. Windows publishes their
 normalised state and availability; it does not publish a pressure-derived byte

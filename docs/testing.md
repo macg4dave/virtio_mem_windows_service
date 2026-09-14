@@ -58,6 +58,14 @@ and unknown fields, bounds, timestamps, warm-up, session changes, and replay
 remain distinct cases; successful fallback decoding is not pressure-qualified
 reclaim evidence.
 
+HPM0 host-pool contract changes are owned by `virtio-mem-core`. Focused tests
+must cover versioned policy/report serialization, total-RAM conversion,
+full-member and lifecycle validation, overflow and geometry rejection,
+priority-neutral unconstrained growth, deterministic contention, and the
+strictly-lower-priority named-recipient reclaim rule. These are source-level
+pure-planner checks; native Windows, deployment, live, recovery, and endurance
+gates are not applicable until later HPM milestones cross those boundaries.
+
 The host status surface is implemented by `virtio-mem-host status`. Live
 validation uses `cargo xtask controller-status INSTANCE` with an explicit
 current prebuilt host binary, output path, command bound, connection, and
@@ -326,6 +334,12 @@ classification lag, and cache treatment explicitly.
 For QA-T026, derive any proposed reusable-memory and paging-rate threshold from
 the supported guest, workload, and observation-window evidence. Diagnostic
 examples are not repository defaults or automatic pass/fail rules.
+
+The WN3 construction checkpoint was closed by operator decision on 2026-09-14
+without completing the broader schema-v3 workload matrix. That remaining
+notification correlation and classification review is deferred to QA-T031.
+The deferral unblocks further construction but does not count as a pass for
+applied behavior, endurance, or release readiness.
 
 Applied qualification begins with growth only. Reclaim stays blocked until the
 shadow review shows sustained high/healthy Windows evidence, adequate commit

@@ -95,13 +95,16 @@ and `docs/testing.md`; do not copy values from old evidence.
 
 Core telemetry, Windows low/high memory-resource notification collection,
 single-controller policy/reconciliation, native service lifecycle, host
-actuation, a pure non-actuating pool planner, and Rust validation tooling are
-implemented. Notification state is measurement-only and not yet used by target
-policy. The implemented sizing policy remains a temporary baseline, not the
-release candidate. Durable host-wide configuration/reservation, runtime
-arbitration, reclaim-for-transfer, and additional guest providers are not yet
-implemented. The stack remains NO-GO for unattended automatic resizing until
-the WN component gates and HPM system gates in `docs/QA-roadmap.md` pass.
+actuation, versioned HPM0 pool/demand contracts, a pure non-actuating pool
+planner, and Rust validation tooling are implemented. Notification state now
+feeds the non-actuating WN3 shadow assessment but does not yet drive an applied
+target. The implemented sizing
+policy remains a temporary baseline, not the release candidate. Final
+host-wide deployment configuration, durable reservation, runtime coordination
+and dispatch, observed reclaim-for-transfer, and additional guest providers
+are not yet implemented. The stack remains NO-GO for unattended automatic
+resizing until the WN component gates and HPM system gates in
+`docs/QA-roadmap.md` pass.
 
 ## Documentation
 

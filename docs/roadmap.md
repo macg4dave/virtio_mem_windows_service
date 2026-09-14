@@ -91,7 +91,7 @@ single-VM controller as the destination. In particular:
 - fallback and legacy migration language did not give every obsolete path a
   firm deletion gate.
 
-This roadmap keeps WN3 as the current bounded implementation slice. WN0-WN10
+This roadmap keeps WN4 as the current bounded implementation slice. WN0-WN10
 now qualify the Windows demand-provider and per-VM safety components. HPM0-HPM6
 then make the host pool the only allocation authority and deliver the complete
 multi-VM product. These are dependent component and system tracks within one
@@ -208,7 +208,7 @@ the unmet demand remains explicitly constrained.
 | WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
 | WN1 | Complete | Define the Windows-native telemetry contract and capability model | WN0 |
 | WN2 | Complete | Collect authoritative Windows pressure notifications | WN1 |
-| WN3 | In progress | Separate requirement, pressure, and shrink-safety assessment in shadow mode | WN2 |
+| WN3 | Complete | Separate requirement, pressure, and shrink-safety assessment in shadow mode | WN2 |
 | WN4 | Planned | Integrate pressure-aware bounded growth | WN3 |
 | WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
 | WN6 | Planned | Add only qualified trend and rate evidence | WN5 |
@@ -221,7 +221,7 @@ the unmet demand remains explicitly constrained.
 
 | Milestone | Status | Outcome | Depends on |
 | --- | --- | --- | --- |
-| HPM0 | Planned | Define the host-pool, member-policy, and OS-neutral demand-report contracts | WN3 contract |
+| HPM0 | Complete | Define the host-pool, member-policy, and OS-neutral demand-report contracts | WN3 contract |
 | HPM1 | Planned | Add one durable atomic reservation ledger around the pure pool planner | HPM0 |
 | HPM2 | Planned | Run one host-wide coordinator in shadow mode across configured members | HPM1, WN3 |
 | HPM3 | Planned | Require a durable pool grant for every growth action | HPM2, qualified provider growth |
@@ -945,8 +945,7 @@ without changing runtime actuation or selecting a final configuration syntax.
 
 ### Dependencies
 
-The stable WN3 assessment boundary; contract work may proceed alongside its
-remaining host shadow integration.
+The stable completed WN3 assessment boundary.
 
 ### Explicitly not yet
 

@@ -106,12 +106,12 @@ always produces `NoChange`; it is not allocation authority and does not remove
 
 ## Guest demand provider
 
-The host-pool boundary consumes a versioned OS-neutral `GuestDemandReport`, not
+The host-pool boundary consumes version-1 OS-neutral `GuestDemandReport`, not
 a Windows raw-telemetry record. A provider adapter derives it from evidence
 native to one guest operating system. The report contains:
 
-- exact VM and provider identity, schema/policy version, observation time, and
-  freshness/continuity state;
+- exact VM/device and provider kind/instance identity, report and provider
+  policy versions, observation time, and availability/continuity state;
 - a bounded quantitative total-RAM `demand_target` and effective maximum;
 - pressure/urgency and an explainable reason set;
 - shrink eligibility and a qualified total-RAM `safe_floor`; and
@@ -125,11 +125,13 @@ arbitration sees one common demand contract.
 
 ## Host RAM pool
 
-The destination `HostPoolConfig` is one versioned host-wide policy with a total
-VM-pool byte limit and an explicit member set. Each member binds VM/device
-identity to a minimum guarantee, maximum bound, priority, provider kind, and
-provider configuration. The exact serialization format is intentionally
-deferred, but these semantics are not.
+`HostPoolPolicy` version 1 is the implemented semantic host-wide policy. It has
+an arbitration version, a total VM-pool byte limit, and an explicit member set.
+Each member binds exact VM/device identity to total-RAM minimum and maximum
+bounds, one non-zero contention priority, provider kind, and a positive report
+freshness bound. The Rust contract is serializable for deterministic fixtures;
+the final deployment file syntax and provider-specific configuration remain
+deferred.
 
 Pool and member bounds are total guest-RAM bytes. For each member:
 
@@ -146,28 +148,38 @@ topology but never replace host allocation authority. QEMU overhead and other
 host use remain covered by host safety reserves rather than being presented as
 guest RAM.
 
-The sum of aligned total-RAM minimum guarantees must fit within the pool.
-Minimums are reserved for every enabled member according to explicit lifecycle
-state. Priority does not reserve discretionary capacity or define a permanent
-share. When all eligible growth fits, each VM may grow toward demand regardless
-of priority. Priority ordering and deterministic same-priority behavior become
-active only when eligible requests exceed currently free capacity.
+The sum of geometry-valid total-RAM minimum guarantees must fit within the
+pool. An `enabled` member requires settled live allocation and a fresh usable
+report. An `inactive` member cannot move and retains the greater of its current
+charge and minimum guarantee. An `unavailable` member retains that charge and
+blocks movement for the complete snapshot. A `removed` member remains held and
+charged until a later explicit policy update removes its drained identity; it
+is never silently omitted. Priority does not reserve discretionary capacity or
+define a permanent share. When all eligible growth fits, each VM may grow
+toward demand regardless of priority. Priority ordering and exact identity as
+the same-priority tie-break become active only when eligible requests exceed
+currently free capacity.
 
-One arbitration snapshot joins every fresh `GuestDemandReport` with live
-`requested` and authoritative `current`. Its versioned plan records, per VM:
+One exact full-member arbitration snapshot joins every fresh
+`GuestDemandReport` with host-derived non-reclaimable base, device geometry,
+live `requested`, and authoritative `current`. Version-1 `HostPoolPlan` records,
+per VM:
 
 - assessed demand and safe floor;
-- current allocation and owned in-flight intent;
+- current allocation, requested state, and explicit snapshot blockers for
+  in-flight allocation or unavailable member/provider evidence;
 - total-RAM pool grant, derived device target, and
   hold/grow/reclaim/constrained reason;
 - unmet demand and, when applicable, the higher-priority recipient and strictly
   lower-priority donor dependency;
-- reserved growth bytes or reclaim bytes awaiting observation; and
+- non-durable growth grants or reclaim dependencies awaiting later reservation
+  and observation; and
 - the pool totals before and after the plan.
 
-The durable reservation ledger binds the complete member/configuration
-fingerprint, plan generation, per-VM grant, command ownership, and observed
-total-RAM allocation. A growth grant consumes pool capacity before dispatch. A reclaim
+HPM0 plans have no runtime authority and cannot be dispatched. The HPM1 durable
+reservation ledger will bind the complete member/configuration fingerprint,
+plan generation, per-VM grant, command ownership, and observed total-RAM
+allocation. A growth grant consumes pool capacity before dispatch. A reclaim
 plan does not create free capacity until live `current` confirms the decrease.
 Restart reconstructs the same accounting from the ledger and fresh live state;
 it never lets separate per-VM services recalculate the same free bytes.

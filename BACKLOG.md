@@ -11,25 +11,8 @@ not from completed task notes.
 
 ## In progress
 
-TASK-038 is claimed for WN3 shadow assessment. TASK-030 and TASK-037 are
-complete, so its construction dependencies are satisfied. This task must keep
-actuation and reclaim disabled while it separates memory requirement, pressure
-state, and shrink safety and exposes their inputs and reasons. The assessment is
-now wired to accepted raw telemetry and fresh alias-scoped allocation in an
-explicit no-actuation shadow mode. Separate policy fingerprinting,
-checkpointed history/latest assessment, append-only comparisons, and
-controller-status exposure are implemented. The typed qualification workflow
-now has an explicit no-resize shadow contract that verifies the running mode,
-unchanged allocation, and archived comparisons. Earlier focused, aggregate
-local, and native Windows gates passed; the new focused and aggregate local
-gates plus native Windows revalidation also pass. The shadow host candidate is
-installed with matching hashes and the unit remains disabled/inactive. The
-live status/workload refresh and QA-T026–QA-T027 evidence remain in progress;
-after two launches stopped before elevation, resident schema-v2 fallback
-qualification passed with 119 samples, zero warnings, unchanged allocation,
-and 136 unavailable/blocked comparisons. The native-gated schema-v3 Windows
-candidate is now installed with advancing telemetry and protected ACLs;
-schema-v3 workload correlation remains.
+No task is currently claimed. HPM0/TASK-032 is complete as a source-level
+contract and pure-planner milestone; it made no runtime or live-system change.
 
 ## Paused fixed-headroom qualification
 
@@ -49,7 +32,8 @@ no historical result authorizes automatic resizing under the new policy.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| TASK-032 | Complete HPM0: define total-RAM pool/member accounting, contention-only priority, and OS-neutral `GuestDemandReport` contracts, then audit the existing pure planner against them; no runtime change | Stable WN3 assessment boundary and existing `global_pool` prototype |
+| TASK-039 | Complete WN4: enable pressure-aware bounded growth while reclaim remains disabled | Completed WN3 checkpoint |
+| TASK-033 | Complete HPM1: add the versioned durable atomic pool ledger and restart-safe accounting without live actuation | Completed HPM0 contract |
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation
@@ -59,7 +43,6 @@ evidence here when it completes.
 
 | ID | Work | Depends on |
 | --- | --- | --- |
-| TASK-039 | Complete WN4: enable pressure-aware bounded growth while reclaim remains disabled | TASK-038, QA-T025–QA-T027 |
 | TASK-040 | Complete WN5: add fail-closed shrink blockers and conservative reclaim from sustained qualified evidence | TASK-039, QA-T028 |
 | TASK-041 | Complete WN6: add only rate/trend signals that demonstrate value in shadow qualification | TASK-040, QA-T029 |
 | TASK-042 | Complete WN7: automate the realistic Windows workload and decision-classification matrix | TASK-041, QA-T030 |
@@ -67,7 +50,6 @@ evidence here when it completes.
 | TASK-044 | Complete WN9: freeze versioned configuration, evidence-backed defaults, and migration behavior | TASK-043, QA-T033 |
 | TASK-045 | Complete WN10 construction: freeze the Windows demand-provider candidate and component evidence index | TASK-044, QA-T034 |
 | TASK-031 | Add deterministic fault-scenario execution and machine-readable results for telemetry loss, restart, rejection, ambiguity, and partial progress | TASK-030 |
-| TASK-033 | Complete HPM1: add the versioned durable atomic pool ledger and restart-safe accounting without live actuation | TASK-032 |
 | TASK-046 | Complete HPM2: build the exclusive host-wide coordinator, Windows provider adapter, full-member snapshot, and shadow grants | TASK-033, TASK-038 |
 | TASK-047 | Complete HPM3: grant all growth that fits, apply priority only to constrained contenders, require durable reservations, then remove direct per-VM capacity allocation | TASK-046, TASK-039, WN10 growth evidence |
 | TASK-048 | Complete HPM4: reclaim only for unmet higher-priority demand from strictly lower-priority safe donors, qualify wait/cancellation/recovery, then remove independent per-VM reclaim | TASK-047, TASK-040, WN10 reclaim evidence |
@@ -91,7 +73,7 @@ they do not replace executable task cards.
 | WN0 | Complete | Audit and clean up the fixed-headroom controller direction | Existing implementation |
 | WN1 | Complete | Define the Windows-native telemetry contract | WN0 |
 | WN2 | Complete | Add authoritative Windows pressure notifications | WN1 |
-| WN3 | In progress | Separate requirement, pressure, and shrink-safety assessment | WN2 |
+| WN3 | Complete | Separate requirement, pressure, and shrink-safety assessment | WN2 |
 | WN4 | Planned | Integrate pressure-aware growth | WN3 |
 | WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
 | WN6 | Planned | Add qualified trend/rate evidence | WN5 |
@@ -107,7 +89,7 @@ track. The final product release decision belongs to HPM6, not WN10.
 
 | Milestone | Status | Work | Depends on |
 | --- | --- | --- | --- |
-| HPM0 | Planned | Define pool/member and OS-neutral demand-report contracts | WN3 contract |
+| HPM0 | Complete | Define pool/member and OS-neutral demand-report contracts | WN3 contract |
 | HPM1 | Planned | Add durable atomic reservation and restart-safe pool accounting | HPM0 |
 | HPM2 | Planned | Run one full-member host coordinator in shadow mode | HPM1, WN3 |
 | HPM3 | Planned | Let every VM grow when capacity is free; arbitrate only constrained growth and remove direct capacity allocation | HPM2, qualified provider growth |
@@ -160,6 +142,21 @@ record replaces historical command transcripts and machine-specific evidence:
   converged alias-scoped state with no command owner or latch while the unit
   remained inactive and disabled; this is observability evidence, not
   actuation qualification.
+- TASK-038: completed the WN3 shadow assessment, host integration, separate
+  fingerprint/history/status state, append-only comparison evidence, runtime
+  no-actuation boundary, and typed no-resize qualification workflow. Focused,
+  local, and native Windows gates passed; the shadow candidate and schema-v3
+  producer were deployed, and a schema-v2 fallback resident run passed without
+  allocation change. Broader schema-v3 workload correlation was explicitly
+  deferred to later pressure-policy qualification and is not release evidence.
+- TASK-032: replaced the host-pressure prototype with versioned semantic
+  `HostPoolPolicy`, OS-neutral `GuestDemandReport`, total-RAM conversion, and a
+  deterministic pure `HostPoolPlan`. The planner grants all fitting growth
+  without priority, uses one priority only under contention, and emits reclaim
+  only for a named unmet higher-priority recipient from a strictly
+  lower-priority safe donor. Focused core tests and the aggregate local gate
+  passed on 2026-09-14; no native, deployment, live, recovery, endurance, or
+  actuation work applied.
 - TASK-009 and QA-T001 through QA-T008: native Windows deployment, safe
   baseline, coherent least-privilege host deployment, calibration, current
   attestation, and restart-safe no-actuation preflight.

@@ -18,7 +18,7 @@ recipient capacity before the release is observed.
 
 Basic Windows telemetry, the host-side allocation join, compatibility
 attestation, fixed-headroom targets, durable per-VM reconciliation, bounded
-recovery, and a pure non-actuating pool-planner prototype are implemented. The
+recovery, and the HPM0 host-pool contracts and pure planner are implemented. The
 fixed-headroom formula is a temporary migration baseline, not a supported
 long-term policy. The completed coherent deployment evidence remains valid.
 The controller remains disabled/inactive, and automatic resizing remains
@@ -29,27 +29,28 @@ qualified.
 
 - TASK-035 completed the implementation/document audit, Microsoft-native signal
   research, target architecture, obsolete-item classification, and WN0 cleanup.
-- TASK-038 / WN3 remains the claimed implementation slice: qualify the
-  implemented host persistence, version-2 status, and append-only comparison
-  path. Explicit shadow mode joins accepted telemetry to live allocation and
-  always suppresses actuation. The qualification workflow now has an explicit
-  no-resize shadow contract and retains protected comparisons.
-  The new focused, aggregate local, and native Windows gates pass. The shadow
-  candidate is installed with matching hashes while the unit remains
-  disabled/inactive. Resident schema-v2 fallback qualification subsequently
-  passed with 119 samples, zero warnings, unchanged allocation, and retained
-  unavailable/blocked comparisons. The native-gated schema-v3 Windows service
-  is now installed with protected ACLs and advancing telemetry; notification
-  workload correlation remains.
+- TASK-038 / WN3 is complete as the accepted construction checkpoint. Explicit
+  shadow mode joins accepted telemetry to live allocation, always suppresses
+  actuation, persists versioned state/comparisons, and has a typed no-resize
+  workflow. Focused, aggregate local, and native Windows gates pass; deployed
+  schema-v2 fallback qualification preserved allocation and the current
+  schema-v3 service is installed with advancing telemetry. The remaining
+  workload-correlation breadth is deferred to later pressure qualification and
+  is not release evidence.
 - TASK-028 and QA-T009 are paused as fixed-headroom qualification. Their
   evidence remains useful for reconciliation and platform behavior but cannot
   qualify the replacement demand policy.
-- The roadmap now preserves WN3 as the current implementation slice, treats
-  WN0-WN10 as Windows-provider/per-VM component qualification, and makes
+- WN4 / TASK-039 is the next ready Windows construction slice. The roadmap
+  treats WN0-WN10 as Windows-provider/per-VM component qualification and makes
   HPM0-HPM6 the mandatory system path to a final release decision.
+- HPM0 / TASK-032 is complete at the source-contract layer. Versioned semantic
+  pool/member and provider-neutral demand-report types, checked total-RAM
+  accounting, lifecycle holds, contention-only priority, and named safe donor
+  plans passed focused and aggregate local validation. HPM1 / TASK-033 is the
+  next ready host-pool slice.
 
-The current slice changes host/shared-core code and documentation. Deployment
-and live mutation have not yet been performed.
+The installed host controller remains disabled/inactive. No WN3 qualification
+issued a resize, and automatic resizing remains NO-GO.
 
 ## Implemented
 
@@ -64,6 +65,9 @@ and live mutation have not yet been performed.
   accounting, and latching.
 - Rust `xtask` workflows for local and cross-platform gates, host prerequisites,
   QGA health, live resize, Windows verification, and detached qualification.
+- Version-1 shared-core `HostPoolPolicy`, `GuestDemandReport`, and
+  `HostPoolPlan` contracts with checked total-RAM/device conversion and a
+  deterministic side-effect-free arbiter.
 
 The audit found that the active raw-path formula directly uses only available
 physical memory and commit headroom plus configured reserves. Low/high memory
@@ -78,14 +82,12 @@ compression do not currently influence `desired`.
 - Windows does not expose a general recommended-RAM byte target for KVM; the
   host's minimal mapping from pressure evidence to bytes still requires shadow
   calibration and validation.
-- There is no host-wide configuration for total VM-pool bytes, members,
-  minimums, priorities, or provider kinds.
-- Existing pool inputs do not yet charge each VM's host-derived non-reclaimable
-  base RAM alongside live virtio-mem allocation and reservations.
-- The pure `global_pool` planner has no durable reservation ledger, exclusive
-  coordinator, provider-neutral demand-report input, or runtime integration.
-- Its current separate growth/reclaim priorities and host-pressure-driven
-  reclaim do not implement the contention-only, named-recipient transfer model.
+- There is no final host-wide deployment configuration syntax or runtime
+  loader for the implemented semantic pool/member policy.
+- Pool accounting does not yet include a durable growth reservation ledger or
+  restart reconstruction around the HPM0 base-plus-live-current charge.
+- The pure `global_pool` planner has no exclusive coordinator, Windows provider
+  adapter, durable dispatch authority, or runtime integration.
 - Concurrent demand, reclaim-before-transfer, mixed guest-OS providers, and
   multi-VM recovery/endurance remain unimplemented and unqualified.
 - Classic Windows Event Log text rendering still needs a packaged message

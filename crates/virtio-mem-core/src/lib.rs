@@ -40,8 +40,14 @@ pub use demand::{
 };
 pub use error::{MemoryStatsError, PollError, ServiceLoopError, VirtioMemError};
 pub use global_pool::{
-    arbitrate_global_pool, GlobalPoolConfig, GlobalPoolDecision, GlobalPoolError, GlobalPoolPlan,
-    HostPressureState, VmPoolInput,
+    arbitrate_host_pool, device_target_from_total_ram, total_ram_from_device,
+    validate_host_pool_policy, DemandProviderIdentity, DemandReportAvailability,
+    DemandReportContinuity, GuestDemandReport, GuestPressureState, GuestShrinkEligibility,
+    HostPoolError, HostPoolMemberPolicy, HostPoolPlan, HostPoolPolicy, PoolGrant,
+    PoolGrantDisposition, PoolMemberIdentity, PoolMemberLifecycle, PoolMemberSnapshot,
+    PoolSnapshotBlocker, PoolSnapshotBlockerReason, ReclaimForTransfer,
+    GUEST_DEMAND_REPORT_VERSION, HOST_POOL_ARBITRATION_VERSION, HOST_POOL_PLAN_VERSION,
+    HOST_POOL_POLICY_VERSION, MAX_DEMAND_REASON_CODES, MAX_POOL_MEMBERS,
 };
 pub use pressure_assessment::{
     assess_windows_pressure, AssessmentAllocation, AssessmentAvailability, AssessmentConfidence,

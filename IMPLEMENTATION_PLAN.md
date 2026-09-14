@@ -6,28 +6,24 @@ roadmap to implementation-sized slices without duplicating milestone contracts.
 
 ## Current checkpoint
 
-WN2 / TASK-037 is complete. The Windows service now publishes authoritative
-low/neutral/high memory-resource notification state with explicit failure and
-cleanup behavior. Focused, local, and native Windows gates passed, including a
-real native API capability probe. Workload correlation, installed-service
-evidence, target-policy use, and actuation remain outstanding. TASK-030 has a
-passing versioned read-only status contract, product command, and typed
-privileged workflow. Its live read passed on 2026-09-13 with converged
-alias-scoped state, no command owner or latch, and the unit still inactive and
-disabled. TASK-038 is now claimed for WN3 shadow assessment; it must not actuate
-or enable reclaim. Its assessment and history contracts are integrated with
-accepted telemetry and live allocation. Shadow mode requires explicit
-margin/evidence inputs, persists a separate fingerprint/history/latest result,
-appends comparisons, extends status, and always returns `NoChange`. Focused,
-aggregate local, and native Windows gates passed for the host integration. The
-qualification workflow now supports an explicit no-resize shadow run with
-protected comparison capture; its focused and aggregate local gates pass.
-Native revalidation also passes. The shadow candidate deployment now has
-matching installed hashes and a disabled/inactive final state. Status refresh
-and QA-T026–QA-T027 gates remain. A resident schema-v2 fallback shadow run
-passed with unchanged allocation and retained comparisons. The native-gated
-schema-v3 Windows candidate is now installed with advancing production
-telemetry; notification workload correlation remains.
+WN3 / TASK-038 is complete as the accepted construction checkpoint. The host
+integrates separate memory-requirement, pressure-state, and shrink-safety
+assessments with accepted telemetry and fresh allocation while explicit shadow
+mode always returns `NoChange`. Separate fingerprint/history/status state,
+append-only comparisons, and the typed no-resize workflow are implemented.
+Focused, aggregate local, and native Windows gates pass; the shadow host and
+schema-v3 Windows candidates are installed, and a schema-v2 fallback resident
+run passed with unchanged allocation. By operator decision on 2026-09-14, the
+remaining schema-v3 workload correlation and classification breadth moves to
+later pressure-policy qualification. It is not a test pass or release evidence.
+WN4 / TASK-039 is the next ready Windows construction slice.
+
+HPM0 / TASK-032 is complete. Shared core now owns version-1 semantic
+`HostPoolPolicy`, OS-neutral `GuestDemandReport`, checked total-RAM/device
+conversion, lifecycle charging, deterministic contention, and named
+strictly-lower-priority reclaim dependencies in a pure non-durable plan. The
+focused core suite and aggregate local gate pass. HPM1 / TASK-033 is the next
+ready host-pool slice; no runtime or live behavior changed in HPM0.
 
 The Windows sequence produces one guest-demand provider and preserves the
 per-VM safety machinery. It is not the top-level product. HPM0-HPM6 add the
