@@ -40,14 +40,17 @@ qualified.
 - TASK-028 and QA-T009 are paused as fixed-headroom qualification. Their
   evidence remains useful for reconciliation and platform behavior but cannot
   qualify the replacement demand policy.
-- WN4 / TASK-039 is the next ready Windows construction slice. The roadmap
-  treats WN0-WN10 as Windows-provider/per-VM component qualification and makes
-  HPM0-HPM6 the mandatory system path to a final release decision.
+- WN4 / TASK-039 is in progress. Shared core selects bounded normal, urgent,
+  fallback, held, and capacity-limited growth; explicit host `growth` mode
+  persists that decision and independently suppresses every lower request
+  before the resize sink. Focused core/host tests and the aggregate local gate
+  pass. Native, deployment, and QA-T028 applied evidence remain outstanding.
 - HPM0 / TASK-032 is complete at the source-contract layer. Versioned semantic
   pool/member and provider-neutral demand-report types, checked total-RAM
   accounting, lifecycle holds, contention-only priority, and named safe donor
-  plans passed focused and aggregate local validation. HPM1 / TASK-033 is the
-  next ready host-pool slice.
+  plans passed focused and aggregate local validation. HPM1 / TASK-033 is also
+  complete at the durable-ledger source layer; HPM2 runtime coordination has
+  not started.
 
 The installed host controller remains disabled/inactive. No WN3 qualification
 issued a resize, and automatic resizing remains NO-GO.
@@ -69,10 +72,12 @@ issued a resize, and automatic resizing remains NO-GO.
   `HostPoolPlan` contracts with checked total-RAM/device conversion and a
   deterministic side-effect-free arbiter.
 
-The audit found that the active raw-path formula directly uses only available
-physical memory and commit headroom plus configured reserves. Low/high memory
-notifications, standby/free/modified lists, paging activity, hard faults, and
-compression do not currently influence `desired`.
+Legacy mode directly uses available physical memory and commit headroom plus
+configured reserves. The in-progress WN4 growth mode instead uses the
+commit-centred pressure requirement and lets authoritative low-memory state
+select its configured urgent step. Standby/free/modified lists, paging
+activity, hard faults, and compression still do not influence the applied
+target.
 
 ## Known gaps
 

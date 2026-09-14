@@ -43,7 +43,7 @@ pub enum HostConfigError {
     InvalidRawTelemetryAckPath,
     #[error("VIRTIO_MEM_POLICY_STATE_PATH must be non-empty")]
     InvalidPolicyStatePath,
-    #[error("VIRTIO_MEM_PRESSURE_POLICY_MODE must be 'legacy' or 'shadow': {0}")]
+    #[error("VIRTIO_MEM_PRESSURE_POLICY_MODE must be 'legacy', 'shadow', or 'growth': {0}")]
     InvalidPressurePolicyMode(String),
     #[error("VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH must be non-empty")]
     InvalidPressureShadowLogPath,
@@ -85,6 +85,8 @@ pub enum RawTelemetryTransport {
 pub struct PressureShadowConfig {
     pub policy: PressurePolicyConfig,
     pub comparison_log_path: String,
+    pub growth_step_bytes: Option<u64>,
+    pub fallback_growth_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -152,7 +154,7 @@ impl HostConfig {
         let pressure_policy_mode = parse_pressure_policy_mode(
             env::var("VIRTIO_MEM_PRESSURE_POLICY_MODE").unwrap_or_else(|_| "legacy".to_owned()),
         )?;
-        let pressure_shadow = if pressure_policy_mode == PressurePolicyMode::Shadow {
+        let pressure_shadow = if pressure_policy_mode != PressurePolicyMode::Legacy {
             Some(PressureShadowConfig {
                 policy: PressurePolicyConfig {
                     demand_margin_ratio_numerator: positive(
@@ -170,6 +172,20 @@ impl HostConfig {
                     downward_hysteresis_bytes: positive("VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES")?,
                 },
                 comparison_log_path: required("VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH")?,
+                growth_step_bytes: if pressure_policy_mode == PressurePolicyMode::Growth {
+                    Some(positive("VIRTIO_MEM_PRESSURE_GROW_STEP_BYTES")?)
+                } else {
+                    None
+                },
+                fallback_growth_enabled: if pressure_policy_mode == PressurePolicyMode::Growth {
+                    parse_optional_bool(
+                        "VIRTIO_MEM_PRESSURE_FALLBACK_GROWTH",
+                        Some(required("VIRTIO_MEM_PRESSURE_FALLBACK_GROWTH")?),
+                        false,
+                    )?
+                } else {
+                    false
+                },
             })
         } else {
             None
@@ -336,7 +352,7 @@ impl HostConfig {
         if self.policy_state_path.trim().is_empty() {
             return Err(HostConfigError::InvalidPolicyStatePath);
         }
-        if self.pressure_policy_mode == PressurePolicyMode::Shadow {
+        if self.pressure_policy_mode != PressurePolicyMode::Legacy {
             let Some(shadow) = &self.pressure_shadow else {
                 return Err(HostConfigError::InvalidPressureShadowLogPath);
             };
@@ -350,6 +366,27 @@ impl HostConfig {
             {
                 return Err(HostConfigError::InvalidTargetPolicy(
                     "pressure-shadow margin policy is invalid",
+                ));
+            }
+            if self.pressure_policy_mode == PressurePolicyMode::Growth
+                && shadow.growth_step_bytes.is_none_or(|step| step == 0)
+            {
+                return Err(HostConfigError::InvalidTargetPolicy(
+                    "pressure growth mode requires a positive urgent-growth step",
+                ));
+            }
+            if self.pressure_policy_mode == PressurePolicyMode::Growth
+                && self.automatic_windows_shrink
+            {
+                return Err(HostConfigError::InvalidTargetPolicy(
+                    "pressure growth mode requires automatic Windows shrink to be disabled",
+                ));
+            }
+            if self.pressure_policy_mode == PressurePolicyMode::Shadow
+                && (shadow.growth_step_bytes.is_some() || shadow.fallback_growth_enabled)
+            {
+                return Err(HostConfigError::InvalidTargetPolicy(
+                    "pressure shadow mode contains active-growth configuration",
                 ));
             }
         } else if self.pressure_shadow.is_some() {
@@ -384,6 +421,7 @@ fn parse_pressure_policy_mode(value: String) -> Result<PressurePolicyMode, HostC
     match value.as_str() {
         "legacy" => Ok(PressurePolicyMode::Legacy),
         "shadow" => Ok(PressurePolicyMode::Shadow),
+        "growth" => Ok(PressurePolicyMode::Growth),
         _ => Err(HostConfigError::InvalidPressurePolicyMode(value)),
     }
 }
@@ -520,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn pressure_shadow_mode_is_explicit_and_closed() {
+    fn pressure_policy_mode_is_explicit_and_closed() {
         assert_eq!(
             parse_pressure_policy_mode("legacy".to_owned()),
             Ok(PressurePolicyMode::Legacy)
@@ -528,6 +566,10 @@ mod tests {
         assert_eq!(
             parse_pressure_policy_mode("shadow".to_owned()),
             Ok(PressurePolicyMode::Shadow)
+        );
+        assert_eq!(
+            parse_pressure_policy_mode("growth".to_owned()),
+            Ok(PressurePolicyMode::Growth)
         );
         assert_eq!(
             parse_pressure_policy_mode("active".to_owned()),

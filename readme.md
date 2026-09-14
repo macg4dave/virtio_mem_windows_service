@@ -97,10 +97,12 @@ Core telemetry, Windows low/high memory-resource notification collection,
 single-controller policy/reconciliation, native service lifecycle, host
 actuation, versioned HPM0 pool/demand contracts, a pure non-actuating pool
 planner, the HPM1 durable reservation ledger and restart-safe accounting state
-machine, and Rust validation tooling are implemented. Notification state now
-feeds the non-actuating WN3 shadow assessment but does not yet drive an applied
-target. The implemented sizing
-policy remains a temporary baseline, not the release candidate. Final
+machine, and Rust validation tooling are implemented. Notification state feeds
+the WN3 assessment, and the in-progress WN4 host path can select bounded normal,
+urgent, or explicitly configured fallback growth while independently
+prohibiting reclaim. This source integration has not passed native deployment
+or applied qualification. The legacy sizing policy remains a temporary rollback
+baseline, not the release candidate. Final
 host-wide deployment configuration, runtime pool coordination and dispatch,
 pool-authorized growth, reclaim-for-transfer, and additional guest providers
 are not yet implemented. The stack remains NO-GO for unattended automatic

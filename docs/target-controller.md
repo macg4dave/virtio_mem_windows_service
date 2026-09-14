@@ -114,13 +114,19 @@ configured polling interval. The host exposes these settings:
 - `VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES`;
 - `VIRTIO_MEM_POLICY_STATE_PATH` for the protected host checkpoint/journal.
 
-WN3 adds a bounded migration selector. `VIRTIO_MEM_PRESSURE_POLICY_MODE` is
-`legacy` when absent or explicitly selected. Selecting `shadow` requires
+WN3 adds a bounded migration selector and WN4 adds the explicit `growth` mode.
+`VIRTIO_MEM_PRESSURE_POLICY_MODE` is `legacy` when absent or explicitly
+selected. Selecting `shadow` or `growth` requires
 `VIRTIO_MEM_PRESSURE_MARGIN_RATIO_NUMERATOR`,
 `VIRTIO_MEM_PRESSURE_MARGIN_RATIO_DENOMINATOR`,
 `VIRTIO_MEM_PRESSURE_MARGIN_MINIMUM_BYTES`,
 `VIRTIO_MEM_PRESSURE_MARGIN_MAXIMUM_BYTES`, and
 `VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH`; none has a production numeric default.
+`growth` additionally requires the aligned
+`VIRTIO_MEM_PRESSURE_GROW_STEP_BYTES` and an explicit
+`VIRTIO_MEM_PRESSURE_FALLBACK_GROWTH=true|false` choice. It also requires the
+WN4 rollout pause `VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false`; the selector and
+runtime guard independently prohibit lower requests.
 The existing visible-base, history-window, maximum-gap, hysteresis, and live
 geometry settings are shared inputs rather than copied shadow settings.
 
@@ -158,6 +164,32 @@ pressure history; transport unavailability preserves both until the next
 accepted sample applies the maximum-gap rule. Shadow evaluation returns
 `NoChange` regardless of either candidate, so it cannot create command intent
 or reach the resize sink. Applied pressure-aware growth begins only in WN4.
+
+### WN4 bounded growth
+
+In `growth` mode, a fresh accepted assessment replaces fixed-headroom demand as
+the primary device-scoped goal. Neutral and high-memory notification states
+move toward the committed-memory requirement by at most the normal growth
+step. Authoritative low-memory state selects urgent growth: its goal is the
+greater of the requirement and `current + pressure_growth_step`, bounded by the
+effective maximum, and its next request advances by at most that pressure step.
+
+When notification state is unavailable, an explicitly enabled fallback may
+move toward the fresh fixed-headroom candidate by the normal growth step. With
+fallback disabled the controller holds. Every result records normal, urgent,
+fallback, or held mode plus independent capacity limitation. A goal at or below
+`current` is always held; growth mode never emits a lower target. The host
+runtime independently suppresses any lower request in growth mode before the
+resize sink.
+
+The pressure mode and all margin, urgent-step, and fallback settings are part
+of the pressure-policy fingerprint. The latest assessment and growth decision
+are persisted with the existing bounded atomic checkpoint and append-only
+comparison evidence. Controller-status version 3 reports that decision without
+reevaluating telemetry or mutating state. Existing host headroom, attestation,
+fresh live reread, no-overlap, intent journal, convergence, ambiguity, and
+latch gates remain unchanged. Automatic pressure-aware reclaim is not part of
+WN4.
 
 For reserve pair `(Rphysical, Rcommit)`, calculate:
 

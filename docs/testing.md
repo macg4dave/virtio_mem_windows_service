@@ -347,6 +347,13 @@ headroom, no paging blocker, complete continuity, and an accepted fallback
 contract. Existing attestation, host headroom, journaling, convergence,
 no-overlap, and recovery checks continue unchanged.
 
+TASK-039 source integration adds the explicit `growth` policy mode, but its
+presence in a build is not QA-T028 evidence. A WN4 applied run must use reviewed
+margin, normal-step, urgent-step, and explicit fallback inputs; record the
+persisted growth mode and capacity-limited flag; prove host-headroom and
+effective-maximum blocking; and finish with the controller disabled/inactive
+and `requested == current`. No WN4 run may accept or grade a lower request.
+
 ## Host-pool manager validation
 
 QA-T036 and QA-T037 are non-actuating contract, fault-injection, and shadow

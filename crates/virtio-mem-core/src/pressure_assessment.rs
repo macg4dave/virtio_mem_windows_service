@@ -1,7 +1,7 @@
-//! Shadow-only Windows pressure assessment.
+//! Windows pressure assessment and bounded growth selection.
 //!
-//! This module produces explainable observations. It does not return a resize
-//! decision and has no dependency on an actuation sink.
+//! This module has no dependency on an actuation sink. Assessment stays
+//! separate from the host-owned decision to apply a bounded growth target.
 
 use std::collections::VecDeque;
 
@@ -13,7 +13,7 @@ use crate::{MemoryResourceNotificationState, RawTelemetryEnvelope, TelemetrySign
 pub const PRESSURE_ASSESSMENT_VERSION: u16 = 1;
 pub const PRESSURE_POLICY_VERSION: u16 = 1;
 pub const PRESSURE_HISTORY_VERSION: u16 = 1;
-pub const PRESSURE_SHADOW_COMPARISON_VERSION: u16 = 1;
+pub const PRESSURE_SHADOW_COMPARISON_VERSION: u16 = 2;
 pub const MAX_PRESSURE_HISTORY_ENTRIES: usize = 4096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,6 +21,25 @@ pub const MAX_PRESSURE_HISTORY_ENTRIES: usize = 4096;
 pub enum PressurePolicyMode {
     Legacy,
     Shadow,
+    Growth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressureGrowthMode {
+    Normal,
+    Urgent,
+    Fallback,
+    Held,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PressureGrowthDecision {
+    pub mode: PressureGrowthMode,
+    pub goal_bytes: u64,
+    pub next_target_bytes: Option<u64>,
+    pub capacity_limited: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -298,6 +317,8 @@ pub struct PressureShadowComparison {
     pub device_alias: String,
     pub policy_fingerprint_sha256: String,
     pub assessment: WindowsPressureAssessment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub growth_decision: Option<PressureGrowthDecision>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -312,6 +333,108 @@ pub enum PressureAssessmentError {
     ArithmeticOverflow,
     #[error("pressure history is invalid: {0}")]
     InvalidHistory(&'static str),
+}
+
+pub fn select_pressure_growth(
+    assessment: &WindowsPressureAssessment,
+    current_bytes: u64,
+    effective_maximum_bytes: u64,
+    block_size_bytes: u64,
+    normal_growth_step_bytes: u64,
+    urgent_growth_step_bytes: u64,
+    fallback_enabled: bool,
+) -> Result<PressureGrowthDecision, PressureAssessmentError> {
+    if block_size_bytes == 0
+        || assessment.version != PRESSURE_ASSESSMENT_VERSION
+        || assessment.policy_version != PRESSURE_POLICY_VERSION
+        || assessment.memory_requirement.input != assessment.pressure.input
+        || assessment.pressure.input != assessment.shrink_safety.input
+        || assessment.memory_requirement.input.current_bytes != current_bytes
+        || assessment.memory_requirement.requirement_bytes == 0
+        || assessment.memory_requirement.requirement_bytes > effective_maximum_bytes
+        || !assessment
+            .memory_requirement
+            .requirement_bytes
+            .is_multiple_of(block_size_bytes)
+    {
+        return Err(PressureAssessmentError::InvalidAllocation(
+            "growth assessment identity, version, or requirement is invalid",
+        ));
+    }
+    if current_bytes > effective_maximum_bytes
+        || block_size_bytes == 0
+        || !block_size_bytes.is_power_of_two()
+        || normal_growth_step_bytes == 0
+        || urgent_growth_step_bytes == 0
+        || !current_bytes.is_multiple_of(block_size_bytes)
+        || !effective_maximum_bytes.is_multiple_of(block_size_bytes)
+        || !normal_growth_step_bytes.is_multiple_of(block_size_bytes)
+        || !urgent_growth_step_bytes.is_multiple_of(block_size_bytes)
+    {
+        return Err(PressureAssessmentError::InvalidAllocation(
+            "growth bounds, geometry, or movement quanta are invalid",
+        ));
+    }
+
+    let requirement = assessment.memory_requirement.requirement_bytes;
+    if assessment.pressure.state == PressureState::Unavailable
+        && fallback_enabled
+        && (assessment.fixed_headroom_candidate_bytes == 0
+            || assessment.fixed_headroom_candidate_bytes > effective_maximum_bytes
+            || !assessment
+                .fixed_headroom_candidate_bytes
+                .is_multiple_of(block_size_bytes))
+    {
+        return Err(PressureAssessmentError::InvalidAllocation(
+            "fallback growth candidate is invalid",
+        ));
+    }
+    let (mode, raw_goal, step) = match assessment.pressure.state {
+        PressureState::LowMemory
+            if assessment.pressure.availability == AssessmentAvailability::Available =>
+        {
+            let relief = current_bytes.saturating_add(urgent_growth_step_bytes);
+            (
+                PressureGrowthMode::Urgent,
+                requirement.max(relief),
+                urgent_growth_step_bytes,
+            )
+        }
+        PressureState::Unavailable if fallback_enabled => (
+            PressureGrowthMode::Fallback,
+            assessment.fixed_headroom_candidate_bytes,
+            normal_growth_step_bytes,
+        ),
+        PressureState::Unavailable => (PressureGrowthMode::Held, current_bytes, 0),
+        _ => (
+            PressureGrowthMode::Normal,
+            requirement,
+            normal_growth_step_bytes,
+        ),
+    };
+    let goal_bytes = raw_goal.min(effective_maximum_bytes);
+    let capacity_limited =
+        assessment.memory_requirement.capacity_limited || raw_goal > effective_maximum_bytes;
+    let next_target_bytes = if mode == PressureGrowthMode::Held || goal_bytes <= current_bytes {
+        None
+    } else {
+        Some(
+            current_bytes
+                .checked_add(step)
+                .ok_or(PressureAssessmentError::ArithmeticOverflow)?
+                .min(goal_bytes),
+        )
+    };
+    Ok(PressureGrowthDecision {
+        mode: if next_target_bytes.is_none() {
+            PressureGrowthMode::Held
+        } else {
+            mode
+        },
+        goal_bytes: goal_bytes.max(current_bytes),
+        next_target_bytes,
+        capacity_limited,
+    })
 }
 
 pub fn assess_windows_pressure(
@@ -756,6 +879,104 @@ mod tests {
             AssessmentAvailability::Unavailable
         );
         assert_eq!(result.shrink_safety.state, ShrinkSafetyState::Blocked);
+    }
+
+    #[test]
+    fn pressure_growth_selects_normal_urgent_and_fallback_steps() {
+        let mut growth_allocation = allocation();
+        growth_allocation.requested_bytes = 3 * GIB;
+        growth_allocation.current_bytes = 3 * GIB;
+        let normal = assess_windows_pressure(
+            &envelope(Some(MemoryResourceNotificationState::Neutral)),
+            policy(),
+            growth_allocation,
+            history(),
+            9 * GIB,
+        )
+        .expect("normal assessment");
+        assert_eq!(
+            select_pressure_growth(&normal, 3 * GIB, 10 * GIB, 2 * MIB, GIB, 2 * GIB, true)
+                .expect("normal growth"),
+            PressureGrowthDecision {
+                mode: PressureGrowthMode::Normal,
+                goal_bytes: 3_790 * MIB,
+                next_target_bytes: Some(3_790 * MIB),
+                capacity_limited: false,
+            }
+        );
+
+        let urgent = assess_windows_pressure(
+            &envelope(Some(MemoryResourceNotificationState::Low)),
+            policy(),
+            growth_allocation,
+            history(),
+            9 * GIB,
+        )
+        .expect("urgent assessment");
+        assert_eq!(
+            select_pressure_growth(&urgent, 3 * GIB, 10 * GIB, 2 * MIB, GIB, 2 * GIB, true)
+                .expect("urgent growth"),
+            PressureGrowthDecision {
+                mode: PressureGrowthMode::Urgent,
+                goal_bytes: 5 * GIB,
+                next_target_bytes: Some(5 * GIB),
+                capacity_limited: false,
+            }
+        );
+
+        let fallback = assess_windows_pressure(
+            &envelope(None),
+            policy(),
+            growth_allocation,
+            history(),
+            9 * GIB,
+        )
+        .expect("fallback assessment");
+        assert_eq!(
+            select_pressure_growth(&fallback, 3 * GIB, 10 * GIB, 2 * MIB, GIB, 2 * GIB, true)
+                .expect("fallback growth"),
+            PressureGrowthDecision {
+                mode: PressureGrowthMode::Fallback,
+                goal_bytes: 9 * GIB,
+                next_target_bytes: Some(4 * GIB),
+                capacity_limited: false,
+            }
+        );
+    }
+
+    #[test]
+    fn pressure_growth_holds_without_fallback_and_never_selects_shrink() {
+        let unavailable =
+            assess_windows_pressure(&envelope(None), policy(), allocation(), history(), 2 * GIB)
+                .expect("unavailable assessment");
+        let held = select_pressure_growth(
+            &unavailable,
+            8 * GIB,
+            10 * GIB,
+            2 * MIB,
+            GIB,
+            2 * GIB,
+            false,
+        )
+        .expect("held decision");
+        assert_eq!(held.mode, PressureGrowthMode::Held);
+        assert_eq!(held.goal_bytes, 8 * GIB);
+        assert_eq!(held.next_target_bytes, None);
+
+        let high = assess_windows_pressure(
+            &envelope(Some(MemoryResourceNotificationState::High)),
+            policy(),
+            allocation(),
+            history(),
+            2 * GIB,
+        )
+        .expect("high assessment");
+        let no_shrink =
+            select_pressure_growth(&high, 8 * GIB, 10 * GIB, 2 * MIB, GIB, 2 * GIB, true)
+                .expect("no shrink");
+        assert_eq!(no_shrink.mode, PressureGrowthMode::Held);
+        assert_eq!(no_shrink.next_target_bytes, None);
+        assert_eq!(no_shrink.goal_bytes, 8 * GIB);
     }
 
     #[test]

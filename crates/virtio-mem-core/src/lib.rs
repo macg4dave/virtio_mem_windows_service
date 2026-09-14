@@ -57,13 +57,14 @@ pub use pool_ledger::{
     MAX_HOST_POOL_LEDGER_BYTES,
 };
 pub use pressure_assessment::{
-    assess_windows_pressure, AssessmentAllocation, AssessmentAvailability, AssessmentConfidence,
-    AssessmentInputIdentity, AssessmentReason, MemoryRequirementAssessment,
-    PressureAssessmentError, PressureHistoryEntry, PressureHistoryState, PressureHistorySummary,
-    PressurePolicyConfig, PressurePolicyMode, PressureShadowComparison, PressureState,
-    PressureStateAssessment, ShrinkSafetyAssessment, ShrinkSafetyState, WindowsPressureAssessment,
-    MAX_PRESSURE_HISTORY_ENTRIES, PRESSURE_ASSESSMENT_VERSION, PRESSURE_HISTORY_VERSION,
-    PRESSURE_POLICY_VERSION, PRESSURE_SHADOW_COMPARISON_VERSION,
+    assess_windows_pressure, select_pressure_growth, AssessmentAllocation, AssessmentAvailability,
+    AssessmentConfidence, AssessmentInputIdentity, AssessmentReason, MemoryRequirementAssessment,
+    PressureAssessmentError, PressureGrowthDecision, PressureGrowthMode, PressureHistoryEntry,
+    PressureHistoryState, PressureHistorySummary, PressurePolicyConfig, PressurePolicyMode,
+    PressureShadowComparison, PressureState, PressureStateAssessment, ShrinkSafetyAssessment,
+    ShrinkSafetyState, WindowsPressureAssessment, MAX_PRESSURE_HISTORY_ENTRIES,
+    PRESSURE_ASSESSMENT_VERSION, PRESSURE_HISTORY_VERSION, PRESSURE_POLICY_VERSION,
+    PRESSURE_SHADOW_COMPARISON_VERSION,
 };
 pub use reconciler::{
     reconcile, ControlHealth, ReconcileAction, ReconcileDecision, ReconcileDirection,

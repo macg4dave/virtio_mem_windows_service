@@ -16,7 +16,12 @@ schema-v3 Windows candidates are installed, and a schema-v2 fallback resident
 run passed with unchanged allocation. By operator decision on 2026-09-14, the
 remaining schema-v3 workload correlation and classification breadth moves to
 later pressure-policy qualification. It is not a test pass or release evidence.
-WN4 / TASK-039 is the next ready Windows construction slice.
+WN4 / TASK-039 is in progress. The shared core now selects bounded normal,
+urgent, fallback, held, and capacity-limited growth, and the host has an
+explicit growth-only mode with persisted decision evidence and a second
+pre-sink no-shrink guard. Configuration/status, broader regression coverage,
+and the aggregate local gate pass. Native/deployment preflight, applied
+qualification coverage, and QA-T028 remain on the milestone path.
 
 HPM1 / TASK-033 is complete as a source-level durable-accounting milestone.
 Shared core now owns the version-1 bounded, checksum-protected atomic pool

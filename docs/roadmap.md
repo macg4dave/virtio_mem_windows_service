@@ -209,7 +209,7 @@ the unmet demand remains explicitly constrained.
 | WN1 | Complete | Define the Windows-native telemetry contract and capability model | WN0 |
 | WN2 | Complete | Collect authoritative Windows pressure notifications | WN1 |
 | WN3 | Complete | Separate requirement, pressure, and shrink-safety assessment in shadow mode | WN2 |
-| WN4 | Planned | Integrate pressure-aware bounded growth | WN3 |
+| WN4 | In Progress | Integrate pressure-aware bounded growth | WN3 |
 | WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
 | WN6 | Planned | Add only qualified trend and rate evidence | WN5 |
 | WN7 | Planned | Qualify realistic Windows memory behavior and automate the workload matrix | WN6 |
@@ -448,6 +448,10 @@ WN2 and the read-only controller status surface.
 - No paging-rate influence.
 
 ## WN4 — Pressure-aware growth
+
+**Status:** In Progress. TASK-039 is claimed. The source-level selector and
+host wiring pass focused and aggregate local validation; native, deployment,
+and QA-T028 applied evidence remain outstanding.
 
 ### Goal
 

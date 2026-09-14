@@ -218,7 +218,7 @@ violating a guarantee or inventing capacity.
 
 ## Controller status
 
-`ControllerStatusSnapshot` version 2 is a bounded read-only operational view.
+`ControllerStatusSnapshot` version 3 is a bounded read-only operational view.
 It joins a fresh alias-selected `VirtioMemState` with the matching policy
 checkpoint and exposes:
 
@@ -232,8 +232,9 @@ checkpoint and exposes:
 - command ownership and immutable command details when an intent exists; and
 - control health, latch/recovery reasons, fingerprints, and the last reviewed
   latch-clear reason; and
-- the pressure-policy mode plus, in shadow mode, its policy fingerprint,
-  history-entry count, and latest assessment or cold state.
+- the pressure-policy mode, policy fingerprint, history-entry count, latest
+  assessment, and, in growth mode, the persisted normal/urgent/fallback/held
+  growth decision and capacity-limited flag.
 
 The snapshot is not persisted by the status command and is not control state.
 Malformed, oversized, newer-version, contradictory, unaligned, or

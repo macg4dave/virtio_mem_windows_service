@@ -169,15 +169,16 @@ The service manager does not blindly restart a failed controller. Recovery and
 resumption are explicit operator decisions made after current live state and
 durable command state are reviewed.
 
-The version-2 controller status snapshot is a read-only join of one fresh,
+The version-3 controller status snapshot is a read-only join of one fresh,
 alias-scoped live device read with the matching durable policy checkpoint. It
 contains device geometry, desired/safe-floor/effective-maximum and live
 requested/current bytes, the last accepted telemetry identity, history and
 reclaim readiness, capacity state, command ownership/detail, control health,
 latch reason, recovery reason, fingerprints, the last latch-clear reason, and
-the pressure-policy mode. In `shadow` mode it also contains the independent
+the pressure-policy mode. Non-legacy modes also contain the independent
 pressure-policy fingerprint, persisted history-entry count, and latest
-assessment (or an explicit empty latest result while cold).
+assessment (or an explicit empty latest result while cold). Growth mode adds
+the persisted normal/urgent/fallback/held decision and capacity-limited flag.
 Unknown fields, unsupported versions, oversized input, invalid geometry,
 misaligned targets, inconsistent ownership/detail, or inconsistent
 latch/recovery state are rejected. Reading status does not consume telemetry,

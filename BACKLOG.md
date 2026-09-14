@@ -11,8 +11,11 @@ not from completed task notes.
 
 ## In progress
 
-No task is currently claimed. HPM1/TASK-033 is complete as a source-level
-durable-accounting milestone; it made no runtime or live-system change.
+TASK-039 / WN4 is claimed for the bounded pressure-aware growth implementation.
+The initial slice adds explicit normal, urgent, fallback, held, and
+capacity-limited decisions while pressure-policy reclaim remains prohibited.
+Focused core/host tests and `cargo xtask gate local` pass on 2026-09-14.
+Native deployment and QA-T028 applied qualification remain separate gates.
 
 ## Paused fixed-headroom qualification
 
@@ -30,9 +33,7 @@ no historical result authorizes automatic resizing under the new policy.
 
 ## Ready
 
-| ID | Work | Depends on |
-| --- | --- | --- |
-| TASK-039 | Complete WN4: enable pressure-aware bounded growth while reclaim remains disabled | Completed WN3 checkpoint |
+No additional product task is ready while TASK-039 is in progress.
 
 Continue with the first Ready task whose dependencies are satisfied. Claim it
 in this file before implementation, then record concise outcome and validation
@@ -73,7 +74,7 @@ they do not replace executable task cards.
 | WN1 | Complete | Define the Windows-native telemetry contract | WN0 |
 | WN2 | Complete | Add authoritative Windows pressure notifications | WN1 |
 | WN3 | Complete | Separate requirement, pressure, and shrink-safety assessment | WN2 |
-| WN4 | Planned | Integrate pressure-aware growth | WN3 |
+| WN4 | In Progress | Integrate pressure-aware growth | WN3 |
 | WN5 | Planned | Integrate shrink blocking and conservative reclaim | WN4 |
 | WN6 | Planned | Add qualified trend/rate evidence | WN5 |
 | WN7 | Planned | Automate realistic Windows behavior qualification | WN6 |

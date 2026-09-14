@@ -20,7 +20,7 @@ use wait_timeout::ChildExt;
 
 use crate::process;
 
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
 const CONTROLLER_GUARD_ROOT: &str = "/run/virtio-mem-qualification";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -65,6 +65,8 @@ struct Config {
     expect_renewed_growth_bytes: u64,
     #[serde(default)]
     expect_no_resize: bool,
+    #[serde(default)]
+    expect_no_reclaim: bool,
     #[serde(default)]
     require_renewed_during_pending_shrink: bool,
 }
@@ -172,6 +174,7 @@ struct QualificationAnalysis {
     observed_renewed_growth_bytes: u64,
     renewed_during_observed_pending_shrink: bool,
     lower_request_while_pending_violations: u64,
+    lower_request_violations: u64,
     telemetry_session_changes: u64,
     telemetry_sequence_regressions: u64,
     requested_change_violations: u64,
@@ -215,6 +218,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     let mut expect_reclaim_bytes = None;
     let mut expect_renewed_growth_bytes = None;
     let mut expect_no_resize = false;
+    let mut expect_no_reclaim = false;
     let mut require_renewed_during_pending_shrink = false;
     let mut remote_workload = None;
     let mut controller_unit = None;
@@ -286,6 +290,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
                     Some(number(args, &mut index, "--expect-renewed-growth-bytes")?)
             }
             "--expect-no-resize" if !expect_no_resize => expect_no_resize = true,
+            "--expect-no-reclaim" if !expect_no_reclaim => expect_no_reclaim = true,
             "--require-renewed-during-pending-shrink" => {
                 require_renewed_during_pending_shrink = true
             }
@@ -357,6 +362,20 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
                 );
             }
             (0, 0, 0)
+        } else if expect_no_reclaim {
+            if expect_reclaim_bytes.is_some() {
+                return Err(
+                    "--expect-no-reclaim conflicts with --expect-reclaim-bytes".to_owned(),
+                );
+            }
+            (
+                required(expect_growth_bytes, "--expect-growth-bytes")?,
+                0,
+                required(
+                    expect_renewed_growth_bytes,
+                    "--expect-renewed-growth-bytes",
+                )?,
+            )
         } else {
             (
                 required(expect_growth_bytes, "--expect-growth-bytes")?,
@@ -417,15 +436,19 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     }
     if !expect_no_resize
         && (expect_growth_bytes == 0
-            || expect_reclaim_bytes == 0
+            || (!expect_no_reclaim && expect_reclaim_bytes == 0)
             || expect_renewed_growth_bytes == 0)
     {
         return Err("resize expectations must be positive".to_owned());
     }
-    if expect_no_resize && require_renewed_during_pending_shrink {
+    if (expect_no_resize || expect_no_reclaim) && require_renewed_during_pending_shrink {
         return Err(
-            "--expect-no-resize conflicts with --require-renewed-during-pending-shrink".to_owned(),
+            "no-resize/no-reclaim qualification conflicts with --require-renewed-during-pending-shrink"
+                .to_owned(),
         );
+    }
+    if expect_no_resize && expect_no_reclaim {
+        return Err("--expect-no-resize conflicts with --expect-no-reclaim".to_owned());
     }
     match (apply_service_restart, guest_service_cycle_timeout_seconds) {
         (true, Some(0)) => {
@@ -498,6 +521,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             expect_reclaim_bytes,
             expect_renewed_growth_bytes,
             expect_no_resize,
+            expect_no_reclaim,
             require_renewed_during_pending_shrink,
         },
         output_root,
