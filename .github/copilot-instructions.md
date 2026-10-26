@@ -1,100 +1,32 @@
-# Repository operating instructions
+# Repository instructions
 
-Read `readme.md`, `docs/architecture.md`, `BACKLOG.md`, `docs/testing.md`,
-`docs/engineering-standards.md`, and the applicable contract before changing
-the repository. Use `.github/prompts/README.md` to select a task prompt.
+Read `PLAN.md` first. It is the only project doc: what the project is for,
+its honest current state, and the phased plan. Work on the current phase only.
 
-## Language and ownership
+## Code
 
-- Product code and maintained automation use Rust.
-- Do not add another language, a shell workflow, or duplicated
-  parsing, policy, polling, timeout, evidence, cleanup, or rollback logic.
-- The Windows service collects native telemetry, publishes versioned
-  allocation-free records, and owns only its local lifecycle and observability.
-- The host controller owns QGA, libvirt/QEMU state, compatibility, headroom,
-  target calculation, and actuation. Windows never receives resize authority.
-- `cargo xtask` owns repository gates, remote native-Windows orchestration,
-  artifact verification, and repeatable cross-process or live workflows.
+- Rust only. Keep it small: no new module, trait, mode, or config knob unless
+  current code needs it now. Prefer deleting code to adding it.
+- The Windows service only measures and publishes memory stats. The host
+  daemon decides target size and runs `virsh`. Windows never resizes.
+- Memory sizes are `u64` bytes with checked arithmetic, aligned to the device
+  block size.
+- Add focused unit tests for logic you change (target math, parsing, state).
+  Don't add tests that only restate the implementation.
 
-## Implementation rules
+## Validation
 
-- Follow the documented architecture and current contracts; remove superseded
-  behavior instead of preserving it implicitly.
-- Require explicit target identity. Do not discover mutation targets broadly.
-- Keep memory quantities as checked byte counts and derive device geometry from
-  fresh alias-scoped live state.
-- Put operational sizes, time bounds, sampling intervals, workload durations,
-  endpoints, paths, and service identities in validated configuration or
-  explicit command arguments. Do not copy values from prior runs into defaults.
-- Preserve stable public contracts unless the task updates the contract.
-- Prefer safe Rust, small testable functions, structured errors, injected side
-  effects, and minimal dependencies. Justify and test any `unsafe` code.
-- Never commit credentials, private keys, tokens, production data, or guest
-  memory contents.
+- `cargo test -p virtio-mem-core -p virtio-mem-host` (plus `-p virtio-mem-xtask`
+  while it exists) must pass. The `windows` crate only builds for a Windows target.
+- "Works" means it worked on a real VM. Say plainly what was and wasn't run.
 
-## Validation model
+## Live VMs
 
-Validation layers are cumulative:
+- Before any live resize, state the VM, device alias, target size, and how to
+  roll back. Wait for live `current` to converge; never stack resizes.
+- Ask first before reboots, VM definition changes, or anything not reversible.
 
-1. Add and run focused Rust tests in the crate that owns changed behavior.
-2. Run `cargo xtask gate local` after focused tests pass.
-3. Run the applicable capability-named `cargo xtask` workflow when acceptance
-   crosses a platform, process, service manager, deployment, or live boundary.
-4. Report native Windows, RHEL, deployment, and live results separately. An
-   unavailable or unrun layer is not a pass.
+## Docs
 
-Use `gate` only for non-mutating quality aggregation. Every deployment, live,
-or privileged workflow belongs in `tools/xtask`; do not create shell scripts
-for elevation, orchestration, parsing, evidence, cleanup, or rollback.
-
-## Live-system safety
-
-Task-scoped beta builds, tests, candidate installation, service lifecycle,
-read-only inspection, and bounded reversible resize validation are authorized
-when the target is unambiguous and the task requires them.
-
-Before mutation, report the resolved target, command, expected effect, selected
-time bounds, and rollback. Capture initial state; validate the exact VM and
-device alias; preserve attestation, compatibility, headroom, retention-floor,
-freshness, and convergence gates; and restore the captured requested size for a
-reversible test. Stop on ambiguity or failed safety checks.
-
-Guest health requires hypervisor continuity, QGA, an independent authenticated
-guest command, named service/application checks, and bounded crash/reboot
-evidence. Do not overlap an installer, update, or pending reboot.
-
-When elevation is needed, build `xtask` unprivileged and use its explicit
-elevation option. The unprivileged process must validate the complete scope,
-invoke its current prebuilt executable through one outer `sudo`, collect typed
-output, and persist evidence as the invoking user. Never run Cargo as root,
-accept open-ended privileged commands, or automate credentials.
-
-When one task needs several privileged steps, model the complete ordered batch
-as one reviewed typed xtask workflow and keep the single elevated child alive
-for its bounded duration. The operator enters the password once for that outer
-`sudo`; do not open `sudo -s`, start one sudo process per step, rely on a cached
-credential, or use nested elevation. Resolve all targets, arguments, effects,
-timeouts, cleanup, and rollback before requesting elevation.
-
-When a command or detached workflow is waiting for a declared time bound or a
-durable result, wait on that process or its documented completion artifact.
-Do not spend agent turns repeatedly analysing elapsed time, emitting unchanged
-status updates, or rereading unchanged logs. Resume processing only when the
-process exits, relevant output changes, a completion artifact is committed, or
-the declared deadline requires timeout handling. Choose a wait interval no
-shorter than the producer's configured polling or sampling interval, while
-still providing the user-facing progress updates required by the agent host.
-
-Explicit current-turn approval is still required for reboot or shutdown,
-deleting pre-existing resources, persistent VM/firmware/driver/network/storage/
-ACL/security changes, disabling safeguards, non-reversible resize, or unrelated
-mutations.
-
-## Documentation and task tracking
-
-`BACKLOG.md` is the product execution board and
-`docs/build-test-tooling-roadmap.md` is the tooling board. Update the applicable
-task, contracts, `docs/testing.md`, and status documents in the same change.
-Document supported commands and behavior, not obsolete procedures or transient
-test observations. Record exact validation outcomes and blockers without
-turning historical evidence into current defaults.
+- Update `PLAN.md` when the state or plan changes. Don't create new doc files,
+  task boards, roadmaps, or prompt files.
