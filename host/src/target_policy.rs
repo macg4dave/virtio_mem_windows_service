@@ -1030,8 +1030,10 @@ fn load_matching_checkpoint(
             || intent.compatibility_fingerprint_sha256
                 != checkpoint.compatibility_fingerprint_sha256
     }) {
-        eprintln!("target policy command intent is invalid; starting with cold reclaim history");
-        return Ok(None);
+        return Err(
+            "target policy command intent is invalid; refusing to discard possible control state"
+                .to_owned(),
+        );
     }
     Ok(Some(checkpoint))
 }
@@ -1313,6 +1315,48 @@ mod tests {
             &"changed".repeat(9)
         )
         .is_err());
+        fs::remove_file(state_path).expect("remove checkpoint");
+    }
+
+    #[test]
+    fn invalid_pending_intent_never_discards_the_checkpoint_or_latch() {
+        let (state_path, _) = paths("invalid-pending-intent");
+        for latched in [false, true] {
+            let checkpoint = PolicyCheckpoint {
+                version: POLICY_CHECKPOINT_VERSION,
+                vm_name: "guest".to_owned(),
+                device_alias: "memory0".to_owned(),
+                policy_fingerprint_sha256: "a".repeat(64),
+                compatibility_fingerprint_sha256: "b".repeat(64),
+                estimator: TargetEstimatorState::cold(),
+                actuation_latched: latched,
+                actuation_latch_reason: latched.then(|| "uncertain command".to_owned()),
+                command_intent: Some(CommandIntent {
+                    operation_id: String::new(),
+                    direction: virtio_mem_core::ReconcileDirection::Grow,
+                    prior_requested_bytes: 8 * GIB,
+                    prior_current_bytes: 8 * GIB,
+                    target_bytes: 9 * GIB,
+                    telemetry_identity: "session:1:10:1000".to_owned(),
+                    policy_fingerprint_sha256: "a".repeat(64),
+                    compatibility_fingerprint_sha256: "b".repeat(64),
+                }),
+                last_latch_clear_reason: None,
+                pressure_shadow: None,
+            };
+            persist_checkpoint(&state_path, &checkpoint).expect("write checkpoint");
+            let before = fs::read(&state_path).expect("checkpoint bytes");
+            let error = load_matching_checkpoint(
+                &state_path,
+                "guest",
+                "memory0",
+                &"a".repeat(64),
+                &"b".repeat(64),
+            )
+            .expect_err("invalid intent must block startup rather than become cold state");
+            assert!(error.contains("command intent"));
+            assert_eq!(fs::read(&state_path).expect("retained checkpoint"), before);
+        }
         fs::remove_file(state_path).expect("remove checkpoint");
     }
 

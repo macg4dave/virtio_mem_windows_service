@@ -1,0 +1,9 @@
+// Installed once by the privileged host deployment command. The daemon runs
+// as this dedicated account; interactive desktop users receive no new access.
+// This grants connection-level management access, not a per-VM ACL.
+polkit.addRule(function(action, subject) {
+    if (action.id == "org.libvirt.unix.manage" &&
+        subject.user == "virtio-mem-host") {
+        return polkit.Result.YES;
+    }
+});

@@ -364,17 +364,12 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
             (0, 0, 0)
         } else if expect_no_reclaim {
             if expect_reclaim_bytes.is_some() {
-                return Err(
-                    "--expect-no-reclaim conflicts with --expect-reclaim-bytes".to_owned(),
-                );
+                return Err("--expect-no-reclaim conflicts with --expect-reclaim-bytes".to_owned());
             }
             (
                 required(expect_growth_bytes, "--expect-growth-bytes")?,
                 0,
-                required(
-                    expect_renewed_growth_bytes,
-                    "--expect-renewed-growth-bytes",
-                )?,
+                required(expect_renewed_growth_bytes, "--expect-renewed-growth-bytes")?,
             )
         } else {
             (
@@ -1411,6 +1406,7 @@ fn analyze(observations: &Observations) -> QualificationAnalysis {
         })
         .is_some_and(|sample| sample.requested_bytes < sample.current_bytes);
     let mut lower_request_while_pending_violations = 0;
+    let mut lower_request_violations = 0;
     let mut telemetry_session_changes = 0;
     let mut telemetry_sequence_regressions = 0;
     let mut requested_change_violations = 0;
@@ -1430,6 +1426,9 @@ fn analyze(observations: &Observations) -> QualificationAnalysis {
     for pair in observations.memory_samples.windows(2) {
         let previous = &pair[0];
         let next = &pair[1];
+        if next.requested_bytes < previous.requested_bytes {
+            lower_request_violations += 1;
+        }
         if previous.requested_bytes != previous.current_bytes
             && next.requested_bytes < previous.requested_bytes
             && next.current_bytes != previous.requested_bytes
@@ -1453,6 +1452,7 @@ fn analyze(observations: &Observations) -> QualificationAnalysis {
         observed_renewed_growth_bytes,
         renewed_during_observed_pending_shrink,
         lower_request_while_pending_violations,
+        lower_request_violations,
         telemetry_session_changes,
         telemetry_sequence_regressions,
         requested_change_violations,
@@ -1489,6 +1489,12 @@ fn classify(
             analysis.requested_change_violations,
             analysis.current_change_violations,
             analysis.unconverged_sample_violations
+        ));
+    }
+    if config.expect_no_reclaim && analysis.lower_request_violations != 0 {
+        return Err(format!(
+            "grow-only invariant failed: observed {} lower request(s)",
+            analysis.lower_request_violations
         ));
     }
     if !config.expect_no_resize && analysis.observed_growth_bytes < config.expect_growth_bytes {
@@ -2580,6 +2586,60 @@ mod tests {
         assert!(analysis.renewed_during_observed_pending_shrink);
         options.config.expect_growth_bytes = 201;
         assert!(classify(&options.config, &observations, &analysis).is_err());
+    }
+
+    #[test]
+    fn grow_only_result_rejects_a_new_shrink_from_a_converged_state() {
+        let mut arguments = valid_start_arguments();
+        let option = arguments
+            .iter()
+            .position(|arg| arg == "--expect-reclaim-bytes")
+            .expect("reclaim expectation");
+        arguments.drain(option..=option + 1);
+        arguments.push("--expect-no-reclaim".to_owned());
+        let mut options = parse_start(&arguments, Path::new("/repo")).expect("grow-only options");
+        options.config.expect_growth_bytes = 100;
+        options.config.expect_renewed_growth_bytes = 50;
+        let mut observations = Observations {
+            initial_current: Some(1_000),
+            maximum_current: 1_300,
+            maximum_peak_current: 1_200,
+            minimum_settled_current: Some(1_200),
+            minimum_settled_phase_current: Some(1_200),
+            maximum_renewed_current: Some(1_300),
+            workload_phases: ["baseline", "peak", "settled", "renewed", "complete"]
+                .iter()
+                .map(|phase| (*phase).to_owned())
+                .collect(),
+            sample_count: 5,
+            memory_samples: [
+                ("baseline", 1_000),
+                ("peak", 1_200),
+                ("settled", 1_200),
+                ("renewed", 1_300),
+                ("complete", 1_300),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (phase, bytes))| MemorySample {
+                phase: phase.to_owned(),
+                requested_bytes: bytes,
+                current_bytes: bytes,
+                telemetry_session_id: "session-a".to_owned(),
+                telemetry_sequence: index as u64,
+            })
+            .collect(),
+            ..Observations::default()
+        };
+        assert!(classify(&options.config, &observations, &analyze(&observations)).is_ok());
+
+        observations.memory_samples[2].requested_bytes = 1_100;
+        let analysis = analyze(&observations);
+        assert_eq!(analysis.lower_request_while_pending_violations, 0);
+        assert_eq!(analysis.lower_request_violations, 1);
+        let error = classify(&options.config, &observations, &analysis)
+            .expect_err("a grow-only run must reject even the first shrink request");
+        assert!(error.contains("grow-only invariant"));
     }
 
     #[test]

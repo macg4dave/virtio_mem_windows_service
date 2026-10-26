@@ -55,11 +55,11 @@ VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS=REQUIRED_STATS_FUTURE_TOLERANCE_SECOND
 VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS=REQUIRED_TELEMETRY_MAX_AGE_SECONDS
 VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS=REQUIRED_TELEMETRY_FUTURE_TOLERANCE_SECONDS
 
-# Current production modes. Automatic reclaim is default-on; set false only
-# for a reviewed rollout pause or diagnosis. Re-notification is diagnostic.
+# Start grow-only. Enable reclaim only after live unplug has been qualified
+# for this deployment. Re-notification is diagnostic.
 VIRTIO_MEM_DEMAND_SOURCE=raw
 VIRTIO_MEM_STATS_SOURCE=dommemstat
-VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=true
+VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=false
 VIRTIO_MEM_SHRINK_RENOTIFICATION=false
 # Required only when re-notification is enabled. Supply a strictly increasing
 # comma-separated schedule below the configured convergence timeout.

@@ -4,8 +4,8 @@ use std::time::Duration;
 use thiserror::Error;
 use virtio_mem_core::{PressurePolicyConfig, PressurePolicyMode};
 
-/// Automatic reclaim is a core product capability unless explicitly paused.
-pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = true;
+/// Unplug must be qualified on the deployment before automatic reclaim is enabled.
+pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = false;
 /// Same-target re-notification remains an explicitly selected diagnostic mode.
 pub const DEFAULT_SHRINK_RENOTIFICATION: bool = false;
 
@@ -512,14 +512,14 @@ mod tests {
     const TEST_DOWNWARD_HYSTERESIS_BYTES: u64 = 256 * 1024 * 1024;
 
     #[test]
-    fn automatic_shrink_defaults_on_while_renotification_defaults_off() {
+    fn automatic_shrink_requires_explicit_opt_in() {
         assert_eq!(
             parse_optional_bool(
                 "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
                 None,
                 DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
             ),
-            Ok(true)
+            Ok(false)
         );
         assert_eq!(
             parse_optional_bool(
@@ -532,10 +532,10 @@ mod tests {
         assert_eq!(
             parse_optional_bool(
                 "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
-                Some("false".to_owned()),
+                Some("true".to_owned()),
                 DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
             ),
-            Ok(false)
+            Ok(true)
         );
     }
 

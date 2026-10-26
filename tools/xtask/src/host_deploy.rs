@@ -38,6 +38,7 @@ struct Evidence {
     config_sha256: String,
     attestation_sha256: String,
     unit_sha256: String,
+    libvirt_policy_sha256: String,
     active_state: String,
     unit_file_state: String,
     restart_policy: String,
@@ -140,11 +141,13 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     let attestation_source = resolve(repo, &command.attestation);
     let candidate = repo.join("target/release/virtio-mem-host");
     let unit_source = repo.join("host/systemd/virtio-mem-host@.service");
+    let policy_source = repo.join("host/systemd/50-virtio-mem-host.rules");
     for path in [
         &config_source,
         &attestation_source,
         &candidate,
         &unit_source,
+        &policy_source,
     ] {
         if !path.is_file() {
             return Err(format!(
@@ -170,6 +173,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     let config_hash = hash(&config_source, repo, command.timeout)?;
     let attestation_hash = hash(&attestation_source, repo, command.timeout)?;
     let unit_hash = hash(&unit_source, repo, command.timeout)?;
+    let policy_hash = hash(&policy_source, repo, command.timeout)?;
     let mut backup_path = None;
     if command.apply {
         if !command.elevated_child || unsafe { libc_geteuid() } != 0 {
@@ -214,6 +218,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
         config_sha256: config_hash,
         attestation_sha256: attestation_hash,
         unit_sha256: unit_hash,
+        libvirt_policy_sha256: policy_hash,
         active_state: one(&after, "ActiveState")?,
         unit_file_state: one(&after, "UnitFileState")?,
         restart_policy,
@@ -277,6 +282,7 @@ fn install(
         PathBuf::from("/etc/systemd/system/virtio-mem-host@.service"),
         target_config.clone(),
         target_attestation.clone(),
+        PathBuf::from("/etc/polkit-1/rules.d/50-virtio-mem-host.rules"),
     ];
     for target in &targets {
         if target.exists() {
@@ -315,6 +321,15 @@ fn install(
     install_file(
         unit,
         "/etc/systemd/system/virtio-mem-host@.service",
+        "root",
+        "root",
+        "0644",
+        repo,
+        command.timeout,
+    )?;
+    install_file(
+        &repo.join("host/systemd/50-virtio-mem-host.rules"),
+        "/etc/polkit-1/rules.d/50-virtio-mem-host.rules",
         "root",
         "root",
         "0644",

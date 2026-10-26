@@ -341,13 +341,16 @@ where
             });
             if owned_durable_growth {
                 let started = pending_since.get_or_insert_with(Instant::now);
+                if started.elapsed() >= self.config.convergence_timeout {
+                    self.demand_source
+                        .latch_actuation("owned growth exceeded the convergence deadline")
+                        .map_err(HostRuntimeError::Controller)?;
+                    return Err(HostRuntimeError::ConvergenceTimeout(
+                        self.config.convergence_timeout,
+                    ));
+                }
                 eprintln!(
-                    "virtio-mem-host: event=control_health health={} vm={} alias={} requested_bytes={} current_bytes={}",
-                    if started.elapsed() >= self.config.convergence_timeout {
-                        "constrained"
-                    } else {
-                        "growing"
-                    },
+                    "virtio-mem-host: event=control_health health=growing vm={} alias={} requested_bytes={} current_bytes={}",
                     self.config.vm_name,
                     self.config.alias,
                     state.requested_bytes,
@@ -1005,6 +1008,25 @@ mod tests {
     }
 
     #[test]
+    fn default_configuration_keeps_shrink_advisory() {
+        let stop = AtomicBool::new(false);
+        let sink = AmbiguousShrinkSink(Cell::new(0));
+        let mut runtime_config = config();
+        runtime_config.automatic_windows_shrink = crate::config::DEFAULT_AUTOMATIC_WINDOWS_SHRINK;
+        let runtime = HostRuntime::new(
+            StopWithShrinkDecision(&stop),
+            ConvergedState,
+            &sink,
+            UnusedHostMemory,
+            runtime_config,
+        );
+
+        runtime.run(&stop).expect("advisory shrink stops cleanly");
+
+        assert_eq!(sink.0.get(), 0);
+    }
+
+    #[test]
     fn pressure_growth_runtime_blocks_lower_requests_before_the_sink() {
         let stop = AtomicBool::new(false);
         let sink = AmbiguousShrinkSink(Cell::new(0));
@@ -1226,6 +1248,64 @@ mod tests {
             self.events.borrow_mut().push("resolve".to_owned());
             Ok(IntentResolution::Accepted)
         }
+
+        fn latch_actuation(&self, _reason: &str) -> Result<(), String> {
+            self.control.borrow_mut().actuation_latched = true;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn owned_growth_timeout_latches_and_stops_without_another_resize() {
+        let stop = AtomicBool::new(false);
+        let target = 17 * GIB;
+        let demand = DurablePressureDemand {
+            control: RefCell::new(DurableControlState {
+                actuation_latched: false,
+                intent: Some(CommandIntent {
+                    operation_id: "growth-1".to_owned(),
+                    direction: ReconcileDirection::Grow,
+                    prior_requested_bytes: 16 * GIB,
+                    prior_current_bytes: 16 * GIB,
+                    target_bytes: target,
+                    telemetry_identity: "session:1:10:1000".to_owned(),
+                    policy_fingerprint_sha256: "a".repeat(64),
+                    compatibility_fingerprint_sha256: "b".repeat(64),
+                }),
+            }),
+            events: Default::default(),
+        };
+        let source = ScriptedState {
+            observations: RefCell::new(VecDeque::from([
+                Ok(state(target, 16 * GIB)),
+                Ok(state(target, 16 * GIB)),
+                Ok(state(target, 16 * GIB)),
+            ])),
+            stop: &stop,
+        };
+        let sink = RecordingShrinkSink {
+            requests: Default::default(),
+        };
+        let mut runtime_config = config();
+        runtime_config.poll_interval = Duration::from_millis(2);
+        runtime_config.convergence_timeout = Duration::from_millis(1);
+        let runtime = HostRuntime::new(&demand, &source, &sink, UnusedHostMemory, runtime_config);
+
+        assert!(matches!(
+            runtime.run(&stop),
+            Err(HostRuntimeError::ConvergenceTimeout(_))
+        ));
+        let control = demand.control.borrow();
+        assert!(control.actuation_latched);
+        assert_eq!(
+            control
+                .intent
+                .as_ref()
+                .expect("unresolved growth")
+                .target_bytes,
+            target
+        );
+        assert!(sink.requests.borrow().is_empty());
     }
 
     struct SupersessionSink(std::rc::Rc<RefCell<Vec<String>>>);

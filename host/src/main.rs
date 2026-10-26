@@ -42,6 +42,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
+    if let Err(error) = virsh.require_management_access() {
+        eprintln!("virtio-mem-host authorization error: {error}");
+        return ExitCode::FAILURE;
+    }
     let stop = Arc::new(AtomicBool::new(false));
     if let Err(error) = flag::register(SIGTERM, Arc::clone(&stop))
         .and_then(|_| flag::register(SIGINT, Arc::clone(&stop)))

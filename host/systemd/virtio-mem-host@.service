@@ -7,6 +7,9 @@ Wants=network-online.target
 Type=exec
 User=virtio-mem-host
 Group=virtio-mem-host
+# Provision non-interactive libvirt management authorization for this account
+# during installation. The daemon checks it before polling and never requests
+# a desktop password dialog or elevates itself.
 EnvironmentFile=/etc/virtio-mem-host/%i.conf
 Environment=LIBVIRT_DEFAULT_URI=qemu:///system
 Environment=HOME=/run/virtio-mem-host
