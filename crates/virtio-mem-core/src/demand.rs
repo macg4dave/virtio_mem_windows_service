@@ -4,7 +4,6 @@ use thiserror::Error;
 pub const LEGACY_RAW_TELEMETRY_VERSION: u16 = 2;
 pub const RAW_TELEMETRY_VERSION: u16 = 3;
 pub const WINDOWS_NATIVE_TELEMETRY_VERSION: u16 = 1;
-pub const DEMAND_REPORT_VERSION: u16 = 1;
 
 /// Native, canonical-byte memory observations collected from the Windows guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,16 +46,6 @@ impl MemoryTelemetrySnapshot {
             return Err(DemandError::InvalidMemoryLoad(self.memory_load_percent));
         }
         Ok(())
-    }
-
-    pub fn physical_pressure(&self) -> Result<f64, DemandError> {
-        self.validate()?;
-        Ok(1.0 - (self.physical_available_bytes as f64 / self.physical_total_bytes as f64))
-    }
-
-    pub fn commit_pressure(&self) -> Result<f64, DemandError> {
-        self.validate()?;
-        Ok(self.commit_total_bytes as f64 / self.commit_limit_bytes as f64)
     }
 }
 
@@ -473,17 +462,6 @@ impl RawTelemetryEnvelope {
     }
 }
 
-/// Provisional demand levels. They are recommendations and never authorize a resize.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DemandState {
-    Release,
-    Stable,
-    WantMore,
-    Pressure,
-    Critical,
-}
-
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum DemandError {
     #[error("memory counter must be greater than zero: {0}")]
@@ -542,168 +520,6 @@ pub enum DemandError {
     InvalidTelemetrySessionStart(u64),
     #[error("raw telemetry wall clock moved backwards across records")]
     TelemetryWallClockMovedBackwards,
-}
-
-/// Bounds and alignment used by the advisory target calculator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DemandPolicyConfig {
-    pub configured_minimum_bytes: u64,
-    pub configured_maximum_bytes: u64,
-    pub block_size_bytes: u64,
-    pub grow_step_bytes: u64,
-    pub shrink_step_bytes: u64,
-}
-
-impl DemandPolicyConfig {
-    pub fn validate(&self) -> Result<(), DemandError> {
-        if self.configured_minimum_bytes == 0
-            || self.configured_maximum_bytes == 0
-            || self.block_size_bytes == 0
-        {
-            return Err(DemandError::InvalidPolicy(
-                "values must be greater than zero",
-            ));
-        }
-        if self.configured_minimum_bytes > self.configured_maximum_bytes {
-            return Err(DemandError::InvalidPolicy("minimum exceeds maximum"));
-        }
-        if !self.block_size_bytes.is_power_of_two() {
-            return Err(DemandError::InvalidPolicy(
-                "block size must be a power of two",
-            ));
-        }
-        if self.grow_step_bytes == 0
-            || self.shrink_step_bytes == 0
-            || !self.grow_step_bytes.is_multiple_of(self.block_size_bytes)
-            || !self.shrink_step_bytes.is_multiple_of(self.block_size_bytes)
-        {
-            return Err(DemandError::InvalidPolicy(
-                "grow and shrink steps must be positive block-aligned values",
-            ));
-        }
-        if !self
-            .configured_minimum_bytes
-            .is_multiple_of(self.block_size_bytes)
-            || !self
-                .configured_maximum_bytes
-                .is_multiple_of(self.block_size_bytes)
-        {
-            return Err(DemandError::InvalidPolicy("limits must be block aligned"));
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct DemandReport {
-    pub version: u16,
-    pub memory: MemoryTelemetrySnapshot,
-    pub demand: DemandRecommendation,
-    pub limits: DemandLimits,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub struct DemandRecommendation {
-    pub state: DemandState,
-    pub physical_pressure: f64,
-    pub commit_pressure: f64,
-    pub desired_target_bytes: u64,
-    pub safe_floor_bytes: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DemandLimits {
-    pub configured_minimum_bytes: u64,
-    pub configured_maximum_bytes: u64,
-}
-
-#[derive(Debug)]
-pub struct DemandCalculator {
-    config: DemandPolicyConfig,
-}
-
-impl DemandCalculator {
-    pub fn new(config: DemandPolicyConfig) -> Result<Self, DemandError> {
-        config.validate()?;
-        Ok(Self { config })
-    }
-
-    pub fn calculate(
-        &self,
-        snapshot: MemoryTelemetrySnapshot,
-        current_bytes: u64,
-    ) -> Result<DemandReport, DemandError> {
-        snapshot.validate()?;
-        if !current_bytes.is_multiple_of(self.config.block_size_bytes) {
-            return Err(DemandError::InvalidPolicy(
-                "current allocation must be block aligned",
-            ));
-        }
-
-        let physical_pressure = snapshot.physical_pressure()?;
-        let commit_pressure = snapshot.commit_pressure()?;
-        let pressure = physical_pressure.max(commit_pressure);
-        let state = classify_pressure(pressure);
-        let desired_target_bytes = if current_bytes < self.config.configured_minimum_bytes {
-            self.config.configured_minimum_bytes
-        } else {
-            directional_target(current_bytes, state, self.config)?
-        };
-        let safe_floor_bytes = current_bytes
-            .saturating_sub(self.config.shrink_step_bytes)
-            .clamp(
-                self.config.configured_minimum_bytes,
-                self.config.configured_maximum_bytes,
-            );
-
-        Ok(DemandReport {
-            version: DEMAND_REPORT_VERSION,
-            memory: snapshot,
-            demand: DemandRecommendation {
-                state,
-                physical_pressure,
-                commit_pressure,
-                desired_target_bytes,
-                safe_floor_bytes,
-            },
-            limits: DemandLimits {
-                configured_minimum_bytes: self.config.configured_minimum_bytes,
-                configured_maximum_bytes: self.config.configured_maximum_bytes,
-            },
-        })
-    }
-}
-
-fn classify_pressure(pressure: f64) -> DemandState {
-    if pressure < 0.25 {
-        DemandState::Release
-    } else if pressure < 0.60 {
-        DemandState::Stable
-    } else if pressure < 0.75 {
-        DemandState::WantMore
-    } else if pressure < 0.90 {
-        DemandState::Pressure
-    } else {
-        DemandState::Critical
-    }
-}
-
-fn directional_target(
-    current_bytes: u64,
-    state: DemandState,
-    config: DemandPolicyConfig,
-) -> Result<u64, DemandError> {
-    let target = match state {
-        DemandState::Release => current_bytes.saturating_sub(config.shrink_step_bytes),
-        DemandState::Stable => current_bytes,
-        DemandState::WantMore | DemandState::Pressure | DemandState::Critical => current_bytes
-            .checked_add(config.grow_step_bytes)
-            .ok_or(DemandError::ArithmeticOverflow)?,
-    };
-    Ok(target.clamp(
-        config.configured_minimum_bytes,
-        config.configured_maximum_bytes,
-    ))
 }
 
 #[cfg(test)]
@@ -1075,59 +891,5 @@ mod tests {
     fn windows_native_extension_has_no_heap_owned_fields() {
         fn assert_copy<T: Copy>() {}
         assert_copy::<WindowsNativeTelemetry>();
-    }
-
-    #[test]
-    fn calculates_from_zero_live_allocation_without_guessing() {
-        let calculator = DemandCalculator::new(DemandPolicyConfig {
-            configured_minimum_bytes: 4 * GIB,
-            configured_maximum_bytes: 32 * GIB,
-            block_size_bytes: 2 * GIB,
-            grow_step_bytes: 2 * GIB,
-            shrink_step_bytes: 2 * GIB,
-        })
-        .expect("valid policy");
-        let report = calculator
-            .calculate(snapshot(), 0)
-            .expect("zero is live state");
-        assert_eq!(report.demand.desired_target_bytes, 4 * GIB);
-        assert_eq!(report.demand.safe_floor_bytes, 4 * GIB);
-    }
-
-    #[test]
-    fn uses_one_gibibyte_growth_and_64_mibibyte_reclaim_quanta() {
-        const MIB: u64 = 1024 * 1024;
-        let calculator = DemandCalculator::new(DemandPolicyConfig {
-            configured_minimum_bytes: 4 * GIB,
-            configured_maximum_bytes: 32 * GIB,
-            block_size_bytes: 2 * MIB,
-            grow_step_bytes: GIB,
-            shrink_step_bytes: 64 * MIB,
-        })
-        .expect("valid asymmetric policy");
-
-        let grow = calculator
-            .calculate(snapshot(), 16 * GIB)
-            .expect("critical pressure grows once");
-        assert_eq!(grow.demand.state, DemandState::Critical);
-        assert_eq!(grow.demand.desired_target_bytes, 17 * GIB);
-
-        let mut release_snapshot = snapshot();
-        release_snapshot.physical_available_bytes = 15 * GIB;
-        release_snapshot.memory_load_percent = 6;
-        release_snapshot.commit_total_bytes = GIB;
-        release_snapshot.commit_peak_bytes = GIB;
-        let release = calculator
-            .calculate(release_snapshot, 16 * GIB)
-            .expect("low pressure releases once");
-        assert_eq!(release.demand.state, DemandState::Release);
-        assert_eq!(release.demand.desired_target_bytes, 16 * GIB - 64 * MIB);
-        assert_eq!(release.demand.safe_floor_bytes, 16 * GIB - 64 * MIB);
-
-        let invalid = DemandPolicyConfig {
-            shrink_step_bytes: 63 * MIB,
-            ..calculator.config
-        };
-        assert!(DemandCalculator::new(invalid).is_err());
     }
 }

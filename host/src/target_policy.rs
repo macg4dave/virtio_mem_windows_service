@@ -9,15 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use virtio_mem_core::{
-    assess_windows_pressure, calculate_effective_maximum, select_pressure_growth,
-    AcceptedTelemetryIdentity, AssessmentAllocation, CapacityState, CommandOwnership,
-    ControlHealth, ControllerCommandStatus, ControllerStatusSnapshot, PressureHistoryState,
-    PressureHistorySummary, PressurePolicyConfig, PressurePolicyMode, PressureShadowComparison,
-    PressureShadowStatus, ReclaimReadiness, RecoveryState, ResizeDecision, TargetEstimator,
-    TargetEstimatorState, TargetGeometry, TargetPolicyConfig, TargetSample, VirtioMemState,
-    WindowsPressureAssessment, CONTROLLER_STATUS_VERSION, MAX_PRESSURE_HISTORY_ENTRIES,
-    PRESSURE_ASSESSMENT_VERSION, PRESSURE_HISTORY_VERSION, PRESSURE_POLICY_VERSION,
-    PRESSURE_SHADOW_COMPARISON_VERSION,
+    calculate_effective_maximum, AcceptedTelemetryIdentity, CapacityState, CommandOwnership,
+    ControlHealth, ControllerCommandStatus, ControllerStatusSnapshot, ReclaimReadiness,
+    RecoveryState, ResizeDecision, TargetEstimator, TargetEstimatorState, TargetGeometry,
+    TargetPolicyConfig, TargetSample, VirtioMemState, CONTROLLER_STATUS_VERSION,
 };
 
 use crate::attestation::CompatibilityAttestation;
@@ -47,18 +42,19 @@ struct PolicyCheckpoint {
     command_intent: Option<CommandIntent>,
     #[serde(default)]
     last_latch_clear_reason: Option<String>,
-    #[serde(default)]
-    pressure_shadow: Option<PersistedPressureShadow>,
+    /// Earlier builds stored shadow-policy history here. It was expendable
+    /// history, never control state, so it is accepted on load and dropped.
+    #[serde(default, rename = "pressure_shadow", skip_serializing)]
+    retired_pressure_shadow: RetiredPressureShadow,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PersistedPressureShadow {
-    policy_fingerprint_sha256: String,
-    history: PressureHistoryState,
-    latest_assessment: Option<WindowsPressureAssessment>,
-    #[serde(default)]
-    latest_growth_decision: Option<virtio_mem_core::PressureGrowthDecision>,
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RetiredPressureShadow;
+
+impl<'de> Deserialize<'de> for RetiredPressureShadow {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        serde::de::IgnoredAny::deserialize(deserializer).map(|_| Self)
+    }
 }
 
 pub struct TargetDemandSource<R> {
@@ -72,10 +68,6 @@ pub struct TargetDemandSource<R> {
     grow_step_bytes: u64,
     shrink_step_bytes: u64,
     control: Mutex<CheckpointControl>,
-    pressure_mode: PressurePolicyMode,
-    pressure_policy: Option<PressurePolicyConfig>,
-    pressure_comparison_path: Option<PathBuf>,
-    pressure: Mutex<Option<PersistedPressureShadow>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -108,28 +100,6 @@ impl<R> TargetDemandSource<R> {
             &policy_fingerprint,
             &compatibility_fingerprint,
         )?;
-        let pressure_mode = config.pressure_policy_mode;
-        let (pressure_policy, pressure_comparison_path, pressure) =
-            if let Some(shadow) = &config.pressure_shadow {
-                let fingerprint = pressure_policy_fingerprint(pressure_mode, shadow)?;
-                let restored = checkpoint
-                    .as_ref()
-                    .and_then(|checkpoint| checkpoint.pressure_shadow.clone())
-                    .filter(|state| valid_persisted_pressure(state, &fingerprint))
-                    .unwrap_or(PersistedPressureShadow {
-                        policy_fingerprint_sha256: fingerprint,
-                        history: PressureHistoryState::default(),
-                        latest_assessment: None,
-                        latest_growth_decision: None,
-                    });
-                (
-                    Some(shadow.policy),
-                    Some(PathBuf::from(&shadow.comparison_log_path)),
-                    Some(restored),
-                )
-            } else {
-                (None, None, None)
-            };
         let control = checkpoint
             .as_ref()
             .map(|checkpoint| CheckpointControl {
@@ -162,10 +132,6 @@ impl<R> TargetDemandSource<R> {
             grow_step_bytes: config.grow_step_bytes,
             shrink_step_bytes: config.shrink_step_bytes,
             control: Mutex::new(control),
-            pressure_mode,
-            pressure_policy,
-            pressure_comparison_path,
-            pressure: Mutex::new(pressure),
         })
     }
 }
@@ -212,23 +178,6 @@ fn read_controller_status_at(
         &policy_fingerprint_sha256,
         &compatibility_fingerprint_sha256,
     )?;
-    let pressure_shadow = config
-        .pressure_shadow
-        .as_ref()
-        .map(|shadow| -> Result<PressureShadowStatus, String> {
-            let fingerprint = pressure_policy_fingerprint(config.pressure_policy_mode, shadow)?;
-            let persisted = checkpoint
-                .as_ref()
-                .and_then(|checkpoint| checkpoint.pressure_shadow.as_ref())
-                .filter(|state| valid_persisted_pressure(state, &fingerprint));
-            Ok(PressureShadowStatus {
-                policy_fingerprint_sha256: fingerprint,
-                history_entries: persisted.map_or(0, |state| state.history.entries.len()),
-                latest_assessment: persisted.and_then(|state| state.latest_assessment.clone()),
-                latest_growth_decision: persisted.and_then(|state| state.latest_growth_decision),
-            })
-        })
-        .transpose()?;
     let (estimator_state, history_ready, control) = if let Some(checkpoint) = checkpoint {
         let estimator = TargetEstimator::restore(policy, checkpoint.estimator.clone())
             .map_err(|error| format!("target policy checkpoint state is invalid: {error}"))?;
@@ -249,29 +198,15 @@ fn read_controller_status_at(
             CheckpointControl::default(),
         )
     };
-    let legacy_desired_bytes = if estimator_state.desired_bytes == 0 {
+    let desired_bytes = if estimator_state.desired_bytes == 0 {
         live.current_bytes
     } else {
         estimator_state.desired_bytes
     };
-    let legacy_safe_floor_bytes = if estimator_state.safe_floor_bytes == 0 {
-        live.current_bytes.min(legacy_desired_bytes)
+    let safe_floor_bytes = if estimator_state.safe_floor_bytes == 0 {
+        live.current_bytes.min(desired_bytes)
     } else {
         estimator_state.safe_floor_bytes
-    };
-    let applied_growth = pressure_shadow
-        .as_ref()
-        .and_then(|pressure| pressure.latest_growth_decision);
-    let desired_bytes = applied_growth.map_or(legacy_desired_bytes, |growth| {
-        growth.goal_bytes.max(live.current_bytes)
-    });
-    let safe_floor_bytes = applied_growth.map_or(legacy_safe_floor_bytes, |_| {
-        live.current_bytes.min(desired_bytes)
-    });
-    let history_ready = if applied_growth.is_some() {
-        false
-    } else {
-        history_ready
     };
     let accepted_telemetry =
         (!estimator_state.session_id.is_empty()).then_some(AcceptedTelemetryIdentity {
@@ -368,8 +303,6 @@ fn read_controller_status_at(
         last_latch_clear_reason: control.last_latch_clear_reason,
         policy_fingerprint_sha256,
         compatibility_fingerprint_sha256,
-        pressure_policy_mode: config.pressure_policy_mode,
-        pressure_shadow,
     };
     snapshot.validate().map_err(|error| error.to_string())?;
     Ok(snapshot)
@@ -426,7 +359,7 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
     fn evaluate(
         &self,
         state: VirtioMemState,
-        config: &HostConfig,
+        _config: &HostConfig,
     ) -> Result<DemandDecision, String> {
         let envelope = match self.raw.read() {
             Ok(RawTelemetryRead::Fresh(envelope)) => envelope,
@@ -452,7 +385,6 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
                     effective_maximum_bytes: desired_bytes.max(state.current_bytes),
                     history_ready: false,
                     telemetry_identity: None,
-                    pressure_growth: None,
                 });
             }
             Err(error) => {
@@ -462,16 +394,6 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
                         .lock()
                         .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
                     estimator.invalidate_history();
-                    let mut pressure = self
-                        .pressure
-                        .lock()
-                        .map_err(|_| "pressure shadow state lock is poisoned".to_owned())?;
-                    if let Some(pressure) = pressure.as_mut() {
-                        pressure.history.invalidate();
-                        pressure.latest_assessment = None;
-                        pressure.latest_growth_decision = None;
-                    }
-                    drop(pressure);
                     self.persist_estimator(&estimator)?;
                 }
                 return Err(error.to_string());
@@ -500,109 +422,6 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
             return Err(error.to_string());
         }
         let estimate = estimate_result.map_err(|error| error.to_string())?;
-        let pressure_growth = if self.pressure_mode != PressurePolicyMode::Legacy {
-            let policy = self
-                .pressure_policy
-                .ok_or_else(|| "pressure mode has no pressure policy".to_owned())?;
-            let allocation = AssessmentAllocation {
-                device_size_bytes: state.size_bytes,
-                block_size_bytes: state.block_size_bytes,
-                requested_bytes: state.requested_bytes,
-                current_bytes: state.current_bytes,
-                configured_minimum_bytes: config.min_memory_bytes,
-                effective_maximum_bytes: estimate.effective_maximum_bytes,
-                visible_base_bytes: config.fixed_visible_base_bytes,
-            };
-            let provisional = assess_windows_pressure(
-                &envelope,
-                policy,
-                allocation,
-                PressureHistorySummary {
-                    complete: false,
-                    healthy: false,
-                    all_high: false,
-                },
-                estimate.desired_now_bytes,
-            )
-            .map_err(|error| error.to_string())?;
-            let assessment = {
-                let mut pressure = self
-                    .pressure
-                    .lock()
-                    .map_err(|_| "pressure shadow state lock is poisoned".to_owned())?;
-                let pressure = pressure
-                    .as_mut()
-                    .ok_or_else(|| "shadow mode has no durable pressure state".to_owned())?;
-                let history = pressure
-                    .history
-                    .observe(
-                        &provisional.pressure,
-                        duration_millis(config.reclaim_history)?,
-                        duration_millis(config.reclaim_max_gap)?,
-                    )
-                    .map_err(|error| error.to_string())?;
-                let assessment = assess_windows_pressure(
-                    &envelope,
-                    policy,
-                    allocation,
-                    history,
-                    estimate.desired_now_bytes,
-                )
-                .map_err(|error| error.to_string())?;
-                pressure.latest_assessment = Some(assessment.clone());
-                assessment
-            };
-            let growth_decision = if self.pressure_mode == PressurePolicyMode::Growth {
-                let pressure = config
-                    .pressure_shadow
-                    .as_ref()
-                    .ok_or_else(|| "growth mode has no pressure configuration".to_owned())?;
-                Some(
-                    select_pressure_growth(
-                        &assessment,
-                        state.current_bytes,
-                        estimate.effective_maximum_bytes,
-                        state.block_size_bytes,
-                        self.grow_step_bytes,
-                        pressure
-                            .growth_step_bytes
-                            .ok_or_else(|| "growth mode has no urgent-growth step".to_owned())?,
-                        pressure.fallback_growth_enabled,
-                    )
-                    .map_err(|error| error.to_string())?,
-                )
-            } else {
-                None
-            };
-            self.pressure
-                .lock()
-                .map_err(|_| "pressure state lock is poisoned".to_owned())?
-                .as_mut()
-                .ok_or_else(|| "pressure mode has no durable state".to_owned())?
-                .latest_growth_decision = growth_decision;
-            append_pressure_comparison(
-                self.pressure_comparison_path
-                    .as_deref()
-                    .ok_or_else(|| "shadow mode has no comparison path".to_owned())?,
-                &PressureShadowComparison {
-                    version: PRESSURE_SHADOW_COMPARISON_VERSION,
-                    vm_name: self.vm_name.clone(),
-                    device_alias: self.device_alias.clone(),
-                    policy_fingerprint_sha256: pressure_policy_fingerprint(
-                        self.pressure_mode,
-                        config
-                            .pressure_shadow
-                            .as_ref()
-                            .ok_or_else(|| "pressure mode has no configuration".to_owned())?,
-                    )?,
-                    assessment,
-                    growth_decision,
-                },
-            )?;
-            growth_decision
-        } else {
-            None
-        };
         self.persist_estimator(&estimator)?;
         if estimate.capacity_limited {
             eprintln!(
@@ -615,53 +434,36 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
             .lock()
             .map_err(|_| "target control-state lock is poisoned".to_owned())?
             .actuation_latched;
-        let requested_bytes =
-            if self.pressure_mode == PressurePolicyMode::Shadow || actuation_latched {
-                None
-            } else if self.pressure_mode == PressurePolicyMode::Growth {
-                pressure_growth.and_then(|growth| growth.next_target_bytes)
-            } else if estimate.desired_bytes > state.current_bytes {
-                Some(
-                    state
-                        .current_bytes
-                        .checked_add(self.grow_step_bytes)
-                        .ok_or_else(|| "growth quantum overflowed".to_owned())?
-                        .min(estimate.desired_bytes)
-                        .min(estimate.effective_maximum_bytes),
-                )
-            } else if estimate.history_ready && estimate.desired_bytes < state.current_bytes {
-                Some(
-                    state
-                        .current_bytes
-                        .saturating_sub(self.shrink_step_bytes)
-                        .max(estimate.desired_bytes)
-                        .max(estimate.safe_floor_bytes),
-                )
-            } else {
-                None
-            };
-        let (desired_bytes, safe_floor_bytes, history_ready) = pressure_growth.map_or(
-            (
-                estimate.desired_bytes,
-                estimate.safe_floor_bytes,
-                estimate.history_ready,
-            ),
-            |growth| {
-                (
-                    growth.goal_bytes,
-                    state.current_bytes.min(growth.goal_bytes),
-                    false,
-                )
-            },
-        );
+        let requested_bytes = if actuation_latched {
+            None
+        } else if estimate.desired_bytes > state.current_bytes {
+            Some(
+                state
+                    .current_bytes
+                    .checked_add(self.grow_step_bytes)
+                    .ok_or_else(|| "growth quantum overflowed".to_owned())?
+                    .min(estimate.desired_bytes)
+                    .min(estimate.effective_maximum_bytes),
+            )
+        } else if estimate.history_ready && estimate.desired_bytes < state.current_bytes {
+            Some(
+                state
+                    .current_bytes
+                    .saturating_sub(self.shrink_step_bytes)
+                    .max(estimate.desired_bytes)
+                    .max(estimate.safe_floor_bytes),
+            )
+        } else {
+            None
+        };
         Ok(DemandDecision {
             decision: requested_bytes
                 .map(|requested_bytes| ResizeDecision::Request { requested_bytes })
                 .unwrap_or(ResizeDecision::NoChange),
-            safe_floor_bytes,
-            desired_bytes,
+            safe_floor_bytes: estimate.safe_floor_bytes,
+            desired_bytes: estimate.desired_bytes,
             effective_maximum_bytes: estimate.effective_maximum_bytes,
-            history_ready,
+            history_ready: estimate.history_ready,
             telemetry_identity: Some(format!(
                 "{}:{}:{}:{}",
                 estimator.state().session_id,
@@ -669,7 +471,6 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
                 estimator.state().last_monotonic_millis,
                 estimator.state().last_observed_unix_millis
             )),
-            pressure_growth,
         })
     }
 
@@ -782,11 +583,6 @@ impl<R> TargetDemandSource<R> {
         estimator: &TargetEstimator,
         control: &CheckpointControl,
     ) -> Result<(), String> {
-        let pressure_shadow = self
-            .pressure
-            .lock()
-            .map_err(|_| "pressure shadow state lock is poisoned".to_owned())?
-            .clone();
         persist_checkpoint(
             &self.checkpoint_path,
             &PolicyCheckpoint {
@@ -800,7 +596,7 @@ impl<R> TargetDemandSource<R> {
                 actuation_latch_reason: control.actuation_latch_reason.clone(),
                 command_intent: control.command_intent.clone(),
                 last_latch_clear_reason: control.last_latch_clear_reason.clone(),
-                pressure_shadow,
+                retired_pressure_shadow: RetiredPressureShadow,
             },
         )
     }
@@ -847,11 +643,6 @@ pub fn clear_actuation_latch(
         checkpoint.actuation_latch_reason = None;
         checkpoint.command_intent = None;
         checkpoint.last_latch_clear_reason = Some(reason.to_owned());
-        if let Some(pressure) = checkpoint.pressure_shadow.as_mut() {
-            pressure.history = PressureHistoryState::default();
-            pressure.latest_assessment = None;
-            pressure.latest_growth_decision = None;
-        }
         persist_checkpoint(&path, &checkpoint)?;
     }
     Ok(message)
@@ -910,63 +701,6 @@ fn policy_fingerprint(policy: &TargetPolicyConfig) -> Result<String, String> {
     let bytes = serde_json::to_vec(policy)
         .map_err(|error| format!("serialize target policy fingerprint: {error}"))?;
     Ok(sha256_hex(&bytes))
-}
-
-fn pressure_policy_fingerprint(
-    mode: PressurePolicyMode,
-    config: &crate::config::PressureShadowConfig,
-) -> Result<String, String> {
-    let bytes = serde_json::to_vec(&(
-        mode,
-        config.policy,
-        config.growth_step_bytes,
-        config.fallback_growth_enabled,
-    ))
-    .map_err(|error| format!("serialize pressure policy fingerprint: {error}"))?;
-    Ok(sha256_hex(&bytes))
-}
-
-fn valid_persisted_pressure(state: &PersistedPressureShadow, fingerprint: &str) -> bool {
-    state.policy_fingerprint_sha256 == fingerprint
-        && state.history.version == PRESSURE_HISTORY_VERSION
-        && state.history.entries.len() <= MAX_PRESSURE_HISTORY_ENTRIES
-        && state.latest_assessment.as_ref().is_none_or(|assessment| {
-            assessment.version == PRESSURE_ASSESSMENT_VERSION
-                && assessment.policy_version == PRESSURE_POLICY_VERSION
-                && assessment.memory_requirement.version == PRESSURE_ASSESSMENT_VERSION
-                && assessment.pressure.version == PRESSURE_ASSESSMENT_VERSION
-                && assessment.shrink_safety.version == PRESSURE_ASSESSMENT_VERSION
-                && assessment.memory_requirement.input == assessment.pressure.input
-                && assessment.pressure.input == assessment.shrink_safety.input
-        })
-        && state
-            .latest_growth_decision
-            .is_none_or(|growth| growth.goal_bytes > 0)
-}
-
-fn append_pressure_comparison(
-    path: &Path,
-    comparison: &PressureShadowComparison,
-) -> Result<(), String> {
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("create pressure shadow evidence directory: {error}"))?;
-    }
-    let mut bytes = serde_json::to_vec(comparison)
-        .map_err(|error| format!("encode pressure shadow comparison: {error}"))?;
-    bytes.push(b'\n');
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-        .map_err(|error| format!("open pressure shadow comparison log: {error}"))?;
-    file.write_all(&bytes)
-        .map_err(|error| format!("append pressure shadow comparison: {error}"))?;
-    file.sync_data()
-        .map_err(|error| format!("flush pressure shadow comparison: {error}"))
 }
 
 fn compatibility_fingerprint(path: &str) -> Result<String, String> {
@@ -1089,14 +823,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::attestation::{CompatibilityReview, LiveCompatibilityEvidence};
-    use crate::config::{DemandSourceMode, PressureShadowConfig, StatsSource};
+    use crate::config::{DemandSourceMode, StatsSource};
     use crate::raw_telemetry::RawTelemetryError;
     use serde_json::json;
     use std::time::Duration;
-    use virtio_mem_core::{
-        MemoryResourceNotificationState, MemoryTelemetrySnapshot, OptionalTelemetrySignal,
-        RawTelemetryEnvelope, TelemetryCapability,
-    };
+    use virtio_mem_core::{MemoryTelemetrySnapshot, RawTelemetryEnvelope};
 
     const GIB: u64 = 1024 * 1024 * 1024;
     const MIB: u64 = 1024 * 1024;
@@ -1232,37 +963,8 @@ mod tests {
             automatic_windows_shrink: true,
             shrink_renotification: false,
             shrink_retry_delays: Vec::new(),
-            pressure_policy_mode: virtio_mem_core::PressurePolicyMode::Legacy,
-            pressure_shadow: None,
+            observe_only: false,
         }
-    }
-
-    fn shadow_config(state: &Path, attestation: &Path, evidence: &Path) -> HostConfig {
-        let mut config = config(state, attestation);
-        config.pressure_policy_mode = PressurePolicyMode::Shadow;
-        config.pressure_shadow = Some(PressureShadowConfig {
-            policy: PressurePolicyConfig {
-                demand_margin_ratio_numerator: 1,
-                demand_margin_ratio_denominator: 10,
-                demand_margin_minimum_bytes: 256 * MIB,
-                demand_margin_maximum_bytes: 2 * GIB,
-                downward_hysteresis_bytes: 256 * MIB,
-            },
-            comparison_log_path: evidence.display().to_string(),
-            growth_step_bytes: None,
-            fallback_growth_enabled: false,
-        });
-        config
-    }
-
-    fn growth_config(state: &Path, attestation: &Path, evidence: &Path) -> HostConfig {
-        let mut config = shadow_config(state, attestation, evidence);
-        config.pressure_policy_mode = PressurePolicyMode::Growth;
-        let pressure = config.pressure_shadow.as_mut().expect("pressure config");
-        pressure.growth_step_bytes = Some(2 * GIB);
-        pressure.fallback_growth_enabled = true;
-        config.automatic_windows_shrink = false;
-        config
     }
 
     #[test]
@@ -1279,7 +981,7 @@ mod tests {
             actuation_latch_reason: None,
             command_intent: None,
             last_latch_clear_reason: None,
-            pressure_shadow: None,
+            retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("persist checkpoint");
         assert_eq!(
@@ -1302,6 +1004,32 @@ mod tests {
         )
         .expect("mismatch is cold state")
         .is_none());
+
+        // Checkpoints from builds with shadow/growth modes carry a retired
+        // `pressure_shadow` field, null in legacy mode. Both forms must load.
+        for retired in [
+            serde_json::Value::Null,
+            serde_json::json!({"history": {"entries": []}}),
+        ] {
+            let mut value = serde_json::to_value(&checkpoint).expect("checkpoint value");
+            value["pressure_shadow"] = retired;
+            fs::write(&state_path, serde_json::to_vec(&value).expect("encode"))
+                .expect("write retired-field checkpoint");
+            assert_eq!(
+                load_matching_checkpoint(
+                    &state_path,
+                    "guest",
+                    "memory0",
+                    &"a".repeat(64),
+                    &"b".repeat(64)
+                )
+                .expect("retired field is accepted"),
+                Some(checkpoint.clone())
+            );
+        }
+        assert!(!serde_json::to_string(&checkpoint)
+            .expect("encode checkpoint")
+            .contains("pressure_shadow"));
 
         let mut latched = checkpoint;
         latched.actuation_latched = true;
@@ -1342,7 +1070,7 @@ mod tests {
                     compatibility_fingerprint_sha256: "b".repeat(64),
                 }),
                 last_latch_clear_reason: None,
-                pressure_shadow: None,
+                retired_pressure_shadow: RetiredPressureShadow,
             };
             persist_checkpoint(&state_path, &checkpoint).expect("write checkpoint");
             let before = fs::read(&state_path).expect("checkpoint bytes");
@@ -1421,7 +1149,7 @@ mod tests {
             actuation_latch_reason: None,
             command_intent: None,
             last_latch_clear_reason: None,
-            pressure_shadow: None,
+            retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
         let live = VirtioMemState {
@@ -1534,178 +1262,10 @@ mod tests {
                 effective_maximum_bytes: 20 * GIB,
                 history_ready: false,
                 telemetry_identity: Some("session-a:0:10:1000000".to_owned()),
-                pressure_growth: None,
             }
         );
         assert!(state_path.is_file());
         fs::remove_file(state_path).expect("remove checkpoint");
-    }
-
-    #[test]
-    fn pressure_shadow_persists_and_emits_comparison_but_never_requests_resize() {
-        let (state_path, attestation) = paths("pressure-shadow");
-        let evidence = state_path.with_extension("jsonl");
-        let config = shadow_config(&state_path, &attestation, &evidence);
-        write_attestation(&attestation);
-        let mut envelope = RawTelemetryEnvelope::new(
-            "guest",
-            "VirtioMemService",
-            "session-shadow",
-            1_000_000,
-            10,
-            1,
-            MemoryTelemetrySnapshot {
-                physical_total_bytes: 16 * GIB,
-                physical_available_bytes: 0,
-                memory_load_percent: 100,
-                commit_total_bytes: 32 * GIB,
-                commit_limit_bytes: 32 * GIB,
-                commit_peak_bytes: 32 * GIB,
-                system_cache_bytes: 0,
-                kernel_paged_bytes: 0,
-                kernel_nonpaged_bytes: 0,
-            },
-        );
-        let monotonic_millis = envelope.monotonic_millis;
-        let native = envelope
-            .windows_native
-            .as_mut()
-            .expect("current telemetry extension");
-        native.capabilities.memory_resource_notifications = TelemetryCapability::Supported;
-        native.memory_resource_notifications = OptionalTelemetrySignal::supported(
-            monotonic_millis,
-            MemoryResourceNotificationState::Low,
-        );
-        let raw = OneEnvelope(Mutex::new(Some(envelope)));
-        let source = TargetDemandSource::new(raw, &config).expect("shadow source");
-        let live = VirtioMemState {
-            size_bytes: 24 * GIB,
-            block_size_bytes: 2 * MIB,
-            requested_bytes: 8 * GIB,
-            current_bytes: 8 * GIB,
-        };
-
-        let decision = source.evaluate(live, &config).expect("shadow assessment");
-
-        assert_eq!(decision.decision, ResizeDecision::NoChange);
-        assert_eq!(decision.desired_bytes, 10 * GIB);
-        let lines = fs::read_to_string(&evidence).expect("comparison evidence");
-        assert_eq!(lines.lines().count(), 1);
-        let comparison: PressureShadowComparison =
-            serde_json::from_str(lines.trim()).expect("comparison JSON");
-        assert_eq!(
-            comparison.assessment.fixed_headroom_candidate_bytes,
-            10 * GIB
-        );
-        assert_eq!(
-            comparison.assessment.pressure.state,
-            virtio_mem_core::PressureState::LowMemory
-        );
-        let status = read_controller_status_at(&config, live, 2_000_000).expect("shadow status");
-        assert_eq!(status.pressure_policy_mode, PressurePolicyMode::Shadow);
-        let shadow = status.pressure_shadow.expect("shadow status detail");
-        assert_eq!(shadow.history_entries, 1);
-        assert_eq!(shadow.latest_assessment, Some(comparison.assessment));
-        let mut changed_policy = config.clone();
-        changed_policy
-            .pressure_shadow
-            .as_mut()
-            .expect("shadow configuration")
-            .policy
-            .demand_margin_ratio_numerator = 2;
-        let changed_status = read_controller_status_at(&changed_policy, live, 2_000_001)
-            .expect("changed pressure policy keeps legacy checkpoint readable");
-        assert_eq!(changed_status.desired_bytes, 10 * GIB);
-        let changed_shadow = changed_status.pressure_shadow.expect("cold changed policy");
-        assert_eq!(changed_shadow.history_entries, 0);
-        assert!(changed_shadow.latest_assessment.is_none());
-
-        fs::remove_file(state_path).expect("remove checkpoint");
-        fs::remove_file(attestation).expect("remove attestation");
-        fs::remove_file(evidence).expect("remove evidence");
-    }
-
-    #[test]
-    fn pressure_growth_applies_urgent_step_and_keeps_reclaim_disabled() {
-        let (state_path, attestation) = paths("pressure-growth");
-        let evidence = state_path.with_extension("jsonl");
-        let config = growth_config(&state_path, &attestation, &evidence);
-        config.validate().expect("valid growth configuration");
-        let mut unsafe_growth = config.clone();
-        unsafe_growth.automatic_windows_shrink = true;
-        assert!(unsafe_growth.validate().is_err());
-        write_attestation(&attestation);
-        let mut envelope = RawTelemetryEnvelope::new(
-            "guest",
-            "VirtioMemService",
-            "session-growth",
-            1_000_000,
-            10,
-            1,
-            MemoryTelemetrySnapshot {
-                physical_total_bytes: 16 * GIB,
-                physical_available_bytes: 0,
-                memory_load_percent: 100,
-                commit_total_bytes: 32 * GIB,
-                commit_limit_bytes: 32 * GIB,
-                commit_peak_bytes: 32 * GIB,
-                system_cache_bytes: 0,
-                kernel_paged_bytes: 0,
-                kernel_nonpaged_bytes: 0,
-            },
-        );
-        let monotonic_millis = envelope.monotonic_millis;
-        let native = envelope.windows_native.as_mut().expect("native telemetry");
-        native.capabilities.memory_resource_notifications = TelemetryCapability::Supported;
-        native.memory_resource_notifications = OptionalTelemetrySignal::supported(
-            monotonic_millis,
-            MemoryResourceNotificationState::Low,
-        );
-        let source = TargetDemandSource::new(OneEnvelope(Mutex::new(Some(envelope))), &config)
-            .expect("growth source");
-        let live = VirtioMemState {
-            size_bytes: 24 * GIB,
-            block_size_bytes: 2 * MIB,
-            requested_bytes: 8 * GIB,
-            current_bytes: 8 * GIB,
-        };
-
-        let decision = source.evaluate(live, &config).expect("growth assessment");
-
-        assert_eq!(
-            decision.decision,
-            ResizeDecision::Request {
-                requested_bytes: 10 * GIB,
-            }
-        );
-        let growth = decision.pressure_growth.expect("growth reason");
-        assert_eq!(growth.mode, virtio_mem_core::PressureGrowthMode::Urgent);
-        assert!(growth.capacity_limited);
-        assert!(!decision.history_ready);
-        assert_eq!(decision.safe_floor_bytes, 8 * GIB);
-        let comparison: PressureShadowComparison = serde_json::from_str(
-            fs::read_to_string(&evidence)
-                .expect("growth evidence")
-                .trim(),
-        )
-        .expect("growth evidence JSON");
-        assert_eq!(comparison.growth_decision, Some(growth));
-        let status = read_controller_status_at(&config, live, 2_000_000).expect("growth status");
-        assert_eq!(status.version, CONTROLLER_STATUS_VERSION);
-        assert_eq!(status.desired_bytes, growth.goal_bytes);
-        assert_eq!(status.safe_floor_bytes, live.current_bytes);
-        assert!(!status.history_ready);
-        assert_eq!(
-            status
-                .pressure_shadow
-                .expect("pressure status")
-                .latest_growth_decision,
-            Some(growth)
-        );
-
-        fs::remove_file(state_path).expect("remove checkpoint");
-        fs::remove_file(attestation).expect("remove attestation");
-        fs::remove_file(evidence).expect("remove evidence");
     }
 
     #[test]
@@ -1904,7 +1464,7 @@ mod tests {
             actuation_latch_reason: Some("ambiguous command".to_owned()),
             command_intent: None,
             last_latch_clear_reason: None,
-            pressure_shadow: None,
+            retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
         let converged = VirtioMemState {
@@ -1978,7 +1538,7 @@ mod tests {
             actuation_latch_reason: Some("attestation changed before command".to_owned()),
             command_intent: None,
             last_latch_clear_reason: None,
-            pressure_shadow: None,
+            retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
         let new_compatibility_fingerprint = write_attestation_with_domain(&attestation_path, 'd');
@@ -2077,7 +1637,7 @@ mod tests {
             actuation_latch_reason: None,
             command_intent: None,
             last_latch_clear_reason: Some("prior review".to_owned()),
-            pressure_shadow: None,
+            retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
         let live = VirtioMemState {

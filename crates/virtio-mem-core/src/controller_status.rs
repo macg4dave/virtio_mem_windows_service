@@ -3,13 +3,9 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    ControlHealth, PressureGrowthDecision, PressureGrowthMode, PressurePolicyMode,
-    ReconcileDirection, VirtioMemState, WindowsPressureAssessment, MAX_PRESSURE_HISTORY_ENTRIES,
-    PRESSURE_ASSESSMENT_VERSION, PRESSURE_POLICY_VERSION,
-};
+use crate::{ControlHealth, ReconcileDirection, VirtioMemState};
 
-pub const CONTROLLER_STATUS_VERSION: u16 = 3;
+pub const CONTROLLER_STATUS_VERSION: u16 = 4;
 pub const MAX_CONTROLLER_STATUS_BYTES: usize = 64 * 1024;
 const MAX_IDENTITY_BYTES: usize = 256;
 const MAX_REASON_BYTES: usize = 1024;
@@ -74,15 +70,6 @@ pub struct ControllerCommandStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PressureShadowStatus {
-    pub policy_fingerprint_sha256: String,
-    pub history_entries: usize,
-    pub latest_assessment: Option<WindowsPressureAssessment>,
-    pub latest_growth_decision: Option<PressureGrowthDecision>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ControllerStatusSnapshot {
     pub version: u16,
     pub observed_unix_millis: u64,
@@ -109,8 +96,6 @@ pub struct ControllerStatusSnapshot {
     pub last_latch_clear_reason: Option<String>,
     pub policy_fingerprint_sha256: String,
     pub compatibility_fingerprint_sha256: String,
-    pub pressure_policy_mode: PressurePolicyMode,
-    pub pressure_shadow: Option<PressureShadowStatus>,
 }
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
@@ -134,53 +119,6 @@ impl ControllerStatusSnapshot {
         validate_identity(&self.device_alias)?;
         validate_sha256(&self.policy_fingerprint_sha256)?;
         validate_sha256(&self.compatibility_fingerprint_sha256)?;
-        if (self.pressure_policy_mode != PressurePolicyMode::Legacy)
-            != self.pressure_shadow.is_some()
-        {
-            return Err(ControllerStatusError::Invalid(
-                "pressure mode and shadow status disagree",
-            ));
-        }
-        if let Some(shadow) = &self.pressure_shadow {
-            validate_sha256(&shadow.policy_fingerprint_sha256)?;
-            if shadow.history_entries > MAX_PRESSURE_HISTORY_ENTRIES {
-                return Err(ControllerStatusError::Invalid(
-                    "pressure history entry count is invalid",
-                ));
-            }
-            if shadow.latest_assessment.as_ref().is_some_and(|assessment| {
-                assessment.version != PRESSURE_ASSESSMENT_VERSION
-                    || assessment.policy_version != PRESSURE_POLICY_VERSION
-                    || assessment.memory_requirement.version != PRESSURE_ASSESSMENT_VERSION
-                    || assessment.pressure.version != PRESSURE_ASSESSMENT_VERSION
-                    || assessment.shrink_safety.version != PRESSURE_ASSESSMENT_VERSION
-                    || assessment.memory_requirement.input != assessment.pressure.input
-                    || assessment.pressure.input != assessment.shrink_safety.input
-            }) {
-                return Err(ControllerStatusError::Invalid(
-                    "latest pressure assessment is inconsistent",
-                ));
-            }
-            if self.pressure_policy_mode == PressurePolicyMode::Shadow
-                && shadow.latest_growth_decision.is_some()
-            {
-                return Err(ControllerStatusError::Invalid(
-                    "shadow pressure mode contains an applied growth decision",
-                ));
-            }
-            if shadow.latest_growth_decision.is_some() && shadow.latest_assessment.is_none() {
-                return Err(ControllerStatusError::Invalid(
-                    "pressure growth decision has no matching assessment",
-                ));
-            }
-            if self.pressure_policy_mode == PressurePolicyMode::Growth
-                && (shadow.latest_growth_decision.is_some() != shadow.latest_assessment.is_some())
-            {
-                return Err(ControllerStatusError::Invalid(
-                    "growth mode assessment and decision disagree",
-                ));
-            }
-        }
         VirtioMemState {
             size_bytes: self.device_size_bytes,
             block_size_bytes: self.block_size_bytes,
@@ -203,24 +141,6 @@ impl ControllerStatusSnapshot {
         {
             return Err(ControllerStatusError::Invalid(
                 "target values violate bounds or alignment",
-            ));
-        }
-        if self.pressure_shadow.as_ref().is_some_and(|pressure| {
-            pressure.latest_growth_decision.is_some_and(|growth| {
-                growth.goal_bytes == 0
-                    || growth.goal_bytes > self.effective_maximum_bytes
-                    || !growth.goal_bytes.is_multiple_of(self.block_size_bytes)
-                    || (growth.mode == PressureGrowthMode::Held)
-                        != growth.next_target_bytes.is_none()
-                    || growth.next_target_bytes.is_some_and(|target| {
-                        target == 0
-                            || target > growth.goal_bytes
-                            || !target.is_multiple_of(self.block_size_bytes)
-                    })
-            })
-        }) {
-            return Err(ControllerStatusError::Invalid(
-                "pressure growth decision violates bounds or alignment",
             ));
         }
         if let Some(identity) = &self.accepted_telemetry {
@@ -387,8 +307,6 @@ mod tests {
             last_latch_clear_reason: None,
             policy_fingerprint_sha256: "a".repeat(64),
             compatibility_fingerprint_sha256: "b".repeat(64),
-            pressure_policy_mode: PressurePolicyMode::Legacy,
-            pressure_shadow: None,
         }
     }
 

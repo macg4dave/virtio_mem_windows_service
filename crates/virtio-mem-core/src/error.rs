@@ -17,26 +17,6 @@ pub enum MemoryStatsError {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum PollError {
-    #[error("QEMU Guest Agent request failed: {0}")]
-    GuestAgent(String),
-    #[error(transparent)]
-    MemoryStats(#[from] MemoryStatsError),
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ServiceLoopError {
-    #[error("polling interval must be greater than zero")]
-    InvalidInterval,
-    #[error("memory state provider failed: {0}")]
-    StateProvider(String),
-    #[error(transparent)]
-    Poll(#[from] PollError),
-    #[error("resize request failed: {0}")]
-    ResizeRequest(String),
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
 pub enum VirtioMemError {
     #[error("virtio-mem device size must be greater than zero")]
     ZeroSize,

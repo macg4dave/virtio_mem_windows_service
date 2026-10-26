@@ -48,7 +48,6 @@ pub struct DemandDecision {
     pub effective_maximum_bytes: u64,
     pub history_ready: bool,
     pub telemetry_identity: Option<String>,
-    pub pressure_growth: Option<virtio_mem_core::PressureGrowthDecision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,7 +138,6 @@ impl<T: GuestStatsSource> DemandSource for GuestStatsDemandSource<T> {
             effective_maximum_bytes: config.max_memory_bytes.min(state.size_bytes),
             history_ready: true,
             telemetry_identity: None,
-            pressure_growth: None,
         })
     }
 }
@@ -312,11 +310,11 @@ where
                     .durable_control_state()
                     .map_err(HostRuntimeError::Controller)?;
             }
-            if self.config.pressure_policy_mode == virtio_mem_core::PressurePolicyMode::Shadow
+            if self.config.observe_only
                 && (durable.intent.is_some() || state.requested_bytes != state.current_bytes)
             {
                 eprintln!(
-                    "virtio-mem-host: event=pressure_shadow_non_actuating vm={} alias={} requested_bytes={} current_bytes={} reason=existing_or_unowned_live_intent",
+                    "virtio-mem-host: event=observe_only_non_actuating vm={} alias={} requested_bytes={} current_bytes={} reason=existing_or_unowned_live_intent",
                     self.config.vm_name,
                     self.config.alias,
                     state.requested_bytes,
@@ -607,7 +605,7 @@ where
             };
             let decision = demand.decision;
             eprintln!(
-                "virtio-mem-host: event=controller_decision vm={} alias={} desired_bytes={} safe_floor_bytes={} effective_maximum_bytes={} history_ready={} requested_bytes={} current_bytes={} pressure_growth={:?} decision={decision:?}",
+                "virtio-mem-host: event=controller_decision vm={} alias={} desired_bytes={} safe_floor_bytes={} effective_maximum_bytes={} history_ready={} requested_bytes={} current_bytes={} decision={decision:?}",
                 self.config.vm_name,
                 self.config.alias,
                 demand.desired_bytes,
@@ -616,26 +614,10 @@ where
                 demand.history_ready,
                 state.requested_bytes,
                 state.current_bytes,
-                demand.pressure_growth,
             );
-            if self.config.pressure_policy_mode == virtio_mem_core::PressurePolicyMode::Shadow
-                && matches!(decision, ResizeDecision::Request { .. })
-            {
+            if self.config.observe_only && matches!(decision, ResizeDecision::Request { .. }) {
                 eprintln!(
-                    "virtio-mem-host: event=pressure_shadow_non_actuating vm={} alias={} requested_bytes={} current_bytes={} reason=resize_decision_suppressed",
-                    self.config.vm_name,
-                    self.config.alias,
-                    state.requested_bytes,
-                    state.current_bytes
-                );
-                wait_interruptibly(stop, self.config.poll_interval);
-                continue;
-            }
-            if self.config.pressure_policy_mode == virtio_mem_core::PressurePolicyMode::Growth
-                && matches!(decision, ResizeDecision::Request { requested_bytes } if requested_bytes < state.current_bytes)
-            {
-                eprintln!(
-                    "virtio-mem-host: event=pressure_growth_non_reclaiming vm={} alias={} requested_bytes={} current_bytes={} reason=lower_request_suppressed",
+                    "virtio-mem-host: event=observe_only_non_actuating vm={} alias={} requested_bytes={} current_bytes={} reason=resize_decision_suppressed",
                     self.config.vm_name,
                     self.config.alias,
                     state.requested_bytes,
@@ -853,8 +835,7 @@ mod tests {
             automatic_windows_shrink: false,
             shrink_renotification: false,
             shrink_retry_delays: Vec::new(),
-            pressure_policy_mode: virtio_mem_core::PressurePolicyMode::Legacy,
-            pressure_shadow: None,
+            observe_only: false,
         }
     }
 
@@ -900,7 +881,6 @@ mod tests {
                 effective_maximum_bytes: 32 * GIB,
                 history_ready: true,
                 telemetry_identity: None,
-                pressure_growth: None,
             }
         );
     }
@@ -959,17 +939,16 @@ mod tests {
                 effective_maximum_bytes: 32 * GIB,
                 history_ready: false,
                 telemetry_identity: None,
-                pressure_growth: None,
             })
         }
     }
 
     #[test]
-    fn shadow_runtime_blocks_a_resize_decision_before_the_sink() {
+    fn observe_only_runtime_blocks_a_resize_decision_before_the_sink() {
         let stop = AtomicBool::new(false);
         let sink = AmbiguousShrinkSink(Cell::new(0));
         let mut runtime_config = config();
-        runtime_config.pressure_policy_mode = virtio_mem_core::PressurePolicyMode::Shadow;
+        runtime_config.observe_only = true;
         runtime_config.poll_interval = Duration::from_millis(1);
         let runtime = HostRuntime::new(
             StopWithResizeDecision(&stop),
@@ -979,7 +958,9 @@ mod tests {
             runtime_config,
         );
 
-        runtime.run(&stop).expect("shadow runtime stops cleanly");
+        runtime
+            .run(&stop)
+            .expect("observe-only runtime stops cleanly");
 
         assert_eq!(sink.0.get(), 0);
     }
@@ -1002,7 +983,6 @@ mod tests {
                 effective_maximum_bytes: 32 * GIB,
                 history_ready: true,
                 telemetry_identity: None,
-                pressure_growth: None,
             })
         }
     }
@@ -1022,28 +1002,6 @@ mod tests {
         );
 
         runtime.run(&stop).expect("advisory shrink stops cleanly");
-
-        assert_eq!(sink.0.get(), 0);
-    }
-
-    #[test]
-    fn pressure_growth_runtime_blocks_lower_requests_before_the_sink() {
-        let stop = AtomicBool::new(false);
-        let sink = AmbiguousShrinkSink(Cell::new(0));
-        let mut runtime_config = config();
-        runtime_config.pressure_policy_mode = virtio_mem_core::PressurePolicyMode::Growth;
-        runtime_config.poll_interval = Duration::from_millis(1);
-        let runtime = HostRuntime::new(
-            StopWithShrinkDecision(&stop),
-            ConvergedState,
-            &sink,
-            UnusedHostMemory,
-            runtime_config,
-        );
-
-        runtime
-            .run(&stop)
-            .expect("growth-only runtime stops cleanly");
 
         assert_eq!(sink.0.get(), 0);
     }
@@ -1073,7 +1031,6 @@ mod tests {
                 effective_maximum_bytes: 32 * GIB,
                 history_ready: true,
                 telemetry_identity: None,
-                pressure_growth: None,
             })
         }
     }
@@ -1156,7 +1113,6 @@ mod tests {
                 effective_maximum_bytes: 32 * GIB,
                 history_ready: true,
                 telemetry_identity: None,
-                pressure_growth: None,
             })
         }
     }
@@ -1225,7 +1181,6 @@ mod tests {
                 effective_maximum_bytes: 31 * GIB,
                 history_ready: true,
                 telemetry_identity: Some("session:2:20:2000".to_owned()),
-                pressure_growth: None,
             })
         }
 

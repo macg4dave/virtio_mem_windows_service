@@ -7,8 +7,12 @@ Git history still has them if anything needs recovering.
 
 ## What this project is for
 
-Give a Windows KVM guest more RAM when it needs it, and take RAM back when it
-doesn't, by resizing a virtio-mem device from the host:
+Share one host RAM pool between several KVM guests. The host watches each
+guest OS for memory pressure and grows a pressured guest from the pool. Each
+VM has a weight, so important VMs win when guests contend for the same RAM.
+Guests give RAM back to the pool when their OS no longer needs it.
+
+The mechanism, per guest, is resizing a virtio-mem device from the host:
 
 ```text
 Windows guest                         RHEL/libvirt host
@@ -22,23 +26,25 @@ service samples memory  --(file)-->   daemon reads it over QGA guest-file-read
 The idea is simple and the mechanism is standard (libvirt
 `update-memory-device`, QGA file reads). The implementation is not simple.
 
+Phases 1–3 make the per-guest loop trustworthy on one VM, because the pool
+depends on each guest growing and giving back reliably. Phase 4 is the pool
+itself, built on the existing arbitration code. Giving RAM back is the biggest
+platform risk: Windows virtio-mem unplug has already stalled once (Phase 0).
+
 ## Honest current state (2026-10-26)
 
 | Item | Reality |
 | --- | --- |
 | Code size | 29,641 Rust source lines, including tests, comments, and blanks; not a production-code count |
-| `virtio-mem-core` + `host` tests | Rerun on 2026-10-26: 96 + 85 pass with `--locked` |
-| `tools/xtask` | Initial E0063 reproduced, then fixed by completing the existing grow-only analysis and rejecting lower requested targets; local tests pass |
-| `windows` crate | Requires a Windows target. Cross-compilation from Linux needs the appropriate toolchain; native service behavior requires Windows execution |
+| Non-Windows tests | 2026-10-26: core 78, host 88, xtask 45 pass with `--locked` |
+| `windows` crate | `cargo clippy -p virtio-mem-service --all-targets --target x86_64-pc-windows-gnu` passes on Linux (type-check only; no MinGW linker installed, so no binary). Native service behaviour requires Windows execution |
 | Automatic resizing | Earlier "never enabled" claim was wrong. Archived workload run `qualification-1789231813766-72447` records 1,098,907,648 bytes of peak growth but zero accepted reclaim; the later passing run explicitly required no resizing. The installed host unit is currently disabled/inactive |
-| Multi-VM pool (`global_pool.rs`, `pool_ledger.rs`, ~2.4k lines) | Internal/test callers and public exports, but no host integration found in this workspace; external consumers have not been established |
-| `behavior_evidence.rs` (~500 lines) | Only reachable from a host CLI subcommand |
-| Host config | ~45 `VIRTIO_MEM_*` env vars, 2 demand-source modes, 2 raw transports, and shadow/growth/legacy pressure-policy modes |
-| Shrink rollout | Default and example now disable automatic shrink; explicit opt-in remains for separately qualified deployments |
+| Multi-VM pool (`global_pool.rs`, `pool_ledger.rs`, ~2.4k lines) | Pure arbitration with strict priority, plus a ledger; unit-tested but not yet wired into the host. This is the product's core goal (Phase 4) |
+| Host config | ~35 `VIRTIO_MEM_*` env vars, 2 demand-source modes, 2 raw transports; one target policy plus `VIRTIO_MEM_OBSERVE_ONLY` |
 
 Growth has occurred in an earlier automatic workload run. That does not prove
 reliable shrink or unattended operation. Those outcomes still require direct
-evidence; a passing shadow/no-resize run is not a resizing qualification.
+evidence; a passing observe-only/no-resize run is not a resizing qualification.
 
 ## Facts worth keeping
 
@@ -111,9 +117,6 @@ reboot-time reset; shrink waits until the platform supports it.
 - SSH alias `virtio-mem-windows` currently resolves to `ice101.lan` and times out.
   The earlier guest workload executable path is also absent. No workload,
   service restart, deployment, reboot, or VM-definition change was performed.
-- Local checks: `cargo test -p virtio-mem-core -p virtio-mem-host --locked`
-  passed (181 tests). Adding xtask fails with E0063 as recorded above. Only
-  the Linux Rust target is installed; no current Windows binary build is claimed.
 - Explicit user approval covered at most three cycles from 1 GiB to
   1,140,850,688 bytes (1 GiB + 64 MiB; 1,114,112 KiB to virsh) and back to
   1 GiB (1,048,576 KiB). Require 4 GiB host reserve; allow 120 seconds for growth
@@ -126,7 +129,17 @@ reboot-time reset; shrink waits until the platform supports it.
   timeout or a successful restoration. No second cycle or recovery was issued.
 - Last observed device state: requested 1,073,741,824 bytes (1 GiB), current
   1,130,364,928 bytes (1 GiB + 54 MiB). The baseline has **not** been confirmed
-  restored. No later live-state check was attempted after the user's correction.
+  restored. A read-only check on 2026-10-26 found the same state: requested
+  1,048,576 KiB, current 1,103,872 KiB (1 GiB + 54 MiB). The unplug is still
+  unconverged; no recovery has been issued. The user chose to leave it as is:
+  the 54 MiB is not worth recovering. The program must still treat the device
+  as unconverged and must not stack a resize on it.
+- Desktop user `dave` is now in the `libvirt` group. The system rule
+  `/usr/share/polkit-1/rules.d/50-libvirt.rules` grants
+  `org.libvirt.unix.manage` to that group, so `pkcheck` and write-capable
+  `qemu:///system` connections succeed without a password prompt. The
+  `virtio-mem-host` account was already a member, which makes the repository's
+  `50-virtio-mem-host.rules` redundant on this host.
 - The manual loop opened a fresh read-write libvirt connection for every query,
   triggering repeated desktop authorization. The user reported more than fifty
   password prompts. The loop has exited; no polling/virsh child remains. Future
@@ -172,15 +185,11 @@ policy change, not an equivalent refactor.
 
 Proposed removals, subject to the Phase 0 result and retained contracts:
 
-- `global_pool` and `pool_ledger` (no host integration found); `behavior_evidence`
-  is CLI-reachable, so its removal is deliberate feature retirement.
-- `pressure_assessment` and the shadow/growth/legacy policy modes in
-  `host/src/target_policy.rs`; replace them with the single specified policy.
 - `shrink_recovery` until shrink is proven, compatibility attestation,
-  controller-status v3, the custom QGA memory-command path, and
-  the unused parts of `core::demand` (e.g. `DemandCalculator`).
-- Most of `tools/xtask`: qualification, deployment, host_deploy, calibration,
-  preflight. Keep at most a `cargo xtask windows-build` cross-compile helper.
+  and the custom QGA memory-command path. Keep `global_pool` and `pool_ledger`
+  for Phase 4.
+- Keep `tools/xtask`: the user retains it for AI-driven testing and
+  qualification. Consolidate duplication inside it; do not delete commands.
   Direct Cargo commands, listed below, are the local gate.
 
 Do not remove dommemstat with the unsupported custom QGA command if Phase 0
@@ -195,48 +204,29 @@ non-Windows tests, and a Windows binary build for the selected target
 service behavior still needs separate Windows execution. A few thousand lines
 is a simplification aim, not a measured reduction or correctness criterion.
 
-### Phase 1 implementation progress (2026-10-26)
+### Phase 1 open items from completed work
 
-- The host daemon checks `org.libvirt.unix.manage` authorization before its
-  loop, using `pkcheck` without user interaction and the exact process
-  PID/start-time/UID. Missing access becomes an explicit startup failure.
-- The shared virsh adapter uses read-only connections for XML, dommemstat,
-  domain-state, and version queries. It checks local management authorization
-  before commands requiring a write-capable connection. This targets the local
-  RHEL `qemu:///system` deployment; remote transports retain their own contract.
-- The existing host deployment command now includes a reviewable polkit rule
-  for the dedicated `virtio-mem-host` account in its backup/install/evidence
-  workflow. This is connection-level libvirt management access, **not** a
-  per-VM ACL. It grants no new rights to the desktop user. The rule is prepared
-  in the repository and has **not** been installed on the host. Administrative
-  installation is a one-time setup step; the daemon does not elevate itself or
-  store a password. Local system access assumes the deployment uses polkit.
-- The shared command runner drains stdout/stderr while the child runs, enforces
-  deadlines, and reaps timed-out children. Tests use a local Rust subprocess
-  fixture and never contact libvirt or polkit.
-- Owned durable growth now persists the actuation latch and returns a convergence
-  timeout when its deadline expires, retaining the unresolved intent. It does
-  not merely change a log label and keep polling forever.
-- Invalid saved command intent now blocks checkpoint loading rather than
-  silently discarding a possible latch and starting cold. Regression tests for
-  both this case and growth timeout were observed failing before the fixes.
-- Automatic Windows shrink defaults off, and the repository's systemd config
-  example matches. A runtime regression test verifies that a lower calculated
-  target remains advisory under the default setting. The old default-on config
-  expectation was updated because the rollout behavior intentionally changed.
-- Xtask's missing analysis field now counts lower requests; its existing
-  grow-only qualification mode rejects even the first shrink from a converged
-  allocation. The parser already exposed this mode, but its invariant was not
-  enforced. The CLI help now describes it.
-- Host and xtask tests pass locally (95 + 45). Final workspace/lint/build results
-  are recorded after verification. No current Windows build or live deployment
-  of these changes is claimed. The broader simplification register remains open.
+- The polkit rule `host/systemd/50-virtio-mem-host.rules` for the dedicated
+  `virtio-mem-host` account is prepared but **not installed**. Installation is
+  a one-time administrative step; the daemon never elevates itself or stores a
+  password. It grants connection-level libvirt management, not a per-VM ACL.
+- Manual runs need no password: `dave` is in the `libvirt` group (see Phase 0
+  evidence). `sudo` also works, as the startup authorization error says.
+- No current Windows binary build or live deployment of the Phase 1 changes.
+- Before redeploying the host daemon: shadow/growth pressure modes are gone.
+  A config with `VIRTIO_MEM_PRESSURE_POLICY_MODE` other than `legacy` now
+  refuses to start (deliberately, so a non-actuating `shadow` deployment never
+  silently starts resizing). Use `VIRTIO_MEM_OBSERVE_ONLY=true` for a
+  no-resize run; xtask `--expect-no-resize` requires it. The deployed
+  `/etc/virtio-mem-host/win11_gpu.conf` was not readable and is unchecked.
+- Controller status JSON is now version 4 (pressure fields removed). xtask and
+  the host binary must be the same build. Existing policy checkpoints that
+  carry the retired `pressure_shadow` field still load; it is dropped on save.
 
-Authorization behavior follows the upstream [libvirt authentication contract](https://libvirt.org/auth.html)
+Authorization follows the upstream [libvirt authentication contract](https://libvirt.org/auth.html)
 and [`pkcheck` non-interactive/process-identity requirements](https://polkit.pages.freedesktop.org/polkit/pkcheck.1.html).
 The non-interactive check is a prerequisite, not a replacement for libvirt's
-own authorization. Host policy and native behavior still require deployment
-verification through the program, without the previous manual command loop.
+own authorization.
 
 ### Phase 2 — Run it for real, grow-only
 
@@ -249,19 +239,60 @@ verification through the program, without the previous manual command loop.
 
 ### Phase 3 — Shrink
 
-- Turn on shrink with conservative cooldowns and small steps.
+- **Decided: give RAM back slowly at first.** When the guest no longer needs
+  RAM, return it in small block-aligned steps with a long cooldown, one step in
+  flight, so a returning workload is never short. Speed it up only once the
+  logs show a reliable "safe to give back faster" metric; choosing that metric
+  is open work, not a default to guess.
 - Verify partial/stalled unplug is detected and the loop stops cleanly
   instead of fighting the guest.
 - Only then consider Windows memory-resource notifications as a faster
   "grow now" trigger.
 
+- Decide the give-back mechanism from evidence. If Windows virtio-mem unplug
+  stays unreliable, evaluate returning RAM through the virtio-balloon driver
+  instead, with virtio-mem used for growth. This is a design decision for the
+  user, not an implementation default.
+
 **Exit:** a week of grow and shrink on the test VM without manual intervention.
+
+### Phase 4 — Shared pool across VMs
+
+- One host daemon controls several VMs from a single configured pool size.
+- Reuse `core::global_pool` arbitration: every guest's demand is evaluated
+  together; growth that fits is granted; under contention, the higher-priority
+  VM is served first and may reclaim from lower-priority VMs that can spare RAM.
+- **Decided: weight means strict priority**, which the existing code already
+  implements (`HostPoolMemberPolicy::priority`; larger wins, 0 is invalid).
+  Each VM gets a priority number in the host config file, for example:
+
+  ```toml
+  pool_bytes = 17179869184   # 16 GiB shared by all members
+
+  [[vm]]
+  name = "win11"
+  alias = "ua-virtiomem0"
+  priority = 100
+
+  [[vm]]
+  name = "win10_test"
+  alias = "ua-virtiomem0"
+  priority = 80
+  ```
+
+  The exact keys are settled with the Phase 1 config-file migration; this is
+  one config file, not a second config path. The first pool is Windows-only;
+  Linux members wait until the Windows pool works (see "Later").
+- Persist pool state through the host (`pool_ledger` today keeps filesystem
+  persistence in core; move it to host per the ownership table).
+- Each VM keeps its own one-command-in-flight and convergence rules. A guest
+  that stalls while giving RAM back must not let the pool hand that RAM out.
+
+**Exit:** two or more test VMs share a pool under alternating load; the
+higher-weight VM is served first; RAM returns to the pool when load ends.
 
 ### Later, only if needed
 
-- Multiple VMs sharing a host RAM budget with priorities. If the current pool
-  code is removed, git history retains it. Build host integration only after
-  Phases 2–3 hold on one VM.
 - Linux guest support (virtio-mem in Linux is mature; this would be easier
   than Windows).
 
@@ -273,16 +304,11 @@ This assessment inspected workspace structure, dependencies, public interfaces,
 entry points, significant workflows, state/persistence paths, and current
 instructions. It is not evidence that the platform works.
 
-The review changed no source files and ran no builds, tests, remote commands,
-or VM actions. Existing staged documentation consolidation was preserved. The
-assessment was recorded without implementing the proposed refactors. The
-later adoption of engineering instructions is recorded below.
-
 ### Workspace and execution paths
 
 | Crate | Actual responsibility | Main dependencies |
 | --- | --- | --- |
-| `virtio-mem-core` | Telemetry contracts, XML parsing, target estimation, reconciliation, pressure policy, pool accounting | Serde, quick-xml, thiserror, SHA-256 |
+| `virtio-mem-core` | Telemetry contracts, XML parsing, target estimation, reconciliation, pool accounting | Serde, quick-xml, thiserror, SHA-256 |
 | `virtio-mem-host` | Configuration, telemetry acquisition, policy persistence, host-memory checks, virsh execution, diagnostics | Core, signal-hook, wait-timeout |
 | `virtio-mem-service` | Windows sampling, atomic telemetry publication, SCM lifecycle, workload utility | Core, winapi, Serde |
 | `virtio-mem-xtask` | Local gates, remote builds, deployment, qualification, live-resize orchestration | Core, host, subprocess utilities |
@@ -292,7 +318,7 @@ later adoption of engineering instructions is recorded below.
   SCM and console startup construct the worker separately.
 - **Host raw telemetry:** configuration -> file or QGA file reader ->
   validation/replay acknowledgement -> `TargetDemandSource` -> estimator and
-  optional pressure policy -> `HostRuntime` -> host-memory gate -> resize sink
+  `HostRuntime` -> host-memory gate -> resize sink
   -> live XML observation.
 - **Host guest stats:** dommemstat or custom QGA command -> `plan_resize` -> the
   same runtime, with different persistence and recovery behavior.
@@ -333,25 +359,12 @@ belong to future work after the current phase's exit criteria.
 - **Preservation risk:** retain restart ownership, uncertain outcomes, and required
   recovery before removing either path.
 
-### 2. IMPROVE — Preserve the stop condition on invalid checkpoints
-
-- **Evidence/callers:** `host/src/target_policy.rs:1026`,
-  `load_matching_checkpoint`, used during controller construction and status
-  loading, returns `Ok(None)` for invalid intent identity or fingerprints.
-  It discards the whole checkpoint, potentially including an actuation latch.
-  Other malformed-checkpoint branches correctly refuse startup.
-- **Canonical behavior:** consistently reject invalid control state. Only
-  expendable estimator history may become cold.
-- **Benefit:** corrupt intent cannot silently become permission to actuate.
-- **Verification/risk:** cover malformed intent with a persisted latch and
-  unresolved commands; do not reset ownership as a recovery shortcut.
-
 ### 3. COMBINE — Convergence timeout behavior
 
-- **Evidence/callers:** `host/src/runtime.rs:342` keeps observing durable growth
-  after timeout and changes its log label to `constrained`. The pending-request
-  branch at line 580 returns `ConvergenceTimeout`; durable shrink latches through
-  another branch. These paths serve the same runtime with different sources.
+- **Evidence/callers:** in `host/src/runtime.rs`, durable growth and the
+  pending-request branch return `ConvergenceTimeout`; durable shrink latches
+  through another branch. These paths serve the same runtime with different
+  sources.
 - **Canonical behavior:** one documented timeout transition consistent with
   stopping actuation and reporting the stall.
 - **Benefit:** source selection does not change the timeout contract.
@@ -362,7 +375,7 @@ belong to future work after the current phase's exit criteria.
 
 - **Evidence/callers:** `host/src/cli.rs:551`, `run_configured_decision`, selects
   only `stats_source` and invokes the threshold policy. It ignores the raw
-  demand source and pressure policy selected by `host/src/main.rs:59`.
+  demand source selected by `host/src/main.rs`.
 - **Canonical direction:** share the selected pure policy evaluation, or retain
   the command as an explicitly named guest-stats diagnostic.
 - **Benefit:** diagnostic output describes the actual configured policy.
@@ -375,12 +388,10 @@ belong to future work after the current phase's exit criteria.
 - **Evidence/callers:** `crates/virtio-mem-core/src/target_controller.rs:375`,
   `calculate_instantaneous`, accounts for physical usage, commit headroom,
   fixed visible base RAM, alignment, and effective device maximum. The host
-  raw evaluator uses it through `TargetEstimator`. At
-  `crates/virtio-mem-core/src/pressure_assessment.rs:440`,
-  `assess_windows_pressure` computes a different commit-based requirement.
-- **Canonical starting point:** existing checked math in `target_controller.rs`.
-  These are alternative policies, not interchangeable helpers. The replacement
-  contract is described in Phase 1 above.
+  raw evaluator uses it through `TargetEstimator`; it is now the only target
+  policy.
+- **Remaining work:** write down its contract (Phase 1 above) before changing
+  the maths.
 - **Benefit:** simplify without confusing total RAM and device allocation.
 - **Verification/risk:** preserve physical floors, capacity limits, alignment,
   and overflow handling. A different policy is an intentional behavior change.
@@ -391,7 +402,7 @@ belong to future work after the current phase's exit criteria.
   serves file and QGA readers and persists replay acceptance before the
   estimator consumes the sample. `TargetEstimator::prepare_sample` at
   `crates/virtio-mem-core/src/target_controller.rs:336` independently tracks
-  ordering; `PressureHistoryState::observe` does so again.
+  ordering.
 - **Canonical direction:** transport obtains bytes, envelope validation
   establishes validity, and host policy state owns acceptance. Retain distinct
   history-window checks where their purposes differ.
@@ -404,54 +415,33 @@ belong to future work after the current phase's exit criteria.
 
 - **Evidence/callers:** `host/src/config.rs:142`, `HostConfig::from_env`, loads
   settings for multiple paths regardless of selection. There are two demand
-  modes, two raw transports, and three pressure modes. At line 8,
-  `DEFAULT_AUTOMATIC_WINDOWS_SHRINK` is true; the example config also enables it.
+  modes and two raw transports.
 - **Canonical direction:** after Phase 0, one selected telemetry path and one
-  policy through `HostConfig`; default shrink off for the planned rollout.
+  policy through `HostConfig`; keep automatic shrink default-off.
 - **Benefit:** fewer invalid combinations and irrelevant required settings.
 - **Verification/risk:** migrate configuration with mode removal, including the
   systemd example. Introduce TOML only with that migration; preserve required
   transport settings, timeouts, permissions, and deliberate defaults.
 
-### 8. DELETE — Pool accounting without host integration
+### 8. KEEP / IMPROVE — Pool arbitration and ledger (Phase 4)
 
-- **Evidence/callers:** `crates/virtio-mem-core/src/global_pool.rs:300`,
-  `arbitrate_host_pool`, and `pool_ledger.rs:635`, `FilePoolLedgerStore`, have
-  internal/test callers and public exports but no host integration found.
-  The ledger also puts filesystem persistence inside the policy crate.
-- **Retained authority:** the single-device host controller. Remove these two
-  modules and their exports in Phase 1 after consumer checks.
-- **Benefit:** eliminate unintegrated multi-VM policy, accounting, and persistence.
-  Core's direct `sha2` dependency then becomes removable; host still uses it.
-- **Preservation risk:** public API removal may affect external consumers; do
-  not claim that exports prove either use or non-use outside the workspace.
+- **Evidence/callers:** `crates/virtio-mem-core/src/global_pool.rs`,
+  `arbitrate_host_pool`, and `pool_ledger.rs`, `FilePoolLedgerStore`, have
+  unit tests and public exports but no host integration yet.
+- **Direction:** keep as the basis for Phase 4. Move the ledger's filesystem
+  persistence into the host crate when wiring it in; keep arbitration pure.
+- **Risk:** strict priority may not match the intended weights; settle that
+  before integration rather than layering a second policy on top.
 
-### 9. DELETE — Superseded implementations with test/export uses only
+### 10. COMBINE — Resize preparation
 
-- **Evidence/callers:** `DemandCalculator` in
-  `crates/virtio-mem-core/src/demand.rs:621`; `NativeTelemetryWorker` in
-  `windows/src/runtime.rs:12`; `JsonLinesRawTelemetryPublisher` in
-  `windows/src/demand.rs:31`; `ScmHandler` in `windows/src/service_scm.rs:99`.
-  Workspace searches found tests/exports but no production callers for these.
-- **Canonical implementations:** host-owned target policy, `RawTelemetryWorker`,
-  `AtomicRawTelemetryPublisher`, and the actual SCM callback/context.
-- **Benefit:** remove alternate demand, sampling, publication, and lifecycle paths.
-- **Verification/risk:** remove associated exports and obsolete error variants
-  after consumer checks. Move useful behavioral tests to retained paths rather
-  than preserving unused code to satisfy its tests.
-
-### 10. COMBINE / DELETE — Compatibility discovery and resize preparation
-
-- **Evidence/callers:** `host/src/compatibility_source.rs:62`,
-  `VirshQmpCompatibilitySource::property`, overlaps the production attestation
-  collector's QOM queries and boolean parsing; its uses are tests. Four
-  preparation methods in `host/src/resize_sink.rs:102` repeat XML acquisition,
+- **Evidence/callers:** four preparation methods in `host/src/resize_sink.rs`
+  repeat XML acquisition,
   compatibility validation, conversion, and command construction. Runtime and
   manual CLI operations use the sink.
-- **Canonical direction:** retain the currently wired attested collector while
-  needed, remove its unused alternative, and share preparation mechanics only
-  among operations that survive Phase 1.
-- **Benefit:** fewer discovery and command-construction implementations.
+- **Canonical direction:** share preparation mechanics only among operations
+  that survive Phase 1.
+- **Benefit:** fewer command-construction implementations.
 - **Preservation risk:** ordinary resize, renotification, supersession, and
   recovery have different preconditions. Do not merge those checks or remove
   the immediate live-state race check as apparent duplicate work.
@@ -477,29 +467,18 @@ belong to future work after the current phase's exit criteria.
   independently constructs Windows config JSON with hardcoded schema version
   4. Qualification, deployment, preflight, and controller-status commands add
   further state, validation, process, and evidence layers, dispatched by xtask.
-- **Canonical direction:** follow Phase 1's tooling reduction rather than build
-  a shared tooling framework. If deployment remains, use the service's
-  authoritative serialization contract.
+- **Canonical direction:** xtask stays. Make deployment use the service's
+  authoritative serialization contract rather than build a shared framework.
 - **Benefit:** fewer independently evolving schemas and operational workflows.
-- **Preservation risk:** remove commands deliberately with their users. In
-  particular, `behavior_evidence` is CLI-reachable; retirement changes a feature
-  contract and must not be described as dead-code deletion.
+- **Preservation risk:** keep the commands; consolidate their internals.
 
-### 13. IMPROVE — Process execution and failure reporting
+### 13. COMBINE — Tooling process execution
 
-- **Evidence/callers:** `host/src/virsh.rs:57`, `Virsh::run`, waits before
-  draining piped output; enough output can block the child and produce a
-  misleading timeout. All host virsh adapters use it. Xtask's `bounded_output`
-  in `tools/xtask/src/process.rs:75` drains concurrently but duplicates much
-  of `bounded_output_with_env`.
-- **Canonical direction:** improve the existing host adapter using concurrent
-  draining; consolidate surviving tooling locally.
-- **Benefit:** command completion and timeout reports reflect execution rather
-  than pipe backpressure; preserve contextual causes and rejected/unknown
-  command distinctions through existing error boundaries.
-- **Verification/risk:** exercise large stdout/stderr, failure, timeout, and
-  child cleanup using local subprocess fixtures when tests are authorized.
-  Do not create a workspace process framework for tooling scheduled for deletion.
+- **Evidence/callers:** host `bounded_output` in `host/src/virsh.rs` now drains
+  concurrently. Xtask's `bounded_output` in `tools/xtask/src/process.rs`
+  duplicates much of `bounded_output_with_env`.
+- **Canonical direction:** consolidate surviving tooling locally. Do not create
+  a workspace process framework for tooling scheduled for deletion.
 
 ### 14. KEEP / SEPARATE — Different transport and platform contracts
 
@@ -516,17 +495,12 @@ belong to future work after the current phase's exit criteria.
 
 ### Tooling limitations affecting verification
 
-- `QualificationAnalysis` declares `lower_request_violations`, but `analyze`
-  at `tools/xtask/src/qualification.rs:1392` omits it from construction. This
-  is a source-visible compile blocker; the compiler was not run in this review.
 - `live_resize::run` at `tools/xtask/src/live_resize.rs:208` attempts ordinary
   rollback after forward failure. Ordinary resize preparation rejects an
   unconverged device, so rollback cannot be assumed to recover a stalled
   operation. Preserve the no-stacked-resizes rule and specify operator recovery.
 
-## Engineering standards and instruction adoption
-
-### Responsibility ownership
+## Responsibility ownership
 
 | Responsibility | Authoritative home |
 | --- | --- |
@@ -543,43 +517,6 @@ Use one implementation per responsibility and preserve meaningful platform
 differences. These are the proposed target boundaries; the current code does
 not yet consistently follow them.
 
-### Instruction adoption (2026-10-26)
-
-The reviewed instruction proposal and the supplied Rust guidance have been
-adapted and adopted in [`.github/copilot-instructions.md`](.github/copilot-instructions.md).
-`AGENTS.md` continues to point there. The former draft contents and Working
-rules are not repeated here; the instruction file is the single authoritative
-home for engineering, review, consolidation, testing, and live-operation rules.
-
-The adaptation follows this workspace's actual responsibilities:
-
-- Memory units, fixed-base/device mapping, telemetry acceptance, pending
-  operations, and asynchronous convergence replace the source project's device
-  model and UI concerns. Existing typed errors, CLI exits, journal output, and
-  Windows Event Log remain the platform conventions.
-- Required Win32/host FFI remains permitted with scoped safety contracts; a
-  blanket unsafe ban or generated Slint-code exception would not fit this code.
-- Ownership follows runtimes, threads, signals, and SCM callbacks. There is no
-  blanket requirement for single-threaded `Rc<RefCell<_>>`, identifier wrappers,
-  new modules, or arbitrary function/file-size limits.
-- The existing local gate uses formatting checks and Clippy with warnings
-  denied. Manifest inspection found no configured pedantic/restriction groups
-  or numeric caps. No lint configuration was changed or new enforcement claimed.
-  Existing lint suppressions and runtime panic shortcuts remain cleanup debt
-  for appropriately scoped code changes, not precedent for new ones.
-- Tests target memory math, XML/telemetry parsing, persistence, cancellation,
-  and resize failure/recovery behavior. Slint, CUDA, model fixtures, GPU-only
-  inference tests, and translation-file requirements do not apply.
-- Tests serve required behavior: obsolete tests need an independent reason for
-  change; neither weakening tests nor distorting the design to pass them is
-  acceptable.
-
-Only instruction/documentation files changed for this adoption. No executable
-source, Cargo manifest, or dependency changed, and no builds, tests, remote
-commands, or VM actions were run. Phase 0 remains the current phase. The
-architecture ownership table is the target design; adoption of the standards
-does not claim that existing code already meets it.
-
 ## Refactoring execution order
 
 The initial manual platform check was interrupted and the user redirected work
@@ -592,13 +529,11 @@ milestone system.
 | --- | --- | --- |
 | 0 | Complete the existing platform investigation | Record repeated grow/shrink outcomes, timing, stalls, and dommemstat usefulness here. Separately authorized live work; no implementation expansion. |
 | 1 | Define the minimum loop's contract | Specify telemetry source, whole-guest/device mapping, physical floor, aligned maximum, default-off shrink, timeout, restart ownership, and recovery before replacing policy. |
-| 2 | Establish a runnable local baseline | Repair the qualification initializer if xtask remains. Run existing non-Windows tests once implementation work is authorized; record actual results. |
-| 3 | Correct failure-state handling | Invalid pending checkpoints cannot clear a latch; timeout behavior is consistent; cancellation cannot miss a wakeup. Verify malformed checkpoints, fake observations/clocks, and controlled thread ordering. |
-| 4 | Remove isolated unused implementations | Remove pool modules and test/export-only alternatives after consumer checks. Remove associated exports/dependencies; retained tests pass and reference searches find no superseded callers. |
+| 3 | Correct failure-state handling | Timeout behavior is consistent across sources; cancellation cannot miss a wakeup. Verify with fake observations/clocks and controlled thread ordering. |
 | 5 | Unify action selection and lifecycle state | One pending-operation owner and one action path serve the retained source. Cover convergence, external divergence, rejection, ambiguous execution, timeout, cancellation, and restart. |
 | 6 | Make diagnostics reflect the selected policy | Preview agrees with daemon policy for identical inputs and writes no controller or replay state. |
 | 7 | Consolidate sample acceptance and persistence | One authoritative accepted identity; persistence failure cannot masquerade as acceptance. Cover unchanged, replayed, altered, stale, restarted, and retired-session records. |
-| 8 | Reduce modes, configuration, and tooling | Remove settings and feature paths together. Update Cargo membership, aliases, Make targets, and IDE tasks to reference retained commands. |
+| 8 | Reduce remaining modes and move to the config file | Pick one demand source; move settings to the one config file with per-VM priority. Remove settings and feature paths together; update xtask, Make targets, and IDE tasks to match. |
 | 9 | Simplify Windows wiring and finish verification | One worker-construction path; retained atomic publication and SCM tests pass. Build for a Windows target, then separately verify native service behavior. |
 
 For authorized implementation changes, the Linux regression gate while xtask
@@ -622,20 +557,14 @@ commands as completed checks or authorization for live tests.
 
 ## Expected simplification
 
-The source evidence supports removing pool arbitration/persistence, unused
-demand recommendation code, alternate Windows workers/publishers, the unused
-SCM handler model, and the unused QMP compatibility adapter, subject to public
-consumer checks.
-
-After the Phase 0 decision, further reductions can remove alternative policy
-modes, duplicate histories, recovery machinery the retained product does not
-support, CLI-only evidence contracts, and most xtask deployment/qualification
-infrastructure. Preserve required failure and recovery behavior before removing
-larger layers. Core's direct SHA-256 dependency can go with pool persistence;
-do not assume the host's SHA-256 dependency is unused while attestation and
-fingerprints remain.
+After the Phase 0 decision, further reductions can remove duplicate histories,
+the alternate demand-source mode, and recovery machinery the retained product
+does not support. Preserve required failure and recovery behavior before removing
+larger layers. Do not assume the SHA-256 dependencies are unused while the
+ledger, attestation, and fingerprints remain.
 
 The intended result has three clear responsibilities: shared contracts and
-pure policy, a host control loop, and a Windows telemetry service only if needed.
+pure policy (including pool arbitration), a host control loop serving every
+pooled VM, and a Windows telemetry service only if needed.
 Exact code reduction depends on the platform result and deliberately retained
 behaviors. No code-reduction percentage or completed refactor is claimed.

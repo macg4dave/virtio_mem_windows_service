@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc;
@@ -10,10 +10,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use virtio_mem_core::{
-    parse_virtio_mem_xml_for_alias, PressureShadowComparison, RawTelemetryEnvelope,
-    PRESSURE_SHADOW_COMPARISON_VERSION,
-};
+use virtio_mem_core::{parse_virtio_mem_xml_for_alias, RawTelemetryEnvelope};
 use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
 use virtio_mem_host::virsh::Virsh;
 use wait_timeout::ChildExt;
@@ -96,12 +93,6 @@ struct ControllerGuardStatus {
     run_id: String,
     state: String,
     message: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ShadowArchiveSource {
-    path: PathBuf,
-    initial_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -825,7 +816,6 @@ fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Resul
         repo,
         config.command_timeout_seconds,
     );
-    let shadow_archive = archive_guard_shadow(config);
     let reset_failed = systemd_properties(
         &config.controller_unit,
         repo,
@@ -862,17 +852,16 @@ fn serve_controller_guard(config: &Config, run_dir: &Path, repo: &Path) -> Resul
         reset_failed,
         inactive,
         final_state,
-        shadow_archive,
     ) {
-        (false, None, Ok(()), Ok(()), Ok(()), Ok(()), Ok(())) => write_root_guard_status(
+        (false, None, Ok(()), Ok(()), Ok(()), Ok(())) => write_root_guard_status(
             run_dir,
             config,
             "stopped",
             "controller stopped and the pre-run inactive state was restored",
         ),
-        (deadline_elapsed, sampling, stop, reset, state, final_state, shadow_archive) => {
+        (deadline_elapsed, sampling, stop, reset, state, final_state) => {
             let message = format!(
-                "controller guard failed: deadline_elapsed={deadline_elapsed} sampling={sampling:?} stop={stop:?} reset_failed={reset:?} inactive={state:?} final_state={final_state:?} shadow_archive={shadow_archive:?}"
+                "controller guard failed: deadline_elapsed={deadline_elapsed} sampling={sampling:?} stop={stop:?} reset_failed={reset:?} inactive={state:?} final_state={final_state:?}"
             );
             write_root_guard_status(run_dir, config, "failed", &message)?;
             Err(message)
@@ -948,13 +937,12 @@ fn supervise(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), String>
     );
     archive_controller_log(config, run_dir, repo);
     let final_state = persist_guard_final_state(config, run_dir);
-    let shadow_archive = persist_guard_shadow(config, run_dir);
     let final_no_resize = validate_final_no_resize(config, run_dir);
-    match (result, release, cleanup, final_state, shadow_archive, final_no_resize) {
-        (Ok(()), Ok(()), Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
-        (Err(error), _, Ok(()), Ok(()), Ok(()), Ok(())) => Err(error),
-        (result, release, cleanup, final_state, shadow_archive, final_no_resize) => Err(format!(
-            "qualification result={result:?}; controller release={release:?}; cleanup={cleanup:?}; final_state={final_state:?}; shadow_archive={shadow_archive:?}; final_no_resize={final_no_resize:?}"
+    match (result, release, cleanup, final_state, final_no_resize) {
+        (Ok(()), Ok(()), Ok(()), Ok(()), Ok(())) => Ok(()),
+        (Err(error), _, Ok(()), Ok(()), Ok(())) => Err(error),
+        (result, release, cleanup, final_state, final_no_resize) => Err(format!(
+            "qualification result={result:?}; controller release={release:?}; cleanup={cleanup:?}; final_state={final_state:?}; final_no_resize={final_no_resize:?}"
         )),
     }
 }
@@ -1485,7 +1473,7 @@ fn classify(
             || analysis.unconverged_sample_violations != 0)
     {
         return Err(format!(
-            "shadow no-resize invariant failed: requested_changes={} current_changes={} unconverged_samples={}",
+            "observe-only no-resize invariant failed: requested_changes={} current_changes={} unconverged_samples={}",
             analysis.requested_change_violations,
             analysis.current_change_violations,
             analysis.unconverged_sample_violations
@@ -1891,88 +1879,6 @@ fn guard_final_path(config: &Config) -> PathBuf {
     Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-final.json", config.run_id))
 }
 
-fn guard_shadow_source_path(config: &Config) -> PathBuf {
-    Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-shadow-source.json", config.run_id))
-}
-
-fn guard_shadow_archive_path(config: &Config) -> PathBuf {
-    Path::new(CONTROLLER_GUARD_ROOT).join(format!("{}-pressure-shadow.jsonl", config.run_id))
-}
-
-fn archive_guard_shadow(config: &Config) -> Result<(), String> {
-    if !config.expect_no_resize {
-        return Ok(());
-    }
-    let metadata: ShadowArchiveSource =
-        serde_json::from_str(&process::read_file(&guard_shadow_source_path(config))?)
-            .map_err(|error| format!("parse shadow comparison source: {error}"))?;
-    let mut source = File::open(&metadata.path)
-        .map_err(|error| format!("open shadow comparison log: {error}"))?;
-    let current_bytes = source
-        .metadata()
-        .map_err(|error| format!("inspect shadow comparison log: {error}"))?
-        .len();
-    if current_bytes <= metadata.initial_bytes {
-        return Err("shadow controller emitted no comparison during the run".to_owned());
-    }
-    let mut destination = File::create(guard_shadow_archive_path(config))
-        .map_err(|error| format!("create run shadow archive: {error}"))?;
-    let starts_at_record_boundary = if metadata.initial_bytes == 0 {
-        true
-    } else {
-        source
-            .seek(SeekFrom::Start(metadata.initial_bytes - 1))
-            .map_err(|error| format!("seek shadow comparison boundary: {error}"))?;
-        let mut previous = [0_u8; 1];
-        source
-            .read_exact(&mut previous)
-            .map_err(|error| format!("read shadow comparison boundary: {error}"))?;
-        previous[0] == b'\n'
-    };
-    source
-        .seek(SeekFrom::Start(metadata.initial_bytes))
-        .map_err(|error| format!("seek shadow comparison log: {error}"))?;
-    if starts_at_record_boundary {
-        std::io::copy(&mut source, &mut destination)
-            .map_err(|error| format!("archive shadow comparisons: {error}"))?;
-    } else {
-        let mut buffered = BufReader::new(source);
-        let mut partial = Vec::new();
-        buffered
-            .read_until(b'\n', &mut partial)
-            .map_err(|error| format!("skip partial shadow comparison: {error}"))?;
-        std::io::copy(&mut buffered, &mut destination)
-            .map_err(|error| format!("archive shadow comparisons: {error}"))?;
-    }
-    destination
-        .sync_all()
-        .map_err(|error| format!("flush run shadow archive: {error}"))
-}
-
-fn persist_guard_shadow(config: &Config, run_dir: &Path) -> Result<(), String> {
-    if !config.expect_no_resize {
-        return Ok(());
-    }
-    let value = process::read_file(&guard_shadow_archive_path(config))?;
-    let mut comparisons = 0_u64;
-    for line in value.lines().filter(|line| !line.trim().is_empty()) {
-        let comparison: PressureShadowComparison = serde_json::from_str(line)
-            .map_err(|error| format!("parse archived shadow comparison: {error}"))?;
-        if comparison.version != PRESSURE_SHADOW_COMPARISON_VERSION
-            || comparison.vm_name != config.vm_name
-            || comparison.device_alias != config.device_alias
-        {
-            return Err("archived shadow comparison identity is invalid".to_owned());
-        }
-        comparisons = comparisons.saturating_add(1);
-    }
-    if comparisons == 0 {
-        return Err("archived shadow comparison log is empty".to_owned());
-    }
-    std::fs::write(run_dir.join("pressure-shadow.jsonl"), value)
-        .map_err(|error| format!("persist shadow comparison evidence: {error}"))
-}
-
 fn validate_final_no_resize(config: &Config, run_dir: &Path) -> Result<(), String> {
     if !config.expect_no_resize {
         return Ok(());
@@ -1988,7 +1894,7 @@ fn validate_final_no_resize(config: &Config, run_dir: &Path) -> Result<(), Strin
         || final_state.current_bytes != initial.current_bytes
     {
         return Err(format!(
-            "shadow run changed allocation: initial requested/current={}/{} final requested/current={}/{}",
+            "observe-only run changed allocation: initial requested/current={}/{} final requested/current={}/{}",
             initial.requested_bytes,
             initial.current_bytes,
             final_state.requested_bytes,
@@ -2065,28 +1971,12 @@ fn require_controller_active_and_shrink(config: &Config, repo: &Path) -> Result<
         ));
     }
     if config.expect_no_resize {
-        let mode = environment_value(b"VIRTIO_MEM_PRESSURE_POLICY_MODE=");
-        if mode.as_deref() != Some("shadow") {
+        let observe_only = environment_value(b"VIRTIO_MEM_OBSERVE_ONLY=");
+        if observe_only.as_deref() != Some("true") {
             return Err(format!(
-                "--expect-no-resize requires the running controller in shadow mode: {mode:?}"
+                "--expect-no-resize requires the running controller with VIRTIO_MEM_OBSERVE_ONLY=true: {observe_only:?}"
             ));
         }
-        let value = environment_value(b"VIRTIO_MEM_PRESSURE_SHADOW_LOG_PATH=")
-            .ok_or_else(|| "shadow controller has no comparison-log path".to_owned())?;
-        let path = Path::new(&value);
-        if !path.is_absolute() || !path.starts_with("/var/lib/virtio-mem-host/") {
-            return Err(format!(
-                "shadow comparison log must be beneath /var/lib/virtio-mem-host: {value}"
-            ));
-        }
-        let initial_bytes = std::fs::metadata(path).map_or(0, |metadata| metadata.len());
-        write_json(
-            &guard_shadow_source_path(config),
-            &ShadowArchiveSource {
-                path: path.to_owned(),
-                initial_bytes,
-            },
-        )?;
     }
     Ok(())
 }

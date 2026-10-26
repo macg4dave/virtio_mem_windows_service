@@ -1,7 +1,6 @@
 use std::ffi::OsStr;
 use std::iter::once;
 use std::os::windows::ffi::OsStrExt;
-use std::sync::atomic::{AtomicU8, Ordering};
 
 use winapi::ctypes::c_void;
 use winapi::shared::minwindef::{DWORD, FALSE, TRUE};
@@ -96,46 +95,9 @@ impl ScmServiceStatus {
     }
 }
 
-pub struct ScmHandler {
-    stop: StopSignal,
-    state: AtomicU8,
-}
-
 struct ServiceContext {
     stop: StopSignal,
     status_handle: SERVICE_STATUS_HANDLE,
-}
-
-impl ScmHandler {
-    pub fn new(stop: StopSignal) -> Self {
-        Self {
-            stop,
-            state: AtomicU8::new(ServiceState::Created as u8),
-        }
-    }
-
-    pub fn state(&self) -> ServiceState {
-        ServiceState::from_u8(self.state.load(Ordering::Acquire))
-    }
-
-    pub fn transition_to(&self, new_state: ServiceState) {
-        self.state.store(new_state as u8, Ordering::Release);
-    }
-
-    pub fn accept_control(&self, control: DWORD) -> bool {
-        if control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN {
-            self.stop.cancel();
-            self.state
-                .store(ServiceState::StopPending as u8, Ordering::Release);
-            return true;
-        }
-
-        false
-    }
-
-    pub fn status(&self) -> ScmServiceStatus {
-        ScmServiceStatus::from_state(self.state())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -859,18 +821,11 @@ mod tests {
     }
 
     #[test]
-    fn accepts_stop_and_shutdown_controls_only_while_running() {
-        let handler = ScmHandler::new(StopSignal::new());
-        handler.transition_to(ServiceState::Running);
-
+    fn running_service_accepts_stop_and_shutdown_controls() {
         assert_eq!(
-            handler.status().controls_accepted,
+            ScmServiceStatus::from_state(ServiceState::Running).controls_accepted,
             (SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN) as DWORD
         );
-
-        assert!(handler.accept_control(SERVICE_CONTROL_STOP));
-        assert_eq!(handler.state(), ServiceState::StopPending);
-        assert!(handler.stop.is_cancelled());
     }
 
     #[test]

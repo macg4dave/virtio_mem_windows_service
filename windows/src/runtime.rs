@@ -1,58 +1,10 @@
 use std::time::Duration;
 
 use crate::demand::{
-    MemoryResourceNotificationTelemetry, MemoryTelemetry, MemoryTelemetrySnapshot,
-    RawTelemetryEnvelope, RawTelemetryPublisher, TelemetryClock,
-    UnavailableMemoryResourceNotifications,
+    MemoryResourceNotificationTelemetry, MemoryTelemetry, RawTelemetryEnvelope,
+    RawTelemetryPublisher, TelemetryClock, UnavailableMemoryResourceNotifications,
 };
 use crate::service_host::{ServiceWorker, StopSignal};
-
-/// Windows-native telemetry worker used by the service lifecycle.
-#[derive(Debug)]
-pub struct NativeTelemetryWorker<T> {
-    telemetry: T,
-    interval: Duration,
-}
-
-impl<T> NativeTelemetryWorker<T>
-where
-    T: MemoryTelemetry,
-{
-    pub fn new(telemetry: T, interval: Duration) -> Result<Self, String> {
-        if interval.is_zero() {
-            return Err("native telemetry polling interval must be greater than zero".to_owned());
-        }
-        Ok(Self {
-            telemetry,
-            interval,
-        })
-    }
-
-    pub fn poll_once(&self) -> Result<MemoryTelemetrySnapshot, String> {
-        self.telemetry
-            .collect()
-            .map_err(|error| format!("native memory telemetry failed: {error}"))
-    }
-}
-
-impl<T> ServiceWorker for NativeTelemetryWorker<T>
-where
-    T: MemoryTelemetry + Send + 'static,
-{
-    fn initialize(&mut self, _stop: &StopSignal) -> Result<(), String> {
-        self.poll_once().map(|_| ())
-    }
-
-    fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
-        while !stop.is_cancelled() {
-            self.poll_once()?;
-            if !stop.is_cancelled() {
-                stop.wait(self.interval);
-            }
-        }
-        Ok(())
-    }
-}
 
 /// Production worker: publishes only raw, VM-scoped Windows telemetry.
 /// It has no current-allocation input and no resize interface.
@@ -222,8 +174,8 @@ where
 mod tests {
     use super::*;
     use crate::demand::{
-        DemandError, MemoryResourceNotificationState, OptionalTelemetrySignal,
-        RawTelemetryContractMode, TelemetryCapability,
+        DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot,
+        OptionalTelemetrySignal, RawTelemetryContractMode, TelemetryCapability,
     };
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
@@ -246,14 +198,6 @@ mod tests {
                 kernel_paged_bytes: 0,
                 kernel_nonpaged_bytes: 0,
             })
-        }
-    }
-
-    struct FailingTelemetry;
-
-    impl MemoryTelemetry for FailingTelemetry {
-        fn collect(&self) -> Result<MemoryTelemetrySnapshot, DemandError> {
-            Err(DemandError::UnsupportedPlatform)
         }
     }
 
@@ -319,25 +263,6 @@ mod tests {
             self.0.push(envelope.clone());
             Ok(())
         }
-    }
-
-    #[test]
-    fn native_worker_validates_initial_telemetry() {
-        let mut worker = NativeTelemetryWorker::new(TelemetryFixture, Duration::from_secs(1))
-            .expect("worker should be constructible");
-        worker
-            .initialize(&StopSignal::new())
-            .expect("native telemetry should validate");
-    }
-
-    #[test]
-    fn native_worker_preserves_telemetry_failure() {
-        let mut worker = NativeTelemetryWorker::new(FailingTelemetry, Duration::from_secs(1))
-            .expect("worker should be constructible");
-        assert_eq!(
-            worker.initialize(&StopSignal::new()),
-            Err("native memory telemetry failed: native Windows memory telemetry is unavailable on this platform".to_owned())
-        );
     }
 
     #[test]

@@ -112,7 +112,7 @@ Qualification options:
   --expect-growth-bytes N    Required minimum observed growth.
   --expect-reclaim-bytes N   Required minimum observed reclaim.
   --expect-renewed-growth-bytes N Required minimum growth after settled reclaim.
-  --expect-no-resize          Require shadow mode and unchanged requested/current allocation.
+  --expect-no-resize          Require observe-only mode and unchanged requested/current allocation.
   --expect-no-reclaim         Require growth without any lower requested target; replaces --expect-reclaim-bytes.
   --require-renewed-during-pending-shrink Require an observed pending shrink before renewed pressure.
   --remote-workload PATH     Required Windows workload executable path.

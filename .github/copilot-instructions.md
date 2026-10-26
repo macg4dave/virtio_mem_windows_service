@@ -145,7 +145,15 @@ remaining duplication. Do not build a framework for code scheduled for deletion.
 
 ## Documentation
 
-Update `PLAN.md` when evidence, state, or the plan changes. Do not create
-additional project documents, task boards, roadmaps, or prompt collections.
+Update `PLAN.md` when evidence, state, or the plan changes. `PLAN.md` holds
+open work only: when an item, register entry, task row, or phase is finished
+and verified, delete it in the same change rather than marking it done or
+adding a progress log. Git history is the record of completed work. Keep facts
+that still constrain open work, such as unrestored live state, unverified
+deployment steps, and safety limits; trim a partly finished item to what remains.
+
+Task prompts live in `.github/prompts/*.prompt.md`. They hold task-specific
+steps only and defer to these rules rather than repeating them. Do not create
+other project documents, task boards, roadmaps, or prompt collections.
 `AGENTS.md` points here; do not duplicate these rules in tool-specific files.
 Preserve unrelated worktree changes.

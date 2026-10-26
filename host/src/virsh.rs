@@ -15,7 +15,9 @@ pub enum VirshError {
     Failed { status: String, stderr: String },
     #[error("virsh returned invalid UTF-8: {0}")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
-    #[error("non-interactive libvirt management access is unavailable: {0}; configure authorization for the host service account before starting the controller")]
+    // Polkit authorizes root for every action and libvirt accepts root on the
+    // local socket, so sudo is a valid manual test path; it is not a deployment.
+    #[error("non-interactive libvirt management access is unavailable: {0}; configure authorization for the host service account before starting the controller, or run it with sudo for manual testing")]
     Authorization(String),
 }
 

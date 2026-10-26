@@ -26,47 +26,6 @@ pub trait RawTelemetryPublisher {
     fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String>;
 }
 
-/// Appends complete raw telemetry envelopes as newline-delimited JSON records.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JsonLinesRawTelemetryPublisher {
-    path: PathBuf,
-}
-
-impl JsonLinesRawTelemetryPublisher {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl RawTelemetryPublisher for JsonLinesRawTelemetryPublisher {
-    fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String> {
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create raw telemetry directory: {error}"))?;
-        }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.path)
-            .map_err(|error| format!("open raw telemetry {}: {error}", self.path.display()))?;
-        let mut encoded = serde_json::to_vec(envelope)
-            .map_err(|error| format!("encode raw telemetry: {error}"))?;
-        encoded.push(b'\n');
-        file.write_all(&encoded)
-            .map_err(|error| format!("write raw telemetry: {error}"))?;
-        file.flush()
-            .map_err(|error| format!("flush raw telemetry: {error}"))
-    }
-}
-
 /// Publishes one complete current record through an atomic replace and keeps a
 /// bounded set of previous records for diagnostics. Readers never consume a
 /// partially written current record.
@@ -739,44 +698,6 @@ mod tests {
             value.validate(),
             Err(DemandError::ZeroCounter("commit limit"))
         );
-    }
-
-    #[test]
-    fn pressure_ratios_are_bounded() {
-        let value = snapshot(4 * GIB, 12 * GIB);
-        assert!((value.physical_pressure().unwrap() - 0.75).abs() < f64::EPSILON);
-        assert!((value.commit_pressure().unwrap() - 0.75).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn raw_json_lines_publisher_appends_only_raw_vm_scoped_telemetry() {
-        let path = std::env::temp_dir().join(format!(
-            "virtio-mem-raw-telemetry-{}-publisher.jsonl",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let envelope = RawTelemetryEnvelope::new(
-            "guest",
-            "VirtioMemService",
-            "session-a",
-            1_000_000,
-            10,
-            0,
-            snapshot(2 * GIB, 15 * GIB),
-        );
-        let mut publisher = JsonLinesRawTelemetryPublisher::new(&path);
-
-        publisher
-            .publish(&envelope)
-            .expect("raw record should be written");
-        let content = std::fs::read_to_string(&path).expect("raw record should be readable");
-        let decoded: RawTelemetryEnvelope =
-            serde_json::from_str(content.trim()).expect("raw record should parse");
-
-        assert_eq!(decoded, envelope);
-        assert!(!content.contains("desired_target_bytes"));
-        assert!(!content.contains("current_bytes"));
-        std::fs::remove_file(path).expect("test record should be removed");
     }
 
     #[test]
