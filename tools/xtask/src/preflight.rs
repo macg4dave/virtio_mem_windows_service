@@ -332,18 +332,8 @@ fn controller_state(command: &Command, repo: &Path) -> Result<(String, String), 
 }
 
 fn host_mem_available() -> Result<u64, String> {
-    let text = std::fs::read_to_string("/proc/meminfo")
-        .map_err(|error| format!("read /proc/meminfo: {error}"))?;
-    let kib = text
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("MemAvailable:")
-                .and_then(|value| value.split_whitespace().next())
-                .and_then(|value| value.parse::<u64>().ok())
-        })
-        .ok_or_else(|| "MemAvailable is missing".to_owned())?;
-    kib.checked_mul(1024)
-        .ok_or_else(|| "MemAvailable overflows bytes".to_owned())
+    use virtio_mem_host::host_memory::{HostMemorySource, ProcMeminfoSource};
+    ProcMeminfoSource::new().available_bytes()
 }
 
 fn applied_rollback_path(path: &Path) -> Result<String, String> {

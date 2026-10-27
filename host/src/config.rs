@@ -103,7 +103,7 @@ impl HostConfig {
             raw_telemetry_path: CONTROL_PATH.to_owned(),
             raw_telemetry_transport: RawTelemetryTransport::QgaFile,
             raw_telemetry_service_name: SERVICE_NAME.to_owned(),
-            raw_telemetry_max_age: Duration::from_secs(globals.poll_interval_seconds * 6),
+            raw_telemetry_max_age: Duration::from_millis(globals.freshness_millis()),
             raw_telemetry_future_tolerance: Duration::from_secs(globals.poll_interval_seconds),
             host_min_headroom_bytes: globals.host_min_headroom_bytes,
             observe_only: globals.observe_only,

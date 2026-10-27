@@ -167,17 +167,10 @@ Use read-only observations to diagnose the failing layer:
 - `virsh ... dumpxml win11_gpu`: live NICs, guest-agent channel, virtio-mem
   device alias, size, block size, requested/current allocation. Save XML under
   `.artifacts/` if needed; do not redefine the domain or edit its disks.
-- `cargo xtask qga win11_gpu --attempts 3 --command-timeout-seconds 10
-  --connect qemu:///system`: agent/counter diagnostic. It may fall back from
-  `guest-get-memory-stats` to `dommemstat`; report which path actually worked.
-  These counters are not proof of the Windows service's publication or policy.
 - `virsh ... qemu-agent-command win11_gpu '{"execute":"guest-info"}'`
   and `'{"execute":"guest-network-get-interfaces"}'`: agent reachability,
   supported commands and guest addresses. Use timeouts. Inspect support before
   assuming `guest-exec`, guest-file access or a memory-stat command exists.
-- `cargo xtask calibration VM ALIAS ...`: read-only join of two fresh service
-  publications with converged live device geometry. Derive all required bounds
-  and paths from current help/configuration; save structured evidence.
 - `cargo xtask windows diagnose-service SERVICE --output PATH`: service
   diagnostics through SSH; provide the exported Windows environment above.
   Verify the installed executable/configuration and its version separately

@@ -10,7 +10,7 @@ use std::process::{Child, Command as ProcessCommand, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use virtio_mem_host::host_memory::{HostMemorySource, ProcMeminfoSource};
@@ -264,11 +264,8 @@ fn record(log: &Mutex<File>, line: &str) {
     }
 }
 
-fn now_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_millis())
-        .unwrap_or_default()
+fn now_millis() -> u64 {
+    crate::process::unix_millis().unwrap_or_default()
 }
 
 fn resolve(repo: &Path, path: &Path) -> PathBuf {

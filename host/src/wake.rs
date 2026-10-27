@@ -93,7 +93,13 @@ pub struct WakePeer {
     vm: String,
     stream: Mutex<Option<UnixStream>>,
     reported: AtomicBool,
+    /// No reconnect attempt (a domain XML read) before this instant: an
+    /// absent channel would otherwise be looked up every poll.
+    retry_after: Mutex<Option<Instant>>,
 }
+
+/// How long a missing or failed wake channel waits before the next lookup.
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(30);
 
 impl WakePeer {
     pub fn new(command: Virsh, vm: String) -> Arc<Self> {
@@ -102,6 +108,7 @@ impl WakePeer {
             vm,
             stream: Mutex::new(None),
             reported: AtomicBool::new(false),
+            retry_after: Mutex::new(None),
         })
     }
 
@@ -113,6 +120,15 @@ impl WakePeer {
         if self.stream().is_some() {
             return;
         }
+        let mut retry_after = self
+            .retry_after
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if retry_after.is_some_and(|instant| Instant::now() < instant) {
+            return;
+        }
+        *retry_after = Instant::now().checked_add(RECONNECT_INTERVAL);
+        drop(retry_after);
         let attempt = || -> Result<UnixStream, String> {
             let xml = self
                 .command
@@ -128,6 +144,11 @@ impl WakePeer {
                 eprintln!("virtio-mem-host: vm={} event=wake_connected", self.vm);
                 *self.stream() = Some(stream);
                 self.reported.store(false, Ordering::Relaxed);
+                // A later disconnect may reconnect straight away.
+                *self
+                    .retry_after
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = None;
             }
             Err(error) => {
                 if !self.reported.swap(true, Ordering::Relaxed) {
@@ -298,6 +319,7 @@ mod tests {
             vm: "guest".to_owned(),
             stream: Mutex::new(Some(ours)),
             reported: AtomicBool::new(false),
+            retry_after: Mutex::new(None),
         });
         guest.write_all(b"hint").unwrap();
         let started = Instant::now();

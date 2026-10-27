@@ -162,10 +162,12 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   with no stall settle and no convergence timeout; the guest's single request
   slot stays occupied until then. The Windows viomem driver makes one attempt
   per device notification, so a held removal moves again only if Windows
-  frees the memory in its window. One exception: a growth that has plugged
-  nothing before the one-time widening settles at its current allocation as
-  `partial` once it has not moved for one poll, because QEMU rejects plugs
-  outside the usable region and the driver never retries them.
+  frees the memory in its window. Two exceptions settle at the current
+  allocation as `partial`: a held shrink as soon as the guest publishes
+  Windows' Low memory signal (so it can request growth), and a growth that has
+  plugged nothing before the one-time widening once it has not moved for one
+  poll, because QEMU rejects plugs outside the usable region and the driver
+  never retries them.
 - Windows reclaim size matters. Each viomem attempt asks Windows to hot-remove
   whatever whole blocks it can inside one window starting at the lowest
   plugged block, `plugged - requested` bytes long, and never more. Small removal steps
@@ -193,8 +195,10 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
 - Unowned divergence is observed, never replayed. Unreadable live state keeps
   the last pool charge, or the whole pool before a first read, and latches if a
   command is owned. Members fail independently; the daemon stops when all have.
-- `clear-latch` requires converged live state, stamps the current attestation
-  and gives any unresolved request a terminal result from observed movement.
+- `clear-latch` first settles a stuck shrink at the guest's current
+  allocation (it refuses a device still growing), then stamps the current
+  attestation and gives any unresolved request a terminal result from
+  observed movement.
 
 ## Configuration and deployment
 
@@ -267,11 +271,10 @@ suspend/resume, version and QMP evidence still run `virsh`. Checkpoint paths mus
 absolute without `..`; symlink/hard-link checkpoint files are rejected. The
 daemon and operator mutations lock the libvirt domain UUID, and checkpoint
 writers hold a sidecar file lock. Do not unlink lock files. Stop the controller
-before `resize`, `abandon-shrink` or `clear-latch`.
+before `resize` or `clear-latch`.
 
-Checkpoints are version 2 (journal, intent, latch). An estimator-era version 1
-file without a latch or command is superseded on the next save; one recording
-either is refused: stop the controller, review live state, then remove it.
+Checkpoints are version 2 (journal, intent, latch); any other version is
+refused rather than discarded. Guest telemetry is schema version 3 only.
 Controller status is version 5 and includes the admitted request, its result,
 `observe_only` and a read-only view of the guest input. Use matching host,
 xtask and Windows builds.
@@ -490,11 +493,9 @@ checks that publication rolls to a valid successor session and that any
 unresolved request keeps its identity across the restart.
 
 Keep qualification evidence under `.artifacts/` and summarise only evidence
-that affects phase acceptance in the roadmap. The standalone `live-resize`
-command restores the original allocation only after forward convergence and
-without cancellation; otherwise it reports final live state and issues no
-restoration. Inspect fresh `requested`/`current`, stop any controller, then use
-`abandon-shrink` for a stable pending shrink or explicit operator recovery.
+that affects phase acceptance in the roadmap. For manual recovery, inspect
+fresh `requested`/`current`, stop any controller, then use `clear-latch`,
+which settles a stuck shrink at the guest's current allocation.
 Subprocess output is capped at 4 MiB per stream (64 MiB for elevated
 inventory), with a shared deadline covering inherited pipes and cleanup of the
 owned process group.

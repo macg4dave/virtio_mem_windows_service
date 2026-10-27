@@ -3,7 +3,6 @@ use thiserror::Error;
 
 use crate::memory_request::MemoryRequest;
 
-pub const LEGACY_RAW_TELEMETRY_VERSION: u16 = 2;
 pub const RAW_TELEMETRY_VERSION: u16 = 3;
 pub const WINDOWS_NATIVE_TELEMETRY_VERSION: u16 = 1;
 
@@ -313,7 +312,6 @@ impl WindowsNativeTelemetry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawTelemetryContractMode {
-    LegacyV2Fallback,
     WindowsNativeFallback,
     WindowsNativeSignals,
 }
@@ -369,7 +367,6 @@ impl RawTelemetryEnvelope {
 
     pub fn contract_mode(&self) -> Result<RawTelemetryContractMode, DemandError> {
         match (self.version, self.windows_native.as_ref()) {
-            (LEGACY_RAW_TELEMETRY_VERSION, None) => Ok(RawTelemetryContractMode::LegacyV2Fallback),
             (RAW_TELEMETRY_VERSION, Some(windows_native)) => {
                 windows_native.validate(self.monotonic_millis, &self.memory)?;
                 if windows_native.has_native_pressure_state() {
@@ -378,9 +375,7 @@ impl RawTelemetryEnvelope {
                     Ok(RawTelemetryContractMode::WindowsNativeFallback)
                 }
             }
-            (LEGACY_RAW_TELEMETRY_VERSION, Some(_)) | (RAW_TELEMETRY_VERSION, None) => {
-                Err(DemandError::TelemetrySchemaMismatch)
-            }
+            (RAW_TELEMETRY_VERSION, None) => Err(DemandError::TelemetrySchemaMismatch),
             (version, _) => Err(DemandError::UnsupportedTelemetryVersion(version)),
         }
     }
@@ -399,7 +394,7 @@ impl RawTelemetryEnvelope {
             ("service_name", self.service_name.as_str()),
             ("session_id", self.session_id.as_str()),
         ] {
-            if value.trim().is_empty() || value.len() > 128 || !value.is_ascii() {
+            if !crate::memory_request::valid_identity(value) {
                 return Err(DemandError::InvalidTelemetryIdentity(field));
             }
         }
@@ -704,20 +699,6 @@ mod tests {
             decoded.contract_mode(),
             Ok(RawTelemetryContractMode::WindowsNativeSignals)
         );
-
-        let mut legacy = current.clone();
-        legacy.version = LEGACY_RAW_TELEMETRY_VERSION;
-        legacy.windows_native = None;
-        let encoded = serde_json::to_string(&legacy).expect("encode legacy telemetry");
-        let decoded: RawTelemetryEnvelope =
-            serde_json::from_str(&encoded).expect("decode legacy telemetry");
-        assert_eq!(
-            decoded.contract_mode(),
-            Ok(RawTelemetryContractMode::LegacyV2Fallback)
-        );
-        let encoded_value: serde_json::Value =
-            serde_json::from_str(&encoded).expect("decode legacy JSON value");
-        assert!(encoded_value.get("windows_native").is_none());
     }
 
     #[test]

@@ -307,10 +307,8 @@ impl TelemetryClock for SystemTelemetryClock {
     }
 }
 
-pub fn process_session_id(service_name: &str) -> Result<String, String> {
-    if service_name.trim().is_empty() {
-        return Err("service name must be non-empty for session identity".to_owned());
-    }
+/// A per-process identity for this service run's publications.
+pub fn process_session_id() -> Result<String, String> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?;
@@ -687,29 +685,25 @@ impl MemoryTelemetry for NativeMemoryTelemetry {
         if page_size == 0 {
             return Err(DemandError::ZeroCounter("page size"));
         }
-        let total = pages_to_bytes_checked(performance.PhysicalTotal as u64, page_size)?;
-        let available = pages_to_bytes_checked(performance.PhysicalAvailable as u64, page_size)?;
+        let pages_to_bytes = |pages: usize| pages_to_bytes_checked(pages as u64, page_size);
+        let total = pages_to_bytes(performance.PhysicalTotal)?;
+        let available = pages_to_bytes(performance.PhysicalAvailable)?;
         if total == 0 || available > total {
             return Err(DemandError::InconsistentCounters(
                 "invalid physical memory snapshot",
             ));
         }
-        let pages_to_bytes = |pages: usize| {
-            (pages as u64)
-                .checked_mul(page_size)
-                .ok_or(DemandError::ArithmeticOverflow)
-        };
 
         let snapshot = MemoryTelemetrySnapshot {
             physical_total_bytes: total,
             physical_available_bytes: available,
             memory_load_percent: ((u128::from(total - available) * 100) / u128::from(total)) as u32,
-            commit_total_bytes: pages_to_bytes(performance.CommitTotal as usize)?,
-            commit_limit_bytes: pages_to_bytes(performance.CommitLimit as usize)?,
-            commit_peak_bytes: pages_to_bytes(performance.CommitPeak as usize)?,
-            system_cache_bytes: pages_to_bytes(performance.SystemCache as usize)?,
-            kernel_paged_bytes: pages_to_bytes(performance.KernelPaged as usize)?,
-            kernel_nonpaged_bytes: pages_to_bytes(performance.KernelNonpaged as usize)?,
+            commit_total_bytes: pages_to_bytes(performance.CommitTotal)?,
+            commit_limit_bytes: pages_to_bytes(performance.CommitLimit)?,
+            commit_peak_bytes: pages_to_bytes(performance.CommitPeak)?,
+            system_cache_bytes: pages_to_bytes(performance.SystemCache)?,
+            kernel_paged_bytes: pages_to_bytes(performance.KernelPaged)?,
+            kernel_nonpaged_bytes: pages_to_bytes(performance.KernelNonpaged)?,
         };
         snapshot.validate()?;
         Ok(snapshot)

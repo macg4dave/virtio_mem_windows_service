@@ -48,10 +48,8 @@ impl WindowsServiceConfigFile {
                 );
             }
         }
-        if !self.vm_name.is_ascii()
-            || self.vm_name.len() > 128
-            || !self.service_name.is_ascii()
-            || self.service_name.len() > 128
+        if !crate::memory_request::valid_identity(&self.vm_name)
+            || !crate::memory_request::valid_identity(&self.service_name)
             || self.service_name.contains(['/', '\\'])
         {
             return Err("VM/service identity must be ASCII of at most 128 bytes; service names cannot contain slashes".to_owned());

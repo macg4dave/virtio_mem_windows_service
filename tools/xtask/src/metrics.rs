@@ -21,7 +21,7 @@ use std::io::{BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Map, Value};
 use virtio_mem_core::{MemoryResourceNotificationState, RawTelemetryEnvelope, VirtioMemState};
@@ -452,9 +452,7 @@ fn write_error(error: std::io::Error) -> String {
 }
 
 fn unix_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+    crate::process::unix_millis().unwrap_or_default()
 }
 
 fn unit_active(unit: &str, repo: &Path) -> bool {

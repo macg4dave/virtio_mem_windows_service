@@ -242,8 +242,7 @@ mod tests {
     use std::sync::Mutex;
     use virtio_mem_core::{
         MemoryOperation, MemoryRequest, MemoryResourceNotificationState, MemoryTelemetrySnapshot,
-        OptionalTelemetrySignal, RawTelemetryContractMode, RequestIdentity, TelemetryCapability,
-        LEGACY_RAW_TELEMETRY_VERSION, MEMORY_REQUEST_VERSION,
+        OptionalTelemetrySignal, RequestIdentity, TelemetryCapability, MEMORY_REQUEST_VERSION,
     };
 
     #[derive(Default)]
@@ -389,20 +388,6 @@ mod tests {
             request.identity.vm_name = "other".to_owned();
         }
         assert!(qga(line(&foreign).into_bytes()).read().is_err());
-    }
-
-    #[test]
-    fn accepts_v2_only_as_the_explicit_legacy_fallback() {
-        let mut legacy = envelope("session-a", 995_000, 0);
-        legacy.version = LEGACY_RAW_TELEMETRY_VERSION;
-        legacy.windows_native = None;
-        assert_eq!(
-            qga(line(&legacy).into_bytes())
-                .read()
-                .expect("legacy fallback")
-                .contract_mode(),
-            Ok(RawTelemetryContractMode::LegacyV2Fallback)
-        );
     }
 
     #[test]

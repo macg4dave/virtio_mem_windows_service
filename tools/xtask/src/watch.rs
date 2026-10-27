@@ -23,6 +23,7 @@ use virtio_mem_core::{
     VirtioMemState,
 };
 use virtio_mem_host::config::HostConfig;
+use virtio_mem_host::host_memory::meminfo_bytes;
 use virtio_mem_host::qga::{GuestFileReader, VirshGuestFiles};
 use virtio_mem_host::virsh::{Virsh, VirshCommand};
 
@@ -236,12 +237,7 @@ pub(crate) fn read_meminfo() -> Result<HostMemory, String> {
 }
 
 fn parse_meminfo(text: &str) -> HostMemory {
-    let field = |name: &str| {
-        text.lines()
-            .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
-            .and_then(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
-            .map_or(0, |kib| kib * 1024)
-    };
+    let field = |name: &str| meminfo_bytes(text, name).unwrap_or(0);
     HostMemory {
         total: field("MemTotal"),
         available: field("MemAvailable"),

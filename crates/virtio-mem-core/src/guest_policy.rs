@@ -6,8 +6,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::memory_request::{
-    HostMemoryStatus, MemoryOperation, MemoryOutcome, MemoryRequest, MemoryResult, RequestIdentity,
-    MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
+    valid_identity, HostMemoryStatus, MemoryOperation, MemoryOutcome, MemoryRequest, MemoryResult,
+    RequestIdentity, MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
 };
 use crate::{
     MemoryResourceNotificationState, TargetEstimate, TargetEstimator, TargetGeometry,
@@ -205,17 +205,14 @@ impl GuestRequester {
         state: GuestRequestState,
     ) -> Result<Self, String> {
         policy.validate()?;
-        for value in [vm_name, service_name, session_id] {
-            if value.trim().is_empty()
-                || value.len() > 128
-                || !value.is_ascii()
-                || value.chars().any(char::is_control)
-            {
-                return Err(
-                    "guest VM, service and session identity must be printable ASCII of at most 128 bytes"
-                        .to_owned(),
-                );
-            }
+        if ![vm_name, service_name, session_id]
+            .into_iter()
+            .all(valid_identity)
+        {
+            return Err(
+                "guest VM, service and session identity must be printable ASCII of at most 128 bytes"
+                    .to_owned(),
+            );
         }
         if let Some(pending) = &state.pending {
             pending.validate()?;

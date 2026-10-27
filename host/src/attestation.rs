@@ -414,14 +414,10 @@ fn evidence(value: bool) -> CompatibilityEvidence {
 }
 
 fn validate_alias(alias: &str) -> Result<(), String> {
-    if alias.is_empty()
-        || !alias
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-    {
-        Err("compatibility evidence alias contains unsupported characters".to_owned())
-    } else {
+    if virtio_mem_core::settings::valid_alias(alias) {
         Ok(())
+    } else {
+        Err("compatibility evidence alias contains unsupported characters".to_owned())
     }
 }
 

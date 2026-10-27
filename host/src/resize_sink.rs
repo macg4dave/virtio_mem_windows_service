@@ -187,29 +187,6 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
             .map_err(ResizeSinkError::CommandUnknown)
     }
 
-    /// Prepares the one-shot abandon-to-current recovery after two
-    /// independent observations have qualified `stable_current_bytes`.
-    /// This immediate read is the final race check before an operator applies
-    /// the command.
-    pub(crate) fn prepare_abandon_to_current(
-        &self,
-        immutable_target_bytes: u64,
-        expected: VirtioMemState,
-    ) -> Result<PreparedResize, String> {
-        self.prepare(expected.current_bytes, |state| {
-            if *state != expected
-                || state.requested_bytes != immutable_target_bytes
-                || state.current_bytes <= immutable_target_bytes
-            {
-                return Err(
-                    "live state changed before abandon-to-current recovery could be applied"
-                        .to_owned(),
-                );
-            }
-            Ok(())
-        })
-    }
-
     /// Reads live XML immediately before a command, validates compatibility and
     /// the target, then applies the operation's own live-state precondition.
     /// The fresh read is the race check; callers must not reuse an older one.
@@ -573,44 +550,6 @@ mod tests {
         let calls = calls.borrow();
         assert_eq!(calls.len(), 3);
         assert_eq!(calls[2][5], "6291456");
-    }
-
-    #[test]
-    fn abandon_to_current_requires_the_qualified_pending_state() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let sink = VirshResizeSink::new(
-            Fake {
-                xml: SHRINK_PENDING_XML,
-                calls: Rc::clone(&calls),
-            },
-            "guest",
-            "memory0",
-            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
-        );
-
-        let prepared = sink
-            .prepare_abandon_to_current(
-                4 * 1024 * 1024 * 1024,
-                parse_virtio_mem_xml_for_alias(SHRINK_PENDING_XML, "memory0")
-                    .unwrap()
-                    .memory,
-            )
-            .expect("unchanged qualified state may recover to current");
-        assert_eq!(prepared.current_bytes(), prepared.target_bytes());
-        assert_eq!(calls.borrow().len(), 1);
-
-        assert!(sink
-            .prepare_abandon_to_current(
-                4 * 1024 * 1024 * 1024,
-                VirtioMemState {
-                    current_bytes: 5 * 1024 * 1024 * 1024,
-                    ..parse_virtio_mem_xml_for_alias(SHRINK_PENDING_XML, "memory0")
-                        .unwrap()
-                        .memory
-                }
-            )
-            .is_err());
-        assert_eq!(calls.borrow().len(), 2);
     }
 
     #[test]

@@ -1,16 +1,12 @@
 mod attestation;
 mod build_identity;
-mod calibration;
 mod controller_status;
-mod deployment;
 mod host_deploy;
 mod host_run;
-mod live_resize;
 mod local;
 mod metrics;
 mod preflight;
 mod process;
-mod qga;
 mod qualification;
 mod watch;
 mod windows;
@@ -23,8 +19,6 @@ const HELP: &str = r#"Repository build and test tooling
 Usage:
   cargo xtask gate <format|build|test|lint|local|all>
   cargo xtask doctor host
-  cargo xtask deployment inventory INSTANCE [OPTIONS]
-  cargo xtask calibration VM_NAME ALIAS [OPTIONS]
   cargo xtask controller-status INSTANCE [OPTIONS]
   cargo xtask attestation VM_NAME ALIAS REVIEW --output PATH [OPTIONS]
   cargo xtask host-deploy INSTANCE --config PATH --attestation VM=PATH... [OPTIONS]
@@ -37,29 +31,9 @@ Usage:
   cargo xtask windows build-status SERVICE --output PATH
   cargo xtask windows uninstall SERVICE --output PATH [--apply]
   cargo xtask windows verify EXPECTED_ED25519_FINGERPRINT --runs N
-  cargo xtask qga VM_NAME --attempts N --command-timeout-seconds N [--connect URI]
-  cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES [OPTIONS]
   cargo xtask qualification <start|run|status|review> [OPTIONS]
   cargo xtask watch [OPTIONS]
   cargo xtask metrics [OPTIONS]
-
-Deployment inventory options:
-  --unit UNIT                   Required exact inactive systemd instance unit.
-  --binary PATH                 Required absolute installed executable path.
-  --text-file PATH              Required absolute inspected file; repeatable.
-  --output PATH                 Required structured JSON evidence path.
-  --command-timeout-seconds N   Required external-command bound.
-  --elevate                     Invoke this prebuilt xtask once through sudo.
-
-Calibration options:
-  --telemetry-path PATH         Required absolute Windows telemetry file path.
-  --service-name NAME           Required Windows service publishing it.
-  --output PATH                 Required structured JSON evidence path.
-  --sample-interval-seconds N   Required interval between two samples.
-  --max-age-seconds N           Required telemetry freshness bound.
-  --future-tolerance-seconds N  Required future-clock tolerance.
-  --command-timeout-seconds N   Required external-command bound.
-  --connect URI                 Libvirt URI; default qemu:///system.
 
 Attestation options:
   --output PATH                 Required generated attestation path.
@@ -144,20 +118,6 @@ Qualification options:
   --connect URI              Libvirt URI; default qemu:///system.
   --output-root PATH         Default .artifacts/qualification.
 
-Live-resize options:
-  --apply                 Issue the explicitly requested live resize.
-  --keep-target           Do not restore; requires --apply and explicit approval.
-  --forward-timeout-seconds N   Required forward convergence bound.
-  --rollback-timeout-seconds N  Required restoration convergence bound.
-  --sample-interval-seconds N   Required sampling interval.
-  --command-timeout-seconds N  Required external-command bound.
-  --connect URI           Libvirt URI; default qemu:///system.
-  --minimum-target-bytes N     Required deployment safety floor.
-  --host-min-headroom-bytes N Required post-growth MemAvailable reserve.
-  --attestation PATH      Required reviewed compatibility attestation.
-  --host-cli PATH         Required attestation-aware host product binary.
-  --log PATH              Append detailed CSV samples.
-
 Windows environment:
   VIRTIO_MEM_WINDOWS_SSH              Required SSH config alias or USER@HOST.
   VIRTIO_MEM_WINDOWS_DIR              Remote workspace directory.
@@ -195,8 +155,6 @@ fn execute(arguments: &[String]) -> Result<(), String> {
             local::doctor_host()
         }
         Some("doctor") => Err("doctor requires exactly: host".to_owned()),
-        Some("deployment") => deployment::run(&deployment::parse(&arguments[1..])?, &repo),
-        Some("calibration") => calibration::run(&calibration::parse(&arguments[1..])?, &repo),
         Some("controller-status") => {
             controller_status::run(&controller_status::parse(&arguments[1..])?, &repo)
         }
@@ -205,8 +163,6 @@ fn execute(arguments: &[String]) -> Result<(), String> {
         Some("host-run") => host_run::run(&host_run::parse(&arguments[1..])?, &repo),
         Some("preflight") => preflight::run(&preflight::parse(&arguments[1..])?, &repo),
         Some("windows") => windows::run(windows::parse(&arguments[1..])?, &repo),
-        Some("qga") => qga::run(&qga::parse(&arguments[1..])?, &repo),
-        Some("live-resize") => live_resize::run(&live_resize::parse(&arguments[1..])?, &repo),
         Some("qualification") => qualification::execute(&arguments[1..], &repo),
         Some("watch") => watch::run(&watch::parse(&arguments[1..])?, &repo),
         Some("metrics") => metrics::run(&metrics::parse(&arguments[1..])?, &repo),

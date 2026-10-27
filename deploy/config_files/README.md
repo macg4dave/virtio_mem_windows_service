@@ -61,9 +61,9 @@ and attestation, then run
 deploy/config_files/recover-latch.sh "why it is safe to resume"
 ```
 
-It stops the controller, abandons a stuck shrink (requested set to what the
-guest kept) when requested ≠ current, clears the latch and starts the
-controller again.
+It stops the controller, clears the latch and starts the controller again.
+`clear-latch` first settles a stuck shrink (requested set to what the guest
+kept) when requested ≠ current.
 
 ## Configuration ownership
 

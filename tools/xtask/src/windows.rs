@@ -2,7 +2,7 @@ use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::Serialize;
 use virtio_mem_core::settings::{self, VmSettings, CONTROL_PATH, SERVICE_NAME};
@@ -825,10 +825,7 @@ fn verify(
             ));
         }
 
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("system clock is before Unix epoch: {error}"))?
-            .as_millis();
+        let timestamp = unix_millis()?;
         let evidence_dir = config
             .artifact_dir
             .join(format!("verification-{timestamp}"));
@@ -974,7 +971,7 @@ fn deploy(
 #[derive(Debug, Serialize)]
 struct BuildStatusEvidence {
     schema_version: u32,
-    captured_unix_millis: u128,
+    captured_unix_millis: u64,
     service_name: String,
     verdict: Verdict,
     service_state: Option<String>,
@@ -1380,12 +1377,7 @@ fn remote_powershell(config: &Config, repo: &Path, script: &str) -> Result<Strin
     result
 }
 
-fn unix_millis() -> Result<u128, String> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .map_err(|error| format!("system clock is before Unix epoch: {error}"))
-}
+use crate::process::unix_millis;
 
 fn ps_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))

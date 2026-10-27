@@ -75,9 +75,11 @@ impl Virsh {
         }
     }
 
-    /// Check the local RHEL polkit policy without permitting a password dialog.
-    /// This is a prerequisite check, not a grant or a substitute for libvirt's
-    /// own checks. Remote transports retain their own authentication contract.
+    /// Check the local RHEL polkit policy once, at daemon startup, without
+    /// permitting a password dialog, so a missing grant fails with a clear
+    /// message. libvirt authorizes every connection itself; repeating this
+    /// before each command only added polkit load. Remote transports retain
+    /// their own authentication contract.
     pub fn require_management_access(&self) -> Result<(), VirshError> {
         if self.connection != "qemu:///system" {
             return Ok(());
@@ -118,14 +120,7 @@ impl Virsh {
         command
     }
 
-    fn run_with_access_check(
-        &self,
-        arguments: &[String],
-        check: impl FnOnce() -> Result<(), VirshError>,
-    ) -> Result<String, VirshError> {
-        if !read_only(arguments) {
-            check()?;
-        }
+    fn run_process(&self, arguments: &[String]) -> Result<String, VirshError> {
         let output =
             bounded_output(&mut self.command(arguments), self.timeout).map_err(|error| {
                 if error.kind() == io::ErrorKind::TimedOut {
@@ -154,7 +149,7 @@ impl VirshCommand for Virsh {
         {
             return result;
         }
-        self.run_with_access_check(arguments, || self.require_management_access())
+        self.run_process(arguments)
     }
 }
 
@@ -474,29 +469,6 @@ mod tests {
         }
         let command = virsh.command(&["update-memory-device".to_owned(), "guest".to_owned()]);
         assert!(!command.get_args().any(|arg| arg == "--readonly"));
-    }
-
-    #[test]
-    fn denied_authorization_prevents_starting_a_management_command() {
-        let virsh = Virsh::with_connection(
-            "missing-virsh-fixture",
-            Duration::from_secs(1),
-            "qemu:///system",
-        );
-        for operation in [
-            "update-memory-device",
-            "qemu-agent-command",
-            "qemu-monitor-command",
-        ] {
-            let error = virsh
-                .run_with_access_check(&[operation.to_owned()], || {
-                    Err(VirshError::Authorization(
-                        "service access denied".to_owned(),
-                    ))
-                })
-                .expect_err("authorization must precede command execution");
-            assert!(matches!(error, VirshError::Authorization(_)));
-        }
     }
 
     #[cfg(target_os = "linux")]

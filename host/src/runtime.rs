@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use virtio_mem_core::{
     allocate_pool, CommandDirection, CommandOwnership, HostMemoryStatus, MemoryOperation,
-    MemoryOutcome, MemoryRequest, MemoryResult, PoolMember, RequestAdmission, VirtioMemState,
-    MEMORY_REQUEST_VERSION, MIN_BLOCK_SIZE_BYTES,
+    MemoryOutcome, MemoryRequest, MemoryResourceNotificationState, MemoryResult, PoolMember,
+    RequestAdmission, TelemetrySignalStatus, VirtioMemState, MEMORY_REQUEST_VERSION,
+    MIN_BLOCK_SIZE_BYTES,
 };
 
 use crate::checkpoint::{
@@ -141,6 +142,9 @@ pub struct VmController<G, S, R> {
     unowned_divergence_reported: bool,
     state_unavailable_reported: bool,
     guest_unavailable_reported: bool,
+    /// Separate from `guest_unavailable_reported`: a successful status write
+    /// every poll must not re-arm the read-failure report.
+    status_unpublished_reported: bool,
 }
 
 impl<G, S, R> VmController<G, S, R> {
@@ -171,6 +175,7 @@ impl<G, S, R> VmController<G, S, R> {
             unowned_divergence_reported: false,
             state_unavailable_reported: false,
             guest_unavailable_reported: false,
+            status_unpublished_reported: false,
         })
     }
 }
@@ -612,22 +617,27 @@ where
             return Ok(Step::Wait);
         };
         // A grow or shrink holds its target until the guest reaches it: no
-        // stall settle and no convergence timeout. Meanwhile the guest's only
-        // request slot stays occupied. The exception is a grow that has
-        // plugged nothing before the one-time widening: QEMU rejects plugs
-        // past its usable region and the driver never retries, so it settles
-        // and the widening that follows lets the guest's next request plug.
-        let unplugged_growth = direction == CommandDirection::Grow
-            && !self.widened
-            && self
-                .control
-                .intent
-                .as_ref()
-                .is_some_and(|intent| intent.prior_current_bytes == state.current_bytes)
-            && self.command_stalled(state);
+        // stall settle and no convergence timeout. Two exceptions settle it at
+        // its current allocation (`partial`), when commands are allowed:
+        // - a grow that has plugged nothing before the one-time widening:
+        //   QEMU rejects plugs past its usable region and the driver never
+        //   retries, so it settles and the widening lets the next plug land;
+        // - a shrink while Windows reports Low memory: the held shrink
+        //   occupies the guest's only request slot, so release it and let
+        //   the guest ask for memory again.
+        let can_settle = !self.control.latched() && !self.config.observe_only;
         let settle = match direction {
-            CommandDirection::Grow => unplugged_growth,
-            CommandDirection::Shrink => false,
+            CommandDirection::Grow => {
+                can_settle
+                    && !self.widened
+                    && self
+                        .control
+                        .intent
+                        .as_ref()
+                        .is_some_and(|intent| intent.prior_current_bytes == state.current_bytes)
+                    && self.command_stalled(state)
+            }
+            CommandDirection::Shrink => can_settle && self.guest_reports_low_memory(),
             CommandDirection::SettleGrow | CommandDirection::SettleShrink => self.pending_elapsed(),
         };
         if !settle {
@@ -638,16 +648,29 @@ where
             return Ok(Step::Wait);
         }
         match direction {
-            CommandDirection::Grow if !self.control.latched() && !self.config.observe_only => {
+            CommandDirection::Grow | CommandDirection::Shrink => {
                 self.settle_short(direction, state, stop)
             }
-            CommandDirection::Grow | CommandDirection::SettleGrow => {
-                Ok(Step::Stop(self.convergence_timeout("growth")?))
-            }
-            CommandDirection::Shrink | CommandDirection::SettleShrink => {
-                Ok(Step::Stop(self.convergence_timeout("shrink")?))
-            }
+            CommandDirection::SettleGrow => Ok(Step::Stop(self.convergence_timeout("growth")?)),
+            CommandDirection::SettleShrink => Ok(Step::Stop(self.convergence_timeout("shrink")?)),
         }
+    }
+
+    /// Whether the guest's latest valid publication carries Windows' native
+    /// Low memory signal. An unreadable guest is not Low.
+    fn guest_reports_low_memory(&self) -> bool {
+        let low = self.guest.read().ok().and_then(|envelope| {
+            envelope
+                .windows_native
+                .filter(|native| {
+                    native.memory_resource_notifications.status == TelemetrySignalStatus::Supported
+                })
+                .and_then(|native| native.memory_resource_notifications.value)
+        }) == Some(MemoryResourceNotificationState::Low);
+        if low {
+            self.log("event=held_shrink_released reason=guest_low_memory");
+        }
+        low
     }
 
     /// Request the resize's current allocation, which completes it. The
@@ -1057,10 +1080,10 @@ where
             })
         });
         match published {
-            Ok(()) => self.guest_unavailable_reported = false,
-            Err(error) if !self.guest_unavailable_reported => {
+            Ok(()) => self.status_unpublished_reported = false,
+            Err(error) if !self.status_unpublished_reported => {
                 self.log(&format!("event=guest_status_unpublished reason={error}"));
-                self.guest_unavailable_reported = true;
+                self.status_unpublished_reported = true;
             }
             Err(_) => {}
         }
@@ -1234,6 +1257,7 @@ mod tests {
     struct GuestState {
         request: Option<MemoryRequest>,
         statuses: Vec<HostMemoryStatus>,
+        native: Option<MemoryResourceNotificationState>,
     }
 
     #[derive(Clone, Default)]
@@ -1242,6 +1266,10 @@ mod tests {
     impl Guest {
         fn send(&self, request: Option<MemoryRequest>) {
             self.0.borrow_mut().request = request;
+        }
+
+        fn signal(&self, state: MemoryResourceNotificationState) {
+            self.0.borrow_mut().native = Some(state);
         }
 
         fn last_result(&self) -> Option<MemoryResult> {
@@ -1275,6 +1303,14 @@ mod tests {
                 },
             );
             envelope.request = self.0.borrow().request.clone();
+            if let (Some(state), Some(native)) =
+                (self.0.borrow().native, envelope.windows_native.as_mut())
+            {
+                native.capabilities.memory_resource_notifications =
+                    virtio_mem_core::TelemetryCapability::Supported;
+                native.memory_resource_notifications =
+                    virtio_mem_core::OptionalTelemetrySignal::supported(1, state);
+            }
             Ok(envelope)
         }
 
@@ -1673,6 +1709,31 @@ mod tests {
         let result = fixture.guest.last_result().expect("result");
         assert_eq!(result.outcome, MemoryOutcome::Completed);
         assert_eq!(result.actual_bytes, GIB);
+        drop(runtime);
+        assert!(!fixture.journal().latched());
+    }
+
+    #[test]
+    fn a_held_removal_is_released_when_windows_reports_low_memory() {
+        let fixture = Fixture::new("low-release", 100, 8 * GIB);
+        fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
+        fixture.guest.signal(MemoryResourceNotificationState::High);
+        fixture
+            .guest
+            .send(Some(request(1, MemoryOperation::Remove, GIB)));
+        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
+        round(&mut runtime);
+        round(&mut runtime);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
+
+        // Windows runs short: settle at what it reached, report partial.
+        fixture.guest.signal(MemoryResourceNotificationState::Low);
+        round(&mut runtime);
+        round(&mut runtime);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
+        let result = fixture.guest.last_result().expect("result");
+        assert_eq!(result.outcome, MemoryOutcome::Partial);
+        assert_eq!(result.actual_bytes, 512 * MIB);
         drop(runtime);
         assert!(!fixture.journal().latched());
     }

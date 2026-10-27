@@ -6,12 +6,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use virtio_mem_core::{parse_virtio_mem_xml_for_alias, RawTelemetryEnvelope};
 use virtio_mem_host::config::HostConfig;
+use virtio_mem_host::host_memory::meminfo_bytes;
 use virtio_mem_host::qga::{GuestFileReader, VirshGuestFiles};
 use virtio_mem_host::virsh::Virsh;
 use wait_timeout::ChildExt;
@@ -75,8 +76,8 @@ struct Status {
     run_id: String,
     state: String,
     pid: Option<u32>,
-    started_unix_millis: Option<u128>,
-    finished_unix_millis: Option<u128>,
+    started_unix_millis: Option<u64>,
+    finished_unix_millis: Option<u64>,
     final_result: Option<String>,
     message: String,
 }
@@ -101,7 +102,7 @@ struct LiveStateEvidence {
     version: u32,
     run_id: String,
     stage: String,
-    unix_millis: u128,
+    unix_millis: u64,
     vm_state: String,
     controller_active_state: String,
     controller_unit_file_state: String,
@@ -116,7 +117,7 @@ struct LiveStateEvidence {
 struct PrivilegedSample {
     version: u32,
     run_id: String,
-    unix_millis: u128,
+    unix_millis: u64,
     vm_state: String,
     controller_active_state: String,
     requested_bytes: u64,
@@ -141,7 +142,7 @@ struct Observations {
     sample_count: u64,
     warnings: u64,
     last_requested: Option<u64>,
-    last_privileged_sample_millis: Option<u128>,
+    last_privileged_sample_millis: Option<u64>,
     memory_samples: Vec<MemorySample>,
 }
 
@@ -391,7 +392,7 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     identifier(&guest_service, "--guest-service")?;
     // The unit may run a shared config; the running config must contain the VM.
     crate::host_deploy::controller_instance(&controller_unit)?;
-    crate::calibration::validate_windows_path(&telemetry_path)?;
+    virtio_mem_core::windows_service_config::normalize_windows_path(&telemetry_path)?;
     if max_allocation_bytes == 0
         || peak_bytes == 0
         || peak_bytes > max_allocation_bytes
@@ -1148,7 +1149,7 @@ fn supervise_inner(config: &Config, run_dir: &Path, repo: &Path) -> Result<(), S
 fn wait_for_controller_decision(
     config: &Config,
     repo: &Path,
-    since_unix_millis: u128,
+    since_unix_millis: u64,
     timeout_seconds: u64,
 ) -> Result<String, String> {
     let timeout = Duration::from_secs(timeout_seconds);
@@ -1203,8 +1204,7 @@ fn sample_host(
     if !sample.vm_state.to_ascii_lowercase().contains("running") {
         return Err(format!("VM is not running: {}", sample.vm_state.trim()));
     }
-    let now = u64::try_from(now_millis()?)
-        .map_err(|_| "current Unix timestamp does not fit in u64 milliseconds".to_owned())?;
+    let now = now_millis()?;
     sample
         .windows_raw_telemetry
         .validate_for(
@@ -1694,7 +1694,7 @@ fn capture_live_state_direct(
         current_bytes: memory.current_bytes,
         device_size_bytes: memory.size_bytes,
         block_size_bytes: memory.block_size_bytes,
-        host_mem_available_bytes: meminfo_value(&host, "MemAvailable:"),
+        host_mem_available_bytes: meminfo_bytes(&host, "MemAvailable").ok(),
     })
 }
 
@@ -1747,7 +1747,7 @@ fn capture_privileged_sample(config: &Config, repo: &Path) -> Result<PrivilegedS
 
 fn read_privileged_sample(
     config: &Config,
-    after_millis: Option<u128>,
+    after_millis: Option<u64>,
 ) -> Result<PrivilegedSample, String> {
     let wait = Duration::from_secs(config.command_timeout_seconds)
         .checked_mul(8)
@@ -1769,7 +1769,7 @@ fn read_privileged_sample(
                 let is_new = after_millis.is_none_or(|previous| sample.unix_millis > previous);
                 let is_fresh = now_millis()?
                     .checked_sub(sample.unix_millis)
-                    .is_some_and(|age| age <= wait.as_millis());
+                    .is_some_and(|age| u128::from(age) <= wait.as_millis());
                 if sample.version == SCHEMA_VERSION
                     && sample.run_id == config.run_id
                     && is_new
@@ -2105,12 +2105,7 @@ fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {
         .map_err(|e| format!("flush {}: {e}", path.display()))?;
     std::fs::rename(&temporary, path).map_err(|e| format!("publish {}: {e}", path.display()))
 }
-fn now_millis() -> Result<u128, String> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|v| v.as_millis())
-        .map_err(|e| format!("system clock before Unix epoch: {e}"))
-}
+use crate::process::unix_millis as now_millis;
 fn new_run_id() -> Result<String, String> {
     Ok(format!(
         "qualification-{}-{}",
@@ -2158,14 +2153,6 @@ fn absolute_or_repo(repo: &Path, value: &str) -> PathBuf {
     } else {
         repo.join(path)
     }
-}
-fn meminfo_value(input: &str, name: &str) -> Option<u64> {
-    input.lines().find_map(|line| {
-        let mut fields = line.split_whitespace();
-        (fields.next() == Some(name))
-            .then(|| fields.next()?.parse::<u64>().ok()?.checked_mul(1024))
-            .flatten()
-    })
 }
 fn whitespace_pairs(input: &str) -> serde_json::Map<String, Value> {
     input
@@ -2686,8 +2673,8 @@ mod tests {
     #[test]
     fn parses_host_memory_and_dommemstat_without_guessing_units() {
         assert_eq!(
-            meminfo_value("MemAvailable: 1024 kB\n", "MemAvailable:"),
-            Some(1 << 20)
+            meminfo_bytes("MemAvailable: 1024 kB\n", "MemAvailable"),
+            Ok(1 << 20)
         );
         let values = whitespace_pairs("unused 10\navailable 20\nlast-update 30\n");
         assert_eq!(values["available"], 20);

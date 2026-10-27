@@ -166,6 +166,12 @@ pub fn read_file(path: &Path) -> Result<String, String> {
     Ok(value)
 }
 
+/// Wall-clock Unix time in milliseconds, for evidence and log names.
+pub fn unix_millis() -> Result<u64, String> {
+    use virtio_mem_host::guest_channel::{SystemUnixClock, UnixClock};
+    SystemUnixClock.now_unix_millis()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

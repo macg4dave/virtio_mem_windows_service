@@ -1,11 +1,9 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use virtio_mem_core::{
-    parse_virtio_mem_xml_for_alias, AbandonAction, AbandonToCurrent, GuestInputStatus,
-    ShrinkObservation,
-};
+use virtio_mem_core::{parse_virtio_mem_xml_for_alias, GuestInputStatus, VirtioMemState};
 
 use crate::attestation::{
     read_review, AttestedCompatibilitySource, CompatibilityAttestation,
@@ -18,7 +16,7 @@ use crate::guest_channel::{GuestChannel, GuestLink, SystemUnixClock, Transport, 
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
 use crate::qga::VirshGuestFiles;
 use crate::resize_sink::VirshResizeSink;
-use crate::runtime::MemoryStateSource;
+use crate::runtime::{MemoryStateSource, ResizeSink};
 use crate::virsh::{Virsh, VirshCommand};
 use crate::xml_source::VirshXmlSource;
 
@@ -62,17 +60,6 @@ pub enum CliCommand {
         host_min_headroom_bytes: u64,
         command_timeout_seconds: u64,
     },
-    AbandonShrink {
-        vm: String,
-        alias: String,
-        immutable_target_bytes: u64,
-        connection: String,
-        apply: bool,
-        attestation_path: String,
-        command_timeout_seconds: u64,
-        sample_interval_seconds: u64,
-        convergence_timeout_seconds: u64,
-    },
     ClearLatch {
         reason: String,
         config: PathBuf,
@@ -96,7 +83,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
     }
     if !matches!(
         mode,
-        "status" | "attest" | "snapshot" | "validate" | "resize" | "abandon-shrink" | "clear-latch"
+        "status" | "attest" | "snapshot" | "validate" | "resize" | "clear-latch"
     ) {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
     }
@@ -166,7 +153,6 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
     }
     let (minimum, maximum) = match mode {
         "resize" => (10, 13),
-        "abandon-shrink" => (12, 15),
         "attest" => (6, 8),
         _ => (5, 7),
     };
@@ -182,8 +168,6 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
     let mut connection_supplied = false;
     let mut target_bytes = None;
     let mut command_timeout_seconds = None;
-    let mut sample_interval_seconds = None;
-    let mut convergence_timeout_seconds = None;
     let mut index = 3;
     let review_path = if mode == "attest" {
         index += 1;
@@ -191,7 +175,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
     } else {
         None
     };
-    if matches!(mode, "resize" | "abandon-shrink") {
+    if mode == "resize" {
         target_bytes = Some(
             args[index]
                 .parse::<u64>()
@@ -202,8 +186,8 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
     }
     while index < args.len() {
         match args[index].as_str() {
-            "--apply" if matches!(mode, "resize" | "abandon-shrink") && !apply => apply = true,
-            "--attestation" if matches!(mode, "resize" | "abandon-shrink") => {
+            "--apply" if mode == "resize" && !apply => apply = true,
+            "--attestation" if mode == "resize" => {
                 if attestation_path.is_some() {
                     return Err("--attestation may be supplied only once".to_owned());
                 }
@@ -243,28 +227,6 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
                     "--command-timeout-seconds",
                 )?);
             }
-            "--sample-interval-seconds" if mode == "abandon-shrink" => {
-                if sample_interval_seconds.is_some() {
-                    return Err("--sample-interval-seconds may be supplied only once".to_owned());
-                }
-                index += 1;
-                sample_interval_seconds = Some(positive_option(
-                    args.get(index),
-                    "--sample-interval-seconds",
-                )?);
-            }
-            "--convergence-timeout-seconds" if mode == "abandon-shrink" => {
-                if convergence_timeout_seconds.is_some() {
-                    return Err(
-                        "--convergence-timeout-seconds may be supplied only once".to_owned()
-                    );
-                }
-                index += 1;
-                convergence_timeout_seconds = Some(positive_option(
-                    args.get(index),
-                    "--convergence-timeout-seconds",
-                )?);
-            }
             "--connect" => {
                 if connection_supplied {
                     return Err("--connect may be supplied only once".to_owned());
@@ -281,14 +243,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
         }
         index += 1;
     }
-    for seconds in [
-        command_timeout_seconds,
-        sample_interval_seconds,
-        convergence_timeout_seconds,
-    ]
-    .into_iter()
-    .flatten()
-    {
+    if let Some(seconds) = command_timeout_seconds {
         let duration = Duration::from_secs(seconds);
         if std::time::Instant::now().checked_add(duration).is_none()
             || u64::try_from(duration.as_millis()).is_err()
@@ -299,11 +254,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
     if vm.trim().is_empty() {
         return Err("VM must be non-empty".to_owned());
     }
-    if alias.is_empty()
-        || !alias
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-    {
+    if !virtio_mem_core::settings::valid_alias(&alias) {
         return Err("ALIAS contains unsupported characters".to_owned());
     }
     let command = match mode {
@@ -352,28 +303,6 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
                 "--command-timeout-seconds",
             )?,
         },
-        "abandon-shrink" => CliCommand::AbandonShrink {
-            vm,
-            alias,
-            immutable_target_bytes: target_bytes
-                .ok_or_else(|| "immutable shrink target was not supplied".to_owned())?,
-            connection,
-            apply,
-            attestation_path: attestation_path
-                .ok_or_else(|| "abandon-shrink requires --attestation FILE".to_owned())?,
-            command_timeout_seconds: required_option(
-                command_timeout_seconds,
-                "--command-timeout-seconds",
-            )?,
-            sample_interval_seconds: required_option(
-                sample_interval_seconds,
-                "--sample-interval-seconds",
-            )?,
-            convergence_timeout_seconds: required_option(
-                convergence_timeout_seconds,
-                "--convergence-timeout-seconds",
-            )?,
-        },
         _ => return Err(format!("unknown CLI command: {mode}")),
     };
     Ok(command)
@@ -391,7 +320,7 @@ fn required_option<T>(value: Option<T>, name: &str) -> Result<T, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host --config FILE\n       virtio-mem-host status --config FILE [--vm NAME] [--connect URI]\n       virtio-mem-host clear-latch REASON --config FILE [--vm NAME] [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
+    "Usage: virtio-mem-host --config FILE\n       virtio-mem-host status --config FILE [--vm NAME] [--connect URI]\n       virtio-mem-host clear-latch REASON --config FILE [--vm NAME] [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -435,8 +364,20 @@ fn run_with<H: HostMemorySource, W: Write>(
             .compatibility()?
             .validate_for_resize()
             .map_err(|error| error.to_string())?;
-            let live = VirshXmlSource::new(virsh, config.vm_name.clone(), config.alias.clone())
-                .memory_state()?;
+            let state_source =
+                VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone());
+            let sink = VirshResizeSink::new(
+                virsh.clone(),
+                config.vm_name.clone(),
+                config.alias.clone(),
+                AttestedCompatibilitySource::new(
+                    virsh,
+                    config.vm_name.clone(),
+                    config.alias.clone(),
+                    config.compatibility_attestation_path.clone(),
+                ),
+            );
+            let live = settle_stuck_shrink(&state_source, &sink, apply, output)?;
             let fingerprint = crate::attestation::read_attestation(Path::new(
                 &config.compatibility_attestation_path,
             ))?
@@ -536,46 +477,46 @@ fn run_with<H: HostMemorySource, W: Write>(
                 output,
             )
         }
-        CliCommand::AbandonShrink {
-            vm,
-            alias,
-            immutable_target_bytes,
-            connection,
-            apply,
-            attestation_path,
-            command_timeout_seconds,
-            sample_interval_seconds,
-            convergence_timeout_seconds,
-        } => {
-            let virsh = Virsh::with_connection(
-                "virsh",
-                Duration::from_secs(command_timeout_seconds),
-                &connection,
-            );
-            let state_source = VirshXmlSource::new(virsh.clone(), vm.clone(), alias.clone());
-            let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &vm)?;
-            let compatibility_source = AttestedCompatibilitySource::new(
-                virsh.clone(),
-                vm.clone(),
-                alias.clone(),
-                attestation_path,
-            );
-            let sink = VirshResizeSink::new(virsh, vm, alias, compatibility_source);
-            run_abandon_shrink_with(
-                &state_source,
-                &sink,
-                AbandonOptions {
-                    immutable_target_bytes,
-                    connection,
-                    apply,
-                    sample_interval: Duration::from_secs(sample_interval_seconds),
-                    convergence_timeout: Duration::from_secs(convergence_timeout_seconds),
-                },
-                std::thread::sleep,
-                output,
-            )
-        }
     }
+}
+
+/// A latch over a shrink the guest stopped short of cannot clear on divergent
+/// state: request what the guest kept first. Dry runs report the settle and
+/// continue with the state it would produce.
+fn settle_stuck_shrink<S: MemoryStateSource, R: ResizeSink, W: Write>(
+    state_source: &S,
+    sink: &R,
+    apply: bool,
+    output: &mut W,
+) -> Result<VirtioMemState, String> {
+    let live = state_source.memory_state()?;
+    if live.requested_bytes == live.current_bytes {
+        return Ok(live);
+    }
+    if live.requested_bytes > live.current_bytes {
+        return Err(
+            "clear-latch settles only a stuck shrink; this device is still growing".to_owned(),
+        );
+    }
+    writeln!(
+        output,
+        "settle_stuck_shrink requested_bytes={} current_bytes={}",
+        live.requested_bytes, live.current_bytes
+    )
+    .map_err(|error| error.to_string())?;
+    if !apply {
+        return Ok(VirtioMemState {
+            requested_bytes: live.current_bytes,
+            ..live
+        });
+    }
+    sink.settle_pending_guarded(live, &AtomicBool::new(false))
+        .map_err(|error| error.to_string())?;
+    let settled = state_source.memory_state()?;
+    if settled.requested_bytes != settled.current_bytes {
+        return Err("stuck shrink did not settle at the guest's current allocation".to_owned());
+    }
+    Ok(settled)
 }
 
 fn run_configured_status<W: Write>(
@@ -723,120 +664,6 @@ fn run_resize_with<C: VirshCommand, H: HostMemorySource, E: CompatibilitySource,
     Ok(())
 }
 
-struct AbandonOptions {
-    immutable_target_bytes: u64,
-    connection: String,
-    apply: bool,
-    sample_interval: Duration,
-    convergence_timeout: Duration,
-}
-
-fn run_abandon_shrink_with<
-    S: MemoryStateSource,
-    C: VirshCommand,
-    E: CompatibilitySource,
-    F: FnMut(Duration),
-    W: Write,
->(
-    state_source: &S,
-    sink: &VirshResizeSink<C, E>,
-    options: AbandonOptions,
-    mut sleep: F,
-    output: &mut W,
-) -> Result<(), String> {
-    let first = state_source.memory_state()?;
-    first.validate().map_err(|error| error.to_string())?;
-    let mut recovery =
-        AbandonToCurrent::new(options.immutable_target_bytes, first.block_size_bytes)?;
-    let first_observation = shrink_observation(0, first);
-    if recovery.observe(first_observation) != AbandonAction::Wait {
-        return Err("first abandon-to-current sample is not a valid divergence".to_owned());
-    }
-    sleep(options.sample_interval);
-    let second = state_source.memory_state()?;
-    second.validate().map_err(|error| error.to_string())?;
-    if second.size_bytes != first.size_bytes || second.block_size_bytes != first.block_size_bytes {
-        return Err("virtio-mem geometry changed during recovery qualification".to_owned());
-    }
-    let stable_elapsed_millis = u64::try_from(options.sample_interval.as_millis())
-        .map_err(|_| "sample interval is too large".to_owned())?;
-    let stable_current_bytes =
-        match recovery.observe(shrink_observation(stable_elapsed_millis, second)) {
-            AbandonAction::Ready { target_bytes } => target_bytes,
-            AbandonAction::Wait => {
-                return Err("two unchanged samples did not qualify abandon-to-current".to_owned())
-            }
-            AbandonAction::Reject { reason } => return Err(reason),
-        };
-    let immediate = state_source.memory_state()?;
-    immediate.validate().map_err(|error| error.to_string())?;
-    recovery.verify_immediately_before_apply(shrink_observation(
-        stable_elapsed_millis.saturating_add(1),
-        immediate,
-    ))?;
-
-    let prepared = sink.prepare_abandon_to_current(options.immutable_target_bytes, immediate)?;
-    let mut full_arguments = vec!["virsh".to_owned(), "-c".to_owned(), options.connection];
-    full_arguments.extend_from_slice(prepared.arguments());
-    if !options.apply {
-        return writeln!(output, "dry_run_argv={full_arguments:?}")
-            .map_err(|error| error.to_string());
-    }
-
-    let deadline = std::time::Instant::now()
-        .checked_add(options.convergence_timeout)
-        .ok_or_else(|| "convergence timeout is too large".to_owned())?;
-    sink.apply_prepared(prepared)?;
-    loop {
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        let state = state_source.memory_state()?;
-        state.validate().map_err(|error| error.to_string())?;
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        if state.requested_bytes == stable_current_bytes
-            && state.current_bytes == stable_current_bytes
-        {
-            return writeln!(
-                output,
-                "abandon_shrink_converged target_bytes={stable_current_bytes}"
-            )
-            .map_err(|error| error.to_string());
-        }
-        if state.requested_bytes != stable_current_bytes
-            || state.current_bytes > stable_current_bytes
-        {
-            return Err("abandon-to-current entered an unexpected live state".to_owned());
-        }
-        if std::time::Instant::now() >= deadline {
-            break;
-        }
-        let wait = options
-            .sample_interval
-            .min(deadline.saturating_duration_since(std::time::Instant::now()));
-        sleep(wait);
-    }
-    Err(format!(
-        "abandon-to-current did not converge within {:?}",
-        options.convergence_timeout
-    ))
-}
-
-fn shrink_observation(
-    now_millis: u64,
-    state: virtio_mem_core::VirtioMemState,
-) -> ShrinkObservation {
-    ShrinkObservation {
-        now_millis,
-        requested_bytes: state.requested_bytes,
-        current_bytes: state.current_bytes,
-        fresh: true,
-        guest_running: true,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -964,35 +791,6 @@ mod tests {
         );
         assert_eq!(
             parse_args(&args(&[
-                "abandon-shrink",
-                "guest",
-                "memory0",
-                "4294967296",
-                "--attestation",
-                "reviewed.json",
-                "--command-timeout-seconds",
-                "4",
-                "--sample-interval-seconds",
-                "2",
-                "--convergence-timeout-seconds",
-                "8",
-                "--apply",
-            ]))
-            .expect("abandon-shrink"),
-            CliCommand::AbandonShrink {
-                vm: "guest".to_owned(),
-                alias: "memory0".to_owned(),
-                immutable_target_bytes: 4 * GIB,
-                connection: DEFAULT_CONNECTION.to_owned(),
-                apply: true,
-                attestation_path: "reviewed.json".to_owned(),
-                command_timeout_seconds: 4,
-                sample_interval_seconds: 2,
-                convergence_timeout_seconds: 8,
-            }
-        );
-        assert_eq!(
-            parse_args(&args(&[
                 "snapshot",
                 "guest",
                 "memory0",
@@ -1078,80 +876,35 @@ mod tests {
     }
 
     #[test]
-    fn abandon_shrink_qualifies_stability_rereads_and_converges_once() {
+    fn clear_latch_settles_a_stuck_shrink_at_the_current_allocation() {
         let calls = Rc::new(RefCell::new(Vec::new()));
-        let state_source = ScriptedStates(RefCell::new(VecDeque::from([
-            state(4 * GIB, 6 * GIB),
-            state(4 * GIB, 6 * GIB),
+        let sink = VirshResizeSink::new(
+            RecoveryVirsh {
+                calls: Rc::clone(&calls),
+            },
+            "guest",
+            "memory0",
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
+        let states = ScriptedStates(RefCell::new(VecDeque::from([
             state(4 * GIB, 6 * GIB),
             state(6 * GIB, 6 * GIB),
         ])));
-        let sink = VirshResizeSink::new(
-            RecoveryVirsh {
-                calls: Rc::clone(&calls),
-            },
-            "guest",
-            "memory0",
-            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
-        );
-        let mut waits = Vec::new();
         let mut output = Vec::new();
-
-        run_abandon_shrink_with(
-            &state_source,
-            &sink,
-            AbandonOptions {
-                immutable_target_bytes: 4 * GIB,
-                connection: DEFAULT_CONNECTION.to_owned(),
-                apply: true,
-                sample_interval: Duration::from_secs(2),
-                convergence_timeout: Duration::from_secs(8),
-            },
-            |duration| waits.push(duration),
-            &mut output,
-        )
-        .expect("qualified recovery converges");
-
-        assert_eq!(waits, [Duration::from_secs(2)]);
-        assert_eq!(calls.borrow().len(), 2);
-        assert_eq!(calls.borrow()[1][0], "update-memory-device");
+        let settled = settle_stuck_shrink(&states, &sink, true, &mut output).expect("settled");
+        assert_eq!(settled, state(6 * GIB, 6 * GIB));
         assert_eq!(
-            String::from_utf8(output).expect("UTF-8 output"),
-            "abandon_shrink_converged target_bytes=6442450944\n"
-        );
-    }
-
-    #[test]
-    fn abandon_shrink_rejects_moving_current_before_any_command() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let state_source = ScriptedStates(RefCell::new(VecDeque::from([
-            state(4 * GIB, 6 * GIB),
-            state(4 * GIB, 5 * GIB),
-        ])));
-        let sink = VirshResizeSink::new(
-            RecoveryVirsh {
-                calls: Rc::clone(&calls),
-            },
-            "guest",
-            "memory0",
-            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+            calls.borrow().last().expect("update")[0],
+            "update-memory-device"
         );
 
-        assert!(run_abandon_shrink_with(
-            &state_source,
-            &sink,
-            AbandonOptions {
-                immutable_target_bytes: 4 * GIB,
-                connection: DEFAULT_CONNECTION.to_owned(),
-                apply: true,
-                sample_interval: Duration::from_secs(2),
-                convergence_timeout: Duration::from_secs(8),
-            },
-            |_| {},
-            &mut Vec::new(),
-        )
-        .is_err());
-        assert!(calls.borrow().is_empty());
+        // A growing device is never settled; a converged one is untouched.
+        let growing = ScriptedStates(RefCell::new(VecDeque::from([state(6 * GIB, 4 * GIB)])));
+        assert!(settle_stuck_shrink(&growing, &sink, true, &mut Vec::new()).is_err());
+        let calls_before = calls.borrow().len();
+        let converged = ScriptedStates(RefCell::new(VecDeque::from([state(6 * GIB, 6 * GIB)])));
+        settle_stuck_shrink(&converged, &sink, true, &mut Vec::new()).expect("converged");
+        assert_eq!(calls.borrow().len(), calls_before);
     }
 
     #[test]

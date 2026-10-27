@@ -74,10 +74,16 @@ impl GlobalSettings {
         Ok(())
     }
 
+    /// How old a guest publication, host status or request may be, on both
+    /// sides: six polls.
+    pub fn freshness_millis(&self) -> u64 {
+        self.poll_interval_seconds * 6000
+    }
+
     /// Related policy thresholds have one set of conservative built-in defaults.
     /// Polling controls both workers and the corresponding freshness/gap bounds.
     pub fn guest_policy(&self) -> GuestMemoryPolicy {
-        let freshness = self.poll_interval_seconds * 6000;
+        let freshness = self.freshness_millis();
         GuestMemoryPolicy {
             target: TargetPolicyConfig {
                 configured_minimum_bytes: 0,
@@ -178,6 +184,15 @@ pub fn validate_ram_limits(minimum: u64, maximum: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// A libvirt device alias as this project accepts it: non-empty ASCII
+/// letters, digits, `_`, `.` and `-`.
+pub fn valid_alias(alias: &str) -> bool {
+    !alias.is_empty()
+        && alias
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+}
+
 /// Lower-case ASCII identities avoid case-folding, reserved-name and path
 /// traversal collisions on both Linux and Windows; no lossy sanitisation.
 pub fn vm_filename(name: &str) -> Result<String, String> {
@@ -223,13 +238,7 @@ impl HostList {
             if !names.insert(&vm.vm_name) {
                 return Err(format!("duplicate VM {}", vm.vm_name));
             }
-            if vm.priority == 0
-                || vm.alias.is_empty()
-                || !vm
-                    .alias
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b))
-            {
+            if vm.priority == 0 || !valid_alias(&vm.alias) {
                 return Err(format!(
                     "VM {} needs a positive priority and a valid libvirt device alias",
                     vm.vm_name

@@ -18,8 +18,6 @@ use crate::config::HostConfig;
 use crate::ownership::CheckpointOwner;
 
 const CHECKPOINT_VERSION: u16 = 2;
-/// The estimator-era format. It is never resumed: see `load`.
-const LEGACY_CHECKPOINT_VERSION: u16 = 1;
 const MAX_CHECKPOINT_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,9 +368,7 @@ pub fn clear_actuation_latch(
 
 /// The one checkpoint reader. A missing file is fresh state. Anything
 /// unreadable, oversized, foreign or invalid fails closed rather than
-/// discarding possible control state. Estimator-era (v1) files held only
-/// reclaim history unless they recorded a latch or command; those are
-/// refused for operator review, the rest are superseded on the next save.
+/// discarding possible control state.
 fn load(path: &Path, vm_name: &str, device_alias: &str) -> Result<Option<CheckpointFile>, String> {
     let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
@@ -383,25 +379,7 @@ fn load(path: &Path, vm_name: &str, device_alias: &str) -> Result<Option<Checkpo
         return Err("control checkpoint is oversized; refusing to discard it".to_owned());
     }
     let bytes = fs::read(path).map_err(|error| format!("read control checkpoint: {error}"))?;
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
-        format!("control checkpoint is invalid; refusing to discard it: {error}")
-    })?;
-    if value.get("version").and_then(serde_json::Value::as_u64)
-        == Some(u64::from(LEGACY_CHECKPOINT_VERSION))
-    {
-        let holds_control = value.get("actuation_latched") == Some(&serde_json::Value::Bool(true))
-            || value
-                .get("command_intent")
-                .is_some_and(|intent| !intent.is_null());
-        if holds_control {
-            return Err(
-                "legacy estimator checkpoint records a latch or command; stop the controller, review live state, then remove it"
-                    .to_owned(),
-            );
-        }
-        return Ok(None);
-    }
-    let file: CheckpointFile = serde_json::from_value(value).map_err(|error| {
+    let file: CheckpointFile = serde_json::from_slice(&bytes).map_err(|error| {
         format!("control checkpoint is invalid; refusing to discard it: {error}")
     })?;
     if file.version != CHECKPOINT_VERSION
@@ -588,31 +566,6 @@ mod tests {
         ] {
             fs::write(&config.policy_state_path, contents).expect("write");
             assert!(Checkpoint::open(&config, "a".repeat(64)).is_err());
-        }
-        remove(&config);
-    }
-
-    #[test]
-    fn legacy_estimator_checkpoints_are_superseded_only_without_control_state() {
-        let config = config("legacy");
-        for (control, accepted) in [
-            (r#""actuation_latched":false,"command_intent":null"#, true),
-            (r#""actuation_latched":true,"command_intent":null"#, false),
-            (
-                r#""actuation_latched":false,"command_intent":{"operation_id":"x"}"#,
-                false,
-            ),
-        ] {
-            fs::write(
-                &config.policy_state_path,
-                format!(r#"{{"version":1,"vm_name":"guest","estimator":{{}},{control}}}"#),
-            )
-            .expect("write legacy");
-            assert_eq!(
-                Checkpoint::open(&config, "a".repeat(64)).is_ok(),
-                accepted,
-                "{control}"
-            );
         }
         remove(&config);
     }

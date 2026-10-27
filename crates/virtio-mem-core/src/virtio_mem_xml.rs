@@ -2,7 +2,7 @@ use quick_xml::events::Event;
 use quick_xml::{Reader, XmlVersion};
 use thiserror::Error;
 
-use crate::units::{kibibytes_to_bytes, BYTES_PER_KIB};
+use crate::units::BYTES_PER_KIB;
 use crate::virtio_mem::VirtioMemState;
 use crate::{CompatibilityEvidence, VirtioMemCompatibility, VirtioMemError};
 
@@ -38,11 +38,6 @@ pub enum VirtioMemXmlError {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ParsedValue {
-    value: u64,
-}
-
-#[derive(Debug, Clone, Copy)]
 enum Unit {
     Bytes,
     Kibibytes,
@@ -71,13 +66,9 @@ impl Unit {
             Self::Mebibytes => 1 << 20,
             Self::Gibibytes => 1 << 30,
         };
-        if matches!(self, Self::Kibibytes) {
-            kibibytes_to_bytes(value).ok_or(VirtioMemXmlError::Overflow { field })
-        } else {
-            value
-                .checked_mul(multiplier)
-                .ok_or(VirtioMemXmlError::Overflow { field })
-        }
+        value
+            .checked_mul(multiplier)
+            .ok_or(VirtioMemXmlError::Overflow { field })
     }
 }
 
@@ -89,7 +80,7 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
     let mut pending: Option<(&'static str, Unit)> = None;
     let mut alias = None;
     let mut compatibility = VirtioMemCompatibility::unknown();
-    let mut values: [Option<ParsedValue>; 4] = [None, None, None, None];
+    let mut values: [Option<u64>; 4] = [None; 4];
 
     loop {
         match reader.read_event_into(&mut buffer) {
@@ -140,9 +131,7 @@ pub fn parse_virtio_mem_xml(xml: &str) -> Result<VirtioMemXmlState, VirtioMemXml
                                 field,
                                 value: raw.into_owned(),
                             })?;
-                    values[field_index(field)] = Some(ParsedValue {
-                        value: unit.to_bytes(field, value)?,
-                    });
+                    values[field_index(field)] = Some(unit.to_bytes(field, value)?);
                 }
             }
             Ok(Event::End(element)) => {
@@ -254,10 +243,8 @@ fn field_index(field: &'static str) -> usize {
     }
 }
 
-fn bytes(value: Option<ParsedValue>, field: &'static str) -> Result<u64, VirtioMemXmlError> {
-    value
-        .map(|parsed| parsed.value)
-        .ok_or(VirtioMemXmlError::MissingField(field))
+fn bytes(value: Option<u64>, field: &'static str) -> Result<u64, VirtioMemXmlError> {
+    value.ok_or(VirtioMemXmlError::MissingField(field))
 }
 
 fn attribute(

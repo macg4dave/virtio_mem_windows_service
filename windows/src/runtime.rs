@@ -229,8 +229,7 @@ pub type NativeWorker = GuestMemoryWorker<
 
 #[cfg(windows)]
 pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiringError> {
-    let session_id =
-        process_session_id(&config.service_name).map_err(RuntimeWiringError::WorkerConstruction)?;
+    let session_id = process_session_id().map_err(RuntimeWiringError::WorkerConstruction)?;
     let mut requests = GuestRequests::open(
         config.policy,
         &config.vm_name,

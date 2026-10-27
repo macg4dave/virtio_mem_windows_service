@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::Serialize;
 use virtio_mem_host::attestation::{AttestedCompatibilitySource, CompatibilityAttestation};
@@ -796,15 +796,7 @@ fn validate_identity(value: &str) -> Result<(), String> {
         Err("host-deploy INSTANCE contains unsafe characters".to_owned())
     }
 }
-fn now_millis() -> Result<u64, String> {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("system clock is before Unix epoch: {error}"))?
-            .as_millis(),
-    )
-    .map_err(|_| "Unix timestamp does not fit u64".to_owned())
-}
+use crate::process::unix_millis as now_millis;
 
 unsafe extern "C" {
     fn geteuid() -> u32;

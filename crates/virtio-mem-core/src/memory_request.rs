@@ -28,6 +28,15 @@ pub fn request_state_path(publication_path: &str) -> String {
     format!("{publication_path}.request-state")
 }
 
+/// The one rule for VM, service and session identities on the guest/host
+/// wire: non-empty printable ASCII of at most 128 bytes.
+pub fn valid_identity(value: &str) -> bool {
+    !value.trim().is_empty()
+        && value.len() <= 128
+        && value.is_ascii()
+        && !value.chars().any(char::is_control)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RequestIdentity {
@@ -60,18 +69,15 @@ impl MemoryRequest {
         if self.version != MEMORY_REQUEST_VERSION {
             return Err("unsupported memory request version".to_owned());
         }
-        for value in [
+        if ![
             &self.identity.vm_name,
             &self.identity.service_name,
             &self.identity.session_id,
-        ] {
-            if value.trim().is_empty()
-                || value.len() > 128
-                || !value.is_ascii()
-                || value.chars().any(char::is_control)
-            {
-                return Err("invalid memory request identity".to_owned());
-            }
+        ]
+        .into_iter()
+        .all(|value| valid_identity(value))
+        {
+            return Err("invalid memory request identity".to_owned());
         }
         if self.bytes == 0
             || self.issued_unix_millis == 0

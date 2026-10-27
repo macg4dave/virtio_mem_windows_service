@@ -8,7 +8,6 @@ pub mod guest_policy;
 pub mod memory_request;
 pub mod pool;
 pub mod settings;
-pub mod shrink_recovery;
 pub mod target_controller;
 pub mod units;
 pub mod virtio_mem;
@@ -28,7 +27,7 @@ pub use demand::{
     OptionalTelemetrySignal, PagingActivitySnapshot, RawTelemetryContractMode,
     RawTelemetryEnvelope, ReusableMemorySnapshot, TelemetryCapability, TelemetrySignalStatus,
     TelemetrySource, TelemetryWarmup, WindowsNativeTelemetry, WindowsTelemetryCapabilities,
-    LEGACY_RAW_TELEMETRY_VERSION, RAW_TELEMETRY_VERSION, WINDOWS_NATIVE_TELEMETRY_VERSION,
+    RAW_TELEMETRY_VERSION, WINDOWS_NATIVE_TELEMETRY_VERSION,
 };
 pub use error::VirtioMemError;
 pub use guest_policy::{
@@ -41,7 +40,6 @@ pub use memory_request::{
     MEMORY_WAKE_CHANNEL_NAME,
 };
 pub use pool::{allocate_pool, PoolAllocation, PoolError, PoolMember};
-pub use shrink_recovery::{AbandonAction, AbandonToCurrent, ShrinkObservation};
 pub use target_controller::{
     TargetEstimate, TargetEstimator, TargetEstimatorError, TargetGeometry, TargetPolicyConfig,
     TargetSample,

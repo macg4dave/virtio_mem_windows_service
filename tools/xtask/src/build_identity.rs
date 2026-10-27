@@ -77,7 +77,7 @@ pub struct BuildRecord {
     pub identity: BuildIdentity,
     pub service_sha256: String,
     pub workload_sha256: String,
-    pub fetched_unix_millis: u128,
+    pub fetched_unix_millis: u64,
 }
 
 impl BuildRecord {
@@ -85,7 +85,7 @@ impl BuildRecord {
         identity: BuildIdentity,
         service_sha256: String,
         workload_sha256: String,
-        fetched_unix_millis: u128,
+        fetched_unix_millis: u64,
     ) -> Self {
         Self {
             schema_version: RECORD_SCHEMA_VERSION,
