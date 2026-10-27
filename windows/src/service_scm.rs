@@ -1,6 +1,4 @@
-use std::ffi::OsStr;
-use std::iter::once;
-use std::os::windows::ffi::OsStrExt;
+use crate::native::to_wide;
 
 use winapi::ctypes::c_void;
 use winapi::shared::minwindef::{DWORD, FALSE, TRUE};
@@ -30,29 +28,7 @@ use crate::event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
 };
 use crate::runtime::native_raw_telemetry_worker;
-use crate::service_host::{ServiceHost, ServiceState, ServiceWorker, StopSignal};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScmServiceState {
-    StartPending,
-    Running,
-    StopPending,
-    Stopped,
-    Failed,
-}
-
-impl From<ServiceState> for ScmServiceState {
-    fn from(state: ServiceState) -> Self {
-        match state {
-            ServiceState::Created => Self::StartPending,
-            ServiceState::StartPending => Self::StartPending,
-            ServiceState::Running => Self::Running,
-            ServiceState::StopPending => Self::StopPending,
-            ServiceState::Stopped => Self::Stopped,
-            ServiceState::Failed => Self::Failed,
-        }
-    }
-}
+use crate::service_host::{ServiceHost, ServiceState, StopSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScmServiceStatus {
@@ -63,24 +39,16 @@ pub struct ScmServiceStatus {
 
 impl ScmServiceStatus {
     pub fn from_state(state: ServiceState) -> Self {
-        let current_state = match ScmServiceState::from(state) {
-            ScmServiceState::StartPending => SERVICE_START_PENDING,
-            ScmServiceState::Running => SERVICE_RUNNING,
-            ScmServiceState::StopPending => SERVICE_STOP_PENDING,
-            ScmServiceState::Stopped => SERVICE_STOPPED,
-            ScmServiceState::Failed => SERVICE_STOPPED,
-        } as DWORD;
-
-        let controls_accepted = match ScmServiceState::from(state) {
-            ScmServiceState::Running => SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
-            ScmServiceState::StopPending => SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
-            ScmServiceState::StartPending => 0,
-            ScmServiceState::Stopped | ScmServiceState::Failed => 0,
-        };
-
-        let exit_code = match ScmServiceState::from(state) {
-            ScmServiceState::Failed => 1,
-            _ => 0,
+        let (current_state, controls_accepted, exit_code) = match state {
+            ServiceState::Created | ServiceState::StartPending => (SERVICE_START_PENDING, 0, 0),
+            ServiceState::Running => (
+                SERVICE_RUNNING,
+                SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN,
+                0,
+            ),
+            ServiceState::StopPending => (SERVICE_STOP_PENDING, 0, 0),
+            ServiceState::Stopped => (SERVICE_STOPPED, 0, 0),
+            ServiceState::Failed => (SERVICE_STOPPED, 0, 1),
         };
 
         Self {
@@ -91,10 +59,10 @@ impl ScmServiceStatus {
     }
 }
 
-struct ServiceContext {
-    stop: StopSignal,
-    status_handle: SERVICE_STATUS_HANDLE,
-}
+// SCM may have entered a handler when the hosting thread reports Stopped.
+// Keep its sole cancellation context valid for the process lifetime; callbacks
+// never retain a status handle or publish status. This is an own-process service.
+static SCM_STOP: std::sync::OnceLock<StopSignal> = std::sync::OnceLock::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsServiceRegistration {
@@ -112,7 +80,11 @@ impl WindowsServiceRegistration {
         config.validate().map_err(|error| error.to_string())?;
 
         let executable_path = std::env::current_exe()
-            .map(|path| path.to_string_lossy().into_owned())
+            .and_then(|path| {
+                path.into_os_string()
+                    .into_string()
+                    .map_err(|_| std::io::Error::other("executable path is not Unicode"))
+            })
             .map_err(|error| format!("resolve executable path: {error}"))?;
 
         Ok(Self {
@@ -127,14 +99,28 @@ impl WindowsServiceRegistration {
     }
 }
 
-fn to_wide(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain(once(0)).collect()
+struct ServiceHandle(winapi::um::winsvc::SC_HANDLE);
+impl ServiceHandle {
+    fn checked(raw: winapi::um::winsvc::SC_HANDLE, operation: &str) -> Result<Self, String> {
+        if raw.is_null() {
+            Err(format!("{operation}: {}", std::io::Error::last_os_error()))
+        } else {
+            Ok(Self(raw))
+        }
+    }
+}
+impl Drop for ServiceHandle {
+    fn drop(&mut self) {
+        unsafe {
+            winapi::um::winsvc::CloseServiceHandle(self.0);
+        }
+    }
 }
 
 pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
     let registration = WindowsServiceRegistration::from_config(config)?;
     provision_program_data_acl(config)?;
-    let manager_name = to_wide("");
+    let manager_name = to_wide("")?;
     let manager = unsafe {
         OpenSCManagerW(
             manager_name.as_ptr(),
@@ -142,17 +128,15 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
             SC_MANAGER_CREATE_SERVICE,
         )
     };
-    if manager.is_null() {
-        return Err("OpenSCManagerW failed to open the service manager".to_owned());
-    }
+    let manager = ServiceHandle::checked(manager, "OpenSCManagerW")?;
 
-    let service_name = to_wide(&registration.service_name);
-    let display_name = to_wide(&registration.display_name);
-    let executable = to_wide(&registration.executable_path);
-    let account = to_wide(&registration.service_account);
+    let service_name = to_wide(&registration.service_name)?;
+    let display_name = to_wide(&registration.display_name)?;
+    let executable = to_wide(&format!("\"{}\"", registration.executable_path))?;
+    let account = to_wide(&registration.service_account)?;
     let service = unsafe {
         CreateServiceW(
-            manager,
+            manager.0,
             service_name.as_ptr(),
             display_name.as_ptr(),
             SERVICE_ALL_ACCESS,
@@ -168,92 +152,149 @@ pub fn install_service(config: &ServiceConfig) -> Result<(), String> {
         )
     };
 
-    if service.is_null() {
-        let os_error = std::io::Error::last_os_error();
+    let service = ServiceHandle::checked(service, "CreateServiceW")?;
+    let setup = (|| -> Result<(), String> {
         unsafe {
-            winapi::um::winsvc::CloseServiceHandle(manager);
+            let description = to_wide(&registration.description)?;
+            let mut description_config = SERVICE_DESCRIPTIONW {
+                lpDescription: description.as_ptr() as *mut u16,
+            };
+            if ChangeServiceConfig2W(
+                service.0,
+                SERVICE_CONFIG_DESCRIPTION,
+                (&mut description_config as *mut SERVICE_DESCRIPTIONW).cast(),
+            ) == FALSE
+            {
+                let error = std::io::Error::last_os_error();
+                return Err(format!("ChangeServiceConfig2W description failed: {error}"));
+            }
+
+            let mut actions = [
+                SC_ACTION {
+                    Type: SC_ACTION_RESTART,
+                    Delay: 5_000,
+                },
+                SC_ACTION {
+                    Type: SC_ACTION_RESTART,
+                    Delay: 30_000,
+                },
+                SC_ACTION {
+                    Type: SC_ACTION_RESTART,
+                    Delay: 60_000,
+                },
+            ];
+            let mut failure_actions = SERVICE_FAILURE_ACTIONSW {
+                dwResetPeriod: 86_400,
+                lpRebootMsg: std::ptr::null_mut(),
+                lpCommand: std::ptr::null_mut(),
+                cActions: actions.len() as DWORD,
+                lpsaActions: actions.as_mut_ptr(),
+            };
+            if ChangeServiceConfig2W(
+                service.0,
+                SERVICE_CONFIG_FAILURE_ACTIONS,
+                (&mut failure_actions as *mut SERVICE_FAILURE_ACTIONSW).cast(),
+            ) == FALSE
+            {
+                let error = std::io::Error::last_os_error();
+                return Err(format!("ChangeServiceConfig2W recovery failed: {error}"));
+            }
+
+            let mut failure_flag = SERVICE_FAILURE_ACTIONS_FLAG {
+                fFailureActionsOnNonCrashFailures: TRUE,
+            };
+            if ChangeServiceConfig2W(
+                service.0,
+                SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
+                (&mut failure_flag as *mut SERVICE_FAILURE_ACTIONS_FLAG).cast(),
+            ) == FALSE
+            {
+                let error = std::io::Error::last_os_error();
+                return Err(format!(
+                    "ChangeServiceConfig2W failure flag failed: {error}"
+                ));
+            }
         }
-        return Err(format!(
-            "CreateServiceW failed for {} with error {os_error}",
-            registration.service_name,
-        ));
+
+        Ok(())
+    })();
+    if let Err(error) = setup {
+        if unsafe { DeleteService(service.0) } == FALSE {
+            return Err(format!("{error}; cleanup DeleteService failed: {}; remove the partially created service before retrying installation", std::io::Error::last_os_error()));
+        }
+        return Err(error);
     }
-
-    unsafe {
-        let description = to_wide(&registration.description);
-        let mut description_config = SERVICE_DESCRIPTIONW {
-            lpDescription: description.as_ptr() as *mut u16,
-        };
-        if ChangeServiceConfig2W(
-            service,
-            SERVICE_CONFIG_DESCRIPTION,
-            (&mut description_config as *mut SERVICE_DESCRIPTIONW).cast(),
-        ) == FALSE
-        {
-            let error = std::io::Error::last_os_error();
-            winapi::um::winsvc::CloseServiceHandle(service);
-            winapi::um::winsvc::CloseServiceHandle(manager);
-            return Err(format!("ChangeServiceConfig2W description failed: {error}"));
-        }
-
-        let mut actions = [
-            SC_ACTION {
-                Type: SC_ACTION_RESTART,
-                Delay: 5_000,
-            },
-            SC_ACTION {
-                Type: SC_ACTION_RESTART,
-                Delay: 30_000,
-            },
-            SC_ACTION {
-                Type: SC_ACTION_RESTART,
-                Delay: 60_000,
-            },
-        ];
-        let mut failure_actions = SERVICE_FAILURE_ACTIONSW {
-            dwResetPeriod: 86_400,
-            lpRebootMsg: std::ptr::null_mut(),
-            lpCommand: std::ptr::null_mut(),
-            cActions: actions.len() as DWORD,
-            lpsaActions: actions.as_mut_ptr(),
-        };
-        if ChangeServiceConfig2W(
-            service,
-            SERVICE_CONFIG_FAILURE_ACTIONS,
-            (&mut failure_actions as *mut SERVICE_FAILURE_ACTIONSW).cast(),
-        ) == FALSE
-        {
-            let error = std::io::Error::last_os_error();
-            winapi::um::winsvc::CloseServiceHandle(service);
-            winapi::um::winsvc::CloseServiceHandle(manager);
-            return Err(format!("ChangeServiceConfig2W recovery failed: {error}"));
-        }
-
-        let mut failure_flag = SERVICE_FAILURE_ACTIONS_FLAG {
-            fFailureActionsOnNonCrashFailures: TRUE,
-        };
-        if ChangeServiceConfig2W(
-            service,
-            SERVICE_CONFIG_FAILURE_ACTIONS_FLAG,
-            (&mut failure_flag as *mut SERVICE_FAILURE_ACTIONS_FLAG).cast(),
-        ) == FALSE
-        {
-            let error = std::io::Error::last_os_error();
-            winapi::um::winsvc::CloseServiceHandle(service);
-            winapi::um::winsvc::CloseServiceHandle(manager);
-            return Err(format!(
-                "ChangeServiceConfig2W failure flag failed: {error}"
-            ));
-        }
-
-        winapi::um::winsvc::CloseServiceHandle(service);
-        winapi::um::winsvc::CloseServiceHandle(manager);
-    }
-
     Ok(())
 }
 
 fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
+    if !config
+        .service_account
+        .eq_ignore_ascii_case(r"NT AUTHORITY\LocalService")
+    {
+        return Err(
+            "automatic ACL provisioning supports only NT AUTHORITY\\LocalService".to_owned(),
+        );
+    }
+    let report = std::path::Path::new(&config.demand_report_path);
+    let config_path = std::path::Path::new(&config.config_path);
+    let root = config_path
+        .parent()
+        .ok_or("configuration path has no parent")?;
+    let report_parent = report.parent().ok_or("telemetry path has no parent")?;
+    if virtio_mem_core::windows_service_config::normalize_windows_path(
+        root.to_str()
+            .ok_or("configuration directory is not Unicode")?,
+    )? != virtio_mem_core::windows_service_config::normalize_windows_path(
+        report_parent
+            .to_str()
+            .ok_or("telemetry directory is not Unicode")?,
+    )? {
+        return Err("configuration and telemetry files must share one ACL root".to_owned());
+    }
+    std::fs::create_dir_all(root)
+        .map_err(|error| format!("create service data directory: {error}"))?;
+    // The directory allows creation/traversal but neither DELETE nor
+    // FILE_DELETE_CHILD. New telemetry files inherit modify rights; the
+    // protected configuration DACL grants LocalService only read access.
+    apply_acl(
+        root,
+        "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1201bf;;;LS)(A;OIIO;0x1301bf;;;LS)",
+    )?;
+    apply_acl(config_path, "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;LS)")?;
+    // SetFileSecurity does not update existing children. Set their protected
+    // DACLs explicitly, including diagnostic and unpublished handoff files.
+    let prefix = report
+        .file_name()
+        .ok_or("telemetry path has no filename")?
+        .to_string_lossy()
+        .to_lowercase();
+    for entry in std::fs::read_dir(root).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_lowercase();
+        if name == prefix
+            || (1..=3).any(|index| name == format!("{prefix}.{index}"))
+            || name.starts_with(&format!("{prefix}.tmp-"))
+        {
+            crate::config::validate_file_identity(
+                &config.config_path,
+                entry
+                    .path()
+                    .to_str()
+                    .ok_or("publication path is not Unicode")?,
+            )
+            .map_err(|error| error.to_string())?;
+            apply_acl(
+                &entry.path(),
+                "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1301bf;;;LS)",
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn apply_acl(path: &std::path::Path, sddl: &str) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
     use winapi::shared::minwindef::HLOCAL;
     use winapi::shared::sddl::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -261,78 +302,62 @@ fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
     use winapi::um::securitybaseapi::SetFileSecurityW;
     use winapi::um::winbase::LocalFree;
     use winapi::um::winnt::{
-        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+        DACL_SECURITY_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, OWNER_SECURITY_INFORMATION,
+        PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
     };
-
-    if !config
-        .service_account
-        .eq_ignore_ascii_case(r"NT AUTHORITY\LocalService")
+    if std::fs::symlink_metadata(path)
+        .map_err(|error| error.to_string())?
+        .file_attributes()
+        & FILE_ATTRIBUTE_REPARSE_POINT
+        != 0
     {
-        return Err(
-            "automatic ProgramData ACL provisioning supports only NT AUTHORITY\\LocalService"
-                .to_owned(),
-        );
+        return Err(format!(
+            "refusing ACL provisioning on reparse point {}",
+            path.display()
+        ));
     }
-    let report_parent = std::path::Path::new(&config.demand_report_path)
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| "demand report path has no parent directory".to_owned())?;
-    let config_parent = std::path::Path::new(&config.config_path)
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| "configuration path has no parent directory".to_owned())?;
-    if report_parent != config_parent {
-        return Err("configuration and telemetry files must share one ACL root".to_owned());
-    }
-    std::fs::create_dir_all(report_parent)
-        .map_err(|error| format!("create service data directory: {error}"))?;
-
-    // Protected DACL: SYSTEM and Administrators have full control; LocalService
-    // has the file/directory rights required to create and atomically replace
-    // telemetry while no broad Users/Everyone ACE is inherited.
-    let sddl = to_wide("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1301bf;;;LS)");
+    let sddl = to_wide(sddl)?;
+    let path = to_wide(path.to_str().ok_or("ACL path is not Unicode")?)?;
     let mut descriptor: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
-    // SAFETY: The SDDL and path are NUL-terminated UTF-16 buffers, the API
-    // initializes descriptor, and LocalFree releases the returned allocation.
-    let converted = unsafe {
+    if unsafe {
         ConvertStringSecurityDescriptorToSecurityDescriptorW(
             sddl.as_ptr(),
             SDDL_REVISION_1.into(),
             &mut descriptor,
             std::ptr::null_mut(),
         )
-    };
-    if converted == FALSE {
+    } == FALSE
+    {
         return Err(format!(
-            "convert ProgramData security descriptor: {}",
+            "convert security descriptor: {}",
             std::io::Error::last_os_error()
         ));
     }
-    let path = to_wide(&report_parent.to_string_lossy());
-    let applied = unsafe {
+    let result = unsafe {
         SetFileSecurityW(
             path.as_ptr(),
-            DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+            OWNER_SECURITY_INFORMATION
+                | DACL_SECURITY_INFORMATION
+                | PROTECTED_DACL_SECURITY_INFORMATION,
             descriptor,
         )
     };
+    // Capture the API error before LocalFree can change the thread error code.
+    let error = (result == FALSE).then(std::io::Error::last_os_error);
     unsafe {
         LocalFree(descriptor as HLOCAL);
     }
-    if applied == FALSE {
-        return Err(format!(
-            "apply ProgramData security descriptor: {}",
-            std::io::Error::last_os_error()
-        ));
+    match error {
+        Some(error) => Err(format!("apply service ACL: {error}")),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 pub fn run_as_service() -> Result<bool, String> {
     // This is an own-process service, so SCM ignores the table name and passes
     // the installed identity to `service_main`. Keeping the table entry empty
     // avoids coupling dispatcher attachment to the configurable install name.
-    let service_name = to_wide("");
+    let service_name = to_wide("")?;
     let mut table = [
         SERVICE_TABLE_ENTRYW {
             lpServiceName: service_name.as_ptr() as *mut u16,
@@ -365,16 +390,15 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
             return;
         }
     };
-    let stop = StopSignal::new();
-    let service_name = to_wide(&event_source);
-    let mut context = Box::new(ServiceContext {
-        stop: stop.clone(),
-        status_handle: std::ptr::null_mut(),
-    });
+    let callback_stop = SCM_STOP.get_or_init(StopSignal::new);
+    let stop = callback_stop.clone();
+    let Ok(service_name) = to_wide(&event_source) else {
+        return;
+    };
     let status_handle = RegisterServiceCtrlHandlerExW(
         service_name.as_ptr(),
         Some(service_control_handler),
-        (&mut *context) as *mut ServiceContext as *mut _,
+        callback_stop as *const StopSignal as *mut _,
     );
     if status_handle.is_null() {
         emit_event(
@@ -390,7 +414,6 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
         );
         return;
     }
-    context.status_handle = status_handle;
 
     if let Err(error) = publish_status(
         status_handle,
@@ -447,37 +470,42 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
         );
         return;
     }
-    let shutdown_timeout = config.shutdown_timeout;
-    let status_handle_value = status_handle as usize;
-    let running_event_source = event_source.clone();
-    let stop_observer = stop.clone();
-    let mut host = ServiceHost::with_stop_and_shutdown_timeout(
-        move |service_stop: &StopSignal| {
-            let mut worker = native_raw_telemetry_worker(&config)
-                .map_err(|error| format!("runtime wiring / {error}"))?;
-            worker
-                .initialize(service_stop)
-                .map_err(|error| format!("runtime wiring / worker initialization: {error}"))?;
-            publish_status(
-                status_handle_value as SERVICE_STATUS_HANDLE,
-                ScmServiceStatus::from_state(ServiceState::Running),
-            )
-            .map_err(|error| format!("runtime wiring / publish running status: {error}"))?;
+    let worker = match native_raw_telemetry_worker(&config) {
+        Ok(worker) => worker,
+        Err(error) => {
             emit_event(
-                &running_event_source,
+                &event_source,
                 ServiceEvent::new(
-                    ServiceEventId::Running,
-                    ServiceEventLevel::Information,
-                    "service worker is running",
+                    ServiceEventId::WorkerFailed,
+                    ServiceEventLevel::Error,
+                    error.to_string(),
                 ),
             );
-            worker.run(service_stop)
-        },
-        stop,
-        shutdown_timeout,
-    );
+            let _ = publish_status(
+                status_handle,
+                ScmServiceStatus::from_state(ServiceState::Failed),
+            );
+            return;
+        }
+    };
+    let stop_observer = stop.clone();
+    let mut host =
+        ServiceHost::with_stop_and_shutdown_timeout(worker, stop, config.shutdown_timeout);
     let result = host
-        .run()
+        .run_with_status(|state| {
+            publish_status(status_handle, ScmServiceStatus::from_state(state))?;
+            if state == ServiceState::Running {
+                emit_event(
+                    &event_source,
+                    ServiceEvent::new(
+                        ServiceEventId::Running,
+                        ServiceEventLevel::Information,
+                        "service worker is running",
+                    ),
+                );
+            }
+            Ok(())
+        })
         .map_err(|error| format!("runtime wiring / service host execution: {error}"));
     let stop_requested = stop_observer.is_cancelled();
     if stop_requested {
@@ -547,17 +575,9 @@ unsafe extern "system" fn service_control_handler(
     if context.is_null() {
         return 1;
     }
-    let context = &*(context as *const ServiceContext);
+    let stop = &*(context as *const StopSignal);
     if control == SERVICE_CONTROL_STOP || control == SERVICE_CONTROL_SHUTDOWN {
-        context.stop.cancel();
-        if publish_status(
-            context.status_handle,
-            ScmServiceStatus::from_state(ServiceState::StopPending),
-        )
-        .is_err()
-        {
-            return 1;
-        }
+        stop.cancel();
         0
     } else {
         1
@@ -627,100 +647,52 @@ fn publish_status(handle: SERVICE_STATUS_HANDLE, status: ScmServiceStatus) -> Re
     }
 }
 
+fn open_service(service_name: &str, access: DWORD) -> Result<ServiceHandle, String> {
+    if service_name.is_empty() || service_name.contains(['/', '\\']) {
+        return Err("invalid service name".to_owned());
+    }
+    let name = to_wide(service_name)?;
+    let manager = ServiceHandle::checked(
+        unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), 0) },
+        "OpenSCManagerW",
+    )?;
+    ServiceHandle::checked(
+        unsafe { OpenServiceW(manager.0, name.as_ptr(), access) },
+        "OpenServiceW",
+    )
+}
+
 pub fn stop_service(service_name: &str) -> Result<(), String> {
-    let manager_name = to_wide("");
-    let manager = unsafe { OpenSCManagerW(manager_name.as_ptr(), std::ptr::null(), 0) };
-    if manager.is_null() {
-        return Err("OpenSCManagerW failed while preparing to stop the service".to_owned());
+    let service = open_service(service_name, SERVICE_STOP)?;
+    let mut status: SERVICE_STATUS = unsafe { std::mem::zeroed() };
+    if unsafe { ControlService(service.0, SERVICE_CONTROL_STOP, &mut status) } == FALSE {
+        return Err(format!(
+            "ControlService for {service_name}: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-
-    let service_name_u16 = to_wide(service_name);
-    let service = unsafe { OpenServiceW(manager, service_name_u16.as_ptr(), SERVICE_STOP) };
-    if service.is_null() {
-        unsafe {
-            winapi::um::winsvc::CloseServiceHandle(manager);
-        }
-        return Err(format!("OpenServiceW failed for {service_name}"));
-    }
-
-    let mut status = SERVICE_STATUS {
-        dwServiceType: 0,
-        dwCurrentState: 0,
-        dwControlsAccepted: 0,
-        dwWin32ExitCode: 0,
-        dwServiceSpecificExitCode: 0,
-        dwCheckPoint: 0,
-        dwWaitHint: 0,
-    };
-
-    let stopped = unsafe { ControlService(service, SERVICE_CONTROL_STOP, &mut status) };
-    unsafe {
-        winapi::um::winsvc::CloseServiceHandle(service);
-        winapi::um::winsvc::CloseServiceHandle(manager);
-    }
-
-    if stopped == FALSE {
-        return Err(format!("ControlService failed for {service_name}"));
-    }
-
     Ok(())
 }
 
 pub fn start_service(service_name: &str) -> Result<(), String> {
-    let manager_name = to_wide("");
-    let manager = unsafe { OpenSCManagerW(manager_name.as_ptr(), std::ptr::null(), 0) };
-    if manager.is_null() {
-        return Err("OpenSCManagerW failed while preparing to start the service".to_owned());
+    let service = open_service(service_name, SERVICE_START)?;
+    if unsafe { StartServiceW(service.0, 0, std::ptr::null_mut()) } == FALSE {
+        return Err(format!(
+            "StartServiceW for {service_name}: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-
-    let service_name_u16 = to_wide(service_name);
-    let service = unsafe { OpenServiceW(manager, service_name_u16.as_ptr(), SERVICE_START) };
-    if service.is_null() {
-        unsafe {
-            winapi::um::winsvc::CloseServiceHandle(manager);
-        }
-        return Err(format!("OpenServiceW failed for {service_name}"));
-    }
-
-    let started = unsafe { StartServiceW(service, 0, std::ptr::null_mut()) };
-    unsafe {
-        winapi::um::winsvc::CloseServiceHandle(service);
-        winapi::um::winsvc::CloseServiceHandle(manager);
-    }
-
-    if started == FALSE {
-        return Err(format!("StartServiceW failed for {service_name}"));
-    }
-
     Ok(())
 }
 
 pub fn remove_service(service_name: &str) -> Result<(), String> {
-    let manager_name = to_wide("");
-    let manager = unsafe { OpenSCManagerW(manager_name.as_ptr(), std::ptr::null(), 0) };
-    if manager.is_null() {
-        return Err("OpenSCManagerW failed while preparing to remove the service".to_owned());
+    let service = open_service(service_name, SERVICE_DELETE)?;
+    if unsafe { DeleteService(service.0) } == FALSE {
+        return Err(format!(
+            "DeleteService for {service_name}: {}",
+            std::io::Error::last_os_error()
+        ));
     }
-
-    let service_name_u16 = to_wide(service_name);
-    let service = unsafe { OpenServiceW(manager, service_name_u16.as_ptr(), SERVICE_DELETE) };
-    if service.is_null() {
-        unsafe {
-            winapi::um::winsvc::CloseServiceHandle(manager);
-        }
-        return Err(format!("OpenServiceW failed for {service_name}"));
-    }
-
-    let removed = unsafe { DeleteService(service) };
-    unsafe {
-        winapi::um::winsvc::CloseServiceHandle(service);
-        winapi::um::winsvc::CloseServiceHandle(manager);
-    }
-
-    if removed == FALSE {
-        return Err(format!("DeleteService failed for {service_name}"));
-    }
-
     Ok(())
 }
 
@@ -772,7 +744,7 @@ mod tests {
 
     #[test]
     fn service_main_uses_the_scm_supplied_service_identity() {
-        let mut encoded = to_wide("ConfiguredVirtioMemService");
+        let mut encoded = to_wide("ConfiguredVirtioMemService").unwrap();
         let mut argument = encoded.as_mut_ptr();
 
         let service_name = unsafe { service_name_from_main_args(1, &mut argument) };

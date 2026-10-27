@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -10,7 +8,6 @@ use virtio_mem_host::attestation::{AttestedCompatibilitySource, CompatibilityAtt
 use virtio_mem_host::compatibility_source::CompatibilitySource;
 use virtio_mem_host::config::HostConfig;
 use virtio_mem_host::virsh::Virsh;
-use wait_timeout::ChildExt;
 
 use crate::process;
 
@@ -520,55 +517,16 @@ fn hash(path: &Path, repo: &Path, timeout: Duration) -> Result<String, String> {
 fn run_elevated(command: &Command, repo: &Path) -> Result<String, String> {
     let executable =
         std::env::current_exe().map_err(|error| format!("resolve xtask executable: {error}"))?;
-    let mut child = ProcessCommand::new("sudo")
-        .arg("--")
-        .arg(executable)
-        .args(elevated_arguments(command))
-        .current_dir(repo)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|error| format!("start sudo host deployment: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "capture elevated host deployment".to_owned())?;
-    let reader = std::thread::spawn(move || {
-        let mut stdout = stdout;
-        let mut bytes = Vec::new();
-        stdout
-            .read_to_end(&mut bytes)
-            .map(|_| bytes)
-            .map_err(|error| format!("read elevated host deployment: {error}"))
-    });
-    let workflow_timeout = command
-        .timeout
-        .checked_mul(16)
-        .ok_or_else(|| "elevated host deployment timeout overflowed".to_owned())?;
-    let status = if let Some(status) = child
-        .wait_timeout(workflow_timeout)
-        .map_err(|error| format!("wait for elevated host deployment: {error}"))?
-    {
-        status
-    } else {
-        child
-            .kill()
-            .map_err(|error| format!("terminate timed-out elevated host deployment: {error}"))?;
-        let _ = child.wait();
-        let _ = reader.join();
-        return Err(format!(
-            "elevated host deployment timed out after {workflow_timeout:?}"
-        ));
-    };
-    let bytes = reader
-        .join()
-        .map_err(|_| "elevated host deployment stdout reader panicked".to_owned())??;
-    if !status.success() {
-        return Err(format!("elevated host deployment failed with {status}"));
-    }
-    String::from_utf8(bytes)
-        .map_err(|error| format!("elevated host deployment returned invalid UTF-8: {error}"))
+    let mut args = vec![process::os("--"), executable.into_os_string()];
+    args.extend(elevated_arguments(command));
+    process::elevated_text(
+        &args,
+        repo,
+        command
+            .timeout
+            .checked_mul(4)
+            .ok_or("elevated workflow timeout overflowed")?,
+    )
 }
 
 fn elevated_arguments(command: &Command) -> Vec<OsString> {

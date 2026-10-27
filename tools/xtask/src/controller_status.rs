@@ -1,11 +1,9 @@
 use std::ffi::OsString;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use wait_timeout::ChildExt;
 
 use virtio_mem_host::config::HostConfig;
 
@@ -227,55 +225,16 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
 fn run_elevated(command: &Command, repo: &Path) -> Result<String, String> {
     let executable =
         std::env::current_exe().map_err(|error| format!("resolve xtask executable: {error}"))?;
-    let mut child = ProcessCommand::new("sudo")
-        .arg("--")
-        .arg(executable)
-        .args(elevated_arguments(command))
-        .current_dir(repo)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|error| format!("start elevated controller status: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "capture elevated controller status".to_owned())?;
-    let reader = std::thread::spawn(move || {
-        let mut stdout = stdout;
-        let mut bytes = Vec::new();
-        stdout
-            .read_to_end(&mut bytes)
-            .map(|_| bytes)
-            .map_err(|error| format!("read elevated controller status: {error}"))
-    });
-    let workflow_timeout = command
-        .timeout
-        .checked_mul(4)
-        .ok_or_else(|| "controller status timeout overflowed".to_owned())?;
-    let status = if let Some(status) = child
-        .wait_timeout(workflow_timeout)
-        .map_err(|error| format!("wait for elevated controller status: {error}"))?
-    {
-        status
-    } else {
-        child
-            .kill()
-            .map_err(|error| format!("terminate timed-out controller status: {error}"))?;
-        let _ = child.wait();
-        let _ = reader.join();
-        return Err(format!(
-            "elevated controller status timed out after {workflow_timeout:?}"
-        ));
-    };
-    let bytes = reader
-        .join()
-        .map_err(|_| "elevated controller status stdout reader panicked".to_owned())??;
-    if !status.success() {
-        return Err(format!("elevated controller status failed with {status}"));
-    }
-    String::from_utf8(bytes)
-        .map_err(|error| format!("elevated controller status returned invalid UTF-8: {error}"))
+    let mut args = vec![process::os("--"), executable.into_os_string()];
+    args.extend(elevated_arguments(command));
+    process::elevated_text(
+        &args,
+        repo,
+        command
+            .timeout
+            .checked_mul(4)
+            .ok_or("elevated workflow timeout overflowed")?,
+    )
 }
 
 fn elevated_arguments(command: &Command) -> Vec<OsString> {

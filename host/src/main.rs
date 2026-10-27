@@ -109,7 +109,8 @@ fn vm_controller(virsh: &Virsh, config: HostConfig) -> Result<Controller, String
             config.raw_telemetry_future_tolerance,
         )),
     };
-    let demand = TargetDemandSource::new(raw, &config)?;
+    let owner = virtio_mem_host::ownership::DeviceOwner::for_domain(virsh, &config.vm_name)?;
+    let demand = TargetDemandSource::new(raw, &config, owner)?;
     Ok(VmController::new(
         demand,
         VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),

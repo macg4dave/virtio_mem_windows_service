@@ -38,6 +38,9 @@ fn startup_route(command: Option<ServiceCommand>) -> StartupRoute {
 }
 
 fn parse_command(args: &[String]) -> Option<ServiceCommand> {
+    if args.len() > 1 {
+        return None;
+    }
     let command = args.first().map(String::as_str).unwrap_or("run");
     match command {
         "install" => Some(ServiceCommand::Install),
@@ -74,7 +77,7 @@ fn main() {
             process::exit(2);
         }
         StartupRoute::Help => {
-            println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]");
+            println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]\nRecovery with missing/damaged configuration: sc.exe stop SERVICE_NAME; sc.exe delete SERVICE_NAME (administrator terminal). Use the installed SCM identity.");
             return;
         }
         StartupRoute::DispatchThenLoadConfiguration => {}
@@ -197,6 +200,10 @@ mod tests {
             Some(ServiceCommand::Help)
         );
         assert_eq!(parse_command(&[String::from("unknown")]), None);
+        assert_eq!(
+            parse_command(&[String::from("stop"), String::from("ignored")]),
+            None
+        );
     }
 
     #[test]

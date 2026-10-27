@@ -3,7 +3,6 @@ use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
 use thiserror::Error;
-use wait_timeout::ChildExt;
 
 #[derive(Debug, Error)]
 pub enum VirshError {
@@ -124,7 +123,7 @@ impl VirshCommand for Virsh {
 fn read_only(arguments: &[String]) -> bool {
     matches!(
         arguments.first().map(String::as_str),
-        Some("dumpxml" | "domstate" | "version")
+        Some("dumpxml" | "domstate" | "domuuid" | "version")
     )
 }
 
@@ -166,50 +165,168 @@ fn process_identity() -> io::Result<String> {
     ))
 }
 
-fn bounded_output(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+pub fn bounded_output(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+    capture_output(command, timeout, false)
+}
+
+/// Capture stdout while keeping terminal input and diagnostics available to
+/// explicitly requested interactive commands such as operator elevation.
+pub fn bounded_interactive_output(command: &mut Command, timeout: Duration) -> io::Result<Output> {
+    capture_output(command, timeout, true)
+}
+
+/// Capture at most 4 MiB per stream. The deadline includes descendants holding
+/// inherited pipes, rather than just waiting for the direct child.
+#[cfg(unix)]
+fn capture_output(
+    command: &mut Command,
+    timeout: Duration,
+    interactive: bool,
+) -> io::Result<Output> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::process::CommandExt;
+    use std::time::Instant;
+
+    // Elevated inventory can contain 32 escaped 256 KiB text files.
+    let output_limit = if interactive {
+        64 * 1024 * 1024
+    } else {
+        4 * 1024 * 1024
+    };
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "command timeout is too large")
+    })?;
     let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let mut stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| io::Error::other("child stdout is unavailable"))?;
-    let mut stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| io::Error::other("child stderr is unavailable"))?;
-    std::thread::scope(|scope| {
-        let stdout_reader = scope.spawn(move || {
-            let mut bytes = Vec::new();
-            stdout.read_to_end(&mut bytes).map(|_| bytes)
-        });
-        let stderr_reader = scope.spawn(move || {
-            let mut bytes = Vec::new();
-            stderr.read_to_end(&mut bytes).map(|_| bytes)
-        });
-        let waited = child.wait_timeout(timeout);
-        if !matches!(&waited, Ok(Some(_))) {
-            let terminate = child.kill();
-            let reap = child.wait();
-            terminate?;
-            reap?;
-        }
-        let status =
-            waited?.ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
-        let stdout = stdout_reader
-            .join()
-            .map_err(|_| io::Error::other("stdout reader panicked"))??;
-        let stderr = stderr_reader
-            .join()
-            .map_err(|_| io::Error::other("stderr reader panicked"))??;
-        Ok(Output {
-            status: status?,
-            stdout,
-            stderr,
+        .process_group(0)
+        .stdin(if interactive {
+            Stdio::inherit()
+        } else {
+            Stdio::null()
         })
-    })
+        .stdout(Stdio::piped())
+        .stderr(if interactive {
+            Stdio::inherit()
+        } else {
+            Stdio::piped()
+        })
+        .spawn()?;
+    let result = (|| {
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| io::Error::other("stdout unavailable"))?;
+        let mut stderr = child.stderr.take();
+        for fd in std::iter::once(stdout.as_raw_fd()).chain(stderr.as_ref().map(AsRawFd::as_raw_fd))
+        {
+            // SAFETY: both descriptors are owned and open throughout this call.
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut out_done = false;
+        let mut err_done = stderr.is_none();
+        let mut status = None;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "command timed out"));
+            }
+            // One chunk per stream per turn: a continuously writing child
+            // cannot starve the clock, other stream, or exit check.
+            fn read_chunk(
+                input: &mut impl Read,
+                bytes: &mut Vec<u8>,
+                limit: usize,
+            ) -> io::Result<bool> {
+                let mut chunk = [0; 16 * 1024];
+                match input.read(&mut chunk) {
+                    Ok(0) => Ok(true),
+                    Ok(count) => {
+                        if bytes.len() + count > limit {
+                            return Err(io::Error::other(format!(
+                                "command output exceeds {limit} byte stream limit"
+                            )));
+                        }
+                        bytes.extend_from_slice(&chunk[..count]);
+                        Ok(false)
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) =>
+                    {
+                        Ok(false)
+                    }
+                    Err(error) => Err(error),
+                }
+            }
+            if !out_done {
+                out_done = read_chunk(&mut stdout, &mut out, output_limit)?;
+            }
+            if !err_done {
+                if let Some(stderr) = stderr.as_mut() {
+                    err_done = read_chunk(stderr, &mut err, output_limit)?;
+                }
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if out_done && err_done {
+                if let Some(status) = status {
+                    return Ok(Output {
+                        status,
+                        stdout: out,
+                        stderr: err,
+                    });
+                }
+            }
+            std::thread::sleep(
+                Duration::from_millis(1).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+    })();
+    // Always clean up the owned process group, including descendants after the
+    // direct child exits. Dropping the pipes cannot strand reader threads.
+    // SAFETY: spawn placed this child in a new process group with its own PID.
+    let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+    let kill_error = (killed < 0)
+        .then(io::Error::last_os_error)
+        .filter(|error| error.raw_os_error() != Some(libc::ESRCH));
+    let reaped = child.wait();
+    match result {
+        Err(error) => Err(io::Error::new(
+            error.kind(),
+            format!(
+                "{error}{}{}",
+                kill_error
+                    .map(|error| format!("; process-group cleanup failed: {error}"))
+                    .unwrap_or_default(),
+                reaped
+                    .err()
+                    .map(|error| format!("; reap failed: {error}"))
+                    .unwrap_or_default()
+            ),
+        )),
+        Ok(output) => {
+            if let Some(error) = kill_error {
+                return Err(error);
+            }
+            reaped?;
+            Ok(output)
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn capture_output(_: &mut Command, _: Duration, _: bool) -> io::Result<Output> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "bounded host subprocesses require Unix",
+    ))
 }
 
 #[cfg(test)]
@@ -236,6 +353,19 @@ mod tests {
                 let bytes = vec![b'x'; 256 * 1024];
                 io::stdout().write_all(&bytes).expect("fixture stdout");
                 io::stderr().write_all(&bytes).expect("fixture stderr");
+            }
+            "excessive" => {
+                io::stdout()
+                    .write_all(&vec![b'x'; 5 * 1024 * 1024])
+                    .expect("fixture output");
+            }
+            "descendant" => {
+                #[allow(clippy::zombie_processes)]
+                // The fixture deliberately exits first to orphan a pipe holder.
+                let _descendant = Command::new("sh")
+                    .args(["-c", "sleep 10"])
+                    .spawn()
+                    .expect("descendant");
             }
             "failure" => {
                 eprintln!("fixture access denied");
@@ -268,6 +398,17 @@ mod tests {
         let error = bounded_output(&mut fixture("timeout"), Duration::from_millis(100))
             .expect_err("sleeping child must time out");
         assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn descendants_and_excessive_output_are_bounded() {
+        let started = std::time::Instant::now();
+        let error =
+            bounded_output(&mut fixture("descendant"), Duration::from_millis(100)).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert!(started.elapsed() < Duration::from_secs(2));
+        let error = bounded_output(&mut fixture("excessive"), Duration::from_secs(5)).unwrap_err();
+        assert!(error.to_string().contains("output exceeds"));
     }
 
     #[test]

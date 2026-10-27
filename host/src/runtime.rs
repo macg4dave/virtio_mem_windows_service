@@ -34,6 +34,9 @@ pub struct DemandEstimate {
 #[serde(deny_unknown_fields)]
 pub struct CommandIntent {
     pub operation_id: String,
+    /// Original execution start; absent legacy pending commands fail closed.
+    #[serde(default)]
+    pub started_unix_millis: Option<u64>,
     pub direction: virtio_mem_core::ReconcileDirection,
     pub prior_requested_bytes: u64,
     pub prior_current_bytes: u64,
@@ -121,6 +124,33 @@ pub enum ResizeSinkError {
 pub trait ResizeSink {
     fn request_resize(&self, requested_bytes: u64) -> Result<(), ResizeSinkError>;
 
+    fn request_resize_guarded(
+        &self,
+        expected: VirtioMemState,
+        target: u64,
+        stop: &AtomicBool,
+        authorize: &dyn Fn() -> Result<(), String>,
+    ) -> Result<(), ResizeSinkError> {
+        let _ = expected;
+        authorize().map_err(ResizeSinkError::Rejected)?;
+        if stop.load(Ordering::Acquire) {
+            return Err(ResizeSinkError::Rejected("shutdown requested".to_owned()));
+        }
+        self.request_resize(target)
+    }
+
+    fn supersede_shrink_guarded(
+        &self,
+        expected: VirtioMemState,
+        target: u64,
+        stop: &AtomicBool,
+    ) -> Result<(), ResizeSinkError> {
+        if stop.load(Ordering::Acquire) {
+            return Err(ResizeSinkError::Rejected("shutdown requested".to_owned()));
+        }
+        self.supersede_shrink(expected.requested_bytes, expected.current_bytes, target)
+    }
+
     fn supersede_shrink(
         &self,
         _prior_requested_bytes: u64,
@@ -203,15 +233,15 @@ pub struct HostRuntime<G, S, R, H> {
 /// comes only from the durable control state.
 #[derive(Default)]
 struct LoopState {
-    /// When the currently owned operation was first observed in this process.
-    /// A restart starts a fresh deadline; the durable latch is what prevents
-    /// a restart from resuming actuation.
+    /// Monotonic bound within this process, combined with the durable original
+    /// start time so restarts cannot extend an operation.
     pending_since: Option<Instant>,
     operation_counter: u64,
     unowned_divergence_reported: bool,
     state_unavailable_reported: bool,
     /// Last charge read from live state, kept while the VM is unreadable.
     last_charge: Option<(u64, u64)>,
+    outstanding_growth: Option<u64>,
     /// This VM failed and is latched; it is only watched for its pool charge
     /// until the daemon restarts.
     stopped: bool,
@@ -226,7 +256,18 @@ impl LoopState {
         format!("{}-{}", std::process::id(), self.operation_counter)
     }
 
-    fn pending_elapsed(&mut self, timeout: Duration) -> bool {
+    fn pending_elapsed(&mut self, timeout: Duration, intent: Option<&CommandIntent>) -> bool {
+        let now = crate::raw_telemetry::UnixClock::now_unix_millis(
+            &crate::raw_telemetry::SystemUnixClock,
+        );
+        let Some(started) = intent.and_then(|intent| intent.started_unix_millis) else {
+            return true;
+        };
+        if now.map_or(true, |now| {
+            now < started || u128::from(now - started) >= timeout.as_millis()
+        }) {
+            return true;
+        }
         self.pending_since
             .get_or_insert_with(Instant::now)
             .elapsed()
@@ -237,7 +278,6 @@ impl LoopState {
 /// Host memory granted to growth within one round, so two VMs growing in the
 /// same round cannot both count the same available host RAM.
 struct HostBudget {
-    available: Option<u64>,
     committed: u64,
 }
 
@@ -296,7 +336,7 @@ where
             .map(|_| LoopState::default())
             .collect::<Vec<_>>();
         while !stop.load(Ordering::Acquire) {
-            if let Step::Stop(error) = self.round(&mut locals)? {
+            if let Step::Stop(error) = self.round(&mut locals, stop)? {
                 return Err(error);
             }
             wait_interruptibly(stop, self.poll_interval);
@@ -309,14 +349,17 @@ where
     /// A VM that fails (a resize that never converges, a failed grow) is
     /// latched and stops; the others keep running. The daemon stops only once
     /// every VM has.
-    fn round(&self, locals: &mut [LoopState]) -> Result<Step, HostRuntimeError> {
+    fn round(&self, locals: &mut [LoopState], stop: &AtomicBool) -> Result<Step, HostRuntimeError> {
         let mut last_stop = None;
         let mut observed = Vec::with_capacity(self.vms.len());
         for (vm, local) in self.vms.iter().zip(locals.iter_mut()) {
+            if stop.load(Ordering::Acquire) {
+                return Ok(Step::Wait);
+            }
             let seen = if local.stopped {
                 vm.observe_stopped(local)
             } else {
-                vm.observe(local)?
+                vm.observe(local, stop)?
             };
             match seen {
                 Observed::Stop(error) => {
@@ -327,6 +370,9 @@ where
                 other => observed.push(other),
             }
         }
+        if stop.load(Ordering::Acquire) {
+            return Ok(Step::Wait);
+        }
         let ceilings = self.allocate(&observed)?;
         let mut order = (0..self.vms.len()).collect::<Vec<_>>();
         order.sort_by(|left, right| {
@@ -336,11 +382,15 @@ where
                 .cmp(&self.vms[*left].config.priority)
         });
         let mut host = HostBudget {
-            available: None,
-            committed: 0,
+            committed: locals.iter().fold(0_u64, |total, local| {
+                total.saturating_add(local.outstanding_growth.unwrap_or(u64::MAX))
+            }),
         };
         let mut observed = observed.into_iter().map(Some).collect::<Vec<_>>();
         for index in order {
+            if stop.load(Ordering::Acquire) {
+                break;
+            }
             let Some(Observed::Ready(ready)) = observed[index].take() else {
                 continue;
             };
@@ -351,6 +401,7 @@ where
                 &self.host_memory,
                 &mut host,
                 &mut locals[index],
+                stop,
             )? {
                 self.vms[index].stop(&mut locals[index], &error);
                 last_stop = Some(error);
@@ -404,7 +455,11 @@ where
     /// Phase one: resolve recorded state and, on a converged device, evaluate
     /// demand. Pending operations are handled here in full; they never need
     /// pool bytes because their charge already includes their target.
-    fn observe(&self, local: &mut LoopState) -> Result<Observed, HostRuntimeError> {
+    fn observe(
+        &self,
+        local: &mut LoopState,
+        stop: &AtomicBool,
+    ) -> Result<Observed, HostRuntimeError> {
         let mut control = self
             .demand_source
             .control_state()
@@ -435,9 +490,25 @@ where
                 });
             }
         };
+        local.outstanding_growth = Some(
+            state
+                .requested_bytes
+                .max(
+                    control
+                        .intent
+                        .as_ref()
+                        .map_or(0, |intent| intent.target_bytes),
+                )
+                .saturating_sub(state.current_bytes),
+        );
         local.state_unavailable_reported = false;
         let charge = (
-            state.requested_bytes.max(state.current_bytes),
+            state.requested_bytes.max(state.current_bytes).max(
+                control
+                    .intent
+                    .as_ref()
+                    .map_or(0, |intent| intent.target_bytes),
+            ),
             state.block_size_bytes,
         );
         local.last_charge = Some(charge);
@@ -452,10 +523,12 @@ where
             return Ok(held);
         }
         if state.requested_bytes != state.current_bytes {
-            return Ok(match self.observe_pending(&mut control, state, local)? {
-                Step::Wait => held,
-                Step::Stop(error) => Observed::Stop(error),
-            });
+            return Ok(
+                match self.observe_pending(&mut control, state, local, stop)? {
+                    Step::Wait => held,
+                    Step::Stop(error) => Observed::Stop(error),
+                },
+            );
         }
         local.pending_since = None;
         local.unowned_divergence_reported = false;
@@ -486,10 +559,23 @@ where
     /// A stopped VM still holds memory, so the pool keeps charging it.
     fn observe_stopped(&self, local: &mut LoopState) -> Observed {
         if let Ok(state) = self.live_state() {
-            local.last_charge = Some((
-                state.requested_bytes.max(state.current_bytes),
-                state.block_size_bytes,
-            ));
+            match self.demand_source.control_state() {
+                Ok(control) => {
+                    let requested = state.requested_bytes.max(
+                        control
+                            .intent
+                            .as_ref()
+                            .map_or(0, |intent| intent.target_bytes),
+                    );
+                    local.outstanding_growth = Some(requested.saturating_sub(state.current_bytes));
+                    local.last_charge =
+                        Some((requested.max(state.current_bytes), state.block_size_bytes));
+                }
+                Err(_) => {
+                    local.outstanding_growth = None;
+                    local.last_charge = None;
+                }
+            }
         }
         Observed::Held {
             charge: local.last_charge,
@@ -560,6 +646,7 @@ where
         control: &mut DurableControlState,
         state: VirtioMemState,
         local: &mut LoopState,
+        stop: &AtomicBool,
     ) -> Result<Step, HostRuntimeError> {
         let owned_direction = control
             .intent
@@ -568,7 +655,7 @@ where
             .map(|intent| intent.direction);
         match owned_direction {
             Some(ReconcileDirection::Grow) => {
-                if local.pending_elapsed(self.config.convergence_timeout) {
+                if local.pending_elapsed(self.config.convergence_timeout, control.intent.as_ref()) {
                     return Ok(Step::Stop(
                         self.stop_on_convergence_timeout(control, "growth")?,
                     ));
@@ -583,7 +670,7 @@ where
                 ReconcileDirection::Shrink
                 | ReconcileDirection::SupersedeShrink
                 | ReconcileDirection::FreezeShrink,
-            ) => self.observe_owned_shrink(control, state, local),
+            ) => self.observe_owned_shrink(control, state, local, stop),
             None => {
                 if !local.unowned_divergence_reported {
                     eprintln!(
@@ -604,8 +691,10 @@ where
         control: &mut DurableControlState,
         state: VirtioMemState,
         local: &mut LoopState,
+        stop: &AtomicBool,
     ) -> Result<Step, HostRuntimeError> {
-        let elapsed = local.pending_elapsed(self.config.convergence_timeout);
+        let elapsed =
+            local.pending_elapsed(self.config.convergence_timeout, control.intent.as_ref());
         if control.latched() {
             return self.shrink_deadline(control, state, elapsed);
         }
@@ -614,6 +703,7 @@ where
             Err(error) => {
                 let freeze = CommandIntent {
                     operation_id: local.next_operation_id(),
+                    started_unix_millis: None,
                     direction: ReconcileDirection::FreezeShrink,
                     prior_requested_bytes: state.requested_bytes,
                     prior_current_bytes: state.current_bytes,
@@ -623,12 +713,13 @@ where
                     compatibility_fingerprint_sha256: String::new(),
                 };
                 let operation_id = freeze.operation_id.clone();
+                if stop.load(Ordering::Acquire) {
+                    return Ok(Step::Wait);
+                }
                 self.record_intent(control, freeze)?;
-                let command = self.resize_sink.supersede_shrink(
-                    state.requested_bytes,
-                    state.current_bytes,
-                    state.current_bytes,
-                );
+                let command =
+                    self.resize_sink
+                        .supersede_shrink_guarded(state, state.current_bytes, stop);
                 self.latch(
                     control,
                     &format!("telemetry failed during owned shrink: {error}"),
@@ -665,10 +756,11 @@ where
             if !elapsed {
                 return Ok(Step::Wait);
             }
-            return self.settle_short(control, state, local);
+            return self.settle_short(control, state, local, stop);
         };
         let supersede = CommandIntent {
             operation_id: local.next_operation_id(),
+            started_unix_millis: None,
             direction: ReconcileDirection::SupersedeShrink,
             prior_requested_bytes: state.requested_bytes,
             prior_current_bytes: state.current_bytes,
@@ -680,12 +772,13 @@ where
             compatibility_fingerprint_sha256: String::new(),
         };
         let operation_id = supersede.operation_id.clone();
+        if stop.load(Ordering::Acquire) {
+            return Ok(Step::Wait);
+        }
         self.record_intent(control, supersede)?;
-        let command = self.resize_sink.supersede_shrink(
-            state.requested_bytes,
-            state.current_bytes,
-            target_bytes,
-        );
+        let command = self
+            .resize_sink
+            .supersede_shrink_guarded(state, target_bytes, stop);
         eprintln!(
             "virtio-mem-host: event=shrink_superseded operation_id={operation_id} vm={} alias={} prior_requested_bytes={} current_bytes={} target_bytes={target_bytes} command_result={command:?}",
             self.config.vm_name, self.config.alias, state.requested_bytes, state.current_bytes
@@ -707,9 +800,11 @@ where
         control: &mut DurableControlState,
         state: VirtioMemState,
         local: &mut LoopState,
+        stop: &AtomicBool,
     ) -> Result<Step, HostRuntimeError> {
         let settle = CommandIntent {
             operation_id: local.next_operation_id(),
+            started_unix_millis: None,
             direction: ReconcileDirection::FreezeShrink,
             prior_requested_bytes: state.requested_bytes,
             prior_current_bytes: state.current_bytes,
@@ -719,12 +814,13 @@ where
             compatibility_fingerprint_sha256: String::new(),
         };
         let operation_id = settle.operation_id.clone();
+        if stop.load(Ordering::Acquire) {
+            return Ok(Step::Wait);
+        }
         self.record_intent(control, settle)?;
-        let command = self.resize_sink.supersede_shrink(
-            state.requested_bytes,
-            state.current_bytes,
-            state.current_bytes,
-        );
+        let command = self
+            .resize_sink
+            .supersede_shrink_guarded(state, state.current_bytes, stop);
         eprintln!(
             "virtio-mem-host: event=shrink_settled_short operation_id={operation_id} vm={} alias={} target_bytes={} kept_bytes={} command_result={command:?}",
             self.config.vm_name, self.config.alias, state.requested_bytes, state.current_bytes
@@ -733,7 +829,13 @@ where
             self.latch(control, &format!("settling a short shrink failed: {error}"))?;
         }
         local.pending_since = None;
-        local.shrink_paused_until = Some(Instant::now() + self.config.reclaim_history);
+        local.shrink_paused_until = Some(
+            Instant::now()
+                .checked_add(self.config.reclaim_history)
+                .ok_or_else(|| {
+                    HostRuntimeError::Controller("reclaim history duration is too large".to_owned())
+                })?,
+        );
         Ok(Step::Wait)
     }
 
@@ -764,6 +866,7 @@ where
         host_memory: &H,
         host: &mut HostBudget,
         local: &mut LoopState,
+        stop: &AtomicBool,
     ) -> Result<Step, HostRuntimeError> {
         let Ready {
             mut control,
@@ -820,14 +923,9 @@ where
             return Ok(Step::Wait);
         }
         if direction == ReconcileDirection::Grow {
-            let host_available = match host.available {
-                Some(available) => available,
-                None => *host.available.insert(
-                    host_memory
-                        .available_bytes()
-                        .map_err(HostRuntimeError::HostMemory)?,
-                ),
-            };
+            let host_available = host_memory
+                .available_bytes()
+                .map_err(HostRuntimeError::HostMemory)?;
             if let Err(error) = validate_grow_headroom(
                 state.current_bytes,
                 target_bytes,
@@ -843,6 +941,7 @@ where
         }
         let intent = CommandIntent {
             operation_id: local.next_operation_id(),
+            started_unix_millis: None,
             direction,
             prior_requested_bytes: state.requested_bytes,
             prior_current_bytes: state.current_bytes,
@@ -854,8 +953,33 @@ where
             compatibility_fingerprint_sha256: String::new(),
         };
         let operation_id = intent.operation_id.clone();
+        if stop.load(Ordering::Acquire) {
+            return Ok(Step::Wait);
+        }
         self.record_intent(control, intent)?;
-        if let Err(error) = self.resize_sink.request_resize(target_bytes) {
+        let previously_committed = host.committed;
+        let growth = target_bytes.saturating_sub(state.current_bytes);
+        // Reserve before invoking a command: even a lost/error response may
+        // have started growth and must constrain later members in this round.
+        host.committed = host.committed.saturating_add(growth);
+        local.outstanding_growth = Some(growth);
+        let authorize = || {
+            if direction == ReconcileDirection::Grow {
+                validate_grow_headroom(
+                    state.current_bytes,
+                    target_bytes,
+                    host_memory
+                        .available_bytes()?
+                        .saturating_sub(previously_committed),
+                    self.config.host_min_headroom_bytes,
+                )?;
+            }
+            Ok(())
+        };
+        if let Err(error) =
+            self.resize_sink
+                .request_resize_guarded(state, target_bytes, stop, &authorize)
+        {
             // Classify against fresh live state when it is readable; the latch
             // below stops actuation whatever the classification.
             if let Ok(live) = self.live_state() {
@@ -877,12 +1001,8 @@ where
                 Step::Wait
             });
         }
+        local.outstanding_growth = Some(target_bytes.saturating_sub(state.current_bytes));
         local.pending_since = Some(Instant::now());
-        if direction == ReconcileDirection::Grow {
-            host.committed = host
-                .committed
-                .saturating_add(target_bytes - state.current_bytes);
-        }
         eprintln!(
             "virtio-mem-host: event=resize_requested operation_id={operation_id} vm={} alias={} direction={direction:?} target_bytes={target_bytes} requested_bytes={} current_bytes={}",
             self.config.vm_name, self.config.alias, state.requested_bytes, state.current_bytes
@@ -911,7 +1031,7 @@ where
     fn record_intent(
         &self,
         control: &mut DurableControlState,
-        intent: CommandIntent,
+        mut intent: CommandIntent,
     ) -> Result<(), HostRuntimeError> {
         if control.latched() {
             return Err(HostRuntimeError::Controller(
@@ -925,6 +1045,15 @@ where
                 ));
             }
         }
+        intent.started_unix_millis = Some(match control.intent.as_ref() {
+            Some(previous) => previous.started_unix_millis.ok_or_else(|| {
+                HostRuntimeError::Controller("pending command has no original deadline".to_owned())
+            })?,
+            None => crate::raw_telemetry::UnixClock::now_unix_millis(
+                &crate::raw_telemetry::SystemUnixClock,
+            )
+            .map_err(HostRuntimeError::Controller)?,
+        });
         control.intent = Some(intent);
         self.save(control)
     }
@@ -978,7 +1107,9 @@ where
 }
 
 fn wait_interruptibly(stop: &AtomicBool, duration: Duration) {
-    let deadline = Instant::now() + duration;
+    let Some(deadline) = Instant::now().checked_add(duration) else {
+        return;
+    };
     while !stop.load(Ordering::Acquire) {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -1064,6 +1195,12 @@ mod tests {
     ) -> CommandIntent {
         CommandIntent {
             operation_id: "recorded".to_owned(),
+            started_unix_millis: Some(
+                crate::raw_telemetry::UnixClock::now_unix_millis(
+                    &crate::raw_telemetry::SystemUnixClock,
+                )
+                .unwrap(),
+            ),
             direction,
             prior_requested_bytes: prior,
             prior_current_bytes: current,
@@ -1169,15 +1306,13 @@ mod tests {
 
     impl MemoryStateSource for &ScriptedState<'_> {
         fn memory_state(&self) -> Result<VirtioMemState, String> {
-            let observation = self
-                .observations
-                .borrow_mut()
-                .pop_front()
-                .ok_or_else(|| "state script exhausted".to_owned())?;
-            if self.observations.borrow().is_empty() {
-                self.stop.store(true, Ordering::Release);
+            match self.observations.borrow_mut().pop_front() {
+                Some(observation) => observation,
+                None => {
+                    self.stop.store(true, Ordering::Release);
+                    Err("state script exhausted".to_owned())
+                }
             }
-            observation
         }
     }
 
@@ -1336,13 +1471,107 @@ mod tests {
         // With nothing plugged and no history, the estimator's safe floor is
         // min(current, desired) = 0. That is a valid input, not an error.
         let stop = AtomicBool::new(false);
-        let demand = FakeDemand::new(|_| Ok(fresh(4 * GIB, 0))).stopping_after(1, &stop);
+        let demand = FakeDemand::new(|_| Ok(fresh(4 * GIB, 0)));
         let source = ScriptedState::new(&stop, [Ok(state(0, 0)), Ok(state(GIB, 0))]);
         let sink = RecordingSink::default();
-        let runtime = HostRuntime::new(&demand, &source, &sink, AmpleHostMemory, config());
+        let runtime = HostRuntime::new(&demand, &source, &sink, AmpleHostMemory, fast_config());
 
         runtime.run(&stop).expect("an empty device can grow");
         assert_eq!(sink.requests.borrow().as_slice(), [GIB]);
+    }
+
+    #[test]
+    fn stop_during_telemetry_prevents_journalling_and_actuation() {
+        let stop = AtomicBool::new(false);
+        let demand = FakeDemand::new(|state: VirtioMemState| {
+            Ok(fresh(state.current_bytes + GIB, state.current_bytes))
+        })
+        .stopping_after(1, &stop);
+        let sink = RecordingSink::default();
+        HostRuntime::new(
+            &demand,
+            ConvergedState,
+            &sink,
+            UnusedHostMemory,
+            fast_config(),
+        )
+        .run(&stop)
+        .unwrap();
+        assert!(sink.requests.borrow().is_empty());
+        assert!(demand.control.borrow().intent.is_none());
+    }
+
+    #[test]
+    fn pending_growth_reserves_headroom_across_rounds_and_restart() {
+        let stop = AtomicBool::new(false);
+        let first = FakeDemand::new(|_| Ok(fresh(17 * GIB, 8 * GIB)));
+        let second = FakeDemand::new(|_| Ok(fresh(17 * GIB, 8 * GIB)));
+        let first_state = ScriptedState::new(
+            &stop,
+            [Ok(state(16 * GIB, 16 * GIB)), Ok(state(17 * GIB, 16 * GIB))],
+        );
+        let second_state = ScriptedState::new(
+            &stop,
+            [Ok(state(16 * GIB, 16 * GIB)), Ok(state(16 * GIB, 16 * GIB))],
+        );
+        let (first_sink, second_sink) = (RecordingSink::default(), RecordingSink::default());
+        let runtime = HostRuntime::pool(
+            vec![
+                member(
+                    &first,
+                    &first_state,
+                    &first_sink,
+                    member_config("first", 100),
+                ),
+                member(
+                    &second,
+                    &second_state,
+                    &second_sink,
+                    member_config("second", 80),
+                ),
+            ],
+            FixedHostMemory(5 * GIB + 512 * MIB),
+            Some(64 * GIB),
+        )
+        .unwrap();
+        runtime.run(&stop).unwrap();
+        assert_eq!(*first_sink.requests.borrow(), [17 * GIB]);
+        assert!(second_sink.requests.borrow().is_empty());
+        // Reconstruct the runtime while retaining the durable first intent.
+        stop.store(false, Ordering::Release);
+        let first_state = ScriptedState::new(&stop, [Ok(state(17 * GIB, 16 * GIB))]);
+        let second_state = ScriptedState::new(&stop, [Ok(state(16 * GIB, 16 * GIB))]);
+        HostRuntime::pool(
+            vec![
+                member(
+                    &first,
+                    &first_state,
+                    &first_sink,
+                    member_config("first", 100),
+                ),
+                member(
+                    &second,
+                    &second_state,
+                    &second_sink,
+                    member_config("second", 80),
+                ),
+            ],
+            FixedHostMemory(5 * GIB + 512 * MIB),
+            Some(64 * GIB),
+        )
+        .unwrap()
+        .run(&stop)
+        .unwrap();
+        assert!(second_sink.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn pending_deadlines_fail_closed_on_legacy_state_and_clock_rollback() {
+        let mut pending = intent(ReconcileDirection::Grow, GIB, GIB, 2 * GIB);
+        pending.started_unix_millis = None;
+        assert!(LoopState::default().pending_elapsed(Duration::from_secs(30), Some(&pending)));
+        pending.started_unix_millis = Some(u64::MAX);
+        assert!(LoopState::default().pending_elapsed(Duration::from_secs(30), Some(&pending)));
     }
 
     #[test]

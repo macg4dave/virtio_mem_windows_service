@@ -52,7 +52,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
     {
         return Err("ALIAS may contain only letters, digits, '_', '.', and '-'".to_owned());
     }
-    let target_bytes = positive(&args[2], "TARGET_BYTES")?;
+    let target_bytes = nonnegative(&args[2], "TARGET_BYTES")?;
     let mut options = Options {
         vm,
         alias,
@@ -70,6 +70,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         host_cli: PathBuf::new(),
         log_path: None,
     };
+    let mut minimum_supplied = false;
     let mut index = 3;
     while index < args.len() {
         match args[index].as_str() {
@@ -93,8 +94,11 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             }
             "--connect" => options.connect = string_value(args, &mut index, "--connect")?,
             "--minimum-target-bytes" => {
-                options.minimum_target_bytes =
-                    positive_value(args, &mut index, "--minimum-target-bytes")?;
+                options.minimum_target_bytes = nonnegative(
+                    &string_value(args, &mut index, "--minimum-target-bytes")?,
+                    "--minimum-target-bytes",
+                )?;
+                minimum_supplied = true;
             }
             "--host-min-headroom-bytes" => {
                 options.host_reserve_bytes =
@@ -124,12 +128,25 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         || options.rollback_timeout_seconds == 0
         || options.interval_seconds == 0
         || options.command_timeout_seconds == 0
-        || options.minimum_target_bytes == 0
+        || !minimum_supplied
         || options.host_reserve_bytes == 0
         || options.attestation_path.as_os_str().is_empty()
         || options.host_cli.as_os_str().is_empty()
     {
         return Err("live-resize requires explicit forward/rollback/command timeouts, sample interval, minimum target, host headroom, attestation, and host CLI".to_owned());
+    }
+    for seconds in [
+        options.interval_seconds,
+        options.forward_timeout_seconds,
+        options.rollback_timeout_seconds,
+        options.command_timeout_seconds,
+    ] {
+        if Instant::now()
+            .checked_add(Duration::from_secs(seconds))
+            .is_none()
+        {
+            return Err("live-resize duration is too large".to_owned());
+        }
     }
     if options.interval_seconds > options.forward_timeout_seconds
         || options.interval_seconds > options.rollback_timeout_seconds
@@ -184,7 +201,15 @@ pub fn run(options: &Options, repo: &Path) -> Result<(), String> {
         println!("NO CHANGE: target equals current memory.");
         return Ok(());
     }
-    invoke_host_resize(options, repo, options.target_bytes, options.apply)?;
+    if stop.load(Ordering::Acquire) {
+        return Err("operation cancelled before resize".to_owned());
+    }
+    if let Err(error) = invoke_host_resize(options, repo, options.target_bytes, options.apply) {
+        report_live_state(options, repo);
+        return Err(format!(
+            "forward command failed or is uncertain; no restoration attempted: {error}"
+        ));
+    }
     if !options.apply {
         println!("DRY RUN: product resize validation passed; --apply was not supplied.");
         return Ok(());
@@ -201,34 +226,53 @@ pub fn run(options: &Options, repo: &Path) -> Result<(), String> {
         options.forward_timeout_seconds,
         &stop,
     );
-    if forward_result.is_ok() {
-        println!("CONVERGED: target {} bytes reached.", options.target_bytes);
+    let result = finish_trial(forward_result, options.keep_target, &stop, || {
+        let target = initial.state.current_bytes;
+        println!("RESTORE: requesting original size {target} bytes.");
+        invoke_host_resize(options, repo, target, true)?;
+        wait_for_target(
+            options,
+            repo,
+            target,
+            options.rollback_timeout_seconds,
+            &stop,
+        )
+    });
+    if result.is_err() {
+        report_live_state(options, repo);
     }
+    result
+}
 
-    let rollback_result = if options.keep_target {
-        println!("KEEP: target retained by explicit --keep-target.");
-        Ok(())
-    } else {
-        let rollback_target = initial.state.current_bytes;
-        println!("ROLLBACK: requesting original size {rollback_target} bytes.");
-        invoke_host_resize(options, repo, rollback_target, true).and_then(|()| {
-            wait_for_target(
-                options,
-                repo,
-                rollback_target,
-                options.rollback_timeout_seconds,
-                &AtomicBool::new(false),
-            )
-        })
-    };
+fn finish_trial(
+    forward: Result<(), String>,
+    keep: bool,
+    stop: &AtomicBool,
+    restore: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    forward.map_err(|error| format!("forward operation failed; no restoration attempted; inspect live state and use stopped-controller recovery: {error}"))?;
+    if stop.load(Ordering::Acquire) {
+        return Err(
+            "operation cancelled; no restoration attempted; inspect live state before recovery"
+                .to_owned(),
+        );
+    }
+    if keep {
+        println!("KEEP: converged target retained by explicit --keep-target.");
+        return Ok(());
+    }
+    restore().map_err(|error| {
+        format!("restoration failed or is uncertain; inspect live state before recovery: {error}")
+    })?;
+    println!("RESTORED: original size confirmed.");
+    Ok(())
+}
 
-    if let Err(error) = rollback_result {
-        return Err(format!("CRITICAL: rollback did not converge: {error}"));
+fn report_live_state(options: &Options, repo: &Path) {
+    match read_memory_state(options, repo) {
+        Ok(state) => eprintln!("final live state: {state:?}"),
+        Err(error) => eprintln!("final live state unavailable: {error}"),
     }
-    if !options.keep_target {
-        println!("RESTORED: original size confirmed.");
-    }
-    forward_result
 }
 
 fn validate_target(options: &Options, state: VirtioMemState) -> Result<(), String> {
@@ -256,11 +300,11 @@ fn wait_for_target(
         .ok_or_else(|| "convergence timeout is too large".to_owned())?;
     let mut samples = 0_u64;
     loop {
+        if stop.load(Ordering::Acquire) {
+            return Err("operation cancelled".to_owned());
+        }
         let sample = read_sample(options, repo)?;
         samples += 1;
-        if sample.state.requested_bytes == expected && sample.state.current_bytes == expected {
-            return Ok(());
-        }
         if stop.load(Ordering::Relaxed) {
             return Err("operation cancelled".to_owned());
         }
@@ -269,15 +313,16 @@ fn wait_for_target(
                 "expected requested=current={expected} within {timeout_seconds} seconds after {samples} samples"
             ));
         }
+        if sample.state.requested_bytes == expected && sample.state.current_bytes == expected {
+            return Ok(());
+        }
         let remaining = deadline.saturating_duration_since(Instant::now());
         std::thread::sleep(Duration::from_secs(options.interval_seconds).min(remaining));
     }
 }
 
 fn read_sample(options: &Options, repo: &Path) -> Result<Sample, String> {
-    let xml = virsh(options, repo, &["dumpxml", &options.vm])?;
-    let snapshot = parse_virtio_mem_xml_for_alias(&xml, &options.alias)
-        .map_err(|error| format!("failed to parse live virtio-mem state: {error}"))?;
+    let state = read_memory_state(options, repo)?;
     let domstate = virsh(options, repo, &["domstate", &options.vm])?;
     virsh(
         options,
@@ -288,14 +333,15 @@ fn read_sample(options: &Options, repo: &Path) -> Result<Sample, String> {
             r#"{"execute":"guest-ping"}"#,
         ],
     )?;
-    append_sample(
-        options.log_path.as_deref(),
-        domstate.trim(),
-        snapshot.memory,
-    )?;
-    Ok(Sample {
-        state: snapshot.memory,
-    })
+    append_sample(options.log_path.as_deref(), domstate.trim(), state)?;
+    Ok(Sample { state })
+}
+
+fn read_memory_state(options: &Options, repo: &Path) -> Result<VirtioMemState, String> {
+    let xml = virsh(options, repo, &["dumpxml", &options.vm])?;
+    parse_virtio_mem_xml_for_alias(&xml, &options.alias)
+        .map(|snapshot| snapshot.memory)
+        .map_err(|error| format!("failed to parse live virtio-mem state: {error}"))
 }
 
 fn invoke_host_resize(
@@ -400,6 +446,12 @@ fn valid_scope(value: &str) -> bool {
     !value.is_empty() && !value.starts_with('-') && !value.chars().any(char::is_control)
 }
 
+fn nonnegative(value: &str, name: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|_| format!("{name} requires a nonnegative decimal integer"))
+}
+
 fn positive(value: &str, name: &str) -> Result<u64, String> {
     value
         .parse::<u64>()
@@ -497,6 +549,34 @@ mod tests {
             state
         )
         .is_err());
+    }
+
+    #[test]
+    fn restores_only_a_converged_uncancelled_trial() {
+        let stop = AtomicBool::new(false);
+        for cause in ["timeout", "cancelled", "observation unavailable"] {
+            assert!(finish_trial(Err(cause.to_owned()), false, &stop, || panic!(
+                "unsafe restore"
+            ))
+            .is_err());
+        }
+        stop.store(true, Ordering::Release);
+        assert!(finish_trial(Ok(()), false, &stop, || panic!(
+            "restore after cancellation"
+        ))
+        .is_err());
+        stop.store(false, Ordering::Release);
+        let calls = std::cell::Cell::new(0);
+        finish_trial(Ok(()), false, &stop, || {
+            calls.set(calls.get() + 1);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        let failure =
+            finish_trial(Ok(()), false, &stop, || Err("lost response".to_owned())).unwrap_err();
+        assert!(failure.contains("uncertain"));
+        finish_trial(Ok(()), true, &stop, || panic!("explicit keep")).unwrap();
     }
 
     #[test]

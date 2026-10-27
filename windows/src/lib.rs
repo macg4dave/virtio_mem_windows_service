@@ -2,6 +2,7 @@ pub mod config;
 pub mod demand;
 pub mod error;
 pub mod event_log;
+mod native;
 pub mod runtime;
 pub mod service_host;
 pub mod service_scm;
@@ -29,6 +30,6 @@ pub use runtime::{native_raw_telemetry_worker, NativeRawTelemetryWorker};
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};
 pub use service_scm::{
-    install_service, remove_service, run_as_service, start_service, stop_service, ScmServiceState,
-    ScmServiceStatus, WindowsServiceRegistration,
+    install_service, remove_service, run_as_service, start_service, stop_service, ScmServiceStatus,
+    WindowsServiceRegistration,
 };

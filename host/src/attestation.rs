@@ -341,8 +341,7 @@ impl<C> AttestedCompatibilitySource<C> {
 
 impl<C: VirshCommand> CompatibilitySource for AttestedCompatibilitySource<C> {
     fn compatibility(&self) -> Result<VirtioMemCompatibility, String> {
-        let json = read_bounded_json(&self.path, "compatibility attestation")?;
-        let attestation = CompatibilityAttestation::parse(&json)?;
+        let attestation = read_attestation(&self.path)?;
         let live = self.live.collect()?;
         attestation.validate_live(&live)?;
         Ok(VirtioMemCompatibility {
@@ -351,6 +350,10 @@ impl<C: VirshCommand> CompatibilitySource for AttestedCompatibilitySource<C> {
             workload_review: CompatibilityEvidence::Confirmed,
         })
     }
+}
+
+pub fn read_attestation(path: &Path) -> Result<CompatibilityAttestation, String> {
+    CompatibilityAttestation::parse(&read_bounded_json(path, "compatibility attestation")?)
 }
 
 pub fn read_review(path: &Path) -> Result<CompatibilityReview, String> {

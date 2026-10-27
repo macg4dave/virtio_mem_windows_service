@@ -12,3 +12,5 @@ pub mod runtime;
 pub mod target_policy;
 pub mod virsh;
 pub mod xml_source;
+
+pub mod ownership;

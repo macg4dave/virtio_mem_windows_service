@@ -1,18 +1,13 @@
+use crate::service_host::StopSignal;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
 pub const RAW_TELEMETRY_RETENTION_FILES: usize = 3;
 #[cfg(any(windows, test))]
-// QGA guest-file reads require several bounded round trips while holding the
-// current file open without delete sharing. Keep publication retryable for a
-// complete normal read, but below the configured 30-second service shutdown
-// deadline.
-const ATOMIC_REPLACE_ATTEMPTS: usize = 201;
-#[cfg(any(windows, test))]
-const ATOMIC_REPLACE_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
+const ATOMIC_REPLACE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 pub use virtio_mem_core::{
     DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot, OptionalTelemetrySignal,
@@ -24,6 +19,17 @@ pub use virtio_mem_core::{
 /// Publishes raw telemetry without accepting allocation or resize input.
 pub trait RawTelemetryPublisher {
     fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String>;
+
+    fn publish_cancellable(
+        &mut self,
+        envelope: &RawTelemetryEnvelope,
+        stop: &StopSignal,
+    ) -> Result<(), String> {
+        if stop.is_cancelled() {
+            return Ok(());
+        }
+        self.publish(envelope)
+    }
 }
 
 /// Publishes one complete current record through an atomic replace and keeps a
@@ -33,6 +39,7 @@ pub trait RawTelemetryPublisher {
 pub struct AtomicRawTelemetryPublisher {
     path: PathBuf,
     retention_files: usize,
+    retry_timeout: Duration,
 }
 
 impl AtomicRawTelemetryPublisher {
@@ -40,6 +47,7 @@ impl AtomicRawTelemetryPublisher {
         Self {
             path: path.into(),
             retention_files: RAW_TELEMETRY_RETENTION_FILES,
+            retry_timeout: Duration::from_secs(20),
         }
     }
 
@@ -47,7 +55,13 @@ impl AtomicRawTelemetryPublisher {
         Self {
             path: path.into(),
             retention_files,
+            retry_timeout: Duration::from_secs(20),
         }
+    }
+
+    pub fn with_retry_timeout(mut self, timeout: Duration) -> Self {
+        self.retry_timeout = timeout;
+        self
     }
 
     pub fn path(&self) -> &Path {
@@ -61,6 +75,17 @@ impl AtomicRawTelemetryPublisher {
 
 impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
     fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String> {
+        self.publish_cancellable(envelope, &StopSignal::new())
+    }
+
+    fn publish_cancellable(
+        &mut self,
+        envelope: &RawTelemetryEnvelope,
+        stop: &StopSignal,
+    ) -> Result<(), String> {
+        if stop.is_cancelled() {
+            return Ok(());
+        }
         let mut encoded = serde_json::to_vec(envelope)
             .map_err(|error| format!("encode raw telemetry: {error}"))?;
         encoded.push(b'\n');
@@ -78,26 +103,39 @@ impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
                 .map_err(|error| format!("create raw telemetry directory: {error}"))?;
         }
 
-        if self.retention_files > 0 {
-            let oldest = self.backup_path(self.retention_files);
-            match std::fs::remove_file(&oldest) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(format!("remove oldest raw telemetry backup: {error}")),
-            }
-            for index in (1..self.retention_files).rev() {
-                let from = self.backup_path(index);
-                let to = self.backup_path(index + 1);
-                match std::fs::rename(&from, &to) {
+        let retained = (|| -> Result<(), String> {
+            if self.retention_files > 0 {
+                let oldest = self.backup_path(self.retention_files);
+                match std::fs::remove_file(&oldest) {
                     Ok(()) => {}
                     Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => return Err(format!("rotate raw telemetry backup: {error}")),
+                    Err(error) => {
+                        return Err(format!("remove oldest raw telemetry backup: {error}"))
+                    }
+                }
+                for index in (1..self.retention_files).rev() {
+                    let from = self.backup_path(index);
+                    let to = self.backup_path(index + 1);
+                    match std::fs::rename(&from, &to) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(format!("rotate raw telemetry backup: {error}")),
+                    }
+                }
+                if self.path.exists() {
+                    std::fs::copy(&self.path, self.backup_path(1)).map_err(|error| {
+                        format!("retain previous raw telemetry record: {error}")
+                    })?;
                 }
             }
-            if self.path.exists() {
-                std::fs::copy(&self.path, self.backup_path(1))
-                    .map_err(|error| format!("retain previous raw telemetry record: {error}"))?;
-            }
+
+            Ok(())
+        })();
+        if let Err(error) = retained {
+            eprintln!("diagnostic telemetry retention failed: {error}");
+        }
+        if stop.is_cancelled() {
+            return Ok(());
         }
 
         let temporary = PathBuf::from(format!(
@@ -105,31 +143,55 @@ impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
             self.path.display(),
             std::process::id()
         ));
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&temporary)
-            .map_err(|error| format!("open raw telemetry handoff: {error}"))?;
-        file.write_all(&encoded)
-            .map_err(|error| format!("write raw telemetry handoff: {error}"))?;
-        file.sync_all()
-            .map_err(|error| format!("flush raw telemetry handoff: {error}"))?;
-        drop(file);
-        atomic_replace(&temporary, &self.path).map_err(|error| {
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&temporary)
+                .map_err(|error| format!("open raw telemetry handoff: {error}"))?;
+            file.write_all(&encoded)
+                .map_err(|error| format!("write raw telemetry handoff: {error}"))?;
+            file.sync_all()
+                .map_err(|error| format!("flush raw telemetry handoff: {error}"))?;
+            drop(file);
+            atomic_replace(&temporary, &self.path, stop, self.retry_timeout)
+                .map_err(|error| format!("publish raw telemetry handoff: {error}"))
+        })();
+        if result.is_err() || stop.is_cancelled() {
             let _ = std::fs::remove_file(&temporary);
-            format!("publish raw telemetry handoff: {error}")
-        })
+        }
+        if stop.is_cancelled() {
+            Ok(())
+        } else {
+            result
+        }
     }
 }
 
 #[cfg(not(windows))]
-fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn atomic_replace(
+    source: &Path,
+    destination: &Path,
+    stop: &StopSignal,
+    _: Duration,
+) -> std::io::Result<()> {
+    if stop.is_cancelled() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "publication cancelled",
+        ));
+    }
     std::fs::rename(source, destination)
 }
 
 #[cfg(windows)]
-fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
+fn atomic_replace(
+    source: &Path,
+    destination: &Path,
+    stop: &StopSignal,
+    timeout: Duration,
+) -> std::io::Result<()> {
     use std::os::windows::ffi::OsStrExt;
     use winapi::shared::minwindef::FALSE;
     use winapi::um::winbase::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
@@ -144,7 +206,7 @@ fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
         .encode_wide()
         .chain(Some(0))
         .collect::<Vec<_>>();
-    retry_atomic_replace(|| {
+    retry_atomic_replace(stop, timeout, || {
         // SAFETY: Both pointers reference NUL-terminated UTF-16 buffers that
         // live for the complete call, and MoveFileExW does not retain them.
         if unsafe {
@@ -163,20 +225,39 @@ fn atomic_replace(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(any(windows, test))]
-fn retry_atomic_replace(mut operation: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
-    for attempt in 1..=ATOMIC_REPLACE_ATTEMPTS {
+fn retry_atomic_replace(
+    stop: &StopSignal,
+    timeout: Duration,
+    mut operation: impl FnMut() -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "publication timeout too large",
+        )
+    })?;
+    loop {
+        if stop.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "publication cancelled",
+            ));
+        }
         match operation() {
             Ok(()) => return Ok(()),
+            // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION are transient;
+            // access denied is a configuration/ACL failure, not a sharing error.
             Err(error)
-                if error.kind() == std::io::ErrorKind::PermissionDenied
-                    && attempt < ATOMIC_REPLACE_ATTEMPTS =>
+                if matches!(error.raw_os_error(), Some(32 | 33)) && Instant::now() < deadline =>
             {
-                std::thread::sleep(ATOMIC_REPLACE_RETRY_DELAY);
+                stop.wait(
+                    ATOMIC_REPLACE_RETRY_DELAY
+                        .min(deadline.saturating_duration_since(Instant::now())),
+                );
             }
             Err(error) => return Err(error),
         }
     }
-    unreachable!("atomic replace retry loop always returns")
 }
 
 pub trait TelemetryClock {
@@ -743,6 +824,35 @@ mod tests {
     }
 
     #[test]
+    fn unusable_diagnostic_backup_does_not_block_current_publication() {
+        let root =
+            std::env::temp_dir().join(format!("virtio-backup-failure-{}", std::process::id()));
+        let path = root.join("telemetry.json");
+        std::fs::create_dir_all(root.join("telemetry.json.1")).unwrap();
+        let envelope = RawTelemetryEnvelope::new(
+            "guest",
+            "service",
+            "session",
+            1000,
+            10,
+            0,
+            snapshot(2 * GIB, 15 * GIB),
+        );
+        let mut publisher = AtomicRawTelemetryPublisher::with_retention(&path, 1);
+        publisher.publish(&envelope).unwrap();
+        publisher
+            .publish(&RawTelemetryEnvelope {
+                sequence: 1,
+                ..envelope
+            })
+            .unwrap();
+        let current: RawTelemetryEnvelope =
+            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(current.sequence, 1);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn native_collector_has_platform_behavior() {
         #[cfg(not(windows))]
         assert_eq!(
@@ -752,12 +862,32 @@ mod tests {
     }
 
     #[test]
+    fn publication_retry_is_cancellable_and_access_denial_is_not_retried() {
+        let stop = StopSignal::new();
+        let error = retry_atomic_replace(&stop, Duration::from_secs(1), || {
+            stop.cancel();
+            Err(std::io::Error::from_raw_os_error(32))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        let mut calls = 0;
+        assert!(
+            retry_atomic_replace(&StopSignal::new(), Duration::from_secs(1), || {
+                calls += 1;
+                Err(std::io::Error::from_raw_os_error(5))
+            })
+            .is_err()
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
     fn atomic_replace_retries_only_transient_access_denial() {
         let mut attempts = 0;
-        retry_atomic_replace(|| {
+        retry_atomic_replace(&StopSignal::new(), Duration::from_secs(1), || {
             attempts += 1;
             if attempts < 3 {
-                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+                Err(std::io::Error::from_raw_os_error(32))
             } else {
                 Ok(())
             }
@@ -767,7 +897,7 @@ mod tests {
 
         let mut attempts = 0;
         assert_eq!(
-            retry_atomic_replace(|| {
+            retry_atomic_replace(&StopSignal::new(), Duration::from_secs(1), || {
                 attempts += 1;
                 Err(std::io::Error::from(std::io::ErrorKind::InvalidInput))
             })

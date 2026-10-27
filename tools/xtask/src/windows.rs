@@ -764,17 +764,7 @@ fn deploy(
     .to_owned();
 
     let windows = if apply {
-        let service_config = WindowsServiceConfigFile {
-            schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
-            vm_name: manifest.vm_name.clone(),
-            service_name: manifest.service_name.clone(),
-            display_name: manifest.display_name.clone(),
-            description: manifest.description.clone(),
-            demand_report_path: manifest.telemetry_path.clone(),
-            service_account: manifest.service_account.clone(),
-            poll_interval_millis: manifest.poll_interval_millis,
-            shutdown_timeout_millis: manifest.shutdown_timeout_millis,
-        };
+        let service_config = service_config(&manifest);
         let config_base64 = base64_encode(
             serde_json::to_string_pretty(&service_config)
                 .map_err(|error| format!("encode Windows service configuration: {error}"))?
@@ -915,6 +905,20 @@ fn parse_last_json_line(output: &str) -> Result<serde_json::Value, String> {
         })
 }
 
+fn service_config(manifest: &DeploymentManifest) -> WindowsServiceConfigFile {
+    WindowsServiceConfigFile {
+        schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
+        vm_name: manifest.vm_name.clone(),
+        service_name: manifest.service_name.clone(),
+        display_name: manifest.display_name.clone(),
+        description: manifest.description.clone(),
+        demand_report_path: manifest.telemetry_path.clone(),
+        service_account: manifest.service_account.clone(),
+        poll_interval_millis: manifest.poll_interval_millis,
+        shutdown_timeout_millis: manifest.shutdown_timeout_millis,
+    }
+}
+
 fn validate_deployment_manifest(manifest: &DeploymentManifest) -> Result<(), String> {
     if manifest.schema_version != 1 {
         return Err(format!(
@@ -922,42 +926,12 @@ fn validate_deployment_manifest(manifest: &DeploymentManifest) -> Result<(), Str
             manifest.schema_version
         ));
     }
-    for (name, value) in [
-        ("vm_name", &manifest.vm_name),
-        ("service_name", &manifest.service_name),
-        ("display_name", &manifest.display_name),
-        ("description", &manifest.description),
-        ("telemetry_path", &manifest.telemetry_path),
-        ("service_account", &manifest.service_account),
-        ("install_path", &manifest.install_path),
-    ] {
-        if value.trim().is_empty() || value.chars().any(char::is_control) {
-            return Err(format!(
-                "Windows deployment manifest {name} is empty or unsafe"
-            ));
-        }
-    }
-    for (name, value) in [
-        ("telemetry_path", &manifest.telemetry_path),
-        ("install_path", &manifest.install_path),
-    ] {
-        let bytes = value.as_bytes();
-        if bytes.len() < 4
-            || !bytes[0].is_ascii_alphabetic()
-            || bytes[1] != b':'
-            || bytes[2] != b'\\'
-            || value.contains("..")
-        {
-            return Err(format!(
-                "Windows deployment manifest {name} must be an absolute drive path without '..'"
-            ));
-        }
-    }
+    let wire = service_config(manifest);
+    wire.validate()?;
+    wire.validate_paths(r"C:\ProgramData\VirtioMemService\config.json")?;
+    virtio_mem_core::windows_service_config::normalize_windows_path(&manifest.install_path)?;
     if !manifest.install_path.to_ascii_lowercase().ends_with(".exe") {
         return Err("Windows deployment install_path must name an .exe file".to_owned());
-    }
-    if manifest.poll_interval_millis == 0 || manifest.shutdown_timeout_millis == 0 {
-        return Err("Windows deployment timings must be positive".to_owned());
     }
     Ok(())
 }

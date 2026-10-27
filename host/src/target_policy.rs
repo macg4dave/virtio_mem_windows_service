@@ -1,7 +1,7 @@
 //! Host-owned estimator state, checkpointing, and raw-telemetry join.
 
 use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,6 +15,7 @@ use virtio_mem_core::{
     TargetSample, VirtioMemState, CONTROLLER_STATUS_VERSION,
 };
 
+#[cfg(test)]
 use crate::attestation::CompatibilityAttestation;
 use crate::config::HostConfig;
 use crate::raw_telemetry::{AcceptedTelemetry, RawTelemetrySource, SampleAcceptance};
@@ -71,6 +72,8 @@ struct SampleState {
 
 pub struct TargetDemandSource<R> {
     raw: R,
+    _checkpoint_owner: crate::ownership::CheckpointOwner,
+    _device_owner: Option<crate::ownership::DeviceOwner>,
     sample: Mutex<SampleState>,
     checkpoint_path: PathBuf,
     vm_name: String,
@@ -89,10 +92,17 @@ struct CheckpointControl {
 }
 
 impl<R> TargetDemandSource<R> {
-    pub fn new(raw: R, config: &HostConfig) -> Result<Self, String> {
+    pub fn new(
+        raw: R,
+        config: &HostConfig,
+        owner: crate::ownership::DeviceOwner,
+    ) -> Result<Self, String> {
         let compatibility_fingerprint =
             compatibility_fingerprint(&config.compatibility_attestation_path)?;
-        Self::with_compatibility_fingerprint(raw, config, compatibility_fingerprint)
+        let mut source =
+            Self::with_compatibility_fingerprint(raw, config, compatibility_fingerprint)?;
+        source._device_owner = Some(owner);
+        Ok(source)
     }
 
     fn with_compatibility_fingerprint(
@@ -103,6 +113,7 @@ impl<R> TargetDemandSource<R> {
         let policy = target_policy_config(config)?;
         let policy_fingerprint = policy_fingerprint(&policy)?;
         let checkpoint_path = PathBuf::from(&config.policy_state_path);
+        let checkpoint_owner = crate::ownership::CheckpointOwner::acquire(&checkpoint_path)?;
         let checkpoint = load_matching_checkpoint(
             &checkpoint_path,
             &config.vm_name,
@@ -133,6 +144,8 @@ impl<R> TargetDemandSource<R> {
         };
         Ok(Self {
             raw,
+            _checkpoint_owner: checkpoint_owner,
+            _device_owner: None,
             sample: Mutex::new(SampleState {
                 estimator,
                 accepted,
@@ -192,9 +205,13 @@ fn read_controller_status_at(
     let (estimator_state, history_ready, control) = if let Some(checkpoint) = checkpoint {
         let estimator = TargetEstimator::restore(policy, checkpoint.estimator.clone())
             .map_err(|error| format!("target policy checkpoint state is invalid: {error}"))?;
+        let fresh = observed_unix_millis >= checkpoint.estimator.last_observed_unix_millis
+            && u128::from(
+                observed_unix_millis.saturating_sub(checkpoint.estimator.last_observed_unix_millis),
+            ) <= config.raw_telemetry_max_age.as_millis();
         (
             checkpoint.estimator,
-            estimator.history_ready(),
+            estimator.history_ready() && fresh,
             CheckpointControl {
                 actuation_latched: checkpoint.actuation_latched,
                 actuation_latch_reason: checkpoint.actuation_latch_reason,
@@ -209,12 +226,12 @@ fn read_controller_status_at(
             CheckpointControl::default(),
         )
     };
-    let desired_bytes = if estimator_state.desired_bytes == 0 {
+    let desired_bytes = if estimator_state.session_id.is_empty() {
         live.current_bytes
     } else {
         estimator_state.desired_bytes
     };
-    let safe_floor_bytes = if estimator_state.safe_floor_bytes == 0 {
+    let safe_floor_bytes = if estimator_state.session_id.is_empty() {
         live.current_bytes.min(desired_bytes)
     } else {
         estimator_state.safe_floor_bytes
@@ -355,12 +372,12 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
             Ok((envelope, SampleAcceptance::New)) => envelope,
             Ok((_, SampleAcceptance::Unchanged)) => {
                 let estimator = sample.estimator.state();
-                let desired_bytes = if estimator.desired_bytes == 0 {
+                let desired_bytes = if estimator.session_id.is_empty() {
                     state.current_bytes
                 } else {
                     estimator.desired_bytes
                 };
-                let safe_floor_bytes = if estimator.safe_floor_bytes == 0 {
+                let safe_floor_bytes = if estimator.session_id.is_empty() {
                     state.current_bytes.min(desired_bytes)
                 } else {
                     estimator.safe_floor_bytes.min(desired_bytes)
@@ -523,7 +540,9 @@ pub fn clear_actuation_latch(
     let policy_fingerprint = policy_fingerprint(&policy)?;
     let compatibility_fingerprint =
         compatibility_fingerprint(&config.compatibility_attestation_path)?;
+    let _device_owner = crate::ownership::DeviceOwner::acquire(&config.vm_name)?;
     let path = PathBuf::from(&config.policy_state_path);
+    let _checkpoint_owner = crate::ownership::CheckpointOwner::acquire(&path)?;
     let mut checkpoint = load_checkpoint_for_latch_clear(
         &path,
         &config.vm_name,
@@ -603,16 +622,8 @@ fn policy_fingerprint(policy: &TargetPolicyConfig) -> Result<String, String> {
 }
 
 fn compatibility_fingerprint(path: &str) -> Result<String, String> {
-    let mut json = String::new();
-    fs::File::open(path)
-        .map_err(|error| format!("open compatibility attestation for policy state: {error}"))?
-        .take(MAX_POLICY_CHECKPOINT_BYTES + 1)
-        .read_to_string(&mut json)
-        .map_err(|error| format!("read compatibility attestation for policy state: {error}"))?;
-    if json.len() as u64 > MAX_POLICY_CHECKPOINT_BYTES {
-        return Err("compatibility attestation exceeds policy-state read limit".to_owned());
-    }
-    CompatibilityAttestation::parse(&json).map(|document| document.fingerprint_sha256)
+    crate::attestation::read_attestation(Path::new(path))
+        .map(|document| document.fingerprint_sha256)
 }
 
 fn load_matching_checkpoint(
@@ -971,6 +982,7 @@ mod tests {
                 actuation_latch_reason: latched.then(|| "uncertain command".to_owned()),
                 command_intent: Some(CommandIntent {
                     operation_id: String::new(),
+                    started_unix_millis: None,
                     direction: virtio_mem_core::ReconcileDirection::Grow,
                     prior_requested_bytes: 8 * GIB,
                     prior_current_bytes: 8 * GIB,
@@ -1091,6 +1103,7 @@ mod tests {
         .expect("matching checkpoint");
         assert_eq!(preserved.estimator, estimator);
 
+        drop(interrupted);
         let invalid = TargetDemandSource::with_compatibility_fingerprint(
             FailingRaw(RawTelemetryError::InvalidEvidence(
                 "malformed telemetry".to_owned(),
@@ -1261,6 +1274,7 @@ mod tests {
         .expect("construct target source");
         let unstamped = CommandIntent {
             operation_id: "operation-1".to_owned(),
+            started_unix_millis: None,
             direction: virtio_mem_core::ReconcileDirection::Shrink,
             prior_requested_bytes: 8 * GIB,
             prior_current_bytes: 8 * GIB,
@@ -1285,21 +1299,26 @@ mod tests {
             })
             .expect("write intent");
         let restored = || {
-            TargetDemandSource::with_compatibility_fingerprint(
-                OneEnvelope(Mutex::new(None)),
-                &config,
-                "a".repeat(64),
+            let checkpoint = load_matching_checkpoint(
+                &state_path,
+                &config.vm_name,
+                &config.alias,
+                &stamped.policy_fingerprint_sha256,
+                &"a".repeat(64),
             )
-            .expect("restore target source")
-            .control_state()
-            .expect("restored control state")
+            .unwrap()
+            .unwrap();
+            DurableControlState {
+                latch_reason: checkpoint.actuation_latch_reason,
+                intent: checkpoint.command_intent,
+            }
         };
         assert_eq!(restored().intent, Some(stamped.clone()));
 
         source
             .save_control_state(&DurableControlState {
                 latch_reason: Some("recorded command was not applied".to_owned()),
-                intent: Some(stamped),
+                intent: Some(stamped.clone()),
             })
             .expect("write latch");
         let latched = restored();
@@ -1318,7 +1337,8 @@ mod tests {
     #[test]
     fn clear_latch_is_dry_run_by_default_and_refuses_divergence() {
         let (state_path, attestation_path) = paths("clear-latch");
-        let config = config(&state_path, &attestation_path);
+        let mut config = config(&state_path, &attestation_path);
+        config.vm_name = state_path.display().to_string();
         let compatibility_fingerprint = write_attestation(&attestation_path);
         let checkpoint = PolicyCheckpoint {
             version: POLICY_CHECKPOINT_VERSION,
@@ -1390,7 +1410,8 @@ mod tests {
     #[test]
     fn clear_latch_migrates_a_live_valid_compatibility_fingerprint_and_clears_history() {
         let (state_path, attestation_path) = paths("clear-latch-compatibility-migration");
-        let config = config(&state_path, &attestation_path);
+        let mut config = config(&state_path, &attestation_path);
+        config.vm_name = state_path.display().to_string();
         let old_compatibility_fingerprint = write_attestation_with_domain(&attestation_path, 'a');
         let mut estimator = TargetEstimatorState::cold();
         estimator.session_id = "old-session".to_owned();
@@ -1520,8 +1541,11 @@ mod tests {
             current_bytes: 20 * GIB,
         };
 
-        let status = read_controller_status_at(&config, live, 2_000_000)
+        let status = read_controller_status_at(&config, live, 1_600_100)
             .expect("populated status must be valid");
+        let stale = read_controller_status_at(&config, live, 2_000_000).unwrap();
+        assert!(!stale.history_ready);
+        assert_ne!(stale.reclaim_readiness, ReclaimReadiness::Ready);
 
         assert_eq!(
             status.accepted_telemetry,
@@ -1547,6 +1571,7 @@ mod tests {
     fn status_classifies_command_ownership_and_recovery_without_resolving_intent() {
         let intent = CommandIntent {
             operation_id: "operation-status".to_owned(),
+            started_unix_millis: None,
             direction: virtio_mem_core::ReconcileDirection::Shrink,
             prior_requested_bytes: 8 * GIB,
             prior_current_bytes: 8 * GIB,

@@ -1,8 +1,6 @@
 //! Bounded Windows Application Event Log records for SCM lifecycle outcomes.
 
-use std::ffi::OsStr;
-use std::iter::once;
-use std::os::windows::ffi::OsStrExt;
+use crate::native::to_wide;
 
 use winapi::shared::minwindef::WORD;
 use winapi::um::winbase::{DeregisterEventSource, RegisterEventSourceW, ReportEventW};
@@ -80,7 +78,7 @@ impl WindowsEventLog {
         if source_name.trim().is_empty() {
             return Err("Windows Event Log source name must be non-empty".to_owned());
         }
-        let source_name = to_wide(source_name);
+        let source_name = to_wide(source_name)?;
         // SAFETY: both pointers reference valid, NUL-terminated UTF-16 for the
         // duration of the call; a null server name selects the local computer.
         let handle = unsafe { RegisterEventSourceW(std::ptr::null(), source_name.as_ptr()) };
@@ -96,7 +94,7 @@ impl WindowsEventLog {
 
 impl ServiceEventSink for WindowsEventLog {
     fn emit(&self, event: &ServiceEvent) -> Result<(), String> {
-        let message = to_wide(&event.message);
+        let message = to_wide(&event.message)?;
         let mut strings = [message.as_ptr()];
         // SAFETY: the registered handle remains owned by `self`; `strings`
         // contains one valid NUL-terminated UTF-16 pointer and no raw data is
@@ -135,10 +133,6 @@ impl Drop for WindowsEventLog {
             }
         }
     }
-}
-
-fn to_wide(value: &str) -> Vec<u16> {
-    OsStr::new(value).encode_wide().chain(once(0)).collect()
 }
 
 fn sanitize_message(message: &str) -> String {

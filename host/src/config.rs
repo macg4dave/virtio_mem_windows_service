@@ -24,6 +24,8 @@ pub enum HostConfigError {
     PoolRequired,
     #[error("pool_bytes must be positive and cover every VM's min_memory_bytes")]
     PoolTooSmall,
+    #[error("invalid policy state path: {0}")]
+    InvalidStatePath(String),
     #[error("vm {0} is configured more than once")]
     DuplicateVm(String),
     #[error("policy_state_path {0} is shared by more than one VM")]
@@ -42,7 +44,7 @@ pub enum HostConfigError {
     InvalidAlias,
     #[error("grow and shrink steps must be greater than zero")]
     InvalidResizeStep,
-    #[error("host-controller durations must be greater than zero")]
+    #[error("host-controller durations must be positive and fit supported deadlines/milliseconds")]
     InvalidDuration,
     #[error("safe-floor reserves must not exceed normal reserves")]
     InvalidReserveOrder,
@@ -181,7 +183,10 @@ impl HostSettings {
             if !names.insert(config.vm_name.clone()) {
                 return Err(HostConfigError::DuplicateVm(config.vm_name));
             }
-            if !state_paths.insert(config.policy_state_path.clone()) {
+            if !state_paths.insert(
+                crate::ownership::state_path(std::path::Path::new(&config.policy_state_path))
+                    .map_err(HostConfigError::InvalidStatePath)?,
+            ) {
                 return Err(HostConfigError::SharedPolicyState(config.policy_state_path));
             }
             vms.push(config);
@@ -309,6 +314,21 @@ impl HostConfig {
         {
             return Err(HostConfigError::InvalidDuration);
         }
+        for duration in [
+            self.poll_interval,
+            self.command_timeout,
+            self.convergence_timeout,
+            self.raw_telemetry_max_age,
+            self.raw_telemetry_future_tolerance,
+            self.reclaim_history,
+            self.reclaim_max_gap,
+        ] {
+            if std::time::Instant::now().checked_add(duration).is_none()
+                || u64::try_from(duration.as_millis()).is_err()
+            {
+                return Err(HostConfigError::InvalidDuration);
+            }
+        }
         if self.reclaim_max_gap > self.reclaim_history {
             return Err(HostConfigError::InvalidTargetPolicy(
                 "reclaim maximum gap exceeds history window",
@@ -328,6 +348,8 @@ impl HostConfig {
                 return Err(HostConfigError::Empty(key));
             }
         }
+        crate::ownership::state_path(std::path::Path::new(&self.policy_state_path))
+            .map_err(HostConfigError::InvalidStatePath)?;
         Ok(())
     }
 }

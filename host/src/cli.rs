@@ -193,8 +193,7 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
             args[index]
                 .parse::<u64>()
                 .ok()
-                .filter(|value| *value > 0)
-                .ok_or_else(|| "resize target must be a positive byte count".to_owned())?,
+                .ok_or_else(|| "resize target must be a nonnegative byte count".to_owned())?,
         );
         index += 1;
     }
@@ -278,6 +277,21 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
             _ => return Err(format!("unknown CLI option: {}\n{}", args[index], usage())),
         }
         index += 1;
+    }
+    for seconds in [
+        command_timeout_seconds,
+        sample_interval_seconds,
+        convergence_timeout_seconds,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let duration = Duration::from_secs(seconds);
+        if std::time::Instant::now().checked_add(duration).is_none()
+            || u64::try_from(duration.as_millis()).is_err()
+        {
+            return Err("CLI duration is too large".to_owned());
+        }
     }
     if vm.trim().is_empty() {
         return Err("VM must be non-empty".to_owned());
@@ -408,6 +422,7 @@ fn run_with<H: HostMemorySource, W: Write>(
                 config.command_timeout,
                 connection,
             );
+            let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &config.vm_name)?;
             AttestedCompatibilitySource::new(
                 virsh.clone(),
                 config.vm_name.clone(),
@@ -485,6 +500,7 @@ fn run_with<H: HostMemorySource, W: Write>(
                 Duration::from_secs(command_timeout_seconds),
                 &connection,
             );
+            let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &vm)?;
             let compatibility_source = AttestedCompatibilitySource::new(
                 virsh.clone(),
                 vm.clone(),
@@ -523,6 +539,7 @@ fn run_with<H: HostMemorySource, W: Write>(
                 &connection,
             );
             let state_source = VirshXmlSource::new(virsh.clone(), vm.clone(), alias.clone());
+            let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &vm)?;
             let compatibility_source = AttestedCompatibilitySource::new(
                 virsh.clone(),
                 vm.clone(),
@@ -710,8 +727,7 @@ fn run_abandon_shrink_with<
         immediate,
     ))?;
 
-    let prepared =
-        sink.prepare_abandon_to_current(options.immutable_target_bytes, stable_current_bytes)?;
+    let prepared = sink.prepare_abandon_to_current(options.immutable_target_bytes, immediate)?;
     let mut full_arguments = vec!["virsh".to_owned(), "-c".to_owned(), options.connection];
     full_arguments.extend_from_slice(prepared.arguments());
     if !options.apply {
@@ -719,11 +735,19 @@ fn run_abandon_shrink_with<
             .map_err(|error| error.to_string());
     }
 
+    let deadline = std::time::Instant::now()
+        .checked_add(options.convergence_timeout)
+        .ok_or_else(|| "convergence timeout is too large".to_owned())?;
     sink.apply_prepared(prepared)?;
-    let mut elapsed = Duration::ZERO;
     loop {
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
         let state = state_source.memory_state()?;
         state.validate().map_err(|error| error.to_string())?;
+        if std::time::Instant::now() >= deadline {
+            break;
+        }
         if state.requested_bytes == stable_current_bytes
             && state.current_bytes == stable_current_bytes
         {
@@ -738,14 +762,13 @@ fn run_abandon_shrink_with<
         {
             return Err("abandon-to-current entered an unexpected live state".to_owned());
         }
-        if elapsed >= options.convergence_timeout {
+        if std::time::Instant::now() >= deadline {
             break;
         }
         let wait = options
             .sample_interval
-            .min(options.convergence_timeout.saturating_sub(elapsed));
+            .min(deadline.saturating_duration_since(std::time::Instant::now()));
         sleep(wait);
-        elapsed += wait;
     }
     Err(format!(
         "abandon-to-current did not converge within {:?}",

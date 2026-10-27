@@ -46,13 +46,6 @@ impl VirtioMemState {
 
     pub fn validate_target(self, target_bytes: u64) -> Result<(), VirtioMemError> {
         self.validate()?;
-        if target_bytes == 0 {
-            return Err(VirtioMemError::ValueOutsideSize {
-                name: "target",
-                value: target_bytes,
-                size: self.size_bytes,
-            });
-        }
         self.validate_state_value(target_bytes, "target")?;
         if self.size_bytes.saturating_sub(target_bytes) < MIN_HEADROOM_BYTES {
             return Err(VirtioMemError::TargetLacksHeadroom {
@@ -106,7 +99,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_fully_unplugged_observed_state_but_rejects_zero_target() {
+    fn accepts_fully_unplugged_state_and_zero_target() {
         let unplugged = VirtioMemState {
             requested_bytes: 0,
             current_bytes: 0,
@@ -114,10 +107,7 @@ mod tests {
         };
 
         assert!(unplugged.validate().is_ok());
-        assert!(matches!(
-            unplugged.validate_target(0),
-            Err(VirtioMemError::ValueOutsideSize { name: "target", .. })
-        ));
+        assert!(unplugged.validate_target(0).is_ok());
         assert!(unplugged.validate_target(BLOCK).is_ok());
     }
     #[test]
@@ -141,10 +131,7 @@ mod tests {
                 ..
             })
         ));
-        assert!(matches!(
-            valid_state().validate_target(0),
-            Err(VirtioMemError::ValueOutsideSize { name: "target", .. })
-        ));
+        assert!(valid_state().validate_target(0).is_ok());
     }
     #[test]
     fn rejects_targets_that_would_consume_the_full_device() {

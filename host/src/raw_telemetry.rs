@@ -644,7 +644,10 @@ mod tests {
         let non_monotonic = envelope("session-a", 996_000, 10, 1);
         assert!(accepted.classify(&non_monotonic).is_err());
         let mid_session_start = envelope("session-b", 996_000, 1, 3);
-        assert!(accepted.classify(&mid_session_start).is_err());
+        assert_eq!(
+            accepted.classify(&mid_session_start),
+            Ok(SampleAcceptance::New)
+        );
 
         let restarted = envelope("session-b", 996_000, 1, 0);
         assert_eq!(accepted.classify(&restarted), Ok(SampleAcceptance::New));

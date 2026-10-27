@@ -452,8 +452,6 @@ impl RawTelemetryEnvelope {
                     self.monotonic_millis,
                 ));
             }
-        } else if self.sequence != 0 {
-            return Err(DemandError::InvalidTelemetrySessionStart(self.sequence));
         }
         if self.observed_unix_millis < previous.observed_unix_millis {
             return Err(DemandError::TelemetryWallClockMovedBackwards);
@@ -516,8 +514,6 @@ pub enum DemandError {
     ReplayedTelemetrySequence(u64),
     #[error("raw telemetry monotonic clock is non-increasing: {0}")]
     NonIncreasingTelemetryMonotonicClock(u64),
-    #[error("new raw telemetry session must begin at sequence zero, got {0}")]
-    InvalidTelemetrySessionStart(u64),
     #[error("raw telemetry wall clock moved backwards across records")]
     TelemetryWallClockMovedBackwards,
 }
@@ -631,10 +627,7 @@ mod tests {
         assert_eq!(restarted.validate_successor(&next), Ok(()));
         let mut invalid_restart = restarted.clone();
         invalid_restart.sequence = 1;
-        assert_eq!(
-            invalid_restart.validate_successor(&next),
-            Err(DemandError::InvalidTelemetrySessionStart(1))
-        );
+        assert_eq!(invalid_restart.validate_successor(&next), Ok(()));
     }
 
     fn windows_native_fixture() -> WindowsNativeTelemetry {

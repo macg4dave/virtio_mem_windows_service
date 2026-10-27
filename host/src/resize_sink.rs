@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use virtio_mem_core::{
     bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility, VirtioMemState,
 };
@@ -71,6 +72,53 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
             .map_err(ResizeSinkError::CommandUnknown)
     }
 
+    fn request_resize_guarded(
+        &self,
+        expected: VirtioMemState,
+        target: u64,
+        stop: &AtomicBool,
+        authorize: &dyn Fn() -> Result<(), String>,
+    ) -> Result<(), ResizeSinkError> {
+        let prepared = self
+            .prepare(target, |state| {
+                if *state != expected || state.requested_bytes != state.current_bytes {
+                    return Err("live device state changed since the resize decision".to_owned());
+                }
+                Ok(())
+            })
+            .map_err(ResizeSinkError::Rejected)?;
+        authorize().map_err(ResizeSinkError::Rejected)?;
+        if stop.load(Ordering::Acquire) {
+            return Err(ResizeSinkError::Rejected("shutdown requested".to_owned()));
+        }
+        self.apply_prepared(prepared)
+            .map_err(ResizeSinkError::CommandUnknown)
+    }
+
+    fn supersede_shrink_guarded(
+        &self,
+        expected: VirtioMemState,
+        target: u64,
+        stop: &AtomicBool,
+    ) -> Result<(), ResizeSinkError> {
+        let prepared = self
+            .prepare(target, |state| {
+                if *state != expected
+                    || state.requested_bytes >= target
+                    || target > state.current_bytes
+                {
+                    return Err("live pending shrink changed since the resize decision".to_owned());
+                }
+                Ok(())
+            })
+            .map_err(ResizeSinkError::Rejected)?;
+        if stop.load(Ordering::Acquire) {
+            return Err(ResizeSinkError::Rejected("shutdown requested".to_owned()));
+        }
+        self.apply_prepared(prepared)
+            .map_err(ResizeSinkError::CommandUnknown)
+    }
+
     fn supersede_shrink(
         &self,
         prior_requested_bytes: u64,
@@ -133,11 +181,11 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
     pub(crate) fn prepare_abandon_to_current(
         &self,
         immutable_target_bytes: u64,
-        stable_current_bytes: u64,
+        expected: VirtioMemState,
     ) -> Result<PreparedResize, String> {
-        self.prepare(stable_current_bytes, |state| {
-            if state.requested_bytes != immutable_target_bytes
-                || state.current_bytes != stable_current_bytes
+        self.prepare(expected.current_bytes, |state| {
+            if *state != expected
+                || state.requested_bytes != immutable_target_bytes
                 || state.current_bytes <= immutable_target_bytes
             {
                 return Err(
@@ -157,6 +205,7 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         target_bytes: u64,
         precondition: impl FnOnce(&VirtioMemState) -> Result<(), String>,
     ) -> Result<PreparedResize, String> {
+        let compatibility = self.compatibility_source.compatibility()?;
         let snapshot = self
             .command
             .run(&["dumpxml".to_owned(), self.vm_name.clone()])
@@ -165,7 +214,7 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
             .map_err(|error| error.to_string())?;
         snapshot
             .compatibility
-            .merge(self.compatibility_source.compatibility()?)
+            .merge(compatibility)
             .map_err(|error| error.to_string())?
             .validate_for_resize()
             .map_err(|error| error.to_string())?;
@@ -278,6 +327,62 @@ mod tests {
     }
 
     #[test]
+    fn final_guard_rejects_drift_and_cancellation_during_compatibility() {
+        struct Cancelling<'a>(&'a AtomicBool);
+        impl CompatibilitySource for Cancelling<'_> {
+            fn compatibility(&self) -> Result<VirtioMemCompatibility, String> {
+                self.0.store(true, Ordering::Release);
+                Ok(VirtioMemCompatibility::confirmed())
+            }
+        }
+        let expected = parse_virtio_mem_xml_for_alias(CONVERGED_XML, "memory0")
+            .unwrap()
+            .memory;
+        let stop = AtomicBool::new(false);
+        let calls = Rc::new(RefCell::new(Vec::new()));
+        let sink = VirshResizeSink::new(
+            Fake {
+                xml: CONVERGED_XML,
+                calls: calls.clone(),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_compatibility_source(Cancelling(&stop));
+        assert!(matches!(
+            sink.request_resize_guarded(expected, 5 << 30, &stop, &|| Ok(())),
+            Err(ResizeSinkError::Rejected(_))
+        ));
+        assert_eq!(calls.borrow().len(), 1);
+        stop.store(false, Ordering::Release);
+        let sink = VirshResizeSink::new(
+            Fake {
+                xml: CONVERGED_XML,
+                calls: calls.clone(),
+            },
+            "guest",
+            "memory0",
+        )
+        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+        let drifted = VirtioMemState {
+            current_bytes: 3 << 30,
+            requested_bytes: 3 << 30,
+            ..expected
+        };
+        assert!(matches!(
+            sink.request_resize_guarded(drifted, 5 << 30, &stop, &|| Ok(())),
+            Err(ResizeSinkError::Rejected(_))
+        ));
+        assert!(calls.borrow().iter().all(|call| call[0] == "dumpxml"));
+        assert!(matches!(
+            sink.request_resize_guarded(expected, 5 << 30, &stop, &|| Err(
+                "headroom changed".to_owned()
+            )),
+            Err(ResizeSinkError::Rejected(_))
+        ));
+    }
+
+    #[test]
     fn rejects_pending_state_without_sending_a_resize() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let fake = Fake {
@@ -362,13 +467,26 @@ mod tests {
         .with_external_compatibility(VirtioMemCompatibility::confirmed());
 
         let prepared = sink
-            .prepare_abandon_to_current(4 * 1024 * 1024 * 1024, 6 * 1024 * 1024 * 1024)
+            .prepare_abandon_to_current(
+                4 * 1024 * 1024 * 1024,
+                parse_virtio_mem_xml_for_alias(SHRINK_PENDING_XML, "memory0")
+                    .unwrap()
+                    .memory,
+            )
             .expect("unchanged qualified state may recover to current");
         assert_eq!(prepared.current_bytes(), prepared.target_bytes());
         assert_eq!(calls.borrow().len(), 1);
 
         assert!(sink
-            .prepare_abandon_to_current(4 * 1024 * 1024 * 1024, 5 * 1024 * 1024 * 1024)
+            .prepare_abandon_to_current(
+                4 * 1024 * 1024 * 1024,
+                VirtioMemState {
+                    current_bytes: 5 * 1024 * 1024 * 1024,
+                    ..parse_virtio_mem_xml_for_alias(SHRINK_PENDING_XML, "memory0")
+                        .unwrap()
+                        .memory
+                }
+            )
             .is_err());
         assert_eq!(calls.borrow().len(), 2);
     }
@@ -410,9 +528,6 @@ mod tests {
         assert!(
             matches!(error, ResizeSinkError::Rejected(message) if message.contains("drifted: domain_xml"))
         );
-        assert_eq!(
-            calls.take(),
-            vec![vec!["dumpxml".to_owned(), "guest".to_owned()]]
-        );
+        assert_eq!(calls.take(), Vec::<Vec<String>>::new());
     }
 }

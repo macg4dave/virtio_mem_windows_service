@@ -126,10 +126,7 @@ impl ControllerStatusSnapshot {
         }
         .validate()
         .map_err(|_| ControllerStatusError::Invalid("live device state is invalid"))?;
-        if self.desired_bytes == 0
-            || self.safe_floor_bytes == 0
-            || self.effective_maximum_bytes == 0
-            || self.safe_floor_bytes > self.desired_bytes
+        if self.safe_floor_bytes > self.desired_bytes
             || self.desired_bytes > self.effective_maximum_bytes
             || self.effective_maximum_bytes >= self.device_size_bytes
             || !self.desired_bytes.is_multiple_of(self.block_size_bytes)
@@ -196,9 +193,7 @@ impl ControllerStatusSnapshot {
         if let Some(command) = &self.command {
             validate_identity(&command.operation_id)?;
             validate_identity(&command.telemetry_identity)?;
-            if command.target_bytes == 0
-                || !command.target_bytes.is_multiple_of(self.block_size_bytes)
-            {
+            if !command.target_bytes.is_multiple_of(self.block_size_bytes) {
                 return Err(ControllerStatusError::Invalid("command target is invalid"));
             }
         }

@@ -1,5 +1,11 @@
 # Development
 
+This describes the current implementation. The intended guest-driven
+request/result boundary and review findings are in [the roadmap](roadmap.md).
+Currently Linux still estimates demand from raw telemetry; moving those
+choices into Windows is outstanding work. Core request/result types and the
+replay journal are implemented in `memory_request.rs`, but production transport integration is not.
+
 ## Architecture
 
 | Location | Responsibility and entry points |
@@ -49,14 +55,16 @@ are [target estimation](../crates/virtio-mem-core/src/target_controller.rs),
   history window while allowing growth. Settlement failure latches.
 - On restart, an owned converged command clears; a recorded but unapplied or
   conflicting command latches. Unowned divergence is observed, never replayed.
-  Latch clearing is an explicit CLI operation. Pending deadlines and the
-  short-shrink pause are process-local; durable intent and latches survive restart.
+  Latch clearing is an explicit CLI operation. The original command
+  start time survives restart; missing legacy timing, backward clock movement and
+  expired bounds fail closed. The short-shrink pause remains process-local.
 - Evaluation errors hold the VM. Unreadable live state retains its last pool
   charge and latches if a command is owned. Member failures can be isolated;
   the daemon stops when every member has stopped. Configuration, persistence
   or other propagated runtime errors can still terminate the daemon.
-- Growth must leave the configured host reserve, including growth granted to
-  other VMs in the same round. The pool charges `max(requested, current)`;
+- Growth must leave the configured host reserve, including pending/uncertain
+  growth from earlier rounds and restart as well as new grants in this round.
+  The pool charges `max(requested, current, durable intent target)`;
   unreadable members retain their last charge, or the whole pool budget before
   their first successful observation. Free bytes go to larger priorities first,
   with configuration order breaking ties. Pool accounting is recomputed, not
@@ -77,12 +85,34 @@ using `qemu:///system` and `Restart=no`. Non-interactive libvirt management
 access is provisioned once; the daemon neither elevates nor stores passwords.
 The [polkit rule](../host/systemd/50-virtio-mem-host.rules) grants connection-wide
 management to that account, not a per-VM ACL. Existing group access may already
-provide it. Windows atomic replacement and Linux durable checkpoints have
+provide it. Checkpoint paths must be absolute without `..`; symlink/hard-link checkpoint
+files are rejected. The daemon and operator mutations lock the libvirt domain
+UUID, and checkpoint writers also hold a sidecar file lock until dropped. Do not
+unlink lock files. Stop the controller before `resize`, `abandon-shrink` or
+`clear-latch`, including commands from another config.
+
+Windows atomic replacement and Linux durable checkpoints have
 different platform contracts and remain separate implementations.
 
 Windows loads `C:\ProgramData\VirtioMemService\config.json`; its schema is
 [defined in core](../crates/virtio-mem-core/src/windows_service_config.rs).
 Telemetry location and service identity must match the host configuration.
+Windows configuration is bounded to 64 KiB and shared wire/path validation is
+also used by deployment. Paths use absolute drive syntax; ambiguous Win32 forms,
+collisions with telemetry/backups/temporary names and existing file aliases are
+rejected. Poll and shutdown timing must round-trip exactly in milliseconds.
+Installation keeps configuration administrator-owned/read-only to LocalService;
+publication files alone inherit modify rights. Existing files receive explicit
+ACLs. The executable path passed to SCM is quoted.
+
+`help` documents recovery when configuration is missing or damaged: use an
+administrator terminal with `sc.exe stop SERVICE_NAME` and, when removing the
+service, `sc.exe delete SERVICE_NAME`, using its installed identity. Program
+commands reject trailing arguments. A worker panic is reported as failure; a
+worker exceeding the shutdown bound terminates the process for SCM recovery.
+Only the host thread publishes lifecycle status. Publication retries sharing and
+lock errors within the configured bound, wakes on stop, and treats diagnostic
+backup errors independently of current publication.
 
 Migration from the former environment-variable deployment requires copying
 retained values from `<instance>.conf` to `<instance>.toml`. Removed demand,
@@ -157,5 +187,12 @@ restore allocation or prove that a pending resize has finished.
 
 Keep qualification evidence under `.artifacts/` and summarise only evidence
 that affects phase acceptance in the roadmap. The standalone `live-resize`
-command's restoration limitation is tracked as REC-001; do not treat its
-ordinary rollback attempt as recovery from an unconverged operation.
+command restores the original allocation only after forward convergence and
+without cancellation. Failure, timeout, cancellation or an uncertain command
+reports final live state and issues no automatic restoration. Inspect fresh
+`requested`/`current`, stop any controller, then use the reviewed `abandon-shrink`
+path for a stable pending shrink or explicit operator recovery for other states.
+A restoration failure also requires inspection; do not blindly repeat a delta.
+Subprocess output is capped at 4 MiB per stream (64 MiB for elevated inventory),
+with a shared deadline covering
+inherited pipes and cleanup of the owned process group.

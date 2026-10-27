@@ -10,8 +10,6 @@ pub enum ServiceHostError {
     Startup(String),
     #[error("service worker failed: {0}")]
     Worker(String),
-    #[error("service worker did not stop within the configured shutdown timeout")]
-    ShutdownTimeout,
     #[error("service host shutdown timeout must be greater than zero")]
     InvalidShutdownTimeout,
 }
@@ -42,8 +40,6 @@ pub enum RuntimeWiringError {
     Configuration(String),
     #[error("native telemetry worker construction failed: {0}")]
     WorkerConstruction(String),
-    #[error("native telemetry worker initialization failed: {0}")]
-    WorkerInitialization(String),
     #[error("service host execution failed: {0}")]
     HostExecution(String),
 }

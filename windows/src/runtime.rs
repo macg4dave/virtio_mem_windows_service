@@ -110,6 +110,10 @@ where
     }
 
     pub fn poll_once(&mut self) -> Result<RawTelemetryEnvelope, String> {
+        self.poll_once_with_stop(&StopSignal::new())
+    }
+
+    fn poll_once_with_stop(&mut self, stop: &StopSignal) -> Result<RawTelemetryEnvelope, String> {
         let memory = self
             .telemetry
             .collect()
@@ -143,7 +147,7 @@ where
             .contract_mode()
             .map_err(|error| format!("native telemetry contract failed: {error}"))?;
         self.publisher
-            .publish(&envelope)
+            .publish_cancellable(&envelope, stop)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
         self.previous_monotonic_millis = Some(monotonic_millis);
         self.next_sequence = self
@@ -165,15 +169,18 @@ where
     C: TelemetryClock + Send + 'static,
     N: MemoryResourceNotificationTelemetry + Send + 'static,
 {
-    fn initialize(&mut self, _stop: &StopSignal) -> Result<(), String> {
-        self.poll_once().map(|_| ())
+    fn initialize(&mut self, stop: &StopSignal) -> Result<(), String> {
+        if stop.is_cancelled() {
+            return Ok(());
+        }
+        self.poll_once_with_stop(stop).map(|_| ())
     }
 
     fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
         while !stop.is_cancelled() {
             stop.wait(self.interval);
             if !stop.is_cancelled() {
-                self.poll_once()?;
+                self.poll_once_with_stop(stop)?;
             }
         }
         Ok(())
@@ -198,7 +205,8 @@ pub fn native_raw_telemetry_worker(
     RawTelemetryWorker::with_memory_resource_notifications(
         NativeMemoryTelemetry,
         native_memory_resource_notifications(),
-        AtomicRawTelemetryPublisher::new(&config.demand_report_path),
+        AtomicRawTelemetryPublisher::new(&config.demand_report_path)
+            .with_retry_timeout(config.shutdown_timeout),
         SystemTelemetryClock::default(),
         &config.vm_name,
         &config.service_name,
@@ -301,6 +309,24 @@ mod tests {
             self.0.push(envelope.clone());
             Ok(())
         }
+    }
+
+    #[test]
+    fn cancelled_initialization_does_not_sample_or_publish() {
+        let mut worker = RawTelemetryWorker::new(
+            TelemetryFixture,
+            PublisherFixture::default(),
+            FixedClock,
+            "guest",
+            "service",
+            "session",
+            Duration::from_secs(1),
+        )
+        .unwrap();
+        let stop = StopSignal::new();
+        stop.cancel();
+        worker.initialize(&stop).unwrap();
+        assert!(worker.publisher().0.is_empty());
     }
 
     #[test]

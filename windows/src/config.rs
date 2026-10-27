@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::time::Duration;
 
 use virtio_mem_core::{WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION};
@@ -33,6 +34,11 @@ impl ServiceConfig {
             if value.trim().is_empty() {
                 return Err(ConfigurationError::EmptyField(field));
             }
+            if value.chars().any(char::is_control) {
+                return Err(ConfigurationError::InvalidFile(format!(
+                    "{field} contains a control character"
+                )));
+            }
         }
 
         if self.poll_interval.is_zero() {
@@ -42,6 +48,19 @@ impl ServiceConfig {
             return Err(ConfigurationError::InvalidShutdownTimeout);
         }
 
+        for duration in [self.poll_interval, self.shutdown_timeout] {
+            if duration.subsec_nanos() % 1_000_000 != 0
+                || u64::try_from(duration.as_millis()).is_err()
+            {
+                return Err(ConfigurationError::DurationOverflow);
+            }
+        }
+        let wire = WindowsServiceConfigFile::try_from(self)?;
+        wire.validate()
+            .and_then(|()| wire.validate_paths(&self.config_path))
+            .map_err(ConfigurationError::InvalidFile)?;
+        #[cfg(windows)]
+        validate_file_identity(&self.config_path, &self.demand_report_path)?;
         Ok(())
     }
 
@@ -51,8 +70,9 @@ impl ServiceConfig {
 
     pub fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Self, ConfigurationError> {
         let path = path.as_ref();
-        let contents = match std::fs::read_to_string(path) {
-            Ok(contents) => contents,
+        const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 return Err(ConfigurationError::MissingFile(
                     path.to_string_lossy().into_owned(),
@@ -60,6 +80,15 @@ impl ServiceConfig {
             }
             Err(error) => return Err(ConfigurationError::FileIo(error.to_string())),
         };
+        let mut contents = String::new();
+        file.take(MAX_CONFIG_BYTES + 1)
+            .read_to_string(&mut contents)
+            .map_err(|error| ConfigurationError::FileIo(error.to_string()))?;
+        if contents.len() as u64 > MAX_CONFIG_BYTES {
+            return Err(ConfigurationError::InvalidFile(
+                "configuration exceeds 64 KiB".to_owned(),
+            ));
+        }
         let persisted: WindowsServiceConfigFile = serde_json::from_str(&contents)
             .map_err(|error| ConfigurationError::InvalidFile(error.to_string()))?;
         if persisted.schema_version != WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION {
@@ -80,30 +109,6 @@ impl ServiceConfig {
         };
         config.validate()?;
         Ok(config)
-    }
-
-    pub fn save(&self) -> Result<(), ConfigurationError> {
-        self.save_to_path(&self.config_path)
-    }
-
-    pub fn save_to_path(
-        &self,
-        path: impl AsRef<std::path::Path>,
-    ) -> Result<(), ConfigurationError> {
-        self.validate()?;
-        let path = path.as_ref();
-        if let Some(parent) = path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| ConfigurationError::FileIo(error.to_string()))?;
-        }
-        let persisted = WindowsServiceConfigFile::try_from(self)?;
-        let contents = serde_json::to_string_pretty(&persisted)
-            .map_err(|error| ConfigurationError::InvalidFile(error.to_string()))?;
-        std::fs::write(path, format!("{contents}\n"))
-            .map_err(|error| ConfigurationError::FileIo(error.to_string()))
     }
 }
 
@@ -127,6 +132,42 @@ impl TryFrom<&ServiceConfig> for WindowsServiceConfigFile {
             shutdown_timeout_millis,
         })
     }
+}
+
+#[cfg(windows)]
+pub(crate) fn validate_file_identity(config: &str, report: &str) -> Result<(), ConfigurationError> {
+    use std::os::windows::io::AsRawHandle;
+    use winapi::um::fileapi::{GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION};
+    let identify = |path: &str| -> Result<Option<(u32, u32, u32)>, ConfigurationError> {
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(ConfigurationError::FileIo(error.to_string())),
+        };
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info) } == 0 {
+            return Err(ConfigurationError::FileIo(
+                std::io::Error::last_os_error().to_string(),
+            ));
+        }
+        Ok(Some((
+            info.dwVolumeSerialNumber,
+            info.nFileIndexHigh,
+            info.nFileIndexLow,
+        )))
+    };
+    if let Some(config_id) = identify(config)? {
+        for path in std::iter::once(report.to_owned())
+            .chain((1..=3).map(|index| format!("{report}.{index}")))
+        {
+            if identify(&path)? == Some(config_id) {
+                return Err(ConfigurationError::InvalidFile(
+                    "configuration and telemetry/backup share a file identity".to_owned(),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -203,6 +244,21 @@ mod tests {
     }
 
     #[test]
+    fn rejects_native_string_path_collisions_and_lossy_durations() {
+        let mut config = test_config();
+        config.config_path = r"c:\TEST\.\TELEMETRY.jsonl".to_owned();
+        assert!(config.validate().is_err());
+        config.config_path = format!("{}.1", config.demand_report_path);
+        assert!(config.validate().is_err());
+        config = test_config();
+        config.description.push('\0');
+        assert!(config.validate().is_err());
+        config = test_config();
+        config.poll_interval = Duration::from_nanos(1);
+        assert_eq!(config.validate(), Err(ConfigurationError::DurationOverflow));
+    }
+
+    #[test]
     fn persists_and_loads_versioned_configuration() {
         let path = test_path("config-round-trip");
         let _ = std::fs::remove_file(&path);
@@ -213,7 +269,11 @@ mod tests {
             ..test_config()
         };
 
-        expected.save().expect("configuration should save");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&WindowsServiceConfigFile::try_from(&expected).unwrap()).unwrap(),
+        )
+        .unwrap();
         let loaded = ServiceConfig::load_from_path(&path).expect("configuration should load");
 
         assert_eq!(loaded, expected);

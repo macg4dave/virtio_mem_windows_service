@@ -179,16 +179,16 @@ impl TargetEstimator {
                 "checkpoint history exceeds its entry limit",
             ));
         }
-        if state.desired_bytes == 0
+        if state.session_id.is_empty()
             && (state.safe_floor_bytes != 0
-                || !state.session_id.is_empty()
+                || state.desired_bytes != 0
                 || !state.history.is_empty())
         {
             return Err(TargetEstimatorError::InvalidOrdering(
                 "cold checkpoint contains initialized state",
             ));
         }
-        if state.desired_bytes != 0
+        if !state.session_id.is_empty()
             && (state.desired_bytes < config.configured_minimum_bytes
                 || state.safe_floor_bytes < config.configured_minimum_bytes
                 || state.safe_floor_bytes > state.desired_bytes)
@@ -250,7 +250,7 @@ impl TargetEstimator {
             return Err(error);
         }
 
-        if self.state.desired_bytes == 0 {
+        if self.state.session_id.is_empty() {
             self.state.desired_bytes = geometry.current_bytes.max(instantaneous.desired_now_bytes);
             self.state.safe_floor_bytes = geometry.current_bytes;
         }
@@ -591,6 +591,34 @@ mod tests {
             sequence,
             memory,
         }
+    }
+
+    #[test]
+    fn initialized_zero_survives_restore_and_does_not_reinitialize_to_current() {
+        let policy = TargetPolicyConfig {
+            configured_minimum_bytes: 0,
+            ..config()
+        };
+        let mut idle = memory(0, 0, 32 * GIB);
+        idle.physical_available_bytes = idle.physical_total_bytes;
+        let mut estimator = TargetEstimator::new(policy).unwrap();
+        assert_eq!(
+            estimator
+                .estimate(sample(1, 0, idle), geometry(0))
+                .unwrap()
+                .desired_bytes,
+            0
+        );
+        let state: TargetEstimatorState =
+            serde_json::from_slice(&serde_json::to_vec(estimator.state()).unwrap()).unwrap();
+        let mut restored = TargetEstimator::restore(policy, state).unwrap();
+        let mut idle = memory(GIB, 0, 32 * GIB);
+        idle.physical_available_bytes = idle.physical_total_bytes;
+        let next = restored
+            .estimate(sample(60_001, 1, idle), geometry(GIB))
+            .unwrap();
+        assert_eq!(next.desired_bytes, 0);
+        assert_eq!(next.safe_floor_bytes, 0);
     }
 
     #[test]

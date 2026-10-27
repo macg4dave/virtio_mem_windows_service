@@ -4,11 +4,9 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command as ProcessCommand, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use wait_timeout::ChildExt;
 
 use crate::process;
 
@@ -306,57 +304,11 @@ fn inspect_file(
 }
 
 fn run_elevated(command: &InventoryCommand, repo: &Path) -> Result<String, String> {
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("resolve current xtask executable: {error}"))?;
-    let mut child = ProcessCommand::new("sudo")
-        .arg("--")
-        .arg(executable)
-        .args(elevated_arguments(command))
-        .current_dir(repo)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .map_err(|error| format!("start sudo for deployment inventory: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| "capture elevated deployment inventory output".to_owned())?;
-    let reader = std::thread::spawn(move || {
-        use std::io::Read;
-        let mut stdout = stdout;
-        let mut bytes = Vec::new();
-        stdout
-            .read_to_end(&mut bytes)
-            .map(|_| bytes)
-            .map_err(|error| format!("read elevated deployment inventory: {error}"))
-    });
-    let status = if let Some(status) = child
-        .wait_timeout(command.command_timeout)
-        .map_err(|error| format!("wait for elevated deployment inventory: {error}"))?
-    {
-        status
-    } else {
-        child
-            .kill()
-            .map_err(|error| format!("terminate timed-out elevated inventory: {error}"))?;
-        let _ = child.wait();
-        let _ = reader.join();
-        return Err(format!(
-            "elevated deployment inventory timed out after {:?}",
-            command.command_timeout
-        ));
-    };
-    let bytes = reader
-        .join()
-        .map_err(|_| "elevated deployment inventory reader panicked".to_owned())??;
-    if !status.success() {
-        return Err(format!(
-            "elevated deployment inventory failed with status {status}"
-        ));
-    }
-    String::from_utf8(bytes)
-        .map_err(|error| format!("elevated deployment inventory returned invalid UTF-8: {error}"))
+    let executable =
+        std::env::current_exe().map_err(|error| format!("resolve xtask executable: {error}"))?;
+    let mut args = vec![process::os("--"), executable.into_os_string()];
+    args.extend(elevated_arguments(command));
+    process::elevated_text(&args, repo, command.command_timeout)
 }
 
 fn elevated_arguments(command: &InventoryCommand) -> Vec<OsString> {

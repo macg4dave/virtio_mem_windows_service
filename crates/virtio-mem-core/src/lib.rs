@@ -4,6 +4,7 @@ pub mod compatibility;
 pub mod controller_status;
 pub mod demand;
 pub mod error;
+pub mod memory_request;
 pub mod pool;
 pub mod reconciler;
 pub mod shrink_recovery;

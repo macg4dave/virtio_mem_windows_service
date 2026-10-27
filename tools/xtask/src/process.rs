@@ -4,8 +4,6 @@ use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::Duration;
 
-use wait_timeout::ChildExt;
-
 pub fn command_exists(name: &str) -> bool {
     Command::new(name)
         .arg("--version")
@@ -72,6 +70,18 @@ pub fn bounded_text(
         .map_err(|error| format!("{program} returned invalid UTF-8: {error}"))
 }
 
+pub fn elevated_text(args: &[OsString], cwd: &Path, timeout: Duration) -> Result<String, String> {
+    let mut command = Command::new("sudo");
+    command.args(args).current_dir(cwd);
+    let output = virtio_mem_host::virsh::bounded_interactive_output(&mut command, timeout)
+        .map_err(|error| format!("elevated command: {error}"))?;
+    if !output.status.success() {
+        return Err(format!("elevated command failed with {}", output.status));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(|error| format!("elevated command returned invalid UTF-8: {error}"))
+}
+
 pub fn bounded_output(
     program: &str,
     args: &[OsString],
@@ -109,58 +119,10 @@ where
     bounded(command, &program.display().to_string(), timeout)
 }
 
-/// Drains stdout and stderr concurrently so a chatty child cannot block, and
-/// kills and reaps it at the deadline.
+/// Use the same output and descendant lifetime bounds as host commands.
 fn bounded(mut command: Command, name: &str, timeout: Duration) -> Result<Output, String> {
-    let mut child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to start {name}: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| format!("failed to capture {name} stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| format!("failed to capture {name} stderr"))?;
-    let stdout_reader = std::thread::spawn(move || read_all(stdout));
-    let stderr_reader = std::thread::spawn(move || read_all(stderr));
-    let status = if let Some(status) = child
-        .wait_timeout(timeout)
-        .map_err(|error| format!("failed while waiting for {name}: {error}"))?
-    {
-        status
-    } else {
-        child
-            .kill()
-            .map_err(|error| format!("failed to terminate timed-out {name}: {error}"))?;
-        let _ = child.wait();
-        let _ = stdout_reader.join();
-        let _ = stderr_reader.join();
-        return Err(format!("{name} timed out after {timeout:?}"));
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| format!("{name} stdout reader panicked"))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| format!("{name} stderr reader panicked"))??;
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
-}
-
-fn read_all(mut input: impl Read) -> Result<Vec<u8>, String> {
-    let mut output = Vec::new();
-    input
-        .read_to_end(&mut output)
-        .map_err(|error| format!("failed to read command output: {error}"))?;
-    Ok(output)
+    virtio_mem_host::virsh::bounded_output(&mut command, timeout)
+        .map_err(|error| format!("{name}: {error}"))
 }
 
 pub fn run_with_input(
