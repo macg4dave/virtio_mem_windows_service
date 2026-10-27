@@ -196,8 +196,13 @@ fn capture_output(
     let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidInput, "command timeout is too large")
     })?;
+    // An interactive child (sudo) must stay in the terminal's foreground
+    // process group: in a new group its password prompt cannot read the tty
+    // and PAM reports a failed conversation.
+    if !interactive {
+        command.process_group(0);
+    }
     let mut child = command
-        .process_group(0)
         .stdin(if interactive {
             Stdio::inherit()
         } else {
@@ -290,12 +295,17 @@ fn capture_output(
         }
     })();
     // Always clean up the owned process group, including descendants after the
-    // direct child exits. Dropping the pipes cannot strand reader threads.
-    // SAFETY: spawn placed this child in a new process group with its own PID.
-    let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
-    let kill_error = (killed < 0)
-        .then(io::Error::last_os_error)
-        .filter(|error| error.raw_os_error() != Some(libc::ESRCH));
+    // direct child exits. Dropping the pipes cannot strand reader threads. An
+    // interactive child shares our group, so only it is killed.
+    let kill_error = if interactive {
+        child.kill().err()
+    } else {
+        // SAFETY: spawn placed this child in a new process group with its own PID.
+        let killed = unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+        (killed < 0)
+            .then(io::Error::last_os_error)
+            .filter(|error| error.raw_os_error() != Some(libc::ESRCH))
+    };
     let reaped = child.wait();
     match result {
         Err(error) => Err(io::Error::new(

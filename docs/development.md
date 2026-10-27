@@ -57,8 +57,11 @@ Reclaim uses exactly those physical/commit observations, plus native High:
 
 - Every observation throughout the history window must report High. Low,
   Neutral, failed/unavailable native state, a failed numeric sample, missing or
-  stale host geometry, pending device convergence, or a changed inferred fixed
-  RAM base restarts reclaim qualification.
+  stale host geometry, or a changed inferred fixed RAM base restarts reclaim
+  qualification. A device converging on a request contributes no sample but
+  keeps the window while Windows still reports High, so successive bounded
+  removal steps continue without another full window; a convergence longer
+  than the maximum gap restarts it.
 - Targets retain the highest numeric demand over the window. Downward
   hysteresis must be met; each removal is bounded by the configured shrink
   step and cannot pass the normal desired target or the safe-floor target
@@ -189,7 +192,9 @@ administrator terminal, `sc.exe stop SERVICE_NAME` and, when removing the
 service, `sc.exe delete SERVICE_NAME`. A worker panic is reported as failure;
 a worker exceeding the shutdown bound terminates the process for SCM recovery.
 A policy or request-state failure stops the worker. Publication retries
-sharing/lock errors within the shutdown bound. A missing, mid-write or
+sharing/lock errors, and the access denial `MoveFileExW` reports while the
+guest agent holds the file open for a host read, within a bounded retry
+window; access still denied at the deadline stops the worker. A missing, mid-write or
 momentarily shared host status leaves Windows without fresh geometry; other
 status read errors, such as denied access, stop the worker.
 
@@ -286,6 +291,45 @@ schema 2 and include the guest `policy`. Required environment values are
 `VIRTIO_MEM_WINDOWS_ARTIFACTS`, `VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS` and
 `VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS`. Use `cargo xtask help` for
 optional settings and command options. `gate all` includes remote Windows work.
+
+## Live RAM display in Windows 11
+
+Run `tools/windows/Watch-Ram.ps1` in Windows PowerShell 5.1 or PowerShell 7:
+
+```powershell
+.\tools\windows\Watch-Ram.ps1
+# Faster refresh, or a bounded machine-readable observation:
+.\tools\windows\Watch-Ram.ps1 -IntervalMilliseconds 250
+.\tools\windows\Watch-Ram.ps1 -Samples 5 -AsObject | ConvertTo-Json
+```
+
+No elevation is needed. Ctrl+C stops the monitor. It calls `GetPerformanceInfo`
+on every tick. The RAM-only dashboard refreshes in place in a console of at least
+80 columns by 30 rows, showing physical total, available/in-use RAM, commit
+headroom, usage bars, session minimum/maximum total, minimum available, peak
+usage and cumulative added/removed memory. A rolling chart plots total (`T`)
+and in-use (`#`) RAM against an absolute GiB scale. The latest three total-RAM
+changes remain listed with timestamps and signed MiB changes.
+
+History defaults to 60 observations. Set `-HistorySamples 300` for a longer
+window (approximately five minutes at the default interval); windows wider
+than 60 samples are compressed into columns retaining peak sampled usage and
+latest total per bin. This is sampled history, not detection of changes between
+samples. Session extrema and cumulative change totals persist beyond the chart
+window. Use `-NoClear` for scrolling snapshots; redirected output and terminals
+too small for the dashboard use snapshots automatically. `-AsObject` retains
+CSV/JSON support and adds the session metrics. GiB uses 1024-based units.
+Available includes standby/free/zero pages. It does not resize RAM, clear caches or alter
+services. Windows-visible total is distinct from hypervisor requested bytes;
+if a requested hot-add has not reached Windows, this display cannot claim it
+has. `-AsObject` includes exact byte values and timestamps for CSV/JSON capture.
+
+A copy is staged at `C:\Users\Dave\Watch-Ram.ps1` on ice101 for convenience.
+Native Windows PowerShell sampling, object output and plain dashboard rendering
+were verified on 27 October 2026. A 65-sample injected API fixture verified
++1 GiB/-1 GiB events, session extrema, cumulative changes and history compression
+without changing guest RAM. Interactive cursor repaint was not visually
+qualified; live hot-add/removal was not performed for this monitor test.
 
 ## Qualification runner
 

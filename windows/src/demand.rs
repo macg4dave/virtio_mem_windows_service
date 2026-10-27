@@ -254,10 +254,15 @@ fn retry_atomic_replace(
         }
         match operation() {
             Ok(()) => return Ok(()),
-            // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION are transient;
-            // access denied is a configuration/ACL failure, not a sharing error.
+            // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION are transient.
+            // So is ERROR_ACCESS_DENIED while a reader holds the destination
+            // open without FILE_SHARE_DELETE, as the QEMU guest agent does
+            // for every host read; MoveFileExW reports that collision as
+            // access denied. A persistent ACL fault still fails at the
+            // deadline.
             Err(error)
-                if matches!(error.raw_os_error(), Some(32 | 33)) && Instant::now() < deadline =>
+                if matches!(error.raw_os_error(), Some(5 | 32 | 33))
+                    && Instant::now() < deadline =>
             {
                 stop.wait(
                     ATOMIC_REPLACE_RETRY_DELAY
@@ -965,7 +970,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_retry_is_cancellable_and_access_denial_is_not_retried() {
+    fn publication_retry_is_cancellable_and_persistent_access_denial_fails_at_the_deadline() {
         let stop = StopSignal::new();
         let error = retry_atomic_replace(&stop, Duration::from_secs(1), || {
             stop.cancel();
@@ -973,15 +978,16 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Interrupted);
+        let started = Instant::now();
         let mut calls = 0;
-        assert!(
-            retry_atomic_replace(&StopSignal::new(), Duration::from_secs(1), || {
-                calls += 1;
-                Err(std::io::Error::from_raw_os_error(5))
-            })
-            .is_err()
-        );
-        assert_eq!(calls, 1);
+        let error = retry_atomic_replace(&StopSignal::new(), Duration::from_millis(250), || {
+            calls += 1;
+            Err(std::io::Error::from_raw_os_error(5))
+        })
+        .expect_err("persistent access denial must fail");
+        assert_eq!(error.raw_os_error(), Some(5));
+        assert!(calls > 1);
+        assert!(started.elapsed() >= Duration::from_millis(250));
     }
 
     #[test]
@@ -996,6 +1002,20 @@ mod tests {
             }
         })
         .expect("transient sharing collision should recover");
+        assert_eq!(attempts, 3);
+
+        // A guest-agent read holding the destination open surfaces as access
+        // denied until it closes the handle.
+        let mut attempts = 0;
+        retry_atomic_replace(&StopSignal::new(), Duration::from_secs(1), || {
+            attempts += 1;
+            if attempts < 3 {
+                Err(std::io::Error::from_raw_os_error(5))
+            } else {
+                Ok(())
+            }
+        })
+        .expect("access denial from an open reader should recover");
         assert_eq!(attempts, 3);
 
         let mut attempts = 0;

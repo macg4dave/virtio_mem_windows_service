@@ -200,9 +200,16 @@ impl GuestRequester {
         let fresh =
             status.filter(|status| status.fresh_at(now, self.policy.host_status_max_age_millis));
         // Estimate on every fresh status so reclaim history stays continuous
-        // while a request is outstanding.
+        // while a request is outstanding. A device converging on our own
+        // request gives no geometry for that sample, but only missing/stale
+        // status or a non-High observation discards the window; otherwise
+        // every bounded removal step would wait a full window again. A
+        // convergence longer than the maximum gap still restarts it.
         let converged = fresh.filter(|status| status.requested_bytes == status.current_bytes);
-        if converged.is_none() {
+        if fresh.is_none()
+            || (converged.is_none()
+                && sample.native_pressure != Some(MemoryResourceNotificationState::High))
+        {
             self.estimator.invalidate_history();
         }
         let estimate = converged
@@ -537,6 +544,105 @@ mod tests {
                 .poll(
                     sample(second, 10 * GIB, 12 * GIB - 128 * MIB),
                     Some(&status(second, current, None))
+                )
+                .unwrap(),
+            GuestRequester::hold()
+        );
+    }
+
+    #[test]
+    fn completed_removals_continue_without_rewaiting_the_window() {
+        let mut guest = requester(GuestRequestState::default());
+        // 4 GiB fixed + 8 GiB device with 10 GiB available: demand is low.
+        let mut second = 1;
+        let mut current = 8 * GIB;
+        let first = loop {
+            if let Some(request) = guest
+                .poll(
+                    sample(second, 10 * GIB, 4 * GIB + current),
+                    Some(&status(second, current, None)),
+                )
+                .unwrap()
+                .request
+            {
+                break request;
+            }
+            second += 5;
+        };
+        assert_eq!(first.operation, MemoryOperation::Remove);
+
+        let mut request = first;
+        for _ in 0..3 {
+            // The device converges on the removal: High throughout.
+            second += 5;
+            let mut converging = status(second, current, None);
+            converging.requested_bytes = current - request.bytes;
+            let held = guest
+                .poll(
+                    sample(second, 10 * GIB, 4 * GIB + current),
+                    Some(&converging),
+                )
+                .unwrap();
+            assert_eq!(held.request.as_ref(), Some(&request));
+
+            second += 5;
+            current -= request.bytes;
+            let done = MemoryResult {
+                request: request.clone(),
+                outcome: MemoryOutcome::Completed,
+                actual_bytes: request.bytes,
+                observed_unix_millis: 1_000_000 + second * 1000,
+                reason: None,
+            };
+            let resolved = guest
+                .poll(
+                    sample(second, 10 * GIB - request.bytes, 4 * GIB + current),
+                    Some(&status(second, current, Some(done.clone()))),
+                )
+                .unwrap();
+            assert_eq!(resolved.resolved, Some(done.clone()));
+
+            // The very next converged poll issues the following step.
+            second += 5;
+            request = guest
+                .poll(
+                    sample(second, 10 * GIB - request.bytes, 4 * GIB + current),
+                    Some(&status(second, current, Some(done))),
+                )
+                .unwrap()
+                .request
+                .expect("next removal step without another history window");
+            assert_eq!(request.operation, MemoryOperation::Remove);
+        }
+
+        // A non-High observation while converging still restarts the window.
+        second += 5;
+        let mut converging = status(second, current, None);
+        converging.requested_bytes = current - request.bytes;
+        let mut neutral = sample(second, 10 * GIB, 4 * GIB + current);
+        neutral.native_pressure = Some(MemoryResourceNotificationState::Neutral);
+        guest.poll(neutral, Some(&converging)).unwrap();
+        second += 5;
+        current -= request.bytes;
+        let done = MemoryResult {
+            request: request.clone(),
+            outcome: MemoryOutcome::Completed,
+            actual_bytes: request.bytes,
+            observed_unix_millis: 1_000_000 + second * 1000,
+            reason: None,
+        };
+        guest
+            .poll(
+                sample(second, 10 * GIB, 4 * GIB + current),
+                Some(&status(second, current, Some(done.clone()))),
+            )
+            .unwrap();
+        second += 5;
+        assert_eq!(
+            guest
+                .poll(
+                    sample(second, 10 * GIB, 4 * GIB + current),
+                    Some(&status(second, current, Some(done)))
                 )
                 .unwrap(),
             GuestRequester::hold()
