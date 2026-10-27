@@ -49,7 +49,6 @@ pub struct ReconcileInput {
     pub effective_maximum_bytes: u64,
     pub history_ready: bool,
     pub telemetry_fresh: bool,
-    pub automatic_shrink: bool,
     pub actuation_latched: bool,
     pub owns_pending_shrink: bool,
     pub pending_constrained: bool,
@@ -160,7 +159,7 @@ pub fn reconcile(input: ReconcileInput) -> Result<ReconcileDecision, ReconcileEr
             false,
         ));
     }
-    if current > input.desired_bytes && input.automatic_shrink && input.history_ready {
+    if current > input.desired_bytes && input.history_ready {
         let target_bytes = current
             .saturating_sub(input.shrink_step_bytes)
             .max(input.desired_bytes)
@@ -209,7 +208,6 @@ mod tests {
             effective_maximum_bytes: 31 * GIB,
             history_ready: true,
             telemetry_fresh: true,
-            automatic_shrink: true,
             actuation_latched: false,
             owns_pending_shrink: false,
             pending_constrained: false,

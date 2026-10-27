@@ -3,6 +3,7 @@ mod calibration;
 mod controller_status;
 mod deployment;
 mod host_deploy;
+mod host_run;
 mod live_resize;
 mod local;
 mod preflight;
@@ -24,6 +25,7 @@ Usage:
   cargo xtask controller-status INSTANCE [OPTIONS]
   cargo xtask attestation VM_NAME ALIAS REVIEW --output PATH [OPTIONS]
   cargo xtask host-deploy INSTANCE --config PATH --attestation PATH [OPTIONS]
+  cargo xtask host-run --config PATH --max-run-seconds N [OPTIONS]
   cargo xtask preflight VM_NAME ALIAS [OPTIONS]
   cargo xtask windows <check|sync|build|test|lint|fetch|all>
   cargo xtask windows deploy MANIFEST --output PATH [--apply]
@@ -63,6 +65,13 @@ Host deployment options:
   --command-timeout-seconds N   Required external-command bound.
   --apply                       Install; otherwise validate only.
   --elevate                     Invoke this prebuilt xtask once through sudo.
+
+Host run options (the daemon in the foreground instead of systemd):
+  --config PATH                 Required host config file.
+  --max-run-seconds N           Required; the daemon is stopped (SIGTERM) after N seconds.
+  --min-host-available-bytes N  Stop the daemon if host MemAvailable falls below N.
+  --log PATH                    Default .artifacts/host-run/<unix-millis>.log.
+  --sudo                        Run the daemon through sudo (root-only attestation).
 
 Controller status options:
   --host-cli PATH               Required absolute candidate host executable.
@@ -184,6 +193,7 @@ fn execute(arguments: &[String]) -> Result<(), String> {
         }
         Some("attestation") => attestation::run(&attestation::parse(&arguments[1..])?, &repo),
         Some("host-deploy") => host_deploy::run(&host_deploy::parse(&arguments[1..])?, &repo),
+        Some("host-run") => host_run::run(&host_run::parse(&arguments[1..])?, &repo),
         Some("preflight") => preflight::run(&preflight::parse(&arguments[1..])?, &repo),
         Some("windows") => windows::run(windows::parse(&arguments[1..])?, &repo),
         Some("qga") => qga::run(&qga::parse(&arguments[1..])?, &repo),

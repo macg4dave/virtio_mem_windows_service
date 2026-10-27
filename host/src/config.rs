@@ -5,9 +5,6 @@ use std::time::Duration;
 use serde::Deserialize;
 use thiserror::Error;
 
-/// Unplug must be qualified on the deployment before automatic reclaim is enabled.
-pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = false;
-
 /// Bounds a configuration read; a real file is a few kilobytes.
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
@@ -43,8 +40,6 @@ pub enum HostConfigError {
     InvalidPriority,
     #[error("alias contains unsupported characters")]
     InvalidAlias,
-    #[error("minimum memory must not exceed maximum memory")]
-    InvalidMemoryRange,
     #[error("grow and shrink steps must be greater than zero")]
     InvalidResizeStep,
     #[error("host-controller durations must be greater than zero")]
@@ -69,11 +64,10 @@ pub struct HostConfig {
     pub alias: String,
     /// Pool priority; larger is served first when VMs contend.
     pub priority: u32,
+    /// Device bytes never planned below; the device size is the only maximum.
     pub min_memory_bytes: u64,
-    pub max_memory_bytes: u64,
     pub grow_step_bytes: u64,
     pub shrink_step_bytes: u64,
-    pub fixed_visible_base_bytes: u64,
     pub physical_reserve_bytes: u64,
     pub commit_reserve_bytes: u64,
     pub safe_floor_physical_reserve_bytes: u64,
@@ -93,7 +87,6 @@ pub struct HostConfig {
     pub raw_telemetry_future_tolerance: Duration,
     pub host_min_headroom_bytes: u64,
     pub compatibility_attestation_path: String,
-    pub automatic_windows_shrink: bool,
     /// Evaluate and log decisions but never request a resize.
     pub observe_only: bool,
 }
@@ -128,11 +121,10 @@ struct VmTable {
     name: String,
     alias: String,
     priority: u32,
+    #[serde(default)]
     min_memory_bytes: u64,
-    max_memory_bytes: u64,
     grow_step_bytes: u64,
     shrink_step_bytes: u64,
-    fixed_visible_base_bytes: u64,
     physical_reserve_bytes: u64,
     commit_reserve_bytes: u64,
     safe_floor_physical_reserve_bytes: u64,
@@ -143,8 +135,6 @@ struct VmTable {
     downward_hysteresis_bytes: u64,
     policy_state_path: String,
     compatibility_attestation_path: String,
-    #[serde(default = "default_automatic_windows_shrink")]
-    automatic_windows_shrink: bool,
     telemetry_transport: RawTelemetryTransport,
     telemetry_path: String,
     telemetry_service_name: String,
@@ -154,10 +144,6 @@ struct VmTable {
 
 fn default_virsh_binary() -> String {
     "virsh".to_owned()
-}
-
-fn default_automatic_windows_shrink() -> bool {
-    DEFAULT_AUTOMATIC_WINDOWS_SHRINK
 }
 
 impl HostSettings {
@@ -246,10 +232,8 @@ impl HostConfig {
             alias: vm.alias.clone(),
             priority: vm.priority,
             min_memory_bytes: vm.min_memory_bytes,
-            max_memory_bytes: vm.max_memory_bytes,
             grow_step_bytes: vm.grow_step_bytes,
             shrink_step_bytes: vm.shrink_step_bytes,
-            fixed_visible_base_bytes: vm.fixed_visible_base_bytes,
             physical_reserve_bytes: vm.physical_reserve_bytes,
             commit_reserve_bytes: vm.commit_reserve_bytes,
             safe_floor_physical_reserve_bytes: vm.safe_floor_physical_reserve_bytes,
@@ -271,7 +255,6 @@ impl HostConfig {
             ),
             host_min_headroom_bytes: file.host_min_headroom_bytes,
             compatibility_attestation_path: vm.compatibility_attestation_path.clone(),
-            automatic_windows_shrink: vm.automatic_windows_shrink,
             observe_only: file.observe_only,
         };
         config.validate()?;
@@ -292,9 +275,6 @@ impl HostConfig {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
         {
             return Err(HostConfigError::InvalidAlias);
-        }
-        if self.min_memory_bytes == 0 || self.min_memory_bytes > self.max_memory_bytes {
-            return Err(HostConfigError::InvalidMemoryRange);
         }
         if self.grow_step_bytes == 0 || self.shrink_step_bytes == 0 {
             return Err(HostConfigError::InvalidResizeStep);
@@ -369,10 +349,8 @@ name = "win11"
 alias = "ua-virtiomem0"
 priority = 100
 min_memory_bytes = 1073741824
-max_memory_bytes = 17179869184
 grow_step_bytes = 1073741824
 shrink_step_bytes = 67108864
-fixed_visible_base_bytes = 8589934592
 physical_reserve_bytes = 2147483648
 commit_reserve_bytes = 2147483648
 safe_floor_physical_reserve_bytes = 1073741824
@@ -414,7 +392,7 @@ telemetry_future_tolerance_seconds = 5
         let config = parse_one(ONE_VM).expect("valid config");
         assert_eq!(config.vm_name, "win11");
         assert_eq!(config.priority, 100);
-        assert_eq!(config.max_memory_bytes, 16 * GIB);
+        assert_eq!(config.min_memory_bytes, GIB);
         assert_eq!(config.poll_interval, Duration::from_secs(10));
         assert_eq!(config.host_min_headroom_bytes, 4 * GIB);
         assert_eq!(
@@ -427,7 +405,6 @@ telemetry_future_tolerance_seconds = 5
         );
         assert_eq!(config.virsh_binary, "virsh");
         assert_eq!(config.reclaim_max_gap, Duration::from_secs(20));
-        assert!(!config.automatic_windows_shrink);
         assert!(!config.observe_only);
     }
 
@@ -461,16 +438,8 @@ telemetry_future_tolerance_seconds = 5
     }
 
     #[test]
-    fn automatic_shrink_and_observe_only_require_explicit_opt_in() {
-        let config = parse_one(&format!(
-            "observe_only = true\n{}",
-            ONE_VM.replace(
-                "priority = 100",
-                "priority = 100\nautomatic_windows_shrink = true"
-            )
-        ))
-        .expect("opted-in config");
-        assert!(config.automatic_windows_shrink);
+    fn observe_only_requires_explicit_opt_in() {
+        let config = parse_one(&format!("observe_only = true\n{ONE_VM}")).expect("opted-in config");
         assert!(config.observe_only);
     }
 
@@ -574,11 +543,6 @@ telemetry_future_tolerance_seconds = 5
                 HostConfigError::InvalidAlias,
             ),
             (
-                "min_memory_bytes = 1073741824",
-                "min_memory_bytes = 34359738368",
-                HostConfigError::InvalidMemoryRange,
-            ),
-            (
                 "safe_floor_commit_reserve_bytes = 1073741824",
                 "safe_floor_commit_reserve_bytes = 4294967296",
                 HostConfigError::InvalidReserveOrder,
@@ -630,6 +594,6 @@ telemetry_future_tolerance_seconds = 5
             .join("\n");
         let config = parse_one(&filled).expect("filled example");
         assert_eq!(config.vm_name, "REQUIRED_VM_NAME");
-        assert!(!config.automatic_windows_shrink && !config.observe_only);
+        assert!(!config.observe_only);
     }
 }

@@ -26,8 +26,8 @@ service samples memory  --(file)-->   daemon reads it over QGA guest-file-read
 The idea is simple and the mechanism is standard (libvirt
 `update-memory-device`, QGA file reads). The implementation is not simple.
 
-Phases 1–3 make the per-guest loop trustworthy on one VM, because the pool
-depends on each guest growing and giving back reliably. Phase 4 is the pool
+Phases 1–2 make the per-guest loop trustworthy on one VM, because the pool
+depends on each guest growing and giving back reliably. Phase 3 is the pool
 itself; its source is written and awaits live testing. Giving RAM back is the biggest
 platform risk: Windows virtio-mem unplug has already stalled once (Phase 0).
 
@@ -36,7 +36,7 @@ platform risk: Windows virtio-mem unplug has already stalled once (Phase 0).
 | Item | Reality |
 | --- | --- |
 | Code size | 29,641 Rust source lines, including tests, comments, and blanks; not a production-code count |
-| Non-Windows tests | 2026-10-27: core 51, host 94, xtask 44 pass with `--locked` |
+| Non-Windows tests | 2026-10-27: core 49, host 94, xtask 47 pass with `--locked` |
 | `windows` crate | `cargo clippy -p virtio-mem-service --all-targets --target x86_64-pc-windows-gnu` passes on Linux (type-check only; no MinGW linker installed, so no binary). Native service behaviour requires Windows execution |
 | Automatic resizing | Earlier "never enabled" claim was wrong. Archived workload run `qualification-1789231813766-72447` records 1,098,907,648 bytes of peak growth but zero accepted reclaim; the later passing run explicitly required no resizing. The installed host unit is currently disabled/inactive |
 | Multi-VM pool | Wired: `core::pool::allocate_pool` (pure) plus the host runtime's two-phase round. Unit-tested only; no live multi-VM run yet. The old `global_pool`/`pool_ledger` (~2.4k lines) were deleted |
@@ -95,9 +95,7 @@ require approval.
 
 **Exit:** record repeated grow/shrink outcomes, convergence times, partial or
 stalled unplug, behavior under load, and dommemstat usefulness here. Select the
-telemetry source and decide whether automatic shrink is viable. If shrink is
-unreliable, the product is grow-only with an explicitly reviewed manual or
-reboot-time reset; shrink waits until the platform supports it.
+telemetry source.
 
 ### Phase 0 operational evidence (2026-10-26)
 
@@ -127,13 +125,6 @@ reboot-time reset; shrink waits until the platform supports it.
   at about 225.739 seconds. Polling then failed because authentication was
   cancelled. This was an interrupted observation, not a completed 300-second
   timeout or a successful restoration. No second cycle or recovery was issued.
-- Last observed device state: requested 1,073,741,824 bytes (1 GiB), current
-  1,130,364,928 bytes (1 GiB + 54 MiB). The baseline has **not** been confirmed
-  restored. A read-only check on 2026-10-26 found the same state: requested
-  1,048,576 KiB, current 1,103,872 KiB (1 GiB + 54 MiB). The unplug is still
-  unconverged; no recovery has been issued. The user chose to leave it as is:
-  the 54 MiB is not worth recovering. The program must still treat the device
-  as unconverged and must not stack a resize on it.
 - Desktop user `dave` is now in the `libvirt` group. The system rule
   `/usr/share/polkit-1/rules.d/50-libvirt.rules` grants
   `org.libvirt.unix.manage` to that group, so `pkcheck` and write-capable
@@ -181,28 +172,35 @@ code as it stands; changing any line is a policy change, not a refactor.
   `future_tolerance`), belong to the configured VM and service, and advance the
   accepted session/sequence; an unchanged record is "not fresh" and never
   causes a resize. Acceptance is stored in the policy checkpoint.
-- **Fixed base:** `physical_total - current` must match
-  `fixed_visible_base_bytes` within max(256 MiB, 2 blocks); otherwise the
-  sample is refused and the estimate history is cleared.
+- **Fixed base:** the guest's fixed (non-virtio-mem) RAM is read from each
+  sample as `physical_total - current`; it is not configured.
 - **Desired now:** max of a physical candidate
   (`used + physical_reserve - fixed_base`) and a commit candidate
-  (`current + commit_reserve - commit headroom`), at least `min_memory_bytes`,
+  (`current + commit_reserve - commit headroom`), at least `min_memory_bytes`
+  (optional, default 0),
   aligned up to the block, capped at the effective maximum.
 - **Safe floor now:** the same with the smaller safe-floor reserves, never
   above desired.
-- **Effective maximum:** `min(max_memory_bytes, device size - 1 GiB)`, aligned
-  down. Minimum, current, reserves and hysteresis must be block aligned.
+- **Effective maximum:** the device size less 1 GiB, aligned down; there is
+  no configured maximum. Minimum, current, reserves and hysteresis must be
+  block aligned.
 - **Growth:** desired rises immediately; the device grows by at most
   `grow_step_bytes` per command, only if host MemAvailable stays above
   `host_min_headroom_bytes` after the step (shared across VMs in one round).
 - **Give-back:** only after `reclaim_history_seconds` of gap-free history
   (gaps longer than `reclaim_max_gap_seconds` restart it), desired drops to
   the window's peak when that is at least `downward_hysteresis_bytes` lower;
-  the floor becomes the window's peak floor. Shrink is off unless
-  `automatic_windows_shrink = true`, and moves `shrink_step_bytes` per command.
+  the floor becomes the window's peak floor. The daemon sizes RAM in both
+  directions in real time (there is no grow-only or shrink-only mode); a
+  shrink moves `shrink_step_bytes` per command.
 - **One command in flight:** every command is recorded durably first. Growth
-  or shrink must converge within `convergence_timeout_seconds`; otherwise the
-  VM latches and the daemon stops. A pending shrink may be raised toward
+  must converge within `convergence_timeout_seconds`; otherwise the VM
+  latches and stops (the daemon stops once every VM has).
+- **Short shrink is fine (decided):** if the guest gives back less than asked
+  by the deadline, the controller requests the size the guest kept, which
+  completes the shrink, and carries on unlatched. It then starts no new shrink
+  for one `reclaim_history_seconds` window, so it does not ask again every
+  timeout. Growth is never paused. A pending shrink may be raised toward
   `current` when demand returns, or frozen at `current` (and latched) when
   telemetry fails.
 - **Restart:** a recorded command is classified against live state:
@@ -210,8 +208,8 @@ code as it stands; changing any line is a policy change, not a refactor.
   with no recorded command is never replayed; the VM only observes. A latch is
   cleared only by `clear-latch`.
 - **Missing input:** an evaluation error holds the VM; unreadable live state
-  holds it and stops all pool growth that round, except during an owned
-  command, where it latches.
+  holds it at its last known pool charge, except during an owned command,
+  where it latches.
 
 Proposed removals, subject to the Phase 0 result and retained contracts:
 
@@ -251,9 +249,7 @@ is a simplification aim, not a measured reduction or correctness criterion.
   into the deployment backup. **The deployed `win11_gpu.conf` was a shadow
   (non-resizing) deployment** (it has shadow margin settings and a shadow log
   path), so its new TOML must set `observe_only = true` to stay non-resizing.
-  `controller-status` and `qualification` read the same file; qualification
-  now requires `automatic_windows_shrink = true` explicitly (the old check let
-  an unset value pass).
+  `controller-status` and `qualification` read the same file.
 - After the upgrade, telemetry acceptance lives in the policy checkpoint
   (`accepted_telemetry`); the old ack file is unused. The first record is
   treated as new; retired-session history starts empty, while freshness and
@@ -267,35 +263,42 @@ and [`pkcheck` non-interactive/process-identity requirements](https://polkit.pag
 The non-interactive check is a prerequisite, not a replacement for libvirt's
 own authorization.
 
-### Phase 2 — Run it for real, grow-only
+### Phase 2 — Run it for real on `win11_gpu`
 
-- Deploy to the test VM with `enable_shrink = false`.
-- Run memory-hungry workloads in the guest. Confirm it grows in time and the
-  guest doesn't page heavily or OOM.
-- Run for a few days. Watch the logs for stalls.
+One VM first; the pool waits until this works. Test under the fake systemd
+runner, not the real unit, so a bug cannot take the host down:
 
-**Exit:** grow works unattended.
+```bash
+cargo xtask host-run --config .artifacts/run/win11_gpu.toml \
+  --max-run-seconds 600 --min-host-available-bytes 4294967296 --sudo
+```
 
-### Phase 3 — Shrink
+`host-run` builds the release binary, runs it in the foreground with the
+unit's arguments, logs to `.artifacts/host-run/`, and stops it (SIGTERM) at
+the run limit, when host MemAvailable drops below the floor, or on Ctrl-C.
+Nothing is installed. The test config has a 20 GiB pool; `win11_gpu`'s fixed
+8 GB is its minimum.
 
-- **Decided: give RAM back slowly at first.** When the guest no longer needs
-  RAM, return it in small block-aligned steps with a long cooldown, one step in
-  flight, so a returning workload is never short. Speed it up only once the
-  logs show a reliable "safe to give back faster" metric; choosing that metric
-  is open work, not a default to guess.
-- Verify partial/stalled unplug is detected and the loop stops cleanly
-  instead of fighting the guest.
-- Only then consider Windows memory-resource notifications as a faster
-  "grow now" trigger.
+- First run with `observe_only = true`: confirm telemetry is accepted and the
+  decisions make sense.
+- Then `observe_only = false` with load in the guest: confirm it grows in time,
+  gives RAM back when idle, and the guest does not page heavily or OOM.
+- Confirm a partial/stalled unplug is settled where the guest stopped
+  (`event=shrink_settled_short`) instead of fighting the guest.
+- Real systemd testing comes after the fake-systemd runs are clean.
 
-- Decide the give-back mechanism from evidence. If Windows virtio-mem unplug
-  stays unreliable, evaluate returning RAM through the virtio-balloon driver
-  instead, with virtio-mem used for growth. This is a design decision for the
-  user, not an implementation default.
+- **Decided: give RAM back slowly at first.** Small block-aligned steps with a
+  long cooldown, one step in flight, so a returning workload is never short.
+  Speed it up only once the logs show a reliable "safe to give back faster"
+  metric; choosing that metric is open work.
+- Later options, decided from evidence: Windows memory-resource notifications
+  as a faster "grow now" trigger; virtio-balloon for giving RAM back if
+  virtio-mem unplug stays unreliable.
 
-**Exit:** a week of grow and shrink on the test VM without manual intervention.
+**Exit:** a week of real-time sizing on `win11_gpu` without manual
+intervention.
 
-### Phase 4 — Shared pool across VMs
+### Phase 3 — Shared pool across VMs
 
 - **Source done:** one daemon controls every `[[vm]]` in the config, sharing
   `pool_bytes` of device memory. Each poll is one round: every VM observes and
@@ -316,22 +319,20 @@ own authorization.
   priority = 80
   ```
 
-- How the pool behaves:
-  - a VM's charge is `max(requested, current)` from live XML, so RAM a guest
-    is still giving back is never handed out (no pool state is persisted);
+- **Decided: the pool is simple.** It only tracks how much of `pool_bytes`
+  is free and who gets it first. Requesting and releasing RAM is decided by
+  each VM's own controller; the pool never takes RAM back.
+  - a VM holds `max(requested, current)` from live XML, so RAM a guest is
+    still giving back is not free yet (no pool state is persisted);
   - growth comes only from free pool bytes, higher priority first;
-  - a higher-priority VM still short lowers the ceiling of lower-priority VMs
-    that have automatic shrink, fresh telemetry and full history, never below
-    their safe floor; they shrink in normal steps and the freed bytes are
-    granted in a later round;
-  - equal priorities never take from each other;
-  - a pending shrink may still be raised toward `current` if its own guest's
-    demand returns: guest safety beats a higher-priority request.
-- Open decisions for the user:
-  - one VM latching on a convergence timeout still stops the whole daemon
-    (the per-VM fail-stop rule); a pool may want that VM held instead;
-  - a shut-off or unreadable VM freezes all growth (its charge is unknown);
-    treating a shut-off domain (`domstate`) as zero charge would lift that.
+  - a crashed or unreadable VM keeps its last known charge (its configured
+    maximum before the first read); the others carry on.
+- **Decided: each VM sets its own goals** from its own Windows telemetry
+  (more RAM under load, less when idle); the pool plays no part in that.
+- **Decided: a stuck VM is that VM's problem.** A resize that never converges
+  or a failed grow latches that VM and holds it (still charged to the pool);
+  the other VMs keep running. The daemon exits only when every VM has stopped,
+  so a single-VM setup still fail-stops. Restart it after `clear-latch`.
 - `xtask host-deploy`, `controller-status` and `qualification` still handle
   one VM per config file.
 - The first pool is Windows-only; Linux members wait until the Windows pool
@@ -441,7 +442,7 @@ milestone system.
 | Order | Task | Acceptance and verification |
 | --- | --- | --- |
 | 0 | Complete the existing platform investigation | Record repeated grow/shrink outcomes, timing, stalls, and dommemstat usefulness here. Separately authorized live work; no implementation expansion. |
-| 9 | Finish Windows verification | Build a Windows binary and run the `windows` crate tests on Windows (they type-check on Linux but cannot run there; this includes the stop-signal interleaving test). Then verify native service behaviour. |
+| 9 | Finish Windows verification | Build and test on the Windows VM with the existing tooling: `cargo xtask windows sync`, `build`, `test` (or `all`), then `cargo xtask windows deploy MANIFEST --output PATH --apply`. The `windows` crate tests type-check on Linux but must run there, including the stop-signal interleaving test. Then verify native service behaviour. |
 
 For authorized implementation changes, the Linux regression gate while xtask
 remains is:

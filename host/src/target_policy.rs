@@ -256,8 +256,6 @@ fn read_controller_status_at(
         ReclaimReadiness::BlockedRecovery
     } else if live.requested_bytes != live.current_bytes {
         ReclaimReadiness::BlockedInFlight
-    } else if !config.automatic_windows_shrink {
-        ReclaimReadiness::Paused
     } else if history_ready {
         ReclaimReadiness::Ready
     } else if accepted_telemetry.is_none() {
@@ -584,8 +582,6 @@ fn load_checkpoint_for_latch_clear(
 fn target_policy_config(config: &HostConfig) -> Result<TargetPolicyConfig, String> {
     Ok(TargetPolicyConfig {
         configured_minimum_bytes: config.min_memory_bytes,
-        configured_maximum_bytes: config.max_memory_bytes,
-        fixed_visible_base_bytes: config.fixed_visible_base_bytes,
         physical_reserve_bytes: config.physical_reserve_bytes,
         commit_reserve_bytes: config.commit_reserve_bytes,
         safe_floor_physical_reserve_bytes: config.safe_floor_physical_reserve_bytes,
@@ -855,10 +851,8 @@ mod tests {
             alias: "memory0".to_owned(),
             priority: 100,
             min_memory_bytes: 2 * GIB,
-            max_memory_bytes: 20 * GIB,
             grow_step_bytes: GIB,
             shrink_step_bytes: 64 * MIB,
-            fixed_visible_base_bytes: 8 * GIB,
             physical_reserve_bytes: 2 * GIB,
             commit_reserve_bytes: 2 * GIB,
             safe_floor_physical_reserve_bytes: GIB,
@@ -878,7 +872,6 @@ mod tests {
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 4 * GIB,
             compatibility_attestation_path: attestation.display().to_string(),
-            automatic_windows_shrink: true,
             observe_only: false,
         }
     }
@@ -1172,7 +1165,7 @@ mod tests {
             DemandEstimate {
                 safe_floor_bytes: 8 * GIB,
                 desired_bytes: 10 * GIB,
-                effective_maximum_bytes: 20 * GIB,
+                effective_maximum_bytes: 23 * GIB,
                 history_ready: false,
                 telemetry_identity: Some("session-a:0:10:1000000".to_owned()),
             }
@@ -1470,7 +1463,7 @@ mod tests {
         assert_eq!(status.observed_unix_millis, 2_000_000);
         assert_eq!(status.desired_bytes, 8 * GIB);
         assert_eq!(status.safe_floor_bytes, 8 * GIB);
-        assert_eq!(status.effective_maximum_bytes, 20 * GIB);
+        assert_eq!(status.effective_maximum_bytes, 23 * GIB);
         assert_eq!(status.accepted_telemetry, None);
         assert_eq!(status.reclaim_readiness, ReclaimReadiness::Cold);
         assert_eq!(status.capacity_state, CapacityState::Unknown);
@@ -1521,7 +1514,7 @@ mod tests {
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
         let live = VirtioMemState {
-            size_bytes: 24 * GIB,
+            size_bytes: 21 * GIB,
             block_size_bytes: 2 * MIB,
             requested_bytes: 20 * GIB,
             current_bytes: 20 * GIB,

@@ -1960,9 +1960,6 @@ fn require_controller_active_and_shrink(config: &Config, repo: &Path) -> Result<
         .map_err(|error| format!("read controller command line: {error}"))?;
     let running = HostConfig::load_vm(&controller_config_path(&command_line)?, None)
         .map_err(|error| format!("running controller configuration: {error}"))?;
-    if !running.automatic_windows_shrink {
-        return Err("automatic Windows shrink is not enabled for qualification".to_owned());
-    }
     if config.expect_no_resize && !running.observe_only {
         return Err(
             "--expect-no-resize requires the running controller with observe_only = true"

@@ -9,17 +9,16 @@ use crate::{MemoryTelemetrySnapshot, MIN_HEADROOM_BYTES};
 
 pub const TARGET_ESTIMATOR_STATE_VERSION: u16 = 1;
 pub const MAX_TARGET_HISTORY_ENTRIES: usize = 4096;
+#[cfg(test)]
 const MIB: u64 = 1024 * 1024;
 #[cfg(test)]
 const GIB: u64 = 1024 * MIB;
-const MIN_FIXED_BASE_TOLERANCE_BYTES: u64 = 256 * MIB;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TargetPolicyConfig {
+    /// Device bytes never planned below; may be zero.
     pub configured_minimum_bytes: u64,
-    pub configured_maximum_bytes: u64,
-    pub fixed_visible_base_bytes: u64,
     pub physical_reserve_bytes: u64,
     pub commit_reserve_bytes: u64,
     pub safe_floor_physical_reserve_bytes: u64,
@@ -117,12 +116,6 @@ pub enum TargetEstimatorError {
     InvalidPolicy(&'static str),
     #[error("target geometry is invalid: {0}")]
     InvalidGeometry(&'static str),
-    #[error("observed fixed visible memory base {observed} differs from configured {configured} beyond tolerance {tolerance}")]
-    FixedBaseDrift {
-        observed: u64,
-        configured: u64,
-        tolerance: u64,
-    },
     #[error("target arithmetic overflow")]
     ArithmeticOverflow,
     #[error("target telemetry ordering is invalid: {0}")]
@@ -135,9 +128,7 @@ pub enum TargetEstimatorError {
 
 impl TargetPolicyConfig {
     pub fn validate(&self) -> Result<(), TargetEstimatorError> {
-        if self.configured_minimum_bytes == 0
-            || self.configured_maximum_bytes == 0
-            || self.physical_reserve_bytes == 0
+        if self.physical_reserve_bytes == 0
             || self.commit_reserve_bytes == 0
             || self.safe_floor_physical_reserve_bytes == 0
             || self.safe_floor_commit_reserve_bytes == 0
@@ -147,11 +138,6 @@ impl TargetPolicyConfig {
         {
             return Err(TargetEstimatorError::InvalidPolicy(
                 "byte values and durations must be positive",
-            ));
-        }
-        if self.configured_minimum_bytes > self.configured_maximum_bytes {
-            return Err(TargetEstimatorError::InvalidPolicy(
-                "minimum exceeds configured maximum",
             ));
         }
         if self.safe_floor_physical_reserve_bytes > self.physical_reserve_bytes
@@ -204,7 +190,6 @@ impl TargetEstimator {
         }
         if state.desired_bytes != 0
             && (state.desired_bytes < config.configured_minimum_bytes
-                || state.desired_bytes > config.configured_maximum_bytes
                 || state.safe_floor_bytes < config.configured_minimum_bytes
                 || state.safe_floor_bytes > state.desired_bytes)
         {
@@ -215,7 +200,6 @@ impl TargetEstimator {
         if state.history.iter().any(|entry| {
             entry.floor_now_bytes < config.configured_minimum_bytes
                 || entry.floor_now_bytes > entry.desired_now_bytes
-                || entry.desired_now_bytes > config.configured_maximum_bytes
         }) || state
             .history
             .iter()
@@ -386,30 +370,18 @@ pub fn calculate_instantaneous(
         .validate()
         .map_err(|error| TargetEstimatorError::InvalidTelemetry(error.to_string()))?;
 
-    let observed_base = memory
+    // The fixed (non-virtio-mem) RAM the guest sees, from this sample.
+    let visible_base = memory
         .physical_total_bytes
         .checked_sub(geometry.current_bytes)
         .ok_or(TargetEstimatorError::InvalidGeometry(
             "physical total is below current allocation",
         ))?;
-    let tolerance = MIN_FIXED_BASE_TOLERANCE_BYTES.max(
-        geometry
-            .block_size_bytes
-            .checked_mul(2)
-            .ok_or(TargetEstimatorError::ArithmeticOverflow)?,
-    );
-    if observed_base.abs_diff(config.fixed_visible_base_bytes) > tolerance {
-        return Err(TargetEstimatorError::FixedBaseDrift {
-            observed: observed_base,
-            configured: config.fixed_visible_base_bytes,
-            tolerance,
-        });
-    }
 
     let desired_raw = candidate(
         memory,
         geometry.current_bytes,
-        config.fixed_visible_base_bytes,
+        visible_base,
         config.physical_reserve_bytes,
         config.commit_reserve_bytes,
     )?
@@ -417,7 +389,7 @@ pub fn calculate_instantaneous(
     let floor_raw = candidate(
         memory,
         geometry.current_bytes,
-        config.fixed_visible_base_bytes,
+        visible_base,
         config.safe_floor_physical_reserve_bytes,
         config.safe_floor_commit_reserve_bytes,
     )?
@@ -468,9 +440,7 @@ pub fn calculate_effective_maximum(
         ));
     }
     let effective_maximum_bytes = align_down(
-        config
-            .configured_maximum_bytes
-            .min(geometry.device_size_bytes - MIN_HEADROOM_BYTES),
+        geometry.device_size_bytes - MIN_HEADROOM_BYTES,
         geometry.block_size_bytes,
     );
     if config.configured_minimum_bytes > effective_maximum_bytes
@@ -579,8 +549,6 @@ mod tests {
     fn config() -> TargetPolicyConfig {
         TargetPolicyConfig {
             configured_minimum_bytes: 2 * GIB,
-            configured_maximum_bytes: 20 * GIB,
-            fixed_visible_base_bytes: 8 * GIB,
             physical_reserve_bytes: 2 * GIB,
             commit_reserve_bytes: 2 * GIB,
             safe_floor_physical_reserve_bytes: GIB,
@@ -647,13 +615,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_base_drift_and_effective_maximum_failures() {
-        let mut drifted = memory(8 * GIB, 4 * GIB, 4 * GIB);
-        drifted.physical_total_bytes += 512 * MIB;
-        assert!(matches!(
-            calculate_instantaneous(&config(), &drifted, geometry(8 * GIB)),
-            Err(TargetEstimatorError::FixedBaseDrift { .. })
-        ));
+    fn rejects_effective_maximum_failures() {
         let too_small = TargetGeometry {
             device_size_bytes: 2 * GIB,
             block_size_bytes: 2 * MIB,
@@ -666,12 +628,13 @@ mod tests {
     fn reports_capacity_limited_and_preserves_alignment() {
         let result = calculate_instantaneous(
             &config(),
-            &memory(20 * GIB, 20 * GIB, 0),
-            geometry(20 * GIB),
+            &memory(22 * GIB, 22 * GIB, 0),
+            geometry(22 * GIB),
         )
         .expect("bounded target");
-        assert_eq!(result.effective_maximum_bytes, 20 * GIB);
-        assert_eq!(result.desired_now_bytes, 20 * GIB);
+        // The device size, less the one GiB of headroom, is the only limit.
+        assert_eq!(result.effective_maximum_bytes, 23 * GIB);
+        assert_eq!(result.desired_now_bytes, 23 * GIB);
         assert!(result.capacity_limited);
     }
 

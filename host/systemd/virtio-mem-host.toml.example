@@ -14,26 +14,23 @@ observe_only = false
 # virsh_binary = "virsh"   # only when the standard executable is not used
 
 # Device bytes shared by every VM below; required with more than one [[vm]].
-# A VM's charge is max(requested, current) from live XML, so memory still
-# being released is not handed out. Growth comes from free pool bytes, higher
-# priority first; a higher-priority VM that is still short makes lower-priority
-# VMs with automatic_windows_shrink give memory back, never below their floor.
+# The pool only tracks free bytes and who gets them first: a VM holds
+# max(requested, current), and growth comes from what is free, higher priority
+# first. The pool never takes memory back; each VM releases memory itself.
 # pool_bytes = 17179869184
 
-# One table per VM. Larger priority is served first; equal priorities never
-# take memory from each other.
+# One table per VM. Larger priority is served first when free bytes run out.
 [[vm]]
 name = "REQUIRED_VM_NAME"
 alias = "REQUIRED_DEVICE_ALIAS"
 priority = "REQUIRED_PRIORITY"
 
-# These byte counts are deployment inputs. Derive device geometry and current
-# allocation from live XML; calibrate policy bounds and reserves for this VM.
-min_memory_bytes = "REQUIRED_MINIMUM_BYTES"
-max_memory_bytes = "REQUIRED_MAXIMUM_BYTES"
+# Sizes are virtio-mem device bytes. The device size is the only maximum and
+# the guest's fixed RAM is read from its telemetry. min_memory_bytes is
+# optional (default 0): device memory never planned below.
+# min_memory_bytes = 0
 grow_step_bytes = "REQUIRED_GROWTH_QUANTUM_BYTES"
 shrink_step_bytes = "REQUIRED_RECLAIM_QUANTUM_BYTES"
-fixed_visible_base_bytes = "REQUIRED_CALIBRATED_BASE_BYTES"
 physical_reserve_bytes = "REQUIRED_PHYSICAL_RESERVE_BYTES"
 commit_reserve_bytes = "REQUIRED_COMMIT_RESERVE_BYTES"
 safe_floor_physical_reserve_bytes = "REQUIRED_FLOOR_PHYSICAL_RESERVE_BYTES"
@@ -41,10 +38,6 @@ safe_floor_commit_reserve_bytes = "REQUIRED_FLOOR_COMMIT_RESERVE_BYTES"
 reclaim_history_seconds = "REQUIRED_RECLAIM_HISTORY_SECONDS"
 # reclaim_max_gap_seconds defaults to twice the polling interval.
 downward_hysteresis_bytes = "REQUIRED_DOWNWARD_HYSTERESIS_BYTES"
-
-# Start grow-only. Enable reclaim only after live unplug has been qualified
-# for this deployment.
-automatic_windows_shrink = false
 
 # Persistent state paths must be absolute, instance-scoped, and provisioned
 # with the documented least-privilege ownership and ACLs.

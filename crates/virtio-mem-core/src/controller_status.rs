@@ -16,7 +16,6 @@ pub enum ReclaimReadiness {
     Cold,
     Warming,
     Ready,
-    Paused,
     BlockedInFlight,
     BlockedLatched,
     BlockedRecovery,

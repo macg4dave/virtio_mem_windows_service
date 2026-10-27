@@ -154,8 +154,9 @@ enum Step {
 /// One VM's phase-one result. Only `Ready` may act, and only after the pool
 /// has allocated the round.
 enum Observed {
-    /// Nothing to decide this round. The charge is `None` when live state was
-    /// unreadable; block size is kept for pool alignment.
+    /// Nothing to decide this round. The pool charge and block size, from
+    /// live state or, when that is unreadable, the last known charge; `None`
+    /// before the VM was ever read.
     Held {
         charge: Option<(u64, u64)>,
     },
@@ -209,6 +210,14 @@ struct LoopState {
     operation_counter: u64,
     unowned_divergence_reported: bool,
     state_unavailable_reported: bool,
+    /// Last charge read from live state, kept while the VM is unreadable.
+    last_charge: Option<(u64, u64)>,
+    /// This VM failed and is latched; it is only watched for its pool charge
+    /// until the daemon restarts.
+    stopped: bool,
+    /// After a shrink settled short, no new shrink starts before this, so a
+    /// guest that keeps some memory is not asked again every timeout.
+    shrink_paused_until: Option<Instant>,
 }
 
 impl LoopState {
@@ -297,11 +306,24 @@ where
 
     /// Observe every VM, allocate the pool, then let each ready VM act,
     /// highest priority first.
+    /// A VM that fails (a resize that never converges, a failed grow) is
+    /// latched and stops; the others keep running. The daemon stops only once
+    /// every VM has.
     fn round(&self, locals: &mut [LoopState]) -> Result<Step, HostRuntimeError> {
+        let mut last_stop = None;
         let mut observed = Vec::with_capacity(self.vms.len());
         for (vm, local) in self.vms.iter().zip(locals.iter_mut()) {
-            match vm.observe(local)? {
-                Observed::Stop(error) => return Ok(Step::Stop(error)),
+            let seen = if local.stopped {
+                vm.observe_stopped(local)
+            } else {
+                vm.observe(local)?
+            };
+            match seen {
+                Observed::Stop(error) => {
+                    vm.stop(local, &error);
+                    last_stop = Some(error);
+                    observed.push(vm.observe_stopped(local));
+                }
                 other => observed.push(other),
             }
         }
@@ -330,10 +352,14 @@ where
                 &mut host,
                 &mut locals[index],
             )? {
-                return Ok(Step::Stop(error));
+                self.vms[index].stop(&mut locals[index], &error);
+                last_stop = Some(error);
             }
         }
-        Ok(Step::Wait)
+        match last_stop {
+            Some(error) if locals.iter().all(|local| local.stopped) => Ok(Step::Stop(error)),
+            _ => Ok(Step::Wait),
+        }
     }
 
     fn allocate(&self, observed: &[Observed]) -> Result<Option<Vec<u64>>, HostRuntimeError> {
@@ -344,20 +370,19 @@ where
             .vms
             .iter()
             .zip(observed)
-            .map(|(vm, observed)| vm.pool_member(observed))
+            .map(|(vm, observed)| vm.pool_member(observed, pool_bytes))
             .collect::<Vec<_>>();
         let allocations = allocate_pool(pool_bytes, &members)
             .map_err(|error| HostRuntimeError::Controller(error.to_string()))?;
         for (vm, allocation) in self.vms.iter().zip(&allocations) {
-            if allocation.unmet_bytes > 0 || allocation.reclaim_bytes > 0 {
+            if allocation.unmet_bytes > 0 {
                 eprintln!(
-                    "virtio-mem-host: event=pool_allocation vm={} alias={} priority={} ceiling_bytes={} unmet_bytes={} reclaim_bytes={}",
+                    "virtio-mem-host: event=pool_exhausted vm={} alias={} priority={} ceiling_bytes={} unmet_bytes={}",
                     vm.config.vm_name,
                     vm.config.alias,
                     vm.config.priority,
                     allocation.ceiling_bytes,
-                    allocation.unmet_bytes,
-                    allocation.reclaim_bytes
+                    allocation.unmet_bytes
                 );
             }
         }
@@ -391,12 +416,13 @@ where
                     &mut control,
                     &format!("live state unavailable during an owned operation: {error}"),
                 )?;
-                return Ok(Observed::Held { charge: None });
+                return Ok(Observed::Held {
+                    charge: local.last_charge,
+                });
             }
             Err(error) => {
                 // Without an owned operation there is nothing to protect but
-                // the pool: hold with an unknown charge, which stops all
-                // growth until this VM is readable again.
+                // the pool: hold at the last known charge.
                 if !local.state_unavailable_reported {
                     eprintln!(
                         "virtio-mem-host: event=live_state_unavailable vm={} alias={} reason={error}",
@@ -404,15 +430,19 @@ where
                     );
                     local.state_unavailable_reported = true;
                 }
-                return Ok(Observed::Held { charge: None });
+                return Ok(Observed::Held {
+                    charge: local.last_charge,
+                });
             }
         };
         local.state_unavailable_reported = false;
+        let charge = (
+            state.requested_bytes.max(state.current_bytes),
+            state.block_size_bytes,
+        );
+        local.last_charge = Some(charge);
         let held = Observed::Held {
-            charge: Some((
-                state.requested_bytes.max(state.current_bytes),
-                state.block_size_bytes,
-            )),
+            charge: Some(charge),
         };
         self.resolve_intent(&mut control, state)?;
         if self.config.observe_only
@@ -445,32 +475,54 @@ where
         }
     }
 
-    /// This VM's input to the pool. Anything that is not ready to act holds
-    /// its charge and cannot give memory away.
-    fn pool_member(&self, observed: &Observed) -> PoolMember {
-        let hold = |charge: Option<(u64, u64)>| PoolMember {
-            priority: self.config.priority,
-            charged_bytes: charge.map(|(charged, _)| charged),
-            desired_bytes: charge.map_or(0, |(charged, _)| charged),
-            safe_floor_bytes: 0,
-            block_bytes: charge.map_or(MIN_BLOCK_SIZE_BYTES, |(_, block)| block),
-            can_donate: false,
+    fn stop(&self, local: &mut LoopState, error: &HostRuntimeError) {
+        local.stopped = true;
+        eprintln!(
+            "virtio-mem-host: event=vm_stopped vm={} alias={} reason={error}; other VMs continue, restart the daemon after recovery",
+            self.config.vm_name, self.config.alias
+        );
+    }
+
+    /// A stopped VM still holds memory, so the pool keeps charging it.
+    fn observe_stopped(&self, local: &mut LoopState) -> Observed {
+        if let Ok(state) = self.live_state() {
+            local.last_charge = Some((
+                state.requested_bytes.max(state.current_bytes),
+                state.block_size_bytes,
+            ));
+        }
+        Observed::Held {
+            charge: local.last_charge,
+        }
+    }
+
+    /// This VM's input to the pool. Anything that is not ready to act asks
+    /// for nothing beyond what it holds. An unreadable VM (crashed, off, or a
+    /// failing virsh) keeps the memory it last held: the pool never reclaims
+    /// it. A VM never read since startup could hold anything, so it is charged
+    /// the whole pool until its first read.
+    fn pool_member(&self, observed: &Observed, pool_bytes: u64) -> PoolMember {
+        let hold = |charge: Option<(u64, u64)>| {
+            let (charged_bytes, block_bytes) = charge.unwrap_or((pool_bytes, MIN_BLOCK_SIZE_BYTES));
+            PoolMember {
+                priority: self.config.priority,
+                charged_bytes,
+                desired_bytes: charged_bytes,
+                block_bytes,
+            }
         };
         match observed {
             Observed::Held { charge } => hold(*charge),
+            // A stopping round never reaches allocation.
             Observed::Stop(_) => hold(None),
             Observed::Ready(ready) if ready.control.latched() || self.config.observe_only => hold(
                 Some((ready.state.current_bytes, ready.state.block_size_bytes)),
             ),
             Observed::Ready(ready) => PoolMember {
                 priority: self.config.priority,
-                charged_bytes: Some(ready.state.current_bytes),
+                charged_bytes: ready.state.current_bytes,
                 desired_bytes: ready.estimate.desired_bytes,
-                safe_floor_bytes: ready.estimate.safe_floor_bytes,
                 block_bytes: ready.state.block_size_bytes,
-                can_donate: self.config.automatic_windows_shrink
-                    && ready.estimate.history_ready
-                    && ready.estimate.telemetry_identity.is_some(),
             },
         }
     }
@@ -555,7 +607,7 @@ where
     ) -> Result<Step, HostRuntimeError> {
         let elapsed = local.pending_elapsed(self.config.convergence_timeout);
         if control.latched() {
-            return self.shrink_deadline(control, state, elapsed, None);
+            return self.shrink_deadline(control, state, elapsed);
         }
         let estimate = match self.demand_source.evaluate(state) {
             Ok(estimate) => estimate,
@@ -596,7 +648,6 @@ where
             // An unchanged sample is not stale; staleness surfaces as an
             // evaluation error and freezes the shrink above.
             telemetry_fresh: true,
-            automatic_shrink: self.config.automatic_windows_shrink,
             actuation_latched: false,
             owns_pending_shrink: true,
             pending_constrained: elapsed,
@@ -611,7 +662,10 @@ where
             ..
         } = reconciled.action
         else {
-            return self.shrink_deadline(control, state, elapsed, Some(estimate.desired_bytes));
+            if !elapsed {
+                return Ok(Step::Wait);
+            }
+            return self.settle_short(control, state, local);
         };
         let supersede = CommandIntent {
             operation_id: local.next_operation_id(),
@@ -645,18 +699,55 @@ where
         Ok(Step::Wait)
     }
 
+    /// The guest stopped giving memory back before reaching the target. Accept
+    /// what it kept: request its current size, which completes the shrink,
+    /// and carry on. Only an unknown command outcome latches.
+    fn settle_short(
+        &self,
+        control: &mut DurableControlState,
+        state: VirtioMemState,
+        local: &mut LoopState,
+    ) -> Result<Step, HostRuntimeError> {
+        let settle = CommandIntent {
+            operation_id: local.next_operation_id(),
+            direction: ReconcileDirection::FreezeShrink,
+            prior_requested_bytes: state.requested_bytes,
+            prior_current_bytes: state.current_bytes,
+            target_bytes: state.current_bytes,
+            telemetry_identity: "settled-short".to_owned(),
+            policy_fingerprint_sha256: String::new(),
+            compatibility_fingerprint_sha256: String::new(),
+        };
+        let operation_id = settle.operation_id.clone();
+        self.record_intent(control, settle)?;
+        let command = self.resize_sink.supersede_shrink(
+            state.requested_bytes,
+            state.current_bytes,
+            state.current_bytes,
+        );
+        eprintln!(
+            "virtio-mem-host: event=shrink_settled_short operation_id={operation_id} vm={} alias={} target_bytes={} kept_bytes={} command_result={command:?}",
+            self.config.vm_name, self.config.alias, state.requested_bytes, state.current_bytes
+        );
+        if let Err(error) = command {
+            self.latch(control, &format!("settling a short shrink failed: {error}"))?;
+        }
+        local.pending_since = None;
+        local.shrink_paused_until = Some(Instant::now() + self.config.reclaim_history);
+        Ok(Step::Wait)
+    }
+
     fn shrink_deadline(
         &self,
         control: &mut DurableControlState,
         state: VirtioMemState,
         elapsed: bool,
-        desired_bytes: Option<u64>,
     ) -> Result<Step, HostRuntimeError> {
         if !elapsed {
             return Ok(Step::Wait);
         }
         eprintln!(
-            "virtio-mem-host: event=allocation_constrained health=latched vm={} alias={} desired_bytes={desired_bytes:?} requested_bytes={} current_bytes={}",
+            "virtio-mem-host: event=allocation_constrained health=latched vm={} alias={} requested_bytes={} current_bytes={}",
             self.config.vm_name, self.config.alias, state.requested_bytes, state.current_bytes
         );
         Ok(Step::Stop(
@@ -688,7 +779,6 @@ where
             effective_maximum_bytes: estimate.effective_maximum_bytes,
             history_ready: estimate.history_ready,
             telemetry_fresh: fresh,
-            automatic_shrink: self.config.automatic_windows_shrink,
             actuation_latched: control.latched(),
             owns_pending_shrink: false,
             pending_constrained: false,
@@ -716,21 +806,17 @@ where
             ..
         } = reconciled.action
         else {
-            if fresh
-                && !control.latched()
-                && !self.config.automatic_windows_shrink
-                && estimate.history_ready
-                && estimate.desired_bytes < state.current_bytes
-            {
-                eprintln!(
-                    "virtio-mem-host: calculated advisory shrink toward {} bytes; automatic Windows shrink is disabled",
-                    estimate.desired_bytes
-                );
-            }
             return Ok(Step::Wait);
         };
         if self.config.observe_only {
             self.log_observe_only(state, "resize_decision_suppressed");
+            return Ok(Step::Wait);
+        }
+        if direction == ReconcileDirection::Shrink
+            && local
+                .shrink_paused_until
+                .is_some_and(|until| Instant::now() < until)
+        {
             return Ok(Step::Wait);
         }
         if direction == ReconcileDirection::Grow {
@@ -804,9 +890,9 @@ where
         Ok(Step::Wait)
     }
 
-    /// The pool only lowers the desired size, never below what the guest
-    /// already has unless it was asked to give memory back; the safe floor
-    /// follows so the reconciler's ordering holds.
+    /// The pool only caps growth: its ceiling is never below what the VM
+    /// holds, so it cannot cause a shrink. The safe floor follows the cap so
+    /// the reconciler's ordering holds.
     fn limit_to_pool(&self, estimate: DemandEstimate, ceiling: Option<u64>) -> DemandEstimate {
         let Some(ceiling) = ceiling.filter(|ceiling| *ceiling < estimate.desired_bytes) else {
             return estimate;
@@ -919,10 +1005,8 @@ mod tests {
             alias: "memory0".to_owned(),
             priority: 100,
             min_memory_bytes: 4 * GIB,
-            max_memory_bytes: 32 * GIB,
             grow_step_bytes: GIB,
             shrink_step_bytes: 64 * MIB,
-            fixed_visible_base_bytes: 8 * GIB,
             physical_reserve_bytes: 2 * GIB,
             commit_reserve_bytes: 2 * GIB,
             safe_floor_physical_reserve_bytes: GIB,
@@ -942,14 +1026,12 @@ mod tests {
             raw_telemetry_future_tolerance: Duration::from_secs(5),
             host_min_headroom_bytes: 4 * GIB,
             compatibility_attestation_path: "reviewed.json".to_owned(),
-            automatic_windows_shrink: false,
             observe_only: false,
         }
     }
 
-    fn automatic_shrink_config() -> HostConfig {
+    fn fast_config() -> HostConfig {
         let mut runtime_config = config();
-        runtime_config.automatic_windows_shrink = true;
         runtime_config.poll_interval = Duration::from_millis(1);
         runtime_config
     }
@@ -1291,30 +1373,6 @@ mod tests {
     }
 
     #[test]
-    fn default_configuration_keeps_shrink_advisory() {
-        let stop = AtomicBool::new(false);
-        let demand = FakeDemand::new(|state: VirtioMemState| {
-            let target = state.current_bytes - 64 * MIB;
-            Ok(fresh(target, target))
-        })
-        .stopping_after(1, &stop);
-        let sink = RecordingSink::default();
-        let mut runtime_config = config();
-        runtime_config.automatic_windows_shrink = crate::config::DEFAULT_AUTOMATIC_WINDOWS_SHRINK;
-        let runtime = HostRuntime::new(
-            &demand,
-            ConvergedState,
-            &sink,
-            UnusedHostMemory,
-            runtime_config,
-        );
-
-        runtime.run(&stop).expect("advisory shrink stops cleanly");
-
-        assert!(sink.requests.borrow().is_empty());
-    }
-
-    #[test]
     fn ambiguous_automatic_shrink_is_not_replayed_on_the_next_poll() {
         let stop = AtomicBool::new(false);
         let demand = FakeDemand::new(|state: VirtioMemState| {
@@ -1328,7 +1386,7 @@ mod tests {
             ConvergedState,
             &sink,
             UnusedHostMemory,
-            automatic_shrink_config(),
+            fast_config(),
         );
 
         runtime.run(&stop).expect("latched ambiguity is non-fatal");
@@ -1424,39 +1482,53 @@ mod tests {
     }
 
     #[test]
-    fn owned_shrink_timeout_latches_and_stops_like_growth() {
+    fn a_shrink_that_stops_short_is_settled_where_the_guest_left_it() {
         let stop = AtomicBool::new(false);
-        let target = 16 * GIB - 64 * MIB;
+        // Asked to go from 8 GiB to 6 GiB, the guest stays at 8 GiB. Demand
+        // agrees with 6 GiB, so nothing raises the target before the deadline.
         let demand =
-            FakeDemand::new(|_| Ok(fresh(7 * GIB, 4 * GIB))).with_control(DurableControlState {
+            FakeDemand::new(|_| Ok(fresh(6 * GIB, 4 * GIB))).with_control(DurableControlState {
                 latch_reason: None,
                 intent: Some(intent(
                     ReconcileDirection::Shrink,
-                    16 * GIB,
-                    16 * GIB,
-                    target,
+                    8 * GIB,
+                    8 * GIB,
+                    6 * GIB,
                 )),
             });
+        let events = Rc::clone(&demand.events);
         let source = ScriptedState::new(
             &stop,
             [
-                Ok(state(target, 16 * GIB)),
-                Ok(state(target, 16 * GIB)),
-                Ok(state(target, 16 * GIB)),
+                Ok(state(6 * GIB, 8 * GIB)),
+                Ok(state(6 * GIB, 8 * GIB)),
+                Ok(state(8 * GIB, 8 * GIB)),
             ],
         );
-        let sink = RecordingSink::default();
-        let mut runtime_config = automatic_shrink_config();
+        let sink = RecordingSink {
+            requests: RefCell::default(),
+            events: Some(Rc::clone(&events)),
+        };
+        let mut runtime_config = fast_config();
         runtime_config.poll_interval = Duration::from_millis(2);
         runtime_config.convergence_timeout = Duration::from_millis(1);
         let runtime = HostRuntime::new(&demand, &source, &sink, UnusedHostMemory, runtime_config);
 
-        assert!(matches!(
-            runtime.run(&stop),
-            Err(HostRuntimeError::ConvergenceTimeout(_))
-        ));
-        assert!(demand.latched());
-        assert!(sink.requests.borrow().is_empty());
+        runtime.run(&stop).expect("a short shrink is not a failure");
+        assert!(!demand.latched());
+        assert_eq!(
+            *events.borrow(),
+            [
+                format!("intent:{}", 8 * GIB),
+                format!("command:{}", 8 * GIB)
+            ],
+            "the settle is recorded before it is sent"
+        );
+        assert_eq!(
+            demand.control.borrow().intent,
+            None,
+            "the settled request converged and was cleared"
+        );
     }
 
     #[test]
@@ -1481,13 +1553,7 @@ mod tests {
             requests: RefCell::default(),
             events: Some(Rc::clone(&events)),
         };
-        let runtime = HostRuntime::new(
-            &demand,
-            &source,
-            &sink,
-            UnusedHostMemory,
-            automatic_shrink_config(),
-        );
+        let runtime = HostRuntime::new(&demand, &source, &sink, UnusedHostMemory, fast_config());
 
         runtime.run(&stop).expect("supersession is non-fatal");
 
@@ -1514,13 +1580,7 @@ mod tests {
         let target = 16 * GIB - 128 * MIB;
         let demand = FakeDemand::new(move |_| Ok(fresh(target, target)));
         let sink = RecordingSink::default();
-        let runtime = HostRuntime::new(
-            &demand,
-            &source,
-            &sink,
-            UnusedHostMemory,
-            automatic_shrink_config(),
-        );
+        let runtime = HostRuntime::new(&demand, &source, &sink, UnusedHostMemory, fast_config());
 
         runtime
             .run(&stop)
@@ -1544,13 +1604,7 @@ mod tests {
         );
         let demand = FakeDemand::new(move |_| Ok(fresh(target, target)));
         let sink = RecordingSink::default();
-        let runtime = HostRuntime::new(
-            &demand,
-            &source,
-            &sink,
-            UnusedHostMemory,
-            automatic_shrink_config(),
-        );
+        let runtime = HostRuntime::new(&demand, &source, &sink, UnusedHostMemory, fast_config());
 
         runtime
             .run(&stop)
@@ -1580,13 +1634,7 @@ mod tests {
         );
         let demand = FakeDemand::new(move |_| Ok(fresh(target, target)));
         let sink = RecordingSink::default();
-        let runtime = HostRuntime::new(
-            &demand,
-            &source,
-            &sink,
-            UnusedHostMemory,
-            automatic_shrink_config(),
-        );
+        let runtime = HostRuntime::new(&demand, &source, &sink, UnusedHostMemory, fast_config());
 
         runtime
             .run(&stop)
@@ -1612,7 +1660,7 @@ mod tests {
             &first_source,
             &sink,
             UnusedHostMemory,
-            automatic_shrink_config(),
+            fast_config(),
         )
         .run(&first_stop)
         .expect("cancellation is a clean stop");
@@ -1624,7 +1672,7 @@ mod tests {
             &restart_source,
             &sink,
             UnusedHostMemory,
-            automatic_shrink_config(),
+            fast_config(),
         )
         .run(&restart_stop)
         .expect("restart observes but does not replay divergence");
@@ -1650,11 +1698,10 @@ mod tests {
         }
     }
 
-    fn member_config(name: &str, priority: u32, automatic_shrink: bool) -> HostConfig {
+    fn member_config(name: &str, priority: u32) -> HostConfig {
         HostConfig {
             vm_name: name.to_owned(),
             priority,
-            automatic_windows_shrink: automatic_shrink,
             poll_interval: Duration::from_millis(1),
             ..config()
         }
@@ -1686,17 +1733,12 @@ mod tests {
         // low-priority VM is listed first to show order does not matter.
         let runtime = HostRuntime::pool(
             vec![
-                member(
-                    &low_demand,
-                    &low_state,
-                    &low_sink,
-                    member_config("low", 80, false),
-                ),
+                member(&low_demand, &low_state, &low_sink, member_config("low", 80)),
                 member(
                     &high_demand,
                     &high_state,
                     &high_sink,
-                    member_config("high", 100, false),
+                    member_config("high", 100),
                 ),
             ],
             AmpleHostMemory,
@@ -1710,10 +1752,9 @@ mod tests {
     }
 
     #[test]
-    fn unmet_higher_priority_demand_makes_a_lower_priority_vm_give_memory_back() {
+    fn a_full_pool_never_takes_memory_from_a_lower_priority_vm() {
         let stop = AtomicBool::new(false);
         let high_demand = FakeDemand::new(|_| Ok(fresh(20 * GIB, 8 * GIB)));
-        // The low VM is content where it is; only the pool asks it to shrink.
         let low_demand = FakeDemand::new(|_| Ok(fresh(16 * GIB, 8 * GIB)));
         let high_state = ScriptedState::new(&stop, [Ok(state(16 * GIB, 16 * GIB))]);
         let low_state = ScriptedState::new(&stop, [Ok(state(16 * GIB, 16 * GIB))]);
@@ -1724,14 +1765,9 @@ mod tests {
                     &high_demand,
                     &high_state,
                     &high_sink,
-                    member_config("high", 100, true),
+                    member_config("high", 100),
                 ),
-                member(
-                    &low_demand,
-                    &low_state,
-                    &low_sink,
-                    member_config("low", 80, true),
-                ),
+                member(&low_demand, &low_state, &low_sink, member_config("low", 80)),
             ],
             UnusedHostMemory,
             Some(32 * GIB),
@@ -1739,45 +1775,48 @@ mod tests {
         .expect("pool runtime");
 
         runtime.run(&stop).expect("one round");
-        // The pool is full: the high VM waits for memory to be released, and the
-        // low VM takes one normal shrink step toward its lowered ceiling.
+        // Releasing memory is the low VM's own decision; the pool only waits.
         assert!(high_sink.requests.borrow().is_empty());
-        assert_eq!(*low_sink.requests.borrow(), [16 * GIB - 64 * MIB]);
+        assert!(low_sink.requests.borrow().is_empty());
     }
 
     #[test]
-    fn an_unreadable_vm_freezes_pool_growth_without_stopping_the_daemon() {
+    fn an_unreadable_vm_keeps_its_last_charge_while_others_grow() {
         let stop = AtomicBool::new(false);
         let demand = FakeDemand::new(|_| Ok(fresh(20 * GIB, 8 * GIB)));
-        let idle = FakeDemand::new(|_| Ok(fresh(16 * GIB, 8 * GIB)));
-        let readable = ScriptedState::new(&stop, [Ok(state(16 * GIB, 16 * GIB))]);
-        let unreadable = ScriptedState::new(&stop, [Err("domain is not running".to_owned())]);
+        let idle = FakeDemand::new(|_| Ok(fresh(8 * GIB, 4 * GIB)));
+        // Round one: 16 + 8 GiB of a 26 GiB pool, so the first VM grows into
+        // the free 2 GiB. Round two: the second VM crashes while holding 8 GiB.
+        // Its 8 GiB stays charged, so the pool is full and nothing more grows.
+        let grows = ScriptedState::new(
+            &stop,
+            [Ok(state(16 * GIB, 16 * GIB)), Ok(state(18 * GIB, 18 * GIB))],
+        );
+        let crashes = ScriptedState::new(
+            &stop,
+            [
+                Ok(state(8 * GIB, 8 * GIB)),
+                Err("domain is not running".to_owned()),
+            ],
+        );
         let (sink, other_sink) = (RecordingSink::default(), RecordingSink::default());
+        let mut grow_config = member_config("grows", 100);
+        grow_config.grow_step_bytes = 4 * GIB;
         let runtime = HostRuntime::pool(
             vec![
-                member(
-                    &demand,
-                    &readable,
-                    &sink,
-                    member_config("grows", 100, false),
-                ),
-                member(
-                    &idle,
-                    &unreadable,
-                    &other_sink,
-                    member_config("off", 80, false),
-                ),
+                member(&demand, &grows, &sink, grow_config),
+                member(&idle, &crashes, &other_sink, member_config("crashed", 80)),
             ],
             AmpleHostMemory,
-            Some(64 * GIB),
+            Some(26 * GIB),
         )
         .expect("pool runtime");
 
         runtime
             .run(&stop)
             .expect("an unreadable member is not fatal");
-        assert!(sink.requests.borrow().is_empty());
-        assert_eq!(idle.evaluations.get(), 0);
+        assert_eq!(*sink.requests.borrow(), [18 * GIB]);
+        assert!(other_sink.requests.borrow().is_empty());
     }
 
     #[test]
@@ -1796,13 +1835,13 @@ mod tests {
                     &first_demand,
                     &first_state,
                     &first_sink,
-                    member_config("first", 100, false),
+                    member_config("first", 100),
                 ),
                 member(
                     &second_demand,
                     &second_state,
                     &second_sink,
-                    member_config("second", 80, false),
+                    member_config("second", 80),
                 ),
             ],
             FixedHostMemory(5 * GIB + 512 * MIB),
@@ -1813,5 +1852,56 @@ mod tests {
         runtime.run(&stop).expect("one round");
         assert_eq!(*first_sink.requests.borrow(), [17 * GIB]);
         assert!(second_sink.requests.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_stuck_vm_is_latched_and_held_while_the_others_keep_running() {
+        let stop = AtomicBool::new(false);
+        let target = 17 * GIB;
+        let stuck_demand = FakeDemand::new(|_| panic!("pending growth is not re-evaluated"))
+            .with_control(DurableControlState {
+                latch_reason: None,
+                intent: Some(intent(ReconcileDirection::Grow, 16 * GIB, 16 * GIB, target)),
+            });
+        // Never converges: one read per round, plus the charge read when it
+        // stops in round two.
+        let stuck_state = ScriptedState::new(&stop, (0..4).map(|_| Ok(state(target, 16 * GIB))));
+        let healthy_demand = FakeDemand::new(|_| Ok(fresh(12 * GIB, 4 * GIB)));
+        let healthy_state = ScriptedState::new(
+            &stop,
+            [
+                Ok(state(8 * GIB, 8 * GIB)),
+                Ok(state(9 * GIB, 9 * GIB)),
+                Ok(state(10 * GIB, 10 * GIB)),
+            ],
+        );
+        let (stuck_sink, healthy_sink) = (RecordingSink::default(), RecordingSink::default());
+        let mut stuck_config = member_config("stuck", 100);
+        stuck_config.poll_interval = Duration::from_millis(2);
+        stuck_config.convergence_timeout = Duration::from_millis(1);
+        let runtime = HostRuntime::pool(
+            vec![
+                member(&stuck_demand, &stuck_state, &stuck_sink, stuck_config),
+                member(
+                    &healthy_demand,
+                    &healthy_state,
+                    &healthy_sink,
+                    member_config("healthy", 80),
+                ),
+            ],
+            AmpleHostMemory,
+            Some(64 * GIB),
+        )
+        .expect("pool runtime");
+
+        runtime
+            .run(&stop)
+            .expect("one stuck VM does not stop the daemon");
+        assert!(stuck_demand.latched());
+        assert!(stuck_sink.requests.borrow().is_empty());
+        assert_eq!(
+            *healthy_sink.requests.borrow(),
+            [9 * GIB, 10 * GIB, 11 * GIB]
+        );
     }
 }
