@@ -127,6 +127,9 @@ pub struct VmController<G, S, R> {
     pending_since: Option<Instant>,
     /// The owned resize's last observed allocation and when it last moved.
     pending_progress: Option<(u64, Instant)>,
+    /// VIOMEM WORKAROUND: the last shrink extension's operation, allocation
+    /// and step in blocks.
+    extension: Option<(String, u64, u64)>,
     /// A growth settled without plugging anything: widen QEMU's usable
     /// region on the next converged poll.
     widen_due: bool,
@@ -166,6 +169,7 @@ impl<G, S, R> VmController<G, S, R> {
             control,
             pending_since: None,
             pending_progress: None,
+            extension: None,
             widen_due: false,
             widened: false,
             operation_counter: 0,
@@ -687,14 +691,18 @@ where
     // win11_gpu: each request one block (8 MiB) lower frees exactly the block
     // it adds to the window, and the gap below `current` stays the same;
     // re-sending a target already tried (bouncing up and back) frees nothing.
-    // So each time a held shrink stops moving, request one block less, and
-    // settle as soon as `current` reaches the guest's goal: the admitted
-    // request's bytes below the allocation it started from, never below
-    // `min_ram`.
+    // So each time a held shrink stops moving, request less, and settle as
+    // soon as `current` reaches the guest's goal: the admitted request's
+    // bytes below the allocation it started from, never below `min_ram`.
+    // The step starts at one block and doubles, up to
+    // `MAX_EXTENSION_BLOCKS`, while each step is released in full; a short
+    // release drops it back to one block. It never steps past the goal.
     //
     // TO REMOVE once a patched viomem is deployed: delete this block and
     // the marked branch in `observe_pending`.
     // =====================================================================
+
+    const MAX_EXTENSION_BLOCKS: u64 = 32;
 
     fn extend_shrink(
         &mut self,
@@ -727,6 +735,12 @@ where
         let goal = prior_current
             .saturating_sub(asked - asked % block)
             .max(floor);
+        let operation_id = self
+            .control
+            .intent
+            .as_ref()
+            .map(|intent| intent.operation_id.clone())
+            .unwrap_or_default();
         if state.current_bytes <= goal {
             self.log(&format!(
                 "event=shrink_extension_done goal_bytes={goal} current_bytes={}",
@@ -734,10 +748,21 @@ where
             ));
             return self.settle_short(CommandDirection::Shrink, state, stop);
         }
+        let step = match self.extension.take() {
+            Some((operation, from, step))
+                if operation == operation_id
+                    && from.saturating_sub(state.current_bytes) >= step * block =>
+            {
+                (step * 2).min(Self::MAX_EXTENSION_BLOCKS)
+            }
+            _ => 1,
+        };
+        let step_bytes = (step * block).min((state.current_bytes - goal).div_ceil(block) * block);
         let Some(target) = state
             .requested_bytes
-            .checked_sub(block)
-            .filter(|target| *target >= floor)
+            .checked_sub(step_bytes)
+            .map(|target| target.max(floor))
+            .filter(|target| *target < state.requested_bytes)
         else {
             self.log(&format!(
                 "event=control_health direction=Shrink requested_bytes={} current_bytes={} floor_bytes={floor}",
@@ -755,11 +780,12 @@ where
         intent.target_bytes = target;
         self.save()?;
         self.pending_progress = None;
+        self.extension = Some((operation_id, state.current_bytes, step_bytes / block));
         let command = self
             .resize_sink
             .retarget_pending_guarded(state, target, stop);
         self.log(&format!(
-            "event=shrink_extended target_bytes={target} current_bytes={} goal_bytes={goal} floor_bytes={floor} command_result={command:?}",
+            "event=shrink_extended target_bytes={target} step_bytes={step_bytes} current_bytes={} goal_bytes={goal} floor_bytes={floor} command_result={command:?}",
             state.current_bytes
         ));
         match command {
@@ -1261,7 +1287,7 @@ mod tests {
         stall_at: Option<u64>,
         /// A growth stops plugging memory at this allocation.
         grow_stall_at: Option<u64>,
-        /// A retarget of a stalled shrink to a new low frees the one block it
+        /// A retarget of a stalled shrink to a new low frees the blocks it
         /// adds to viomem's window; re-sending a tried target frees nothing.
         release_per_notification: bool,
     }
@@ -1351,8 +1377,8 @@ mod tests {
         ) -> Result<(), ResizeSinkError> {
             let mut device = self.device.0.borrow_mut();
             if device.release_per_notification && target < device.live.requested_bytes {
-                let block = device.live.block_size_bytes;
-                device.stall_at = device.stall_at.map(|stall| stall.saturating_sub(block));
+                let added = device.live.requested_bytes - target;
+                device.stall_at = device.stall_at.map(|stall| stall.saturating_sub(added));
             }
             device.live.requested_bytes = target;
             self.targets.borrow_mut().push(target);
@@ -1840,12 +1866,12 @@ mod tests {
 
     // VIOMEM WORKAROUND test: delete with the workaround.
     #[test]
-    fn a_stalled_removal_widens_one_block_at_a_time_and_stops_at_the_goal() {
+    fn a_stalled_removal_widens_in_growing_steps_and_stops_at_the_goal() {
         let mut fixture = Fixture::new("extend-shrink", 100, 8 * GIB);
         fixture.config.poll_interval = Duration::from_millis(2);
         {
             let mut device = fixture.device.0.borrow_mut();
-            device.stall_at = Some(7 * GIB + 6 * MIB);
+            device.stall_at = Some(7 * GIB + 12 * MIB);
             device.release_per_notification = true;
         }
         fixture
@@ -1856,15 +1882,16 @@ mod tests {
             round(&mut runtime);
             thread::sleep(Duration::from_millis(5));
         }
-        // 7 GiB, then three extensions each free one block; at the goal the
-        // shrink settles at what the guest kept, not further down.
+        // 7 GiB, then extensions of 2, 4 and (doubling to 8, capped at the
+        // 6 MiB left) 6 MiB, each released in full; at the goal the shrink
+        // settles at what the guest kept, not further down.
         assert_eq!(
             *fixture.targets.borrow(),
             [
                 7 * GIB,
                 7 * GIB - 2 * MIB,
-                7 * GIB - 4 * MIB,
                 7 * GIB - 6 * MIB,
+                7 * GIB - 12 * MIB,
                 7 * GIB
             ]
         );
