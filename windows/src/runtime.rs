@@ -74,10 +74,8 @@ where
     }
 
     pub fn with_diagnostics(mut self, path: Option<&str>) -> Self {
-        self.diagnostics = path.map(|path| {
-            AtomicRawTelemetryPublisher::with_retention(path, 0)
-                .with_retry_timeout(Duration::from_millis(100))
-        });
+        self.diagnostics =
+            path.map(|path| AtomicRawTelemetryPublisher::new(path, Duration::from_millis(100)));
         self
     }
 
@@ -111,27 +109,12 @@ where
             self.next_sequence,
             memory,
         );
-        let windows_native = envelope.windows_native.as_mut().ok_or_else(|| {
-            "current raw telemetry is missing its Windows-native extension".to_owned()
-        })?;
-        windows_native.capabilities.memory_resource_notifications =
-            self.memory_resource_notifications.capability();
-        windows_native.memory_resource_notifications =
-            self.memory_resource_notifications.collect(monotonic_millis);
-        let native_pressure = if windows_native.memory_resource_notifications.status
-            == virtio_mem_core::TelemetrySignalStatus::Supported
-        {
-            windows_native.memory_resource_notifications.value
-        } else {
-            None
-        };
-        // Failed observations also back off: a signalled Low handle must not spin
-        // if the other handle cannot be queried.
+        let native_pressure = self.memory_resource_notifications.collect();
+        envelope.native_pressure = native_pressure;
+        // An unreadable signal also backs off to the timer: a signalled Low
+        // handle must not spin.
         self.last_native_low = native_pressure.is_none()
             || native_pressure == Some(virtio_mem_core::MemoryResourceNotificationState::Low);
-        envelope
-            .contract_mode()
-            .map_err(|error| format!("native telemetry contract failed: {error}"))?;
         envelope.request = self
             .requests
             .poll(
@@ -147,11 +130,11 @@ where
             )
             .map_err(|error| format!("guest memory request failed: {error}"))?;
         self.publisher
-            .publish_cancellable(&envelope, stop)
+            .publish(&envelope, stop)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
         self.wake.notify(stop);
         if let Some(publisher) = &mut self.diagnostics {
-            if let Err(error) = publisher.publish_cancellable(&envelope, stop) {
+            if let Err(error) = publisher.publish(&envelope, stop) {
                 // Diagnostic output is optional; its failure cannot prevent
                 // admission or completion of a durable memory request.
                 eprintln!("optional telemetry output failed: {error}");
@@ -236,7 +219,7 @@ pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiri
         &config.service_name,
         &session_id,
         &config.demand_report_path,
-        config.shutdown_timeout,
+        config.shutdown_timeout(),
     )
     .map_err(RuntimeWiringError::WorkerConstruction)?;
     requests
@@ -245,11 +228,10 @@ pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiri
     GuestMemoryWorker::new(
         NativeMemoryTelemetry,
         native_memory_resource_notifications(),
-        AtomicRawTelemetryPublisher::with_retention(&config.demand_report_path, 0)
-            .with_retry_timeout(config.shutdown_timeout),
+        AtomicRawTelemetryPublisher::new(&config.demand_report_path, config.shutdown_timeout()),
         SystemTelemetryClock::default(),
         requests,
-        config.poll_interval,
+        config.poll_interval(),
     )
     .map(|mut worker| {
         worker.wake = crate::wake::WakeChannel::enabled(&config.service_name);
@@ -263,7 +245,6 @@ mod tests {
     use super::*;
     use crate::demand::{
         DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot,
-        OptionalTelemetrySignal, RawTelemetryContractMode, TelemetryCapability,
         UnavailableMemoryResourceNotifications,
     };
     use std::cell::Cell;
@@ -299,33 +280,16 @@ mod tests {
     }
 
     impl MemoryResourceNotificationTelemetry for FixedNotifications {
-        fn capability(&self) -> TelemetryCapability {
-            TelemetryCapability::Supported
-        }
-
-        fn collect(
-            &self,
-            observed_monotonic_millis: u64,
-        ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
-            OptionalTelemetrySignal::supported(observed_monotonic_millis, self.state)
+        fn collect(&self) -> Option<MemoryResourceNotificationState> {
+            Some(self.state)
         }
     }
 
     struct DropTrackedNotifications(Arc<AtomicBool>);
 
     impl MemoryResourceNotificationTelemetry for DropTrackedNotifications {
-        fn capability(&self) -> TelemetryCapability {
-            TelemetryCapability::Supported
-        }
-
-        fn collect(
-            &self,
-            observed_monotonic_millis: u64,
-        ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
-            OptionalTelemetrySignal::supported(
-                observed_monotonic_millis,
-                MemoryResourceNotificationState::Neutral,
-            )
+        fn collect(&self) -> Option<MemoryResourceNotificationState> {
+            Some(MemoryResourceNotificationState::Neutral)
         }
     }
 
@@ -354,8 +318,14 @@ mod tests {
     struct PublisherFixture(Vec<RawTelemetryEnvelope>);
 
     impl RawTelemetryPublisher for PublisherFixture {
-        fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String> {
-            self.0.push(envelope.clone());
+        fn publish(
+            &mut self,
+            envelope: &RawTelemetryEnvelope,
+            stop: &StopSignal,
+        ) -> Result<(), String> {
+            if !stop.is_cancelled() {
+                self.0.push(envelope.clone());
+            }
             Ok(())
         }
     }
@@ -449,11 +419,7 @@ mod tests {
         assert_eq!(envelope.vm_name, "guest");
         assert_eq!(envelope.sequence, 0);
         assert_eq!(envelope.request, None);
-        assert_eq!(
-            envelope.contract_mode(),
-            Ok(RawTelemetryContractMode::WindowsNativeFallback),
-            "a worker without a native notification collector publishes explicit fallback"
-        );
+        assert_eq!(envelope.native_pressure, None);
         assert_eq!(worker.publisher().0, vec![envelope]);
     }
 
@@ -523,15 +489,7 @@ mod tests {
         );
         let envelope = worker.poll_once().expect("publication should pass");
         assert_eq!(
-            envelope.contract_mode(),
-            Ok(RawTelemetryContractMode::WindowsNativeSignals)
-        );
-        assert_eq!(
-            envelope
-                .windows_native
-                .expect("Windows-native extension")
-                .memory_resource_notifications
-                .value,
+            envelope.native_pressure,
             Some(MemoryResourceNotificationState::Low)
         );
     }
@@ -547,10 +505,7 @@ mod tests {
         let envelope = worker
             .poll_once()
             .expect("native observation should publish");
-        assert_eq!(
-            envelope.contract_mode(),
-            Ok(RawTelemetryContractMode::WindowsNativeSignals)
-        );
+        assert!(envelope.native_pressure.is_some());
         assert_eq!(worker.publisher().0, vec![envelope]);
     }
 
@@ -625,11 +580,8 @@ mod tests {
 
     struct WaitTrackingNotifications(Vec<bool>);
     impl MemoryResourceNotificationTelemetry for WaitTrackingNotifications {
-        fn capability(&self) -> TelemetryCapability {
-            TelemetryCapability::Supported
-        }
-        fn collect(&self, at: u64) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
-            OptionalTelemetrySignal::supported(at, MemoryResourceNotificationState::Low)
+        fn collect(&self) -> Option<MemoryResourceNotificationState> {
+            Some(MemoryResourceNotificationState::Low)
         }
         fn wait(
             &mut self,

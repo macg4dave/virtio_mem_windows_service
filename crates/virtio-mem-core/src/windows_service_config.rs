@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::GuestMemoryPolicy;
 
-pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 7;
+pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,9 +64,9 @@ impl WindowsServiceConfigFile {
         self.policy.validate()
     }
 
-    /// The publication path also names its backups, handoff files, host
-    /// status and durable request state as `<path>.<suffix>`; the
-    /// configuration must be none of them.
+    /// The publication path also names its handoff files, host status and
+    /// durable request state as `<path>.<suffix>`; the configuration must be
+    /// none of them.
     pub fn validate_paths(&self, config_path: &str) -> Result<(), String> {
         let config = normalize_windows_path(config_path)?;
         if let Some(path) = &self.telemetry_path {
@@ -210,7 +210,6 @@ mod tests {
                 shrink_step_bytes: 1,
                 host_status_max_age_millis: 1,
                 request_lifetime_millis: 1,
-                max_removal_pause_windows: 16,
             },
         };
         config.validate().unwrap();

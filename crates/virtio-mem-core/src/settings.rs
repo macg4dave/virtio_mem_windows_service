@@ -99,7 +99,6 @@ impl GlobalSettings {
             shrink_step_bytes: 3 * GIB,
             host_status_max_age_millis: freshness,
             request_lifetime_millis: freshness,
-            max_removal_pause_windows: 16,
         }
     }
 }

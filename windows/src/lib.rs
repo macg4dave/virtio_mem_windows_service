@@ -24,11 +24,8 @@ pub use demand::{
     process_session_id, AtomicRawTelemetryPublisher, DemandError, MemoryResourceNotificationApi,
     MemoryResourceNotificationCollector, MemoryResourceNotificationKind,
     MemoryResourceNotificationState, MemoryResourceNotificationTelemetry, MemoryTelemetry,
-    MemoryTelemetrySnapshot, NativeMemoryTelemetry, OptionalTelemetrySignal,
-    PagingActivitySnapshot, RawTelemetryContractMode, RawTelemetryEnvelope, RawTelemetryPublisher,
-    ReusableMemorySnapshot, SystemTelemetryClock, TelemetryCapability, TelemetryClock,
-    TelemetrySignalStatus, TelemetryWarmup, UnavailableMemoryResourceNotifications,
-    WindowsNativeTelemetry, WindowsTelemetryCapabilities,
+    MemoryTelemetrySnapshot, NativeMemoryTelemetry, RawTelemetryEnvelope, RawTelemetryPublisher,
+    SystemTelemetryClock, TelemetryClock, UnavailableMemoryResourceNotifications,
 };
 pub use error::{ConfigurationError, RuntimeWiringError, ServiceHostError};
 pub use event_log::{

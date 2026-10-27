@@ -13,8 +13,7 @@ use thiserror::Error;
 use virtio_mem_core::{
     allocate_pool, CommandDirection, CommandOwnership, HostMemoryStatus, MemoryOperation,
     MemoryOutcome, MemoryRequest, MemoryResourceNotificationState, MemoryResult, PoolMember,
-    RequestAdmission, TelemetrySignalStatus, VirtioMemState, MEMORY_REQUEST_VERSION,
-    MIN_BLOCK_SIZE_BYTES,
+    RequestAdmission, VirtioMemState, MEMORY_REQUEST_VERSION, MIN_BLOCK_SIZE_BYTES,
 };
 
 use crate::checkpoint::{
@@ -659,14 +658,9 @@ where
     /// Whether the guest's latest valid publication carries Windows' native
     /// Low memory signal. An unreadable guest is not Low.
     fn guest_reports_low_memory(&self) -> bool {
-        let low = self.guest.read().ok().and_then(|envelope| {
-            envelope
-                .windows_native
-                .filter(|native| {
-                    native.memory_resource_notifications.status == TelemetrySignalStatus::Supported
-                })
-                .and_then(|native| native.memory_resource_notifications.value)
-        }) == Some(MemoryResourceNotificationState::Low);
+        let low = self.guest.read().is_ok_and(|envelope| {
+            envelope.native_pressure == Some(MemoryResourceNotificationState::Low)
+        });
         if low {
             self.log("event=held_shrink_released reason=guest_low_memory");
         }
@@ -1303,14 +1297,7 @@ mod tests {
                 },
             );
             envelope.request = self.0.borrow().request.clone();
-            if let (Some(state), Some(native)) =
-                (self.0.borrow().native, envelope.windows_native.as_mut())
-            {
-                native.capabilities.memory_resource_notifications =
-                    virtio_mem_core::TelemetryCapability::Supported;
-                native.memory_resource_notifications =
-                    virtio_mem_core::OptionalTelemetrySignal::supported(1, state);
-            }
+            envelope.native_pressure = self.0.borrow().native;
             Ok(envelope)
         }
 
@@ -1367,7 +1354,6 @@ mod tests {
             convergence_timeout: Duration::from_secs(300),
             virsh_binary: "virsh".to_owned(),
             raw_telemetry_path: "telemetry.json".to_owned(),
-            raw_telemetry_transport: crate::config::RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),

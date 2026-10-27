@@ -12,26 +12,8 @@ pub struct VirshResizeSink<C, E> {
     compatibility_source: E,
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) struct PreparedResize {
-    arguments: Vec<String>,
-    current_bytes: u64,
-    target_bytes: u64,
-}
-
-impl PreparedResize {
-    pub(crate) fn arguments(&self) -> &[String] {
-        &self.arguments
-    }
-
-    pub(crate) fn current_bytes(&self) -> u64 {
-        self.current_bytes
-    }
-
-    pub(crate) fn target_bytes(&self) -> u64 {
-        self.target_bytes
-    }
-}
+/// The validated `virsh update-memory-device` arguments for one resize.
+type PreparedResize = Vec<String>;
 
 impl<C, E: CompatibilitySource> VirshResizeSink<C, E> {
     /// Every resize adapter requires its evidence source explicitly. Production
@@ -157,20 +139,9 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         })
     }
 
-    pub(crate) fn prepare_resize(&self, requested_bytes: u64) -> Result<PreparedResize, String> {
-        self.prepare(requested_bytes, |state| {
-            if state.requested_bytes != state.current_bytes {
-                return Err(
-                    "refusing resize while the previous request has not converged".to_owned(),
-                );
-            }
-            Ok(())
-        })
-    }
-
-    pub(crate) fn apply_prepared(&self, prepared: PreparedResize) -> Result<(), String> {
+    fn apply_prepared(&self, prepared: PreparedResize) -> Result<(), String> {
         self.command
-            .run(prepared.arguments())
+            .run(&prepared)
             .map_err(|error| error.to_string())?;
         Ok(())
     }
@@ -215,19 +186,15 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         precondition(&state)?;
         let requested_kib = bytes_to_kibibytes(target_bytes)
             .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
-        Ok(PreparedResize {
-            arguments: vec![
-                "update-memory-device".to_owned(),
-                self.vm_name.clone(),
-                "--alias".to_owned(),
-                self.alias.clone(),
-                "--requested-size".to_owned(),
-                requested_kib.to_string(),
-                "--live".to_owned(),
-            ],
-            current_bytes: state.current_bytes,
-            target_bytes,
-        })
+        Ok(vec![
+            "update-memory-device".to_owned(),
+            self.vm_name.clone(),
+            "--alias".to_owned(),
+            self.alias.clone(),
+            "--requested-size".to_owned(),
+            requested_kib.to_string(),
+            "--live".to_owned(),
+        ])
     }
 }
 
@@ -476,6 +443,18 @@ mod tests {
         ));
     }
 
+    /// A resize of the converged fixture device to 6 MiB.
+    fn resize_to_6_mib<C: VirshCommand, E: CompatibilitySource>(
+        sink: &VirshResizeSink<C, E>,
+    ) -> Result<(), ResizeSinkError> {
+        let expected = parse_virtio_mem_xml_for_alias(CONVERGED_XML, "memory0")
+            .expect("fixture")
+            .memory;
+        sink.request_resize_guarded(expected, 6 * 1024 * 1024, &AtomicBool::new(false), &|| {
+            Ok(())
+        })
+    }
+
     #[test]
     fn rejects_pending_state_without_sending_a_resize() {
         let calls = Rc::new(RefCell::new(Vec::new()));
@@ -490,7 +469,10 @@ mod tests {
             FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
         );
 
-        assert!(sink.prepare_resize(6 * 1024 * 1024).is_err());
+        assert!(matches!(
+            resize_to_6_mib(&sink),
+            Err(ResizeSinkError::Rejected(_))
+        ));
         assert_eq!(calls.take().len(), 1);
     }
 
@@ -566,10 +548,7 @@ mod tests {
             FixedCompatibilitySource::new(VirtioMemCompatibility::unknown()),
         );
 
-        let error = sink
-            .prepare_resize(6 * 1024 * 1024)
-            .map_err(ResizeSinkError::Rejected)
-            .expect_err("unknown compatibility must fail closed");
+        let error = resize_to_6_mib(&sink).expect_err("unknown compatibility must fail closed");
         assert!(
             matches!(error, ResizeSinkError::Rejected(message) if message.contains("dynamic-memslots"))
         );
@@ -589,10 +568,7 @@ mod tests {
             DriftedAttestation,
         );
 
-        let error = sink
-            .prepare_resize(6 * 1024 * 1024)
-            .map_err(ResizeSinkError::Rejected)
-            .expect_err("drift must fail before actuation");
+        let error = resize_to_6_mib(&sink).expect_err("drift must fail before actuation");
         assert!(
             matches!(error, ResizeSinkError::Rejected(message) if message.contains("drifted: domain_xml"))
         );

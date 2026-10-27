@@ -8,7 +8,7 @@ use virtio_mem_core::{
 };
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
 use virtio_mem_host::compatibility_source::CompatibilitySource;
-use virtio_mem_host::guest_channel::{GuestChannel, GuestLink, Transport};
+use virtio_mem_host::guest_channel::{GuestChannel, GuestLink};
 use virtio_mem_host::qga::VirshGuestFiles;
 use virtio_mem_host::virsh::Virsh;
 
@@ -265,10 +265,10 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
 
 fn read_telemetry(command: &Command) -> Result<RawTelemetryEnvelope, String> {
     GuestChannel::new(
-        Transport::Qga(VirshGuestFiles::new(
+        VirshGuestFiles::new(
             Virsh::with_connection("virsh", command.command_timeout, &command.connection),
             &command.vm,
-        )),
+        ),
         &command.telemetry_path,
         &command.vm,
         &command.service,

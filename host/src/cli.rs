@@ -1,23 +1,21 @@
+//! Operator commands beside the daemon: a read-only `status` and the
+//! reviewed `clear-latch` recovery.
+
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
-use std::time::Duration;
 
-use virtio_mem_core::{parse_virtio_mem_xml_for_alias, GuestInputStatus, VirtioMemState};
+use virtio_mem_core::{GuestInputStatus, VirtioMemState};
 
-use crate::attestation::{
-    read_review, AttestedCompatibilitySource, CompatibilityAttestation,
-    VirshCompatibilityEvidenceSource,
-};
+use crate::attestation::AttestedCompatibilitySource;
 use crate::checkpoint::{clear_actuation_latch, read_controller_status};
 use crate::compatibility_source::CompatibilitySource;
-use crate::config::{HostConfig, RawTelemetryTransport};
-use crate::guest_channel::{GuestChannel, GuestLink, SystemUnixClock, Transport, UnixClock};
-use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
+use crate::config::HostConfig;
+use crate::guest_channel::{GuestChannel, GuestLink, SystemUnixClock, UnixClock};
 use crate::qga::VirshGuestFiles;
 use crate::resize_sink::VirshResizeSink;
 use crate::runtime::{MemoryStateSource, ResizeSink};
-use crate::virsh::{Virsh, VirshCommand};
+use crate::virsh::Virsh;
 use crate::xml_source::VirshXmlSource;
 
 const DEFAULT_CONNECTION: &str = "qemu:///system";
@@ -25,459 +23,166 @@ const DEFAULT_CONNECTION: &str = "qemu:///system";
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
     /// Run the controller daemon.
-    Run { config: PathBuf },
-    Status {
+    Run {
         config: PathBuf,
-        vm: Option<String>,
-        connection: String,
     },
-    Attest {
-        vm: String,
-        alias: String,
-        review_path: String,
-        connection: String,
-        command_timeout_seconds: u64,
-    },
-    Snapshot {
-        vm: String,
-        alias: String,
-        connection: String,
-        command_timeout_seconds: u64,
-    },
-    Validate {
-        vm: String,
-        alias: String,
-        connection: String,
-        command_timeout_seconds: u64,
-    },
-    Resize {
-        vm: String,
-        alias: String,
-        target_bytes: u64,
-        connection: String,
-        apply: bool,
-        attestation_path: String,
-        host_min_headroom_bytes: u64,
-        command_timeout_seconds: u64,
+    Status {
+        target: Target,
     },
     ClearLatch {
         reason: String,
-        config: PathBuf,
-        vm: Option<String>,
-        connection: String,
+        target: Target,
         apply: bool,
     },
 }
 
+/// The configured VM an operator command acts on.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Target {
+    pub config: PathBuf,
+    pub vm: Option<String>,
+    pub connection: String,
+}
+
+pub fn usage() -> &'static str {
+    "Usage: virtio-mem-host --config FILE\n       virtio-mem-host status --config FILE [--vm NAME] [--connect URI]\n       virtio-mem-host clear-latch REASON --config FILE [--vm NAME] [--connect URI] [--apply]"
+}
+
 pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
-    let Some(mode) = args.first().map(String::as_str) else {
-        return Err(usage().to_owned());
-    };
+    let (mode, rest) = args.split_first().ok_or_else(|| usage().to_owned())?;
     if mode == "--config" {
-        return match args {
-            [_, path] if !path.trim().is_empty() => Ok(CliCommand::Run {
+        return match rest {
+            [path] if !path.trim().is_empty() => Ok(CliCommand::Run {
                 config: PathBuf::from(path),
             }),
             _ => Err(usage().to_owned()),
         };
     }
-    if !matches!(
-        mode,
-        "status" | "attest" | "snapshot" | "validate" | "resize" | "clear-latch"
-    ) {
-        return Err(format!("unknown CLI command: {mode}\n{}", usage()));
-    }
-    if matches!(mode, "status" | "clear-latch") {
-        let mut index = 1;
-        let reason = if mode == "clear-latch" {
-            index += 1;
-            args.get(1)
-                .filter(|reason| !reason.trim().is_empty())
-                .ok_or_else(|| usage().to_owned())?
-                .clone()
-        } else {
-            String::new()
-        };
-        let mut config = None;
-        let mut vm = None;
-        let mut connection = DEFAULT_CONNECTION.to_owned();
-        let mut apply = false;
-        while index < args.len() {
-            match args[index].as_str() {
-                "--apply" if mode == "clear-latch" && !apply => apply = true,
-                "--vm" if vm.is_none() => {
-                    index += 1;
-                    vm = Some(
-                        args.get(index)
-                            .filter(|value| !value.trim().is_empty())
-                            .ok_or_else(|| "--vm requires a VM name".to_owned())?
-                            .clone(),
-                    );
-                }
-                "--config" if config.is_none() => {
-                    index += 1;
-                    config = Some(PathBuf::from(
-                        args.get(index)
-                            .filter(|value| !value.trim().is_empty())
-                            .ok_or_else(|| "--config requires a file path".to_owned())?,
-                    ));
-                }
-                "--connect" => {
-                    index += 1;
-                    connection = args
-                        .get(index)
-                        .filter(|value| !value.is_empty())
-                        .ok_or_else(|| "--connect requires a libvirt URI".to_owned())?
-                        .clone();
-                }
-                _ => return Err(format!("unknown CLI option: {}\n{}", args[index], usage())),
-            }
-            index += 1;
+    let (reason, options) = match mode.as_str() {
+        "status" => (None, rest),
+        "clear-latch" => {
+            let (reason, options) = rest
+                .split_first()
+                .filter(|(reason, _)| !reason.trim().is_empty() && !reason.starts_with("--"))
+                .ok_or_else(|| usage().to_owned())?;
+            (Some(reason.clone()), options)
         }
-        let config = required_option(config, "--config")?;
-        return Ok(if mode == "status" {
-            CliCommand::Status {
-                config,
-                vm,
-                connection,
-            }
-        } else {
-            CliCommand::ClearLatch {
-                reason,
-                config,
-                vm,
-                connection,
-                apply,
-            }
-        });
-    }
-    let (minimum, maximum) = match mode {
-        "resize" => (10, 13),
-        "attest" => (6, 8),
-        _ => (5, 7),
+        _ => return Err(format!("unknown CLI command: {mode}\n{}", usage())),
     };
-    if args.len() < minimum || args.len() > maximum {
-        return Err(usage().to_owned());
-    }
-    let vm = args[1].clone();
-    let alias = args[2].clone();
-    let mut connection = DEFAULT_CONNECTION.to_owned();
+    let mut config = None;
+    let mut vm = None;
+    let mut connection = None;
     let mut apply = false;
-    let mut attestation_path = None;
-    let mut host_min_headroom_bytes = None;
-    let mut connection_supplied = false;
-    let mut target_bytes = None;
-    let mut command_timeout_seconds = None;
-    let mut index = 3;
-    let review_path = if mode == "attest" {
-        index += 1;
-        Some(args[3].clone())
-    } else {
-        None
+    let mut options = options.iter();
+    while let Some(option) = options.next() {
+        let mut value = |slot: &mut Option<String>| {
+            let value = options
+                .next()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| format!("{option} requires a value"))?;
+            match slot.replace(value.clone()) {
+                Some(_) => Err(format!("{option} may be supplied only once")),
+                None => Ok(()),
+            }
+        };
+        match option.as_str() {
+            "--config" => value(&mut config)?,
+            "--vm" => value(&mut vm)?,
+            "--connect" => value(&mut connection)?,
+            "--apply" if reason.is_some() && !apply => apply = true,
+            _ => return Err(format!("unknown CLI option: {option}\n{}", usage())),
+        }
+    }
+    let target = Target {
+        config: PathBuf::from(config.ok_or_else(|| "--config is required".to_owned())?),
+        vm,
+        connection: connection.unwrap_or_else(|| DEFAULT_CONNECTION.to_owned()),
     };
-    if mode == "resize" {
-        target_bytes = Some(
-            args[index]
-                .parse::<u64>()
-                .ok()
-                .ok_or_else(|| "resize target must be a nonnegative byte count".to_owned())?,
-        );
-        index += 1;
-    }
-    while index < args.len() {
-        match args[index].as_str() {
-            "--apply" if mode == "resize" && !apply => apply = true,
-            "--attestation" if mode == "resize" => {
-                if attestation_path.is_some() {
-                    return Err("--attestation may be supplied only once".to_owned());
-                }
-                index += 1;
-                attestation_path = Some(
-                    args.get(index)
-                        .filter(|value| !value.trim().is_empty())
-                        .ok_or_else(|| "--attestation requires a file path".to_owned())?
-                        .clone(),
-                );
-            }
-            "--host-min-headroom-bytes" if mode == "resize" => {
-                if host_min_headroom_bytes.is_some() {
-                    return Err("--host-min-headroom-bytes may be supplied only once".to_owned());
-                }
-                index += 1;
-                let value = args
-                    .get(index)
-                    .ok_or_else(|| "--host-min-headroom-bytes requires a value".to_owned())?;
-                host_min_headroom_bytes = Some(
-                    value
-                        .parse::<u64>()
-                        .ok()
-                        .filter(|value| *value > 0)
-                        .ok_or_else(|| {
-                            "--host-min-headroom-bytes must be a positive byte count".to_owned()
-                        })?,
-                );
-            }
-            "--command-timeout-seconds" => {
-                if command_timeout_seconds.is_some() {
-                    return Err("--command-timeout-seconds may be supplied only once".to_owned());
-                }
-                index += 1;
-                command_timeout_seconds = Some(positive_option(
-                    args.get(index),
-                    "--command-timeout-seconds",
-                )?);
-            }
-            "--connect" => {
-                if connection_supplied {
-                    return Err("--connect may be supplied only once".to_owned());
-                }
-                connection_supplied = true;
-                index += 1;
-                connection = args
-                    .get(index)
-                    .filter(|value| !value.is_empty())
-                    .ok_or_else(|| "--connect requires a libvirt URI".to_owned())?
-                    .clone();
-            }
-            _ => return Err(format!("unknown CLI option: {}\n{}", args[index], usage())),
-        }
-        index += 1;
-    }
-    if let Some(seconds) = command_timeout_seconds {
-        let duration = Duration::from_secs(seconds);
-        if std::time::Instant::now().checked_add(duration).is_none()
-            || u64::try_from(duration.as_millis()).is_err()
-        {
-            return Err("CLI duration is too large".to_owned());
-        }
-    }
-    if vm.trim().is_empty() {
-        return Err("VM must be non-empty".to_owned());
-    }
-    if !virtio_mem_core::settings::valid_alias(&alias) {
-        return Err("ALIAS contains unsupported characters".to_owned());
-    }
-    let command = match mode {
-        "snapshot" => CliCommand::Snapshot {
-            vm,
-            alias,
-            connection,
-            command_timeout_seconds: required_option(
-                command_timeout_seconds,
-                "--command-timeout-seconds",
-            )?,
-        },
-        "validate" => CliCommand::Validate {
-            vm,
-            alias,
-            connection,
-            command_timeout_seconds: required_option(
-                command_timeout_seconds,
-                "--command-timeout-seconds",
-            )?,
-        },
-        "attest" => CliCommand::Attest {
-            vm,
-            alias,
-            review_path: review_path
-                .ok_or_else(|| "attest review path was not supplied".to_owned())?,
-            connection,
-            command_timeout_seconds: required_option(
-                command_timeout_seconds,
-                "--command-timeout-seconds",
-            )?,
-        },
-        "resize" => CliCommand::Resize {
-            vm,
-            alias,
-            target_bytes: target_bytes
-                .ok_or_else(|| "resize target was not supplied".to_owned())?,
-            connection,
+    Ok(match reason {
+        None => CliCommand::Status { target },
+        Some(reason) => CliCommand::ClearLatch {
+            reason,
+            target,
             apply,
-            attestation_path: attestation_path
-                .ok_or_else(|| "resize requires --attestation FILE".to_owned())?,
-            host_min_headroom_bytes: host_min_headroom_bytes
-                .ok_or_else(|| "resize requires --host-min-headroom-bytes BYTES".to_owned())?,
-            command_timeout_seconds: required_option(
-                command_timeout_seconds,
-                "--command-timeout-seconds",
-            )?,
         },
-        _ => return Err(format!("unknown CLI command: {mode}")),
-    };
-    Ok(command)
-}
-
-fn positive_option(value: Option<&String>, name: &str) -> Result<u64, String> {
-    value
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| format!("{name} requires a positive integer"))
-}
-
-fn required_option<T>(value: Option<T>, name: &str) -> Result<T, String> {
-    value.ok_or_else(|| format!("{name} is required"))
-}
-
-pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host --config FILE\n       virtio-mem-host status --config FILE [--vm NAME] [--connect URI]\n       virtio-mem-host clear-latch REASON --config FILE [--vm NAME] [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]"
+    })
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
     let mut output = std::io::stdout().lock();
-    run_with(command, ProcMeminfoSource::new(), &mut output)
-}
-
-fn run_with<H: HostMemorySource, W: Write>(
-    command: CliCommand,
-    host_memory: H,
-    output: &mut W,
-) -> Result<(), String> {
     match command {
         CliCommand::Run { .. } => Err("the controller runs from main, not the CLI".to_owned()),
-        CliCommand::Status {
-            config,
-            vm,
-            connection,
-        } => run_configured_status(&config, vm.as_deref(), &connection, output),
+        CliCommand::Status { target } => run_status(&target, &mut output),
         CliCommand::ClearLatch {
             reason,
-            config,
-            vm,
-            connection,
+            target,
             apply,
-        } => {
-            let config =
-                HostConfig::load_vm(&config, vm.as_deref()).map_err(|error| error.to_string())?;
-            let virsh = Virsh::with_connection(
-                config.virsh_binary.clone(),
-                config.command_timeout,
-                connection,
-            );
-            let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &config.vm_name)?;
-            AttestedCompatibilitySource::new(
-                virsh.clone(),
-                config.vm_name.clone(),
-                config.alias.clone(),
-                config.compatibility_attestation_path.clone(),
-            )
-            .compatibility()?
-            .validate_for_resize()
-            .map_err(|error| error.to_string())?;
-            let state_source =
-                VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone());
-            let sink = VirshResizeSink::new(
-                virsh.clone(),
-                config.vm_name.clone(),
-                config.alias.clone(),
-                AttestedCompatibilitySource::new(
-                    virsh,
-                    config.vm_name.clone(),
-                    config.alias.clone(),
-                    config.compatibility_attestation_path.clone(),
-                ),
-            );
-            let live = settle_stuck_shrink(&state_source, &sink, apply, output)?;
-            let fingerprint = crate::attestation::read_attestation(Path::new(
-                &config.compatibility_attestation_path,
-            ))?
-            .fingerprint_sha256;
-            let message = clear_actuation_latch(
-                &config,
-                live,
-                fingerprint,
-                &reason,
-                SystemUnixClock.now_unix_millis()?,
-                apply,
-            )?;
-            writeln!(
-                output,
-                "mode={} {message}",
-                if apply { "applied" } else { "dry_run" }
-            )
-            .map_err(|error| error.to_string())
-        }
-        CliCommand::Attest {
-            vm,
-            alias,
-            review_path,
-            connection,
-            command_timeout_seconds,
-        } => {
-            let virsh = Virsh::with_connection(
-                "virsh",
-                Duration::from_secs(command_timeout_seconds),
-                connection,
-            );
-            let evidence = VirshCompatibilityEvidenceSource::new(virsh, vm, alias).collect()?;
-            let review = read_review(std::path::Path::new(&review_path))?;
-            let document = CompatibilityAttestation::new(evidence, review)?;
-            writeln!(output, "{}", document.to_pretty_json()?).map_err(|error| error.to_string())
-        }
-        CliCommand::Snapshot {
-            vm,
-            alias,
-            connection,
-            command_timeout_seconds,
-        } => {
-            let virsh = Virsh::with_connection(
-                "virsh",
-                Duration::from_secs(command_timeout_seconds),
-                connection,
-            );
-            run_snapshot_with(virsh, &vm, &alias, output)
-        }
-        CliCommand::Validate {
-            vm,
-            alias,
-            connection,
-            command_timeout_seconds,
-        } => {
-            let virsh = Virsh::with_connection(
-                "virsh",
-                Duration::from_secs(command_timeout_seconds),
-                connection,
-            );
-            run_validate_with(virsh, &vm, &alias, output)
-        }
-        CliCommand::Resize {
-            vm,
-            alias,
-            target_bytes,
-            connection,
-            apply,
-            attestation_path,
-            host_min_headroom_bytes,
-            command_timeout_seconds,
-        } => {
-            let virsh = Virsh::with_connection(
-                "virsh",
-                Duration::from_secs(command_timeout_seconds),
-                &connection,
-            );
-            let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &vm)?;
-            let compatibility_source = AttestedCompatibilitySource::new(
-                virsh.clone(),
-                vm.clone(),
-                alias.clone(),
-                attestation_path,
-            );
-            run_resize_with(
-                virsh,
-                ResizeOptions {
-                    vm,
-                    alias,
-                    target_bytes,
-                    connection,
-                    apply,
-                    host_min_headroom_bytes,
-                },
-                host_memory,
-                compatibility_source,
-                output,
-            )
-        }
+        } => run_clear_latch(&reason, &target, apply, &mut output),
     }
+}
+
+fn load(target: &Target) -> Result<(HostConfig, Virsh), String> {
+    let config =
+        HostConfig::load_vm(&target.config, target.vm.as_deref()).map_err(|e| e.to_string())?;
+    let virsh = Virsh::with_connection(
+        config.virsh_binary.clone(),
+        config.command_timeout,
+        target.connection.clone(),
+    );
+    Ok((config, virsh))
+}
+
+fn attested(config: &HostConfig, virsh: &Virsh) -> AttestedCompatibilitySource<Virsh> {
+    AttestedCompatibilitySource::new(
+        virsh.clone(),
+        config.vm_name.clone(),
+        config.alias.clone(),
+        config.compatibility_attestation_path.clone(),
+    )
+}
+
+fn fingerprint(config: &HostConfig) -> Result<String, String> {
+    Ok(
+        crate::attestation::read_attestation(Path::new(&config.compatibility_attestation_path))?
+            .fingerprint_sha256,
+    )
+}
+
+fn run_clear_latch<W: Write>(
+    reason: &str,
+    target: &Target,
+    apply: bool,
+    output: &mut W,
+) -> Result<(), String> {
+    let (config, virsh) = load(target)?;
+    let _owner = crate::ownership::DeviceOwner::for_domain(&virsh, &config.vm_name)?;
+    attested(&config, &virsh)
+        .compatibility()?
+        .validate_for_resize()
+        .map_err(|error| error.to_string())?;
+    let state_source =
+        VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone());
+    let sink = VirshResizeSink::new(
+        virsh.clone(),
+        config.vm_name.clone(),
+        config.alias.clone(),
+        attested(&config, &virsh),
+    );
+    let live = settle_stuck_shrink(&state_source, &sink, apply, output)?;
+    let message = clear_actuation_latch(
+        &config,
+        live,
+        fingerprint(&config)?,
+        reason,
+        SystemUnixClock.now_unix_millis()?,
+        apply,
+    )?;
+    writeln!(
+        output,
+        "mode={} {message}",
+        if apply { "applied" } else { "dry_run" }
+    )
+    .map_err(|error| error.to_string())
 }
 
 /// A latch over a shrink the guest stopped short of cannot clear on divergent
@@ -519,28 +224,12 @@ fn settle_stuck_shrink<S: MemoryStateSource, R: ResizeSink, W: Write>(
     Ok(settled)
 }
 
-fn run_configured_status<W: Write>(
-    config: &Path,
-    vm: Option<&str>,
-    connection: &str,
-    output: &mut W,
-) -> Result<(), String> {
-    let config = HostConfig::load_vm(config, vm).map_err(|error| error.to_string())?;
-    let virsh = Virsh::with_connection(
-        config.virsh_binary.clone(),
-        config.command_timeout,
-        connection,
-    );
+fn run_status<W: Write>(target: &Target, output: &mut W) -> Result<(), String> {
+    let (config, virsh) = load(target)?;
     let live = VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
         .memory_state()?;
-    let transport = match config.raw_telemetry_transport {
-        RawTelemetryTransport::File => Transport::LocalFile,
-        RawTelemetryTransport::QgaFile => {
-            Transport::Qga(VirshGuestFiles::new(virsh, config.vm_name.clone()))
-        }
-    };
     let guest_input = match GuestChannel::new(
-        transport,
+        VirshGuestFiles::new(virsh, config.vm_name.clone()),
         &config.raw_telemetry_path,
         &config.vm_name,
         &config.raw_telemetry_service_name,
@@ -560,108 +249,16 @@ fn run_configured_status<W: Write>(
             request: None,
         },
     };
-    let fingerprint =
-        crate::attestation::read_attestation(Path::new(&config.compatibility_attestation_path))?
-            .fingerprint_sha256;
     let status = read_controller_status(
         &config,
         live,
         guest_input,
-        fingerprint,
+        fingerprint(&config)?,
         SystemUnixClock.now_unix_millis()?,
     )?;
     serde_json::to_writer_pretty(&mut *output, &status)
         .map_err(|error| format!("encode controller status: {error}"))?;
     writeln!(output).map_err(|error| error.to_string())
-}
-
-fn run_snapshot_with<C: VirshCommand, W: Write>(
-    command: C,
-    vm: &str,
-    alias: &str,
-    output: &mut W,
-) -> Result<(), String> {
-    let xml = command
-        .run(&["dumpxml".to_owned(), vm.to_owned()])
-        .map_err(|error| error.to_string())?;
-    parse_virtio_mem_xml_for_alias(&xml, alias).map_err(|error| error.to_string())?;
-    write!(output, "{xml}").map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-fn run_validate_with<C: VirshCommand, W: Write>(
-    command: C,
-    vm: &str,
-    alias: &str,
-    output: &mut W,
-) -> Result<(), String> {
-    let xml = command
-        .run(&["dumpxml".to_owned(), vm.to_owned()])
-        .map_err(|error| error.to_string())?;
-    let snapshot =
-        parse_virtio_mem_xml_for_alias(&xml, alias).map_err(|error| error.to_string())?;
-    writeln!(output, "alias={}", snapshot.alias).map_err(|error| error.to_string())?;
-    writeln!(output, "size_bytes={}", snapshot.memory.size_bytes)
-        .map_err(|error| error.to_string())?;
-    writeln!(
-        output,
-        "block_size_bytes={}",
-        snapshot.memory.block_size_bytes
-    )
-    .map_err(|error| error.to_string())?;
-    writeln!(
-        output,
-        "requested_bytes={}",
-        snapshot.memory.requested_bytes
-    )
-    .map_err(|error| error.to_string())?;
-    writeln!(output, "current_bytes={}", snapshot.memory.current_bytes)
-        .map_err(|error| error.to_string())?;
-    writeln!(output, "compatibility={:?}", snapshot.compatibility)
-        .map_err(|error| error.to_string())?;
-    Ok(())
-}
-
-struct ResizeOptions {
-    vm: String,
-    alias: String,
-    target_bytes: u64,
-    connection: String,
-    apply: bool,
-    host_min_headroom_bytes: u64,
-}
-
-fn run_resize_with<C: VirshCommand, H: HostMemorySource, E: CompatibilitySource, W: Write>(
-    command: C,
-    options: ResizeOptions,
-    host_memory: H,
-    compatibility_source: E,
-    output: &mut W,
-) -> Result<(), String> {
-    let sink = VirshResizeSink::new(command, options.vm, options.alias, compatibility_source);
-    let prepared = sink.prepare_resize(options.target_bytes)?;
-    if prepared.target_bytes() > prepared.current_bytes() {
-        validate_grow_headroom(
-            prepared.current_bytes(),
-            prepared.target_bytes(),
-            host_memory.available_bytes()?,
-            options.host_min_headroom_bytes,
-        )?;
-    }
-    let mut full_arguments = vec!["virsh".to_owned(), "-c".to_owned(), options.connection];
-    full_arguments.extend_from_slice(prepared.arguments());
-    if options.apply {
-        sink.apply_prepared(prepared)?;
-        writeln!(
-            output,
-            "resize_applied target_bytes={}",
-            options.target_bytes
-        )
-        .map_err(|error| error.to_string())?;
-    } else {
-        writeln!(output, "dry_run_argv={full_arguments:?}").map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -672,35 +269,11 @@ mod tests {
 
     use super::*;
     use crate::compatibility_source::FixedCompatibilitySource;
-    use crate::virsh::VirshError;
+    use crate::virsh::{VirshCommand, VirshError};
     use virtio_mem_core::VirtioMemCompatibility;
 
     const GIB: u64 = 1 << 30;
-    const CONVERGED_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></devices></domain>";
     const SHRINK_PENDING_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>6</current></target><alias name='memory0'/></memory></devices></domain>";
-
-    struct FakeHostMemory(u64);
-
-    impl HostMemorySource for FakeHostMemory {
-        fn available_bytes(&self) -> Result<u64, String> {
-            Ok(self.0)
-        }
-    }
-
-    struct FakeVirsh {
-        calls: Rc<RefCell<Vec<Vec<String>>>>,
-    }
-
-    impl VirshCommand for FakeVirsh {
-        fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
-            self.calls.borrow_mut().push(arguments.to_vec());
-            if arguments.first().map(String::as_str) == Some("dumpxml") {
-                Ok(CONVERGED_XML.to_owned())
-            } else {
-                Ok(String::new())
-            }
-        }
-    }
 
     struct RecoveryVirsh {
         calls: Rc<RefCell<Vec<Vec<String>>>>,
@@ -717,10 +290,10 @@ mod tests {
         }
     }
 
-    struct ScriptedStates(RefCell<VecDeque<virtio_mem_core::VirtioMemState>>);
+    struct ScriptedStates(RefCell<VecDeque<VirtioMemState>>);
 
     impl MemoryStateSource for ScriptedStates {
-        fn memory_state(&self) -> Result<virtio_mem_core::VirtioMemState, String> {
+        fn memory_state(&self) -> Result<VirtioMemState, String> {
             self.0
                 .borrow_mut()
                 .pop_front()
@@ -728,23 +301,12 @@ mod tests {
         }
     }
 
-    fn state(requested_bytes: u64, current_bytes: u64) -> virtio_mem_core::VirtioMemState {
-        virtio_mem_core::VirtioMemState {
+    fn state(requested_bytes: u64, current_bytes: u64) -> VirtioMemState {
+        VirtioMemState {
             size_bytes: 8 * GIB,
             block_size_bytes: 2 * 1024 * 1024,
             requested_bytes,
             current_bytes,
-        }
-    }
-
-    fn resize_options(apply: bool) -> ResizeOptions {
-        ResizeOptions {
-            vm: "guest".to_owned(),
-            alias: "memory0".to_owned(),
-            target_bytes: 6 * GIB,
-            connection: DEFAULT_CONNECTION.to_owned(),
-            apply,
-            host_min_headroom_bytes: GIB,
         }
     }
 
@@ -753,21 +315,22 @@ mod tests {
     }
 
     #[test]
-    fn parses_snapshot_and_resize_modes() {
+    fn parses_run_status_and_clear_latch() {
         assert_eq!(
-            parse_args(&args(&[
-                "status",
-                "--config",
-                "/etc/virtio-mem-host/guest.toml",
-                "--connect",
-                "test:///default"
-            ]))
-            .expect("status"),
-            CliCommand::Status {
+            parse_args(&args(&["--config", "/etc/virtio-mem-host/guest.toml"])),
+            Ok(CliCommand::Run {
                 config: PathBuf::from("/etc/virtio-mem-host/guest.toml"),
-                vm: None,
-                connection: "test:///default".to_owned(),
-            }
+            })
+        );
+        assert_eq!(
+            parse_args(&args(&["status", "--config", "guest.toml"])),
+            Ok(CliCommand::Status {
+                target: Target {
+                    config: PathBuf::from("guest.toml"),
+                    vm: None,
+                    connection: DEFAULT_CONNECTION.to_owned(),
+                },
+            })
         );
         assert_eq!(
             parse_args(&args(&[
@@ -779,100 +342,44 @@ mod tests {
                 "guest.toml",
                 "--vm",
                 "guest",
-            ]))
-            .expect("clear-latch"),
-            CliCommand::ClearLatch {
+                "--apply",
+            ])),
+            Ok(CliCommand::ClearLatch {
                 reason: "reviewed recovery".to_owned(),
-                config: PathBuf::from("guest.toml"),
-                vm: Some("guest".to_owned()),
-                connection: "test:///default".to_owned(),
-                apply: false,
-            }
-        );
-        assert_eq!(
-            parse_args(&args(&[
-                "snapshot",
-                "guest",
-                "memory0",
-                "--command-timeout-seconds",
-                "4"
-            ]))
-            .expect("snapshot"),
-            CliCommand::Snapshot {
-                vm: "guest".to_owned(),
-                alias: "memory0".to_owned(),
-                connection: DEFAULT_CONNECTION.to_owned(),
-                command_timeout_seconds: 4,
-            }
-        );
-        assert!(matches!(
-            parse_args(&args(&[
-                "resize",
-                "guest",
-                "memory0",
-                "2097152",
-                "--attestation",
-                "reviewed.json",
-                "--host-min-headroom-bytes",
-                "1073741824",
-                "--command-timeout-seconds",
-                "4",
-                "--apply"
-            ]))
-            .expect("resize"),
-            CliCommand::Resize { apply: true, .. }
-        ));
-        assert!(matches!(
-            parse_args(&args(&[
-                "attest",
-                "guest",
-                "memory0",
-                "review.json",
-                "--command-timeout-seconds",
-                "4"
-            ]))
-            .expect("attest"),
-            CliCommand::Attest { .. }
-        ));
-    }
-
-    #[test]
-    fn the_controller_runs_from_one_config_file() {
-        assert_eq!(
-            parse_args(&args(&["--config", "/etc/virtio-mem-host/guest.toml"])),
-            Ok(CliCommand::Run {
-                config: PathBuf::from("/etc/virtio-mem-host/guest.toml"),
+                target: Target {
+                    config: PathBuf::from("guest.toml"),
+                    vm: Some("guest".to_owned()),
+                    connection: "test:///default".to_owned(),
+                },
+                apply: true,
             })
         );
     }
 
     #[test]
-    fn rejects_invalid_cli_options_and_targets() {
-        assert!(parse_args(&args(&["resize", "guest", "memory0", "0"])).is_err());
-        assert!(parse_args(&args(&["snapshot", "guest", "memory0", "--connect"])).is_err());
-        assert!(parse_args(&args(&["snapshot", "guest", "memory0", "--unknown"])).is_err());
-        assert!(parse_args(&args(&["unknown"])).is_err());
-        assert!(parse_args(&[]).is_err());
-        assert!(parse_args(&args(&["--config"])).is_err());
-        assert!(parse_args(&args(&["status"])).is_err());
-        assert!(parse_args(&args(&["status", "--config", "a", "--apply"])).is_err());
-        assert!(parse_args(&args(&[
-            "status", "--config", "a", "--vm", "x", "--vm", "y"
-        ]))
-        .is_err());
-        assert!(parse_args(&args(&["clear-latch", "reason", "--apply"])).is_err());
-        assert!(parse_args(&args(&["validate", "guest", "bad/alias"])).is_err());
-        assert!(parse_args(&args(&[
-            "resize",
-            "guest",
-            "memory0",
-            "6442450944",
-            "--host-min-headroom-bytes",
-            "1073741824"
-        ]))
-        .is_err());
-        assert!(parse_args(&args(&["abandon-shrink", "guest", "memory0", "4294967296"])).is_err());
-        assert!(parse_args(&args(&["qualify-shrink", "guest", "memory0", "4292870144"])).is_err());
+    fn rejects_invalid_cli_options() {
+        for invalid in [
+            &[][..],
+            &["--config"],
+            &["unknown"],
+            &["status"],
+            &["status", "--config", "a", "--apply"],
+            &["status", "--config", "a", "--vm", "x", "--vm", "y"],
+            &["status", "--config"],
+            &["clear-latch", "--config", "a"],
+            &["clear-latch", "reason", "--apply"],
+            &[
+                "clear-latch",
+                "reason",
+                "--config",
+                "a",
+                "--apply",
+                "--apply",
+            ],
+            &["resize", "guest", "memory0", "0"],
+        ] {
+            assert!(parse_args(&args(invalid)).is_err(), "{invalid:?}");
+        }
     }
 
     #[test]
@@ -905,104 +412,5 @@ mod tests {
         let converged = ScriptedStates(RefCell::new(VecDeque::from([state(6 * GIB, 6 * GIB)])));
         settle_stuck_shrink(&converged, &sink, true, &mut Vec::new()).expect("converged");
         assert_eq!(calls.borrow().len(), calls_before);
-    }
-
-    #[test]
-    fn dry_run_reports_the_exact_vector_without_applying() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut output = Vec::new();
-        run_resize_with(
-            FakeVirsh {
-                calls: Rc::clone(&calls),
-            },
-            resize_options(false),
-            FakeHostMemory(4 * GIB),
-            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
-            &mut output,
-        )
-        .expect("valid dry run");
-
-        assert_eq!(calls.borrow().len(), 1);
-        assert_eq!(
-            String::from_utf8(output).expect("UTF-8 output"),
-            "dry_run_argv=[\"virsh\", \"-c\", \"qemu:///system\", \"update-memory-device\", \"guest\", \"--alias\", \"memory0\", \"--requested-size\", \"6291456\", \"--live\"]\n"
-        );
-    }
-
-    #[test]
-    fn snapshot_and_validate_are_read_only_and_alias_scoped() {
-        let snapshot_calls = Rc::new(RefCell::new(Vec::new()));
-        let mut snapshot_output = Vec::new();
-        run_snapshot_with(
-            FakeVirsh {
-                calls: Rc::clone(&snapshot_calls),
-            },
-            "guest",
-            "memory0",
-            &mut snapshot_output,
-        )
-        .expect("valid snapshot");
-        assert_eq!(snapshot_calls.borrow().len(), 1);
-        assert_eq!(snapshot_calls.borrow()[0], ["dumpxml", "guest"]);
-        assert_eq!(snapshot_output, CONVERGED_XML.as_bytes());
-
-        let validate_calls = Rc::new(RefCell::new(Vec::new()));
-        let mut validate_output = Vec::new();
-        run_validate_with(
-            FakeVirsh {
-                calls: Rc::clone(&validate_calls),
-            },
-            "guest",
-            "memory0",
-            &mut validate_output,
-        )
-        .expect("valid validation");
-        assert_eq!(validate_calls.borrow().len(), 1);
-        let output = String::from_utf8(validate_output).expect("UTF-8 output");
-        assert!(output.contains("alias=memory0"));
-        assert!(output.contains("requested_bytes=4294967296"));
-    }
-
-    #[test]
-    fn apply_sends_one_prepared_update_after_headroom_validation() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut output = Vec::new();
-        run_resize_with(
-            FakeVirsh {
-                calls: Rc::clone(&calls),
-            },
-            resize_options(true),
-            FakeHostMemory(4 * GIB),
-            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
-            &mut output,
-        )
-        .expect("valid apply");
-
-        assert_eq!(calls.borrow().len(), 2);
-        assert_eq!(calls.borrow()[1][0], "update-memory-device");
-        assert_eq!(
-            String::from_utf8(output).expect("UTF-8 output"),
-            "resize_applied target_bytes=6442450944\n"
-        );
-    }
-
-    #[test]
-    fn insufficient_host_headroom_blocks_apply() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let mut output = Vec::new();
-        let error = run_resize_with(
-            FakeVirsh {
-                calls: Rc::clone(&calls),
-            },
-            resize_options(true),
-            FakeHostMemory(2 * GIB),
-            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
-            &mut output,
-        )
-        .expect_err("reserve shortfall must fail closed");
-
-        assert!(error.contains("host headroom is insufficient"));
-        assert_eq!(calls.borrow().len(), 1);
-        assert!(output.is_empty());
     }
 }

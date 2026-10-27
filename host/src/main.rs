@@ -6,8 +6,8 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 use virtio_mem_host::attestation::{read_attestation, AttestedCompatibilitySource};
 use virtio_mem_host::cli::CliCommand;
-use virtio_mem_host::config::{HostConfig, HostSettings, RawTelemetryTransport};
-use virtio_mem_host::guest_channel::{GuestChannel, Transport};
+use virtio_mem_host::config::{HostConfig, HostSettings};
+use virtio_mem_host::guest_channel::GuestChannel;
 use virtio_mem_host::host_memory::ProcMeminfoSource;
 use virtio_mem_host::ownership::DeviceOwner;
 use virtio_mem_host::qga::VirshGuestFiles;
@@ -115,18 +115,12 @@ fn vm_controller(
     config: HostConfig,
     wake: Arc<virtio_mem_host::wake::WakePeer>,
 ) -> Result<(DeviceOwner, Controller), String> {
-    let transport = match config.raw_telemetry_transport {
-        RawTelemetryTransport::File => Transport::LocalFile,
-        RawTelemetryTransport::QgaFile => {
-            Transport::Qga(VirshGuestFiles::new(virsh.clone(), config.vm_name.clone()))
-        }
-    };
     let owner = DeviceOwner::for_domain(virsh, &config.vm_name)?;
     let fingerprint =
         read_attestation(Path::new(&config.compatibility_attestation_path))?.fingerprint_sha256;
     let controller = VmController::new(
         GuestChannel::new(
-            transport,
+            VirshGuestFiles::new(virsh.clone(), config.vm_name.clone()),
             &config.raw_telemetry_path,
             &config.vm_name,
             &config.raw_telemetry_service_name,

@@ -16,12 +16,6 @@ pub enum HostConfigError {
     UnknownVm(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RawTelemetryTransport {
-    File,
-    QgaFile,
-}
-
 /// One resolved runtime config from the global, host-list and per-VM files.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostConfig {
@@ -35,7 +29,6 @@ pub struct HostConfig {
     pub convergence_timeout: Duration,
     pub virsh_binary: String,
     pub raw_telemetry_path: String,
-    pub raw_telemetry_transport: RawTelemetryTransport,
     pub raw_telemetry_service_name: String,
     pub raw_telemetry_max_age: Duration,
     pub raw_telemetry_future_tolerance: Duration,
@@ -101,7 +94,6 @@ impl HostConfig {
             convergence_timeout: Duration::from_secs(globals.convergence_timeout_seconds),
             virsh_binary: "/usr/bin/virsh".to_owned(),
             raw_telemetry_path: CONTROL_PATH.to_owned(),
-            raw_telemetry_transport: RawTelemetryTransport::QgaFile,
             raw_telemetry_service_name: SERVICE_NAME.to_owned(),
             raw_telemetry_max_age: Duration::from_millis(globals.freshness_millis()),
             raw_telemetry_future_tolerance: Duration::from_secs(globals.poll_interval_seconds),

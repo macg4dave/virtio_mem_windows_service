@@ -880,11 +880,7 @@ fn guest_rows(frame: &mut Frame, telemetry: &RawTelemetryEnvelope) {
         ),
         VALUE,
     );
-    let signal = telemetry
-        .windows_native
-        .as_ref()
-        .and_then(|native| native.memory_resource_notifications.value);
-    let (signal, colour) = match signal {
+    let (signal, colour) = match telemetry.native_pressure {
         Some(MemoryResourceNotificationState::High) => ("HIGH", GREEN),
         Some(MemoryResourceNotificationState::Neutral) => ("NEUTRAL", YELLOW),
         Some(MemoryResourceNotificationState::Low) => ("LOW", RED),

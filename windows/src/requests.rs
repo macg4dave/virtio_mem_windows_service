@@ -107,7 +107,7 @@ impl GuestRequests {
             }
             let bytes = serde_json::to_vec(self.requester.state())
                 .map_err(|error| format!("encode request state: {error}"))?;
-            replace_file(&self.state_path, &bytes, stop, self.retry_timeout)
+            replace_file(&self.state_path, &bytes, true, stop, self.retry_timeout)
                 .map_err(|error| format!("persist request state: {error}"))?;
         }
         Ok(decision.request)

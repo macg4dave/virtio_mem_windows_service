@@ -1,69 +1,41 @@
 use std::io::Read;
 use std::time::Duration;
 
-use virtio_mem_core::{
-    GuestMemoryPolicy, WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
-};
+use virtio_mem_core::{WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION};
 
 use crate::error::ConfigurationError;
 
 pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VirtioMemService\config.json";
 
+/// The deployed configuration file and where it was loaded from. It reads as
+/// the file's own fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
-    pub vm_name: String,
-    pub service_name: String,
-    pub display_name: String,
-    pub description: String,
-    pub demand_report_path: String,
-    pub service_account: String,
+    pub file: WindowsServiceConfigFile,
     pub config_path: String,
-    pub poll_interval: Duration,
-    pub shutdown_timeout: Duration,
-    pub policy: GuestMemoryPolicy,
-    pub min_ram: u64,
-    pub max_ram: u64,
-    pub telemetry_path: Option<String>,
+}
+
+impl std::ops::Deref for ServiceConfig {
+    type Target = WindowsServiceConfigFile;
+
+    fn deref(&self) -> &WindowsServiceConfigFile {
+        &self.file
+    }
 }
 
 impl ServiceConfig {
+    pub fn poll_interval(&self) -> Duration {
+        Duration::from_millis(self.file.poll_interval_millis)
+    }
+
+    pub fn shutdown_timeout(&self) -> Duration {
+        Duration::from_millis(self.file.shutdown_timeout_millis)
+    }
+
     pub fn validate(&self) -> Result<(), ConfigurationError> {
-        for (value, field) in [
-            (&self.vm_name, "VM name"),
-            (&self.service_name, "service name"),
-            (&self.display_name, "display name"),
-            (&self.description, "description"),
-            (&self.demand_report_path, "demand report path"),
-            (&self.service_account, "service account"),
-            (&self.config_path, "configuration path"),
-        ] {
-            if value.trim().is_empty() {
-                return Err(ConfigurationError::EmptyField(field));
-            }
-            if value.chars().any(char::is_control) {
-                return Err(ConfigurationError::InvalidFile(format!(
-                    "{field} contains a control character"
-                )));
-            }
-        }
-
-        if self.poll_interval.is_zero() {
-            return Err(ConfigurationError::InvalidPollInterval);
-        }
-        if self.shutdown_timeout.is_zero() {
-            return Err(ConfigurationError::InvalidShutdownTimeout);
-        }
-
-        for duration in [self.poll_interval, self.shutdown_timeout] {
-            if duration.subsec_nanos() % 1_000_000 != 0
-                || u64::try_from(duration.as_millis()).is_err()
-            {
-                return Err(ConfigurationError::DurationOverflow);
-            }
-        }
-        let wire = WindowsServiceConfigFile::try_from(self)?;
-        wire.validate()
-            .and_then(|()| wire.validate_paths(&self.config_path))
+        self.file
+            .validate()
+            .and_then(|()| self.file.validate_paths(&self.config_path))
             .map_err(ConfigurationError::InvalidFile)?;
         #[cfg(windows)]
         {
@@ -81,8 +53,8 @@ impl ServiceConfig {
     }
 
     pub fn load_from_path(path: impl AsRef<std::path::Path>) -> Result<Self, ConfigurationError> {
-        let path = path.as_ref();
         const MAX_CONFIG_BYTES: u64 = 64 * 1024;
+        let path = path.as_ref();
         let file = match std::fs::File::open(path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -101,56 +73,19 @@ impl ServiceConfig {
                 "configuration exceeds 64 KiB".to_owned(),
             ));
         }
-        let persisted: WindowsServiceConfigFile = serde_json::from_str(&contents)
+        let file: WindowsServiceConfigFile = serde_json::from_str(&contents)
             .map_err(|error| ConfigurationError::InvalidFile(error.to_string()))?;
-        if persisted.schema_version != WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION {
+        if file.schema_version != WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION {
             return Err(ConfigurationError::UnsupportedSchemaVersion(
-                persisted.schema_version,
+                file.schema_version,
             ));
         }
         let config = Self {
-            vm_name: persisted.vm_name,
-            service_name: persisted.service_name,
-            display_name: persisted.display_name,
-            description: persisted.description,
-            demand_report_path: persisted.demand_report_path,
-            service_account: persisted.service_account,
+            file,
             config_path: path.to_string_lossy().into_owned(),
-            poll_interval: Duration::from_millis(persisted.poll_interval_millis),
-            shutdown_timeout: Duration::from_millis(persisted.shutdown_timeout_millis),
-            policy: persisted.policy,
-            min_ram: persisted.min_ram,
-            max_ram: persisted.max_ram,
-            telemetry_path: persisted.telemetry_path,
         };
         config.validate()?;
         Ok(config)
-    }
-}
-
-impl TryFrom<&ServiceConfig> for WindowsServiceConfigFile {
-    type Error = ConfigurationError;
-
-    fn try_from(config: &ServiceConfig) -> Result<Self, Self::Error> {
-        let poll_interval_millis = u64::try_from(config.poll_interval.as_millis())
-            .map_err(|_| ConfigurationError::DurationOverflow)?;
-        let shutdown_timeout_millis = u64::try_from(config.shutdown_timeout.as_millis())
-            .map_err(|_| ConfigurationError::DurationOverflow)?;
-        Ok(Self {
-            schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
-            vm_name: config.vm_name.clone(),
-            service_name: config.service_name.clone(),
-            display_name: config.display_name.clone(),
-            description: config.description.clone(),
-            demand_report_path: config.demand_report_path.clone(),
-            service_account: config.service_account.clone(),
-            poll_interval_millis,
-            shutdown_timeout_millis,
-            policy: config.policy,
-            min_ram: config.min_ram,
-            max_ram: config.max_ram,
-            telemetry_path: config.telemetry_path.clone(),
-        })
     }
 }
 
@@ -181,10 +116,7 @@ pub(crate) fn validate_file_identity(config: &str, report: &str) -> Result<(), C
             report.to_owned(),
             virtio_mem_core::host_status_path(report),
             virtio_mem_core::request_state_path(report),
-        ]
-        .into_iter()
-        .chain((1..=3).map(|index| format!("{report}.{index}")))
-        {
+        ] {
             if identify(&path)? == Some(config_id) {
                 return Err(ConfigurationError::InvalidFile(
                     "configuration shares a file identity with a publication file".to_owned(),
@@ -200,35 +132,37 @@ pub(crate) fn validate_file_identity(config: &str, report: &str) -> Result<(), C
 pub(crate) fn test_config() -> ServiceConfig {
     const MIB: u64 = 1024 * 1024;
     ServiceConfig {
-        min_ram: 1 << 30,
-        max_ram: 64 << 30,
-        telemetry_path: None,
-        vm_name: "test-vm".to_owned(),
-        service_name: "TestService".to_owned(),
-        display_name: "Test service".to_owned(),
-        description: "Test configuration".to_owned(),
-        demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
-        service_account: r"NT AUTHORITY\LocalService".to_owned(),
-        config_path: DEFAULT_CONFIG_PATH.to_owned(),
-        poll_interval: Duration::from_millis(20),
-        shutdown_timeout: Duration::from_millis(30),
-        policy: GuestMemoryPolicy {
-            target: virtio_mem_core::TargetPolicyConfig {
-                configured_minimum_bytes: 0,
-                physical_reserve_bytes: 2048 * MIB,
-                commit_reserve_bytes: 2048 * MIB,
-                safe_floor_physical_reserve_bytes: 1024 * MIB,
-                safe_floor_commit_reserve_bytes: 1024 * MIB,
-                history_window_millis: 600_000,
-                maximum_gap_millis: 60_000,
-                downward_hysteresis_bytes: 256 * MIB,
+        file: WindowsServiceConfigFile {
+            schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
+            min_ram: 1 << 30,
+            max_ram: 64 << 30,
+            telemetry_path: None,
+            vm_name: "test-vm".to_owned(),
+            service_name: "TestService".to_owned(),
+            display_name: "Test service".to_owned(),
+            description: "Test configuration".to_owned(),
+            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
+            service_account: r"NT AUTHORITY\LocalService".to_owned(),
+            poll_interval_millis: 20,
+            shutdown_timeout_millis: 30,
+            policy: virtio_mem_core::GuestMemoryPolicy {
+                target: virtio_mem_core::TargetPolicyConfig {
+                    configured_minimum_bytes: 0,
+                    physical_reserve_bytes: 2048 * MIB,
+                    commit_reserve_bytes: 2048 * MIB,
+                    safe_floor_physical_reserve_bytes: 1024 * MIB,
+                    safe_floor_commit_reserve_bytes: 1024 * MIB,
+                    history_window_millis: 600_000,
+                    maximum_gap_millis: 60_000,
+                    downward_hysteresis_bytes: 256 * MIB,
+                },
+                grow_step_bytes: 1024 * MIB,
+                shrink_step_bytes: 64 * MIB,
+                host_status_max_age_millis: 60_000,
+                request_lifetime_millis: 30_000,
             },
-            grow_step_bytes: 1024 * MIB,
-            shrink_step_bytes: 64 * MIB,
-            host_status_max_age_millis: 60_000,
-            request_lifetime_millis: 30_000,
-            max_removal_pause_windows: 16,
         },
+        config_path: DEFAULT_CONFIG_PATH.to_owned(),
     }
 }
 
@@ -249,123 +183,53 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_identity_fields() {
+    fn rejects_empty_identity_paths_and_zero_timings() {
         let mut config = test_config();
-        config.service_name.clear();
-
-        assert_eq!(
-            config.validate(),
-            Err(ConfigurationError::EmptyField("service name"))
-        );
+        config.file.service_name.clear();
+        assert!(config.validate().is_err());
+        let mut config = test_config();
+        config.file.demand_report_path.clear();
+        assert!(config.validate().is_err());
+        let mut config = test_config();
+        config.file.poll_interval_millis = 0;
+        assert!(config.validate().is_err());
+        let mut config = test_config();
+        config.file.shutdown_timeout_millis = 0;
+        assert!(config.validate().is_err());
     }
 
     #[test]
-    fn rejects_empty_demand_report_path() {
-        let config = ServiceConfig {
-            demand_report_path: String::new(),
-            ..test_config()
-        };
-
-        assert_eq!(
-            config.validate(),
-            Err(ConfigurationError::EmptyField("demand report path"))
-        );
-    }
-
-    #[test]
-    fn rejects_zero_timeouts() {
-        let mut config = ServiceConfig {
-            poll_interval: Duration::ZERO,
-            ..test_config()
-        };
-        assert_eq!(
-            config.validate(),
-            Err(ConfigurationError::InvalidPollInterval)
-        );
-
-        config.poll_interval = Duration::from_secs(1);
-        config.shutdown_timeout = Duration::ZERO;
-        assert_eq!(
-            config.validate(),
-            Err(ConfigurationError::InvalidShutdownTimeout)
-        );
-    }
-
-    #[test]
-    fn rejects_native_string_path_collisions_and_lossy_durations() {
+    fn rejects_path_collisions_and_control_characters() {
         let mut config = test_config();
         config.config_path = r"c:\TEST\.\TELEMETRY.jsonl".to_owned();
         assert!(config.validate().is_err());
-        config.config_path = format!("{}.1", config.demand_report_path);
-        assert!(config.validate().is_err());
         config.config_path = virtio_mem_core::request_state_path(&config.demand_report_path);
         assert!(config.validate().is_err());
-        config = test_config();
-        config.description.push('\0');
+        let mut config = test_config();
+        config.file.description.push('\0');
         assert!(config.validate().is_err());
-        config = test_config();
-        config.poll_interval = Duration::from_nanos(1);
-        assert_eq!(config.validate(), Err(ConfigurationError::DurationOverflow));
     }
 
     #[test]
-    fn persists_and_loads_versioned_configuration() {
+    fn loads_the_versioned_file_with_its_path() {
         let path = test_path("config-round-trip");
-        let _ = std::fs::remove_file(&path);
         let expected = ServiceConfig {
             config_path: path.to_string_lossy().into_owned(),
-            poll_interval: Duration::from_millis(1250),
-            shutdown_timeout: Duration::from_millis(2750),
             ..test_config()
         };
-
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&WindowsServiceConfigFile::try_from(&expected).unwrap()).unwrap(),
-        )
-        .unwrap();
+        std::fs::write(&path, serde_json::to_vec(&expected.file).unwrap()).unwrap();
         let loaded = ServiceConfig::load_from_path(&path).expect("configuration should load");
-
         assert_eq!(loaded, expected);
-        std::fs::remove_file(path).expect("test configuration should be removed");
-    }
+        assert_eq!(loaded.poll_interval(), Duration::from_millis(20));
 
-    #[test]
-    fn rejects_unsupported_schema_version() {
-        let path = test_path("config-schema");
-        let fixture = WindowsServiceConfigFile {
-            schema_version: 99,
-            min_ram: 1 << 30,
-            max_ram: 64 << 30,
-            telemetry_path: None,
-            vm_name: "test-vm".to_owned(),
-            service_name: "TestService".to_owned(),
-            display_name: "Test service".to_owned(),
-            description: "Test configuration".to_owned(),
-            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
-            service_account: r"NT AUTHORITY\LocalService".to_owned(),
-            poll_interval_millis: 30_000,
-            shutdown_timeout_millis: 30_000,
-            policy: test_config().policy,
-        };
-        std::fs::write(
-            &path,
-            serde_json::to_string(&fixture).expect("fixture should encode"),
-        )
-        .expect("fixture should write");
-
+        let mut old = expected.file.clone();
+        old.schema_version = 99;
+        std::fs::write(&path, serde_json::to_vec(&old).unwrap()).unwrap();
         assert_eq!(
             ServiceConfig::load_from_path(&path),
             Err(ConfigurationError::UnsupportedSchemaVersion(99))
         );
-        std::fs::remove_file(path).expect("test configuration should be removed");
-    }
-
-    #[test]
-    fn missing_configuration_is_rejected() {
-        let path = test_path("config-missing");
-        let _ = std::fs::remove_file(&path);
-
+        std::fs::remove_file(&path).unwrap();
         assert_eq!(
             ServiceConfig::load_from_path(&path),
             Err(ConfigurationError::MissingFile(

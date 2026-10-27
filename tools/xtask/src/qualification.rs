@@ -1720,7 +1720,7 @@ fn capture_privileged_sample(config: &Config, repo: &Path) -> Result<PrivilegedS
     );
     let bytes = reader.read_file(
         &config.telemetry_path,
-        virtio_mem_host::guest_channel::MAX_RAW_TELEMETRY_FILE_BYTES as usize,
+        virtio_mem_host::guest_channel::MAX_RAW_TELEMETRY_FILE_BYTES,
     )?;
     let contents = String::from_utf8(bytes)
         .map_err(|error| format!("QGA raw telemetry is not valid UTF-8: {error}"))?;

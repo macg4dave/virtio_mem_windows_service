@@ -33,13 +33,10 @@ fn parse_command(args: &[String]) -> Option<ServiceCommand> {
     }
 }
 
+/// A console run; `load_default` has already validated `config`.
 fn run_service(config: ServiceConfig) -> Result<(), RuntimeWiringError> {
-    config
-        .validate()
-        .map_err(|error| RuntimeWiringError::Configuration(error.to_string()))?;
     let worker = native_worker(&config)?;
-
-    let mut host = ServiceHost::with_shutdown_timeout(worker, config.shutdown_timeout);
+    let mut host = ServiceHost::with_shutdown_timeout(worker, config.shutdown_timeout());
     host.run()
         .map_err(|error| RuntimeWiringError::HostExecution(error.to_string()))?;
 
@@ -125,55 +122,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn test_config() -> ServiceConfig {
-        ServiceConfig {
-            min_ram: 1 << 30,
-            max_ram: 64 << 30,
-            telemetry_path: None,
-            vm_name: "test-vm".to_owned(),
-            service_name: "TestService".to_owned(),
-            display_name: "Test service".to_owned(),
-            description: "Test configuration".to_owned(),
-            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
-            service_account: r"NT AUTHORITY\LocalService".to_owned(),
-            config_path: r"C:\test\config.json".to_owned(),
-            poll_interval: std::time::Duration::from_millis(20),
-            shutdown_timeout: std::time::Duration::from_millis(30),
-            policy: virtio_mem_core::GuestMemoryPolicy {
-                target: virtio_mem_core::TargetPolicyConfig {
-                    configured_minimum_bytes: 0,
-                    physical_reserve_bytes: 1 << 30,
-                    commit_reserve_bytes: 1 << 30,
-                    safe_floor_physical_reserve_bytes: 1 << 30,
-                    safe_floor_commit_reserve_bytes: 1 << 30,
-                    history_window_millis: 600_000,
-                    maximum_gap_millis: 60_000,
-                    downward_hysteresis_bytes: 1 << 28,
-                },
-                grow_step_bytes: 1 << 30,
-                shrink_step_bytes: 1 << 26,
-                host_status_max_age_millis: 60_000,
-                request_lifetime_millis: 30_000,
-                max_removal_pause_windows: 16,
-            },
-        }
-    }
-
-    #[test]
-    fn rejects_invalid_service_configuration_before_startup() {
-        let config = ServiceConfig {
-            service_name: String::new(),
-            ..test_config()
-        };
-
-        assert_eq!(
-            run_service(config),
-            Err(RuntimeWiringError::Configuration(
-                "service configuration field is empty: service name".to_owned()
-            ))
-        );
-    }
 
     #[test]
     fn parses_service_commands_for_install_and_stop() {

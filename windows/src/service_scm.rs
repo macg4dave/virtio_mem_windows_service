@@ -76,9 +76,8 @@ pub struct WindowsServiceRegistration {
 }
 
 impl WindowsServiceRegistration {
+    /// `config` comes from `ServiceConfig::load_default`, which validated it.
     pub fn from_config(config: &ServiceConfig) -> Result<Self, String> {
-        config.validate().map_err(|error| error.to_string())?;
-
         let executable_path = std::env::current_exe()
             .and_then(|path| {
                 path.into_os_string()
@@ -489,7 +488,7 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
     };
     let stop_observer = stop.clone();
     let mut host =
-        ServiceHost::with_stop_and_shutdown_timeout(worker, stop, config.shutdown_timeout);
+        ServiceHost::with_stop_and_shutdown_timeout(worker, stop, config.shutdown_timeout());
     let result = host
         .run_with_status(|state| {
             publish_status(status_handle, ScmServiceStatus::from_state(state))?;

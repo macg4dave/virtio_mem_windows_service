@@ -557,8 +557,7 @@ device_size_mib,device_requested_mib,device_current_mib,device_divergence_mib,\
 guest_read_ok,guest_read_ms,guest_publication_age_ms,guest_sequence,\
 guest_total_mib,guest_available_mib,guest_load_pct,\
 guest_commit_mib,guest_commit_limit_mib,guest_commit_headroom_mib,guest_cache_mib,\
-guest_standby_mib,guest_free_zero_mib,guest_modified_mib,\
-guest_signal,guest_hard_faults_per_s,guest_pages_input_per_s,\
+guest_signal,\
 guest_request,guest_request_mib,guest_request_sequence";
 
 fn mib(bytes: u64) -> u64 {
@@ -570,26 +569,12 @@ fn signed_mib(left: u64, right: u64) -> i64 {
 }
 
 fn signal_name(telemetry: &RawTelemetryEnvelope) -> &'static str {
-    match telemetry
-        .windows_native
-        .as_ref()
-        .and_then(|native| native.memory_resource_notifications.value)
-    {
+    match telemetry.native_pressure {
         Some(MemoryResourceNotificationState::High) => "high",
         Some(MemoryResourceNotificationState::Neutral) => "neutral",
         Some(MemoryResourceNotificationState::Low) => "low",
         None => "unknown",
     }
-}
-
-fn hard_faults_per_second(telemetry: &RawTelemetryEnvelope) -> Option<f64> {
-    let paging = telemetry.windows_native.as_ref()?.paging_activity.value?;
-    Some(paging.hard_faults_milli_events_per_second as f64 / 1000.0)
-}
-
-fn pages_input_per_second(telemetry: &RawTelemetryEnvelope) -> Option<f64> {
-    let paging = telemetry.windows_native.as_ref()?.paging_activity.value?;
-    Some(paging.pages_input_milli_events_per_second as f64 / 1000.0)
 }
 
 impl Sample {
@@ -629,10 +614,6 @@ impl Sample {
         match self.telemetry() {
             Some(telemetry) => {
                 let memory = &telemetry.memory;
-                let reusable = telemetry
-                    .windows_native
-                    .as_ref()
-                    .and_then(|native| native.reusable_memory.value);
                 let request = telemetry.request.as_ref();
                 columns.extend([
                     (self.unix_millis as i64 - telemetry.observed_unix_millis as i64).to_string(),
@@ -644,18 +625,13 @@ impl Sample {
                     mib(memory.commit_limit_bytes).to_string(),
                     signed_mib(memory.commit_limit_bytes, memory.commit_total_bytes).to_string(),
                     mib(memory.system_cache_bytes).to_string(),
-                    optional(reusable.map(|value| mib(value.standby_reserve_bytes).to_string())),
-                    optional(reusable.map(|value| mib(value.free_zero_bytes).to_string())),
-                    optional(reusable.map(|value| mib(value.modified_bytes).to_string())),
                     signal_name(telemetry).to_owned(),
-                    optional(hard_faults_per_second(telemetry).map(|rate| format!("{rate:.1}"))),
-                    optional(pages_input_per_second(telemetry).map(|rate| format!("{rate:.1}"))),
                     optional(request.map(|request| format!("{:?}", request.operation))),
                     optional(request.map(|request| mib(request.bytes).to_string())),
                     optional(request.map(|request| request.identity.sequence.to_string())),
                 ]);
             }
-            None => columns.extend(std::iter::repeat_n(String::new(), 18)),
+            None => columns.extend(std::iter::repeat_n(String::new(), 13)),
         }
         columns.join(",")
     }
@@ -911,7 +887,6 @@ struct Summary {
     guest_available_mib: Stat,
     guest_commit_headroom_mib: Stat,
     guest_load_pct: Stat,
-    guest_hard_faults_per_s: Stat,
     guest_signals: BTreeMap<&'static str, u64>,
     /// Guest `issued_unix_millis` by (session, sequence).
     guest_issued: HashMap<(String, String), u64>,
@@ -960,7 +935,6 @@ impl Summary {
             guest_available_mib: Stat::default(),
             guest_commit_headroom_mib: Stat::default(),
             guest_load_pct: Stat::default(),
-            guest_hard_faults_per_s: Stat::default(),
             guest_signals: BTreeMap::new(),
             guest_issued: HashMap::new(),
             granted: HashMap::new(),
@@ -1025,9 +999,6 @@ impl Summary {
             .add(signed_mib(memory.commit_limit_bytes, memory.commit_total_bytes) as f64);
         self.guest_load_pct
             .add(f64::from(memory.memory_load_percent));
-        if let Some(rate) = hard_faults_per_second(telemetry) {
-            self.guest_hard_faults_per_s.add(rate);
-        }
         *self
             .guest_signals
             .entry(signal_name(telemetry))
@@ -1136,7 +1107,6 @@ impl Summary {
                 "available_mib": self.guest_available_mib.json(),
                 "commit_headroom_mib": self.guest_commit_headroom_mib.json(),
                 "load_pct": self.guest_load_pct.json(),
-                "hard_faults_per_s": self.guest_hard_faults_per_s.json(),
                 "signal_samples": self.guest_signals,
             },
             "requests": {

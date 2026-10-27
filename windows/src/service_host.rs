@@ -31,12 +31,22 @@ impl ServiceState {
 /// The cancelled flag lives inside the mutex the condition variable waits on.
 /// Setting it under that lock means a waiter either sees it before sleeping or
 /// is already asleep when the notification arrives; a stop cannot be missed.
-#[derive(Debug)]
 struct StopState {
     cancelled: Mutex<bool>,
     wake: Condvar,
+    /// Run once on cancellation, so waiters can block on their own channel.
+    on_cancel: Mutex<Vec<Box<dyn Fn() + Send + Sync>>>,
     #[cfg(windows)]
     native_event: Option<usize>,
+}
+
+impl std::fmt::Debug for StopState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StopState")
+            .field("cancelled", &self.cancelled)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +60,7 @@ impl StopSignal {
             state: Arc::new(StopState {
                 cancelled: Mutex::new(false),
                 wake: Condvar::new(),
+                on_cancel: Mutex::new(Vec::new()),
                 #[cfg(windows)]
                 native_event: {
                     // Manual reset: cancellation stays signalled for all waiters.
@@ -70,12 +81,33 @@ impl StopSignal {
     pub fn cancel(&self) {
         *self.cancelled() = true;
         self.state.wake.notify_all();
+        for callback in self.callbacks().drain(..) {
+            callback();
+        }
         #[cfg(windows)]
         if let Some(handle) = self.state.native_event {
             unsafe {
                 winapi::um::synchapi::SetEvent(handle as winapi::shared::ntdef::HANDLE);
             }
         }
+    }
+
+    /// Run `callback` once when cancelled, or now if already cancelled.
+    pub fn on_cancel(&self, callback: impl Fn() + Send + Sync + 'static) {
+        let mut callbacks = self.callbacks();
+        if self.is_cancelled() {
+            drop(callbacks);
+            callback();
+        } else {
+            callbacks.push(Box::new(callback));
+        }
+    }
+
+    fn callbacks(&self) -> MutexGuard<'_, Vec<Box<dyn Fn() + Send + Sync>>> {
+        self.state
+            .on_cancel
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     #[cfg(windows)]
@@ -225,8 +257,13 @@ where
         enum Event {
             Initialized,
             Finished(Result<(), ServiceHostError>),
+            Stop,
         }
         let (sender, receiver) = std::sync::mpsc::channel();
+        let stop_sender = sender.clone();
+        self.stop.on_cancel(move || {
+            let _ = stop_sender.send(Event::Stop);
+        });
         let stop = self.stop.clone();
         let worker_thread = std::thread::spawn(move || {
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -251,25 +288,29 @@ where
             drop(worker);
             let _ = sender.send(Event::Finished(result));
         });
-        let mut shutdown_started: Option<Instant> = None;
+        let mut shutdown_deadline: Option<Instant> = None;
         let mut status_error = None;
         loop {
-            if self.stop.is_cancelled() && shutdown_started.is_none() {
-                shutdown_started = Some(Instant::now());
-                self.state
-                    .store(ServiceState::StopPending as u8, Ordering::Release);
-                if let Err(error) = publish(ServiceState::StopPending) {
-                    status_error = Some(error);
+            // Block for the next event; once stopping, only until the deadline.
+            let event = match shutdown_deadline {
+                None => receiver
+                    .recv()
+                    .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+                Some(deadline) => {
+                    receiver.recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 }
-            }
-            if shutdown_started.is_some_and(|started| started.elapsed() >= self.shutdown_timeout) {
-                // A Rust thread cannot be safely terminated or detached while
-                // it can publish. Fail the whole own-process service for SCM
-                // recovery, without a final Stopped report from a live worker.
-                eprintln!("service worker exceeded shutdown deadline; terminating process");
-                std::process::exit(1);
-            }
-            match receiver.recv_timeout(Duration::from_millis(10)) {
+            };
+            match event {
+                Ok(Event::Stop) => {
+                    if shutdown_deadline.is_none() {
+                        shutdown_deadline = Instant::now().checked_add(self.shutdown_timeout);
+                        self.state
+                            .store(ServiceState::StopPending as u8, Ordering::Release);
+                        if let Err(error) = publish(ServiceState::StopPending) {
+                            status_error = Some(error);
+                        }
+                    }
+                }
                 Ok(Event::Initialized) => {
                     if !self.stop.is_cancelled() {
                         self.state
@@ -298,7 +339,14 @@ where
                     );
                     return result;
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // A Rust thread cannot be safely terminated or detached
+                    // while it can publish. Fail the whole own-process service
+                    // for SCM recovery, without a final Stopped report from a
+                    // live worker.
+                    eprintln!("service worker exceeded shutdown deadline; terminating process");
+                    std::process::exit(1);
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     let _ = worker_thread.join();
                     self.state

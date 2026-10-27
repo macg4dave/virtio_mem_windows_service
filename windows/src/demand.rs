@@ -5,80 +5,39 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
-pub const RAW_TELEMETRY_RETENTION_FILES: usize = 3;
 #[cfg(any(windows, test))]
 const ATOMIC_REPLACE_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 pub use virtio_mem_core::{
-    DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot, OptionalTelemetrySignal,
-    PagingActivitySnapshot, RawTelemetryContractMode, RawTelemetryEnvelope, ReusableMemorySnapshot,
-    TelemetryCapability, TelemetrySignalStatus, TelemetryWarmup, WindowsNativeTelemetry,
-    WindowsTelemetryCapabilities,
+    DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot, RawTelemetryEnvelope,
 };
 
 /// Publishes raw telemetry without accepting allocation or resize input.
 pub trait RawTelemetryPublisher {
-    fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String>;
-
-    fn publish_cancellable(
-        &mut self,
-        envelope: &RawTelemetryEnvelope,
-        stop: &StopSignal,
-    ) -> Result<(), String> {
-        if stop.is_cancelled() {
-            return Ok(());
-        }
-        self.publish(envelope)
-    }
+    /// Publish one record; a cancelled `stop` publishes nothing.
+    fn publish(&mut self, envelope: &RawTelemetryEnvelope, stop: &StopSignal)
+        -> Result<(), String>;
 }
 
-/// Publishes one complete current record through an atomic replace and keeps a
-/// bounded set of previous records for diagnostics. Readers never consume a
-/// partially written current record.
+/// Publishes one complete record through an atomic replace, so readers never
+/// see a partial one. It is rewritten every poll and needs no durability.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AtomicRawTelemetryPublisher {
     path: PathBuf,
-    retention_files: usize,
     retry_timeout: Duration,
 }
 
 impl AtomicRawTelemetryPublisher {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
+    pub fn new(path: impl Into<PathBuf>, retry_timeout: Duration) -> Self {
         Self {
             path: path.into(),
-            retention_files: RAW_TELEMETRY_RETENTION_FILES,
-            retry_timeout: Duration::from_secs(20),
+            retry_timeout,
         }
-    }
-
-    pub fn with_retention(path: impl Into<PathBuf>, retention_files: usize) -> Self {
-        Self {
-            path: path.into(),
-            retention_files,
-            retry_timeout: Duration::from_secs(20),
-        }
-    }
-
-    pub fn with_retry_timeout(mut self, timeout: Duration) -> Self {
-        self.retry_timeout = timeout;
-        self
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    fn backup_path(&self, index: usize) -> PathBuf {
-        PathBuf::from(format!("{}.{}", self.path.display(), index))
     }
 }
 
 impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
-    fn publish(&mut self, envelope: &RawTelemetryEnvelope) -> Result<(), String> {
-        self.publish_cancellable(envelope, &StopSignal::new())
-    }
-
-    fn publish_cancellable(
+    fn publish(
         &mut self,
         envelope: &RawTelemetryEnvelope,
         stop: &StopSignal,
@@ -94,53 +53,19 @@ impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
                 "raw telemetry record exceeds {MAX_RAW_TELEMETRY_RECORD_BYTES} byte limit"
             ));
         }
-        let retained = (|| -> Result<(), String> {
-            if self.retention_files > 0 {
-                let oldest = self.backup_path(self.retention_files);
-                match std::fs::remove_file(&oldest) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(format!("remove oldest raw telemetry backup: {error}"))
-                    }
-                }
-                for index in (1..self.retention_files).rev() {
-                    let from = self.backup_path(index);
-                    let to = self.backup_path(index + 1);
-                    match std::fs::rename(&from, &to) {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                        Err(error) => return Err(format!("rotate raw telemetry backup: {error}")),
-                    }
-                }
-                if self.path.exists() {
-                    std::fs::copy(&self.path, self.backup_path(1)).map_err(|error| {
-                        format!("retain previous raw telemetry record: {error}")
-                    })?;
-                }
-            }
-
-            Ok(())
-        })();
-        if let Err(error) = retained {
-            eprintln!("diagnostic telemetry retention failed: {error}");
-        }
-        if stop.is_cancelled() {
-            return Ok(());
-        }
-
-        replace_file(&self.path, &encoded, stop, self.retry_timeout)
+        replace_file(&self.path, &encoded, false, stop, self.retry_timeout)
             .map_err(|error| format!("publish raw telemetry handoff: {error}"))
     }
 }
 
-/// Replace `path` with `bytes` through a flushed temporary file and an atomic
-/// write-through rename, so readers and restarts see the old or new contents
-/// whole. Cancellation abandons the replacement and reports success; the
-/// caller's own cancellable publication then publishes nothing either.
+/// Replace `path` with `bytes` through a temporary file and an atomic rename,
+/// so readers see the old or new contents whole. `durable` also flushes the
+/// data and the rename to disk, for state that must survive a crash.
+/// Cancellation abandons the replacement and reports success.
 pub(crate) fn replace_file(
     path: &Path,
     bytes: &[u8],
+    durable: bool,
     stop: &StopSignal,
     retry_timeout: Duration,
 ) -> Result<(), String> {
@@ -161,10 +86,12 @@ pub(crate) fn replace_file(
             .map_err(|error| format!("open handoff: {error}"))?;
         file.write_all(bytes)
             .map_err(|error| format!("write handoff: {error}"))?;
-        file.sync_all()
-            .map_err(|error| format!("flush handoff: {error}"))?;
+        if durable {
+            file.sync_all()
+                .map_err(|error| format!("flush handoff: {error}"))?;
+        }
         drop(file);
-        atomic_replace(&temporary, path, stop, retry_timeout)
+        atomic_replace(&temporary, path, durable, stop, retry_timeout)
             .map_err(|error| format!("replace {}: {error}", path.display()))
     })();
     if result.is_err() || stop.is_cancelled() {
@@ -182,6 +109,7 @@ pub(crate) fn replace_file(
 fn atomic_replace(
     source: &Path,
     destination: &Path,
+    _durable: bool,
     stop: &StopSignal,
     _: Duration,
 ) -> std::io::Result<()> {
@@ -198,6 +126,7 @@ fn atomic_replace(
 fn atomic_replace(
     source: &Path,
     destination: &Path,
+    durable: bool,
     stop: &StopSignal,
     timeout: Duration,
 ) -> std::io::Result<()> {
@@ -222,7 +151,11 @@ fn atomic_replace(
             MoveFileExW(
                 source.as_ptr(),
                 destination.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+                if durable {
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
+                } else {
+                    MOVEFILE_REPLACE_EXISTING
+                },
             )
         } == FALSE
         {
@@ -358,70 +291,41 @@ pub trait MemoryResourceNotificationTelemetry {
         stop.wait(timeout);
     }
 
-    fn capability(&self) -> TelemetryCapability;
-    fn collect(
-        &self,
-        observed_monotonic_millis: u64,
-    ) -> OptionalTelemetrySignal<MemoryResourceNotificationState>;
+    /// Windows' categorical state, or `None` when it cannot be read.
+    fn collect(&self) -> Option<MemoryResourceNotificationState>;
 }
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnavailableMemoryResourceNotifications;
 
 impl MemoryResourceNotificationTelemetry for UnavailableMemoryResourceNotifications {
-    fn capability(&self) -> TelemetryCapability {
-        TelemetryCapability::Unavailable
+    fn collect(&self) -> Option<MemoryResourceNotificationState> {
+        None
     }
-
-    fn collect(
-        &self,
-        observed_monotonic_millis: u64,
-    ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
-        OptionalTelemetrySignal::unavailable(observed_monotonic_millis)
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum MemoryResourceNotificationHandles<H> {
-    Ready { low: H, high: H },
-    CreationFailed(u32),
 }
 
 /// Owns both notification handles for one service worker lifetime.
 #[derive(Debug)]
 pub struct MemoryResourceNotificationCollector<A: MemoryResourceNotificationApi> {
     api: A,
-    handles: MemoryResourceNotificationHandles<A::Handle>,
+    /// The low and high handles; `None` until both could be created.
+    handles: Option<(A::Handle, A::Handle)>,
 }
 
 impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationCollector<A> {
     pub fn new(api: A) -> Self {
-        let low = match api.create(MemoryResourceNotificationKind::Low) {
-            Ok(low) => low,
-            Err(error_code) => {
-                return Self {
-                    api,
-                    handles: MemoryResourceNotificationHandles::CreationFailed(
-                        normalize_error_code(error_code),
-                    ),
-                };
-            }
-        };
-        let high = match api.create(MemoryResourceNotificationKind::High) {
-            Ok(high) => high,
-            Err(error_code) => {
-                api.close(low);
-                return Self {
-                    api,
-                    handles: MemoryResourceNotificationHandles::CreationFailed(
-                        normalize_error_code(error_code),
-                    ),
-                };
-            }
-        };
-        Self {
-            api,
-            handles: MemoryResourceNotificationHandles::Ready { low, high },
+        let handles = create_handles(&api);
+        Self { api, handles }
+    }
+}
+
+fn create_handles<A: MemoryResourceNotificationApi>(api: &A) -> Option<(A::Handle, A::Handle)> {
+    let low = api.create(MemoryResourceNotificationKind::Low).ok()?;
+    match api.create(MemoryResourceNotificationKind::High) {
+        Ok(high) => Some((low, high)),
+        Err(_) => {
+            api.close(low);
+            None
         }
     }
 }
@@ -433,98 +337,35 @@ impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationTelemetry
         if stop.is_cancelled() {
             return;
         }
-        if matches!(
-            self.handles,
-            MemoryResourceNotificationHandles::CreationFailed(_)
-        ) {
-            // A missing optional facility must not permanently disable observation.
-            match self.api.create(MemoryResourceNotificationKind::Low) {
-                Ok(low) => match self.api.create(MemoryResourceNotificationKind::High) {
-                    Ok(high) => {
-                        self.handles = MemoryResourceNotificationHandles::Ready { low, high }
-                    }
-                    Err(_) => self.api.close(low),
-                },
-                Err(_) => { /* Retry at the next bounded poll. */ }
-            }
+        // A missing optional facility must not permanently disable observation.
+        if self.handles.is_none() {
+            self.handles = create_handles(&self.api);
         }
-        let low = match self.handles {
-            MemoryResourceNotificationHandles::Ready { low, .. } if watch_low => Some(low),
-            _ => None,
-        };
-        match self.api.wait_for_pressure(low, stop, timeout, wake) {
-            Ok(_) => {}
-            Err(error) => {
-                eprintln!("native memory notification wait failed: {error}");
-                stop.wait(timeout);
-            }
+        let low = self.handles.filter(|_| watch_low).map(|(low, _)| low);
+        if let Err(error) = self.api.wait_for_pressure(low, stop, timeout, wake) {
+            eprintln!("native memory notification wait failed: {error}");
+            stop.wait(timeout);
         }
     }
 
-    fn capability(&self) -> TelemetryCapability {
-        TelemetryCapability::Supported
-    }
-
-    fn collect(
-        &self,
-        observed_monotonic_millis: u64,
-    ) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
-        let (low, high) = match self.handles {
-            MemoryResourceNotificationHandles::Ready { low, high } => (low, high),
-            MemoryResourceNotificationHandles::CreationFailed(error_code) => {
-                return OptionalTelemetrySignal::failed(observed_monotonic_millis, error_code);
-            }
-        };
-        let low = match self.api.query(low) {
-            Ok(value) => value,
-            Err(error_code) => {
-                return OptionalTelemetrySignal::failed(
-                    observed_monotonic_millis,
-                    normalize_error_code(error_code),
-                );
-            }
-        };
-        let high = match self.api.query(high) {
-            Ok(value) => value,
-            Err(error_code) => {
-                return OptionalTelemetrySignal::failed(
-                    observed_monotonic_millis,
-                    normalize_error_code(error_code),
-                );
-            }
-        };
-        let state = match (low, high) {
-            (true, false) => MemoryResourceNotificationState::Low,
-            (false, true) => MemoryResourceNotificationState::High,
-            (false, false) => MemoryResourceNotificationState::Neutral,
-            (true, true) => {
-                return OptionalTelemetrySignal::failed(
-                    observed_monotonic_millis,
-                    CONTRADICTORY_NOTIFICATION_ERROR_CODE,
-                );
-            }
-        };
-        OptionalTelemetrySignal::supported(observed_monotonic_millis, state)
+    fn collect(&self) -> Option<MemoryResourceNotificationState> {
+        let (low, high) = self.handles?;
+        match (self.api.query(low).ok()?, self.api.query(high).ok()?) {
+            (true, false) => Some(MemoryResourceNotificationState::Low),
+            (false, true) => Some(MemoryResourceNotificationState::High),
+            (false, false) => Some(MemoryResourceNotificationState::Neutral),
+            // Both signalled contradicts the API; report nothing.
+            (true, true) => None,
+        }
     }
 }
 
 impl<A: MemoryResourceNotificationApi> Drop for MemoryResourceNotificationCollector<A> {
     fn drop(&mut self) {
-        if let MemoryResourceNotificationHandles::Ready { low, high } = self.handles {
+        if let Some((low, high)) = self.handles {
             self.api.close(low);
             self.api.close(high);
         }
-    }
-}
-
-const FALLBACK_NOTIFICATION_ERROR_CODE: u32 = 31;
-const CONTRADICTORY_NOTIFICATION_ERROR_CODE: u32 = 13;
-
-fn normalize_error_code(error_code: u32) -> u32 {
-    if error_code == 0 {
-        FALLBACK_NOTIFICATION_ERROR_CODE
-    } else {
-        error_code
     }
 }
 
@@ -633,11 +474,9 @@ impl MemoryResourceNotificationApi for WindowsMemoryResourceNotificationApi {
 
 #[cfg(windows)]
 fn last_windows_error_code() -> u32 {
-    normalize_error_code(
-        std::io::Error::last_os_error()
-            .raw_os_error()
-            .unwrap_or_default() as u32,
-    )
+    std::io::Error::last_os_error()
+        .raw_os_error()
+        .unwrap_or_default() as u32
 }
 
 #[cfg(windows)]
@@ -796,15 +635,12 @@ mod tests {
         });
         let collector = MemoryResourceNotificationCollector::new(api);
 
-        for (monotonic, expected) in [
-            (10, MemoryResourceNotificationState::Neutral),
-            (20, MemoryResourceNotificationState::Low),
-            (30, MemoryResourceNotificationState::High),
+        for expected in [
+            MemoryResourceNotificationState::Neutral,
+            MemoryResourceNotificationState::Low,
+            MemoryResourceNotificationState::High,
         ] {
-            assert_eq!(
-                collector.collect(monotonic),
-                OptionalTelemetrySignal::supported(monotonic, expected)
-            );
+            assert_eq!(collector.collect(), Some(expected));
         }
         drop(collector);
         assert_eq!(
@@ -821,11 +657,7 @@ mod tests {
         });
         let collector = MemoryResourceNotificationCollector::new(api);
 
-        assert_eq!(collector.capability(), TelemetryCapability::Supported);
-        assert_eq!(
-            collector.collect(10),
-            OptionalTelemetrySignal::failed(10, 5)
-        );
+        assert_eq!(collector.collect(), None);
         drop(collector);
         assert_eq!(
             state.lock().expect("notification fixture lock").closed,
@@ -843,17 +675,11 @@ mod tests {
         });
         let collector = MemoryResourceNotificationCollector::new(api);
 
+        assert_eq!(collector.collect(), None);
+        assert_eq!(collector.collect(), None);
         assert_eq!(
-            collector.collect(10),
-            OptionalTelemetrySignal::failed(10, FALLBACK_NOTIFICATION_ERROR_CODE)
-        );
-        assert_eq!(
-            collector.collect(20),
-            OptionalTelemetrySignal::failed(20, CONTRADICTORY_NOTIFICATION_ERROR_CODE)
-        );
-        assert_eq!(
-            collector.collect(30),
-            OptionalTelemetrySignal::supported(30, MemoryResourceNotificationState::High)
+            collector.collect(),
+            Some(MemoryResourceNotificationState::High)
         );
     }
 
@@ -861,12 +687,8 @@ mod tests {
     #[test]
     fn native_notification_api_reports_a_supported_categorical_state() {
         let collector = native_memory_resource_notifications();
-        let observation = collector.collect(1);
-
-        assert_eq!(collector.capability(), TelemetryCapability::Supported);
-        assert_eq!(observation.status, TelemetrySignalStatus::Supported);
         assert!(matches!(
-            observation.value,
+            collector.collect(),
             Some(
                 MemoryResourceNotificationState::Low
                     | MemoryResourceNotificationState::Neutral
@@ -895,16 +717,13 @@ mod tests {
     }
 
     #[test]
-    fn atomic_publisher_handoffs_complete_records_with_bounded_retention() {
+    fn atomic_publisher_replaces_the_record_whole() {
         let path = std::env::temp_dir().join(format!(
             "virtio-mem-raw-telemetry-{}-atomic.jsonl",
             std::process::id()
         ));
-        for suffix in ["", ".1", ".2", ".3"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
-        let mut publisher = AtomicRawTelemetryPublisher::with_retention(&path, 2);
-        for sequence in 0..4 {
+        let mut publisher = AtomicRawTelemetryPublisher::new(&path, Duration::from_secs(1));
+        for sequence in 0..3 {
             let envelope = RawTelemetryEnvelope::new(
                 "guest",
                 "VirtioMemService",
@@ -914,55 +733,15 @@ mod tests {
                 sequence,
                 snapshot(2 * GIB, 15 * GIB),
             );
-            publisher.publish(&envelope).expect("atomic publish");
+            publisher
+                .publish(&envelope, &StopSignal::new())
+                .expect("atomic publish");
         }
-        let current: RawTelemetryEnvelope = serde_json::from_str(
-            std::fs::read_to_string(&path)
-                .expect("current record")
-                .trim(),
-        )
-        .expect("complete JSON");
-        let previous: RawTelemetryEnvelope = serde_json::from_str(
-            std::fs::read_to_string(format!("{}.1", path.display()))
-                .expect("previous record")
-                .trim(),
-        )
-        .expect("complete retained JSON");
-        assert_eq!(current.sequence, 3);
-        assert_eq!(previous.sequence, 2);
-        assert!(std::fs::metadata(format!("{}.3", path.display())).is_err());
-        for suffix in ["", ".1", ".2"] {
-            std::fs::remove_file(format!("{}{suffix}", path.display())).expect("remove fixture");
-        }
-    }
-
-    #[test]
-    fn unusable_diagnostic_backup_does_not_block_current_publication() {
-        let root =
-            std::env::temp_dir().join(format!("virtio-backup-failure-{}", std::process::id()));
-        let path = root.join("telemetry.json");
-        std::fs::create_dir_all(root.join("telemetry.json.1")).unwrap();
-        let envelope = RawTelemetryEnvelope::new(
-            "guest",
-            "service",
-            "session",
-            1000,
-            10,
-            0,
-            snapshot(2 * GIB, 15 * GIB),
-        );
-        let mut publisher = AtomicRawTelemetryPublisher::with_retention(&path, 1);
-        publisher.publish(&envelope).unwrap();
-        publisher
-            .publish(&RawTelemetryEnvelope {
-                sequence: 1,
-                ..envelope
-            })
-            .unwrap();
         let current: RawTelemetryEnvelope =
-            serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        assert_eq!(current.sequence, 1);
-        std::fs::remove_dir_all(root).unwrap();
+            serde_json::from_slice(&std::fs::read(&path).expect("current record"))
+                .expect("complete JSON");
+        assert_eq!(current.sequence, 2);
+        std::fs::remove_file(path).expect("remove fixture");
     }
 
     #[test]
@@ -1050,13 +829,10 @@ mod tests {
             ..NotificationFixtureState::default()
         });
         let mut collector = MemoryResourceNotificationCollector::new(api);
-        assert_eq!(
-            collector.collect(1).status,
-            virtio_mem_core::TelemetrySignalStatus::Failed
-        );
+        assert_eq!(collector.collect(), None);
         collector.wait(&StopSignal::new(), Duration::ZERO, false, None);
         assert_eq!(
-            collector.collect(2).value,
+            collector.collect(),
             Some(MemoryResourceNotificationState::High)
         );
         drop(collector);

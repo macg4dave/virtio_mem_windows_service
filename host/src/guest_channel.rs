@@ -1,10 +1,9 @@
 //! The host side of the guest channel: bounded reads of the Windows
 //! publication (telemetry plus the guest's unresolved request) and writes of
-//! the host status beside it, over QGA or host-local files.
+//! the host status beside it, over the QEMU guest agent.
 
-use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use virtio_mem_core::{
     host_status_path, HostMemoryStatus, RawTelemetryEnvelope, MAX_HOST_STATUS_BYTES,
@@ -13,7 +12,7 @@ use virtio_mem_core::{
 use crate::qga::{GuestFileReader, GuestFileWriter};
 
 pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
-pub const MAX_RAW_TELEMETRY_FILE_BYTES: u64 = 1024 * 1024;
+pub const MAX_RAW_TELEMETRY_FILE_BYTES: usize = 1024 * 1024;
 
 pub trait UnixClock {
     fn now_unix_millis(&self) -> Result<u64, String>;
@@ -39,17 +38,9 @@ pub trait GuestLink {
     fn publish_status(&self, status: &HostMemoryStatus) -> Result<(), String>;
 }
 
-/// How publication bytes move. Host-local files serve the `file` transport
-/// used for testing; QGA serves a running guest.
-#[derive(Debug)]
-pub enum Transport<Q> {
-    LocalFile,
-    Qga(Q),
-}
-
 #[derive(Debug)]
 pub struct GuestChannel<Q, T = SystemUnixClock> {
-    transport: Transport<Q>,
+    files: Q,
     publication_path: String,
     vm_name: String,
     service_name: String,
@@ -59,11 +50,12 @@ pub struct GuestChannel<Q, T = SystemUnixClock> {
     #[cfg(unix)]
     wake: Option<std::sync::Arc<crate::wake::WakePeer>>,
     last_status: std::cell::RefCell<Option<HostMemoryStatus>>,
+    last_write: std::cell::Cell<Option<Instant>>,
 }
 
 impl<Q> GuestChannel<Q, SystemUnixClock> {
     pub fn new(
-        transport: Transport<Q>,
+        files: Q,
         publication_path: impl Into<String>,
         vm_name: impl Into<String>,
         service_name: impl Into<String>,
@@ -71,7 +63,7 @@ impl<Q> GuestChannel<Q, SystemUnixClock> {
         future_tolerance: Duration,
     ) -> Self {
         Self::with_clock(
-            transport,
+            files,
             publication_path,
             vm_name,
             service_name,
@@ -90,7 +82,7 @@ impl<Q, T> GuestChannel<Q, T> {
     }
 
     pub fn with_clock(
-        transport: Transport<Q>,
+        files: Q,
         publication_path: impl Into<String>,
         vm_name: impl Into<String>,
         service_name: impl Into<String>,
@@ -99,7 +91,7 @@ impl<Q, T> GuestChannel<Q, T> {
         clock: T,
     ) -> Self {
         Self {
-            transport,
+            files,
             publication_path: publication_path.into(),
             vm_name: vm_name.into(),
             service_name: service_name.into(),
@@ -109,24 +101,17 @@ impl<Q, T> GuestChannel<Q, T> {
             #[cfg(unix)]
             wake: None,
             last_status: std::cell::RefCell::new(None),
+            last_write: std::cell::Cell::new(None),
         }
     }
 }
 
 impl<Q: GuestFileReader + GuestFileWriter, T: UnixClock> GuestLink for GuestChannel<Q, T> {
     fn read(&self) -> Result<RawTelemetryEnvelope, String> {
-        let bytes = match &self.transport {
-            Transport::LocalFile => read_local(
-                Path::new(&self.publication_path),
-                MAX_RAW_TELEMETRY_FILE_BYTES,
-            )?,
-            Transport::Qga(files) => files
-                .read_file(
-                    &self.publication_path,
-                    MAX_RAW_TELEMETRY_FILE_BYTES as usize,
-                )
-                .map_err(|error| format!("guest publication unavailable: {error}"))?,
-        };
+        let bytes = self
+            .files
+            .read_file(&self.publication_path, MAX_RAW_TELEMETRY_FILE_BYTES)
+            .map_err(|error| format!("guest publication unavailable: {error}"))?;
         let contents = String::from_utf8(bytes)
             .map_err(|error| format!("guest publication is not valid UTF-8: {error}"))?;
         validate_contents(
@@ -139,19 +124,10 @@ impl<Q: GuestFileReader + GuestFileWriter, T: UnixClock> GuestLink for GuestChan
         )
     }
 
+    /// Writes only a semantic change, or a refresh before the guest would
+    /// consider the last status stale: every write is a guest-agent round
+    /// trip that can collide with the guest's own file access.
     fn publish_status(&self, status: &HostMemoryStatus) -> Result<(), String> {
-        let mut bytes = serde_json::to_vec(status)
-            .map_err(|error| format!("encode host memory status: {error}"))?;
-        bytes.push(b'\n');
-        if bytes.len() > MAX_HOST_STATUS_BYTES {
-            return Err("host memory status exceeds its byte limit".to_owned());
-        }
-        let path = host_status_path(&self.publication_path);
-        match &self.transport {
-            Transport::LocalFile => write_local(Path::new(&path), &bytes),
-            Transport::Qga(files) => files.write_file(&path, &bytes),
-        }?;
-        // Timestamps change every poll, but only semantic changes need a wake.
         let changed = self.last_status.borrow().as_ref().is_none_or(|last| {
             last.requested_bytes != status.requested_bytes
                 || last.current_bytes != status.current_bytes
@@ -159,6 +135,22 @@ impl<Q: GuestFileReader + GuestFileWriter, T: UnixClock> GuestLink for GuestChan
                 || last.device_size_bytes != status.device_size_bytes
                 || last.block_size_bytes != status.block_size_bytes
         });
+        let refresh_due = self
+            .last_write
+            .get()
+            .is_none_or(|written| written.elapsed() >= self.max_age / 3);
+        if !changed && !refresh_due {
+            return Ok(());
+        }
+        let mut bytes = serde_json::to_vec(status)
+            .map_err(|error| format!("encode host memory status: {error}"))?;
+        bytes.push(b'\n');
+        if bytes.len() > MAX_HOST_STATUS_BYTES {
+            return Err("host memory status exceeds its byte limit".to_owned());
+        }
+        self.files
+            .write_file(&host_status_path(&self.publication_path), &bytes)?;
+        self.last_write.set(Some(Instant::now()));
         if changed {
             #[cfg(unix)]
             if let Some(wake) = &self.wake {
@@ -170,21 +162,7 @@ impl<Q: GuestFileReader + GuestFileWriter, T: UnixClock> GuestLink for GuestChan
     }
 }
 
-fn read_local(path: &Path, maximum_bytes: u64) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| file.take(maximum_bytes + 1).read_to_end(&mut bytes))
-        .map_err(|error| format!("guest publication {} unavailable: {error}", path.display()))?;
-    if bytes.len() as u64 > maximum_bytes {
-        return Err(format!(
-            "guest publication {} exceeds {maximum_bytes} byte file limit",
-            path.display()
-        ));
-    }
-    Ok(bytes)
-}
-
-/// Readers must never see a partial status, so replace it by rename.
+/// Replace a host-local file by rename, so readers never see it partial.
 pub(crate) fn write_local(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
     std::fs::write(&temporary, bytes)
@@ -242,7 +220,7 @@ mod tests {
     use std::sync::Mutex;
     use virtio_mem_core::{
         MemoryOperation, MemoryRequest, MemoryResourceNotificationState, MemoryTelemetrySnapshot,
-        OptionalTelemetrySignal, RequestIdentity, TelemetryCapability, MEMORY_REQUEST_VERSION,
+        RequestIdentity, MEMORY_REQUEST_VERSION,
     };
 
     #[derive(Default)]
@@ -293,13 +271,6 @@ mod tests {
         }
     }
 
-    fn path(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "virtio-mem-guest-channel-{name}-{}.jsonl",
-            std::process::id()
-        ))
-    }
-
     fn envelope(session: &str, observed: u64, sequence: u64) -> RawTelemetryEnvelope {
         RawTelemetryEnvelope::new(
             "guest",
@@ -316,24 +287,12 @@ mod tests {
         format!("{}\n", serde_json::to_string(envelope).expect("encode"))
     }
 
-    fn local(path: &Path) -> GuestChannel<FakeGuestFiles, FixedClock> {
-        GuestChannel::with_clock(
-            Transport::LocalFile,
-            path.display().to_string(),
-            "guest",
-            "VirtioMemService",
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            FixedClock(1_000_000),
-        )
-    }
-
     fn qga(publication: Vec<u8>) -> GuestChannel<FakeGuestFiles, FixedClock> {
         GuestChannel::with_clock(
-            Transport::Qga(FakeGuestFiles {
+            FakeGuestFiles {
                 publication,
                 written: Mutex::default(),
-            }),
+            },
             r"C:\ProgramData\VirtioMemService\telemetry.json",
             "guest",
             "VirtioMemService",
@@ -344,30 +303,20 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_latest_fresh_matching_record_over_either_transport() {
-        let path = path("fresh");
+    fn reads_the_latest_fresh_matching_record() {
         let latest = envelope("session-a", 995_000, 1);
-        std::fs::write(
-            &path,
-            format!(
-                "{}{}",
-                line(&envelope("session-a", 900_000, 0)),
-                line(&latest)
-            ),
-        )
-        .expect("write fixture");
-        assert_eq!(local(&path).read(), Ok(latest.clone()));
-        assert_eq!(qga(line(&latest).into_bytes()).read(), Ok(latest));
-        std::fs::remove_file(path).expect("remove fixture");
+        let publication = format!(
+            "{}{}",
+            line(&envelope("session-a", 900_000, 0)),
+            line(&latest)
+        );
+        assert_eq!(qga(publication.into_bytes()).read(), Ok(latest));
     }
 
     #[test]
     fn carries_the_guest_request_and_native_signals_uninterpreted() {
         let mut current = envelope("session-a", 995_000, 0);
-        let native = current.windows_native.as_mut().expect("extension");
-        native.capabilities.memory_resource_notifications = TelemetryCapability::Supported;
-        native.memory_resource_notifications =
-            OptionalTelemetrySignal::supported(10, MemoryResourceNotificationState::Low);
+        current.native_pressure = Some(MemoryResourceNotificationState::Low);
         current.request = Some(MemoryRequest {
             version: MEMORY_REQUEST_VERSION,
             identity: RequestIdentity {
@@ -413,16 +362,11 @@ mod tests {
             ),
             (
                 "oversized-file",
-                "\n".repeat(MAX_RAW_TELEMETRY_FILE_BYTES as usize + 1),
+                "\n".repeat(MAX_RAW_TELEMETRY_FILE_BYTES + 1),
             ),
         ] {
-            assert!(qga(contents.clone().into_bytes()).read().is_err(), "{name}");
-            let path = path(name);
-            std::fs::write(&path, contents).expect("write fixture");
-            assert!(local(&path).read().is_err(), "{name}");
-            std::fs::remove_file(path).expect("remove fixture");
+            assert!(qga(contents.into_bytes()).read().is_err(), "{name}");
         }
-        assert!(local(&path("absent")).read().is_err());
     }
 
     #[test]
@@ -441,10 +385,16 @@ mod tests {
         };
         let channel = qga(Vec::new());
         channel.publish_status(&status).expect("QGA status");
-        let Transport::Qga(files) = &channel.transport else {
-            unreachable!("fixture uses QGA");
+        // Unchanged within the refresh interval: no second write.
+        channel.publish_status(&status).expect("QGA status");
+        let changed = HostMemoryStatus {
+            current_bytes: 2 << 20,
+            requested_bytes: 2 << 20,
+            ..status.clone()
         };
-        let written = files.written.lock().expect("written");
+        channel.publish_status(&changed).expect("QGA status");
+        let written = channel.files.written.lock().expect("written");
+        assert_eq!(written.len(), 2);
         assert_eq!(
             written[0].0,
             r"C:\ProgramData\VirtioMemService\telemetry.json.host-status"
@@ -453,16 +403,6 @@ mod tests {
             serde_json::from_slice::<HostMemoryStatus>(&written[0].1).expect("status"),
             status
         );
-
-        let path = path("status");
-        local(&path).publish_status(&status).expect("local status");
-        let local_status = PathBuf::from(host_status_path(&path.display().to_string()));
-        let bytes = std::fs::read(&local_status).expect("local status file");
-        assert!(bytes.ends_with(b"\n"));
-        assert_eq!(
-            serde_json::from_slice::<HostMemoryStatus>(&bytes).expect("status"),
-            status
-        );
-        std::fs::remove_file(local_status).expect("remove status");
+        assert!(written[1].1.ends_with(b"\n"));
     }
 }

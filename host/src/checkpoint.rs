@@ -457,7 +457,6 @@ mod tests {
             convergence_timeout: Duration::from_secs(300),
             virsh_binary: "virsh".to_owned(),
             raw_telemetry_path: "telemetry.jsonl".to_owned(),
-            raw_telemetry_transport: crate::config::RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
             raw_telemetry_future_tolerance: Duration::from_secs(5),

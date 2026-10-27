@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::memory_request::{
-    valid_identity, HostMemoryStatus, MemoryOperation, MemoryOutcome, MemoryRequest, MemoryResult,
+    valid_identity, HostMemoryStatus, MemoryOperation, MemoryRequest, MemoryResult,
     RequestIdentity, MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
 };
 use crate::{
@@ -28,73 +28,7 @@ pub struct GuestMemoryPolicy {
     /// direction, never supplies geometry for a new request.
     pub host_status_max_age_millis: u64,
     pub request_lifetime_millis: u64,
-    /// After a removal that falls short, removals pause for one history
-    /// window; each removal in a row that returns nothing doubles the pause,
-    /// up to this many windows. viomem cannot evacuate the oldest plugged
-    /// memory, so an idle guest would otherwise ask for it every window.
-    /// (VIOMEM WORKAROUND: "returns nothing" currently also covers a removal
-    /// that returns only a sliver; see `viomem_poor_removal`.)
-    pub max_removal_pause_windows: u32,
 }
-
-// =========================================================================
-// VIOMEM WORKAROUND START: removal window
-//
-// Unpatched viomem driver bug: each removal only tries a window that starts
-// at the LOWEST plugged block and is `plugged - requested` bytes long. New
-// plugs only go above the highest plugged block. After a release and
-// regrowth, the bottom of the device holds memory Windows cannot evacuate
-// (about 1.5 GiB on win11_gpu), and every removal window starts there. On
-// 27 Oct 2026 (.artifacts/metrics/win11_gpu-20261027T184144Z) an idle guest
-// with 17 GiB available asked for 3 GiB seven times and got back
-// 352/0/8/8/72/0/0 MiB. The 8-72 MiB results also reset the zero-byte
-// backoff, so it retried every ~11 s.
-//
-// The workaround has three parts, each marked "VIOMEM WORKAROUND" where it is
-// used:
-//   1. A removal that returns under 1/VIOMEM_POOR_REMOVAL_DIVISOR of its
-//      request counts as returning nothing for the backoff
-//      (`viomem_poor_removal`).
-//   2. While that streak lasts, the next removal asks for the largest window
-//      Windows accepts, to reach past the stuck bottom zone
-//      (`viomem_escalated_shrink_step`).
-//   3. Movement from our own in-flight removal does not count as a layout
-//      change that ends the streak.
-//
-// TO REMOVE once a patched viomem is deployed: delete this block and the
-// marked lines in `GuestRequester::poll`. Then restore
-// `resolved.actual_bytes == 0` as the zero-removal test and pass
-// `&self.policy` straight to `plan_request`. Part 3 is harmless to keep.
-// =========================================================================
-
-/// A removal returning less than `1 / VIOMEM_POOR_REMOVAL_DIVISOR` of its
-/// request counts as returning nothing.
-const VIOMEM_POOR_REMOVAL_DIVISOR: u64 = 10;
-
-/// Upper bound on one escalated removal. viomem passes the window to Windows
-/// in a single MDL, which cannot describe 4 GiB or more.
-const VIOMEM_MAX_REMOVAL_WINDOW_BYTES: u64 = 4 << 30;
-
-/// A short removal that returned (almost) nothing, zero included.
-fn viomem_poor_removal(result: &MemoryResult) -> bool {
-    result
-        .actual_bytes
-        .saturating_mul(VIOMEM_POOR_REMOVAL_DIVISOR)
-        < result.request.bytes
-}
-
-/// The largest block-aligned removal window below the MDL limit, never
-/// smaller than the configured step.
-fn viomem_escalated_shrink_step(policy: &GuestMemoryPolicy, block_size_bytes: u64) -> u64 {
-    if block_size_bytes == 0 {
-        return policy.shrink_step_bytes;
-    }
-    ((VIOMEM_MAX_REMOVAL_WINDOW_BYTES - 1) / block_size_bytes * block_size_bytes)
-        .max(policy.shrink_step_bytes)
-}
-
-// VIOMEM WORKAROUND END: removal window
-// =========================================================================
 
 impl GuestMemoryPolicy {
     pub fn validate(&self) -> Result<(), String> {
@@ -104,9 +38,6 @@ impl GuestMemoryPolicy {
             || self.host_status_max_age_millis == 0
         {
             return Err("guest policy steps and status age must be positive".to_owned());
-        }
-        if self.max_removal_pause_windows == 0 {
-            return Err("max_removal_pause_windows must be at least 1".to_owned());
         }
         if self.request_lifetime_millis == 0
             || self.request_lifetime_millis > MAX_REQUEST_LIFETIME_MILLIS
@@ -187,13 +118,6 @@ pub struct GuestRequester {
     service_name: String,
     session_id: String,
     next_sequence: u64,
-    /// Monotonic time before which no removal is requested, after the guest
-    /// could not return all that a previous removal asked for.
-    remove_paused_until_millis: Option<u64>,
-    /// Removals in a row that returned nothing, and the allocation they left.
-    /// Any other allocation means the layout changed and the streak ends.
-    zero_removals: u32,
-    zero_removal_at_bytes: Option<u64>,
 }
 
 impl GuestRequester {
@@ -232,9 +156,6 @@ impl GuestRequester {
             service_name: service_name.to_owned(),
             session_id: session_id.to_owned(),
             next_sequence: 0,
-            remove_paused_until_millis: None,
-            zero_removals: 0,
-            zero_removal_at_bytes: None,
         })
     }
 
@@ -270,7 +191,6 @@ impl GuestRequester {
     ) -> Result<GuestDecision, String> {
         let native_low = sample.native_pressure == Some(MemoryResourceNotificationState::Low);
         let now = sample.observed_unix_millis;
-        let monotonic = sample.monotonic_millis;
         let status = status.filter(|status| {
             status
                 .validate_for(&self.vm_name, &self.service_name)
@@ -285,27 +205,6 @@ impl GuestRequester {
         // every bounded removal step would wait a full window again. A
         // convergence longer than the maximum gap still restarts it.
         let converged = fresh.filter(|status| status.requested_bytes == status.current_bytes);
-        // VIOMEM WORKAROUND START (part 3): the host settles a stalled removal
-        // at whatever it reached, a poll or more before publishing the
-        // result. That movement is ours, and its result updates the streak.
-        // Without this, a poor removal that moved a few MiB would end the
-        // streak before its own result was counted. Harmless to keep after
-        // the driver is patched.
-        let own_removal_in_flight = self
-            .state
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.operation == MemoryOperation::Remove);
-        // VIOMEM WORKAROUND END (part 3)
-        if let (Some(status), Some(at), false) =
-            (converged, self.zero_removal_at_bytes, own_removal_in_flight)
-        {
-            if status.current_bytes != at {
-                self.zero_removals = 0;
-                self.zero_removal_at_bytes = None;
-                self.remove_paused_until_millis = None;
-            }
-        }
         if fresh.is_none()
             || (converged.is_none()
                 && sample.native_pressure != Some(MemoryResourceNotificationState::High))
@@ -338,29 +237,6 @@ impl GuestRequester {
                     resolved: None,
                 });
             };
-            if pending.operation == MemoryOperation::Remove
-                && resolved.outcome != MemoryOutcome::Completed
-            {
-                // VIOMEM WORKAROUND (part 1): a sliver counts as nothing.
-                // Patched driver: restore `resolved.actual_bytes == 0`.
-                if viomem_poor_removal(&resolved) {
-                    self.zero_removals = self.zero_removals.saturating_add(1);
-                    self.zero_removal_at_bytes = status.map(|status| status.current_bytes);
-                } else {
-                    self.zero_removals = 0;
-                    self.zero_removal_at_bytes = None;
-                }
-                let windows = 1u64
-                    .checked_shl(self.zero_removals)
-                    .unwrap_or(u64::MAX)
-                    .min(u64::from(self.policy.max_removal_pause_windows));
-                let pause = self
-                    .policy
-                    .target
-                    .history_window_millis
-                    .saturating_mul(windows);
-                self.remove_paused_until_millis = Some(monotonic.saturating_add(pause));
-            }
             // Reassess with the next sample rather than chaining a new delta
             // onto this resolution.
             self.state.pending = None;
@@ -384,28 +260,10 @@ impl GuestRequester {
                     .min(estimate.effective_maximum_bytes),
             );
         }
-        // VIOMEM WORKAROUND START (part 2): after a poor removal, ask for the
-        // largest window Windows accepts. viomem starts every window at the
-        // lowest plugged block, so only a longer window gets past the
-        // memory Windows cannot evacuate. The desired target and safe floor
-        // in `plan_request` still bound it. Patched driver: delete this block
-        // and pass `&self.policy` to `plan_request`.
-        let mut policy = self.policy;
-        if self.zero_removals > 0 {
-            policy.shrink_step_bytes =
-                viomem_escalated_shrink_step(&self.policy, status.block_size_bytes);
-        }
-        // VIOMEM WORKAROUND END (part 2)
-        let Some((operation, bytes)) = plan_request(&estimate, status.device(), &policy)? else {
+        let Some((operation, bytes)) = plan_request(&estimate, status.device(), &self.policy)?
+        else {
             return Ok(Self::hold());
         };
-        if operation == MemoryOperation::Remove
-            && self
-                .remove_paused_until_millis
-                .is_some_and(|until| monotonic < until)
-        {
-            return Ok(Self::hold());
-        }
         // After a wall-clock rollback, wait until it passes the watermark.
         if now <= self.state.last_issued_unix_millis {
             return Ok(Self::hold());
@@ -453,6 +311,7 @@ impl GuestRequester {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory_request::MemoryOutcome;
     use crate::MemoryTelemetrySnapshot;
 
     const MIB: u64 = 1024 * 1024;
@@ -474,7 +333,6 @@ mod tests {
             shrink_step_bytes: 256 * MIB,
             host_status_max_age_millis: 30_000,
             request_lifetime_millis: 20_000,
-            max_removal_pause_windows: 16,
         }
     }
 
@@ -711,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn reclaim_waits_for_history_and_pauses_after_a_short_removal() {
+    fn reclaim_waits_for_the_history_window() {
         let mut guest = requester(GuestRequestState::default());
         // 4 GiB fixed + 8 GiB device with 10 GiB available: demand is low.
         let mut second = 1;
@@ -731,32 +589,6 @@ mod tests {
         assert!(second > 60, "reclaim must wait for the history window");
         assert_eq!(request.operation, MemoryOperation::Remove);
         assert_eq!(request.bytes, 256 * MIB);
-
-        second += 1;
-        let short = MemoryResult {
-            request,
-            outcome: MemoryOutcome::Partial,
-            actual_bytes: 128 * MIB,
-            observed_unix_millis: 1_000_000 + second * 1000,
-            reason: None,
-        };
-        let current = 8 * GIB - 128 * MIB;
-        guest
-            .poll(
-                sample(second, 10 * GIB, 12 * GIB - 128 * MIB),
-                Some(&status(second, current, Some(short))),
-            )
-            .unwrap();
-        second += 10;
-        assert_eq!(
-            guest
-                .poll(
-                    sample(second, 10 * GIB, 12 * GIB - 128 * MIB),
-                    Some(&status(second, current, None))
-                )
-                .unwrap(),
-            GuestRequester::hold()
-        );
     }
 
     #[test]
@@ -856,171 +688,6 @@ mod tests {
                 .unwrap(),
             GuestRequester::hold()
         );
-    }
-
-    #[test]
-    fn zero_byte_removals_back_off_until_the_allocation_changes() {
-        // 4 GiB fixed + 8 GiB device with 10 GiB available: demand is low.
-        let mut guest = requester(GuestRequestState::default());
-        let window = policy().target.history_window_millis / 1000;
-        let current = 8 * GIB;
-        let mut second = 1;
-        // Seconds between a zero-byte result and the next removal request.
-        let mut gaps = Vec::new();
-        let mut resolved_at = None;
-        while gaps.len() < 6 {
-            assert!(second < 200 * window, "removal never retried");
-            let decision = guest
-                .poll(
-                    sample(second, 10 * GIB, 4 * GIB + current),
-                    Some(&status(second, current, None)),
-                )
-                .unwrap();
-            if let Some(request) = decision.request {
-                if let Some(at) = resolved_at.take() {
-                    gaps.push(second - at);
-                }
-                second += 1;
-                let nothing = MemoryResult {
-                    request,
-                    outcome: MemoryOutcome::Partial,
-                    actual_bytes: 0,
-                    observed_unix_millis: 1_000_000 + second * 1000,
-                    reason: None,
-                };
-                guest
-                    .poll(
-                        sample(second, 10 * GIB, 4 * GIB + current),
-                        Some(&status(second, current, Some(nothing))),
-                    )
-                    .unwrap();
-                resolved_at = Some(second);
-            }
-            second += 5;
-        }
-        // 2, 4, 8, then 16 windows (capped), each within one poll interval.
-        for (gap, windows) in gaps.iter().zip([2, 4, 8, 16, 16, 16]) {
-            assert!(
-                (windows * window..windows * window + 6).contains(gap),
-                "gap {gap}s, expected {windows} windows"
-            );
-        }
-
-        // Growth since the last zero-byte removal ends the streak and pause.
-        let mut guest = requester(GuestRequestState::default());
-        let mut second = 1;
-        let request = loop {
-            if let Some(request) = guest
-                .poll(
-                    sample(second, 10 * GIB, 4 * GIB + current),
-                    Some(&status(second, current, None)),
-                )
-                .unwrap()
-                .request
-            {
-                break request;
-            }
-            second += 5;
-        };
-        second += 1;
-        let nothing = MemoryResult {
-            request,
-            outcome: MemoryOutcome::Partial,
-            actual_bytes: 0,
-            observed_unix_millis: 1_000_000 + second * 1000,
-            reason: None,
-        };
-        guest
-            .poll(
-                sample(second, 10 * GIB, 4 * GIB + current),
-                Some(&status(second, current, Some(nothing))),
-            )
-            .unwrap();
-        let grown = current + GIB;
-        let start = second;
-        let request = loop {
-            second += 5;
-            assert!(
-                second - start < 2 * window,
-                "growth did not clear the pause"
-            );
-            if let Some(request) = guest
-                .poll(
-                    sample(second, 11 * GIB, 4 * GIB + grown),
-                    Some(&status(second, grown, None)),
-                )
-                .unwrap()
-                .request
-            {
-                break request;
-            }
-        };
-        assert_eq!(request.operation, MemoryOperation::Remove);
-    }
-
-    // VIOMEM WORKAROUND test: delete with the workaround.
-    #[test]
-    fn viomem_workaround_slivers_back_off_and_widen_the_next_window() {
-        // 4 GiB fixed + 16 GiB device with 18 GiB available: large surplus.
-        let mut guest = requester(GuestRequestState::default());
-        let window = policy().target.history_window_millis / 1000;
-        let mut current = 16 * GIB;
-        let mut second = 1;
-        let mut requests = Vec::new();
-        let mut gaps = Vec::new();
-        let mut resolved_at = None;
-        while requests.len() < 3 {
-            assert!(second < 200 * window, "removal never retried");
-            let decision = guest
-                .poll(
-                    sample(second, 18 * GIB, 4 * GIB + current),
-                    Some(&status(second, current, None)),
-                )
-                .unwrap();
-            if let Some(request) = decision.request {
-                if let Some(at) = resolved_at.take() {
-                    gaps.push(second - at);
-                }
-                // As in the win11_gpu log: the host settles at 8 MiB less
-                // and publishes the result on a later poll.
-                current -= 8 * MIB;
-                second += 1;
-                let held = guest
-                    .poll(
-                        sample(second, 18 * GIB, 4 * GIB + current),
-                        Some(&status(second, current, None)),
-                    )
-                    .unwrap();
-                assert_eq!(held.request.as_ref(), Some(&request));
-                second += 1;
-                let sliver = MemoryResult {
-                    request: request.clone(),
-                    outcome: MemoryOutcome::Partial,
-                    actual_bytes: 8 * MIB,
-                    observed_unix_millis: 1_000_000 + second * 1000,
-                    reason: None,
-                };
-                guest
-                    .poll(
-                        sample(second, 18 * GIB, 4 * GIB + current),
-                        Some(&status(second, current, Some(sliver))),
-                    )
-                    .unwrap();
-                resolved_at = Some(second);
-                requests.push(request);
-            }
-            second += 5;
-        }
-        // The configured step first, then the widest window below 4 GiB.
-        let widths: Vec<_> = requests.iter().map(|request| request.bytes).collect();
-        assert_eq!(widths, [256 * MIB, 4 * GIB - 2 * MIB, 4 * GIB - 2 * MIB]);
-        // Slivers double the pause like zero-byte results.
-        for (gap, windows) in gaps.iter().zip([2, 4]) {
-            assert!(
-                (windows * window..windows * window + 6).contains(gap),
-                "gap {gap}s, expected {windows} windows"
-            );
-        }
     }
 
     #[test]

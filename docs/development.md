@@ -73,10 +73,7 @@ Reclaim uses exactly those physical/commit observations, plus native High:
   entry bound cannot shorten the qualification window under rapid polling.
   Wall-clock changes still affect host-status freshness and request issuance,
   but cannot create fictitious reclaim history.
-- An incomplete/refused removal pauses further removals for a full window;
-  consecutive removals that return nothing double it, up to
-  `max_removal_pause_windows` (see below).
-  A restart starts with cold history. An unresolved durable request is never
+- A restart starts with cold history. An unresolved durable request is never
   replaced, including by a Low observation: serial ownership and bounded
   removal steps prevent overlapping commands; host convergence/settlement
   resolves the existing request before the guest can issue growth.
@@ -109,22 +106,12 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   terminal result for that exact request arrives. It plans a new delta only from
   status no further than `host_status_max_age_millis` from its clock. Demand
   rises immediately; reclaim waits for gap-free history and hysteresis and
-  never passes the safe floor. After a partial or refused removal, removals
-  pause for one history window. Each consecutive removal that returns 0 bytes
-  doubles the pause, up to `max_removal_pause_windows`: viomem never evacuates the oldest
-  plugged memory, and on `win11_gpu` an idle guest otherwise asked for the
-  last 1.24 GiB every window and got nothing back. Any change in the
-  converged allocation since that result (growth, a reset) ends the streak
-  and the pause. Estimator history and the backoff are process-local, so a
-  restarted service waits a full window before reclaiming.
-- **Temporary viomem workaround** (`VIOMEM WORKAROUND` markers in
-  `guest_policy.rs`; remove once a patched driver is deployed). A removal
-  that returns under 10% of its request counts as a zero result. Movement
-  from our own in-flight removal does not end the streak. While the streak
-  lasts, the next removal asks for the widest block-aligned window below
-  4 GiB. On 27 October, after regrowth, 3 GiB removals from an idle
-  `win11_gpu` returned 0–352 MiB, and the slivers reset the backoff, so the
-  guest retried every ~11 s.
+  never passes the safe floor. There is no removal backoff: the host holds a
+  removal until Windows completes it, so a removal Windows cannot evacuate
+  simply occupies the request slot rather than being re-asked. It ends short
+  only when Windows reports Low, and a Low guest does not reclaim. Estimator
+  history is process-local, so a restarted service waits a full window
+  before reclaiming.
 - **Linux** admits a request only if it is fresh, from the configured guest,
   advances the issue/sequence watermark and no earlier request is unresolved.
   A retransmission of an admitted request is recognised before expiry checks
@@ -141,7 +128,7 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
 - Growth requests cover the entire aligned shortage up to the VM/device
   maximum. The 1 GiB policy increment is only the minimum response to native
   Low pressure; it no longer caps a request. Reclaim requires 1 second of
-  continuous qualifying High observations, and retains safe floors and backoff.
+  continuous qualifying High observations, and retains safe floors.
 - Grants: removals take `min(bytes, current)`. Additions take the least of the
   request, the device ceiling (full size, block aligned), the member's
   pool ceiling (free bytes, larger `priority` first, configuration order on
@@ -225,7 +212,7 @@ units, migration and adding a VM.
 There is no configured fixed-RAM base. The guest derives device bounds from
 `min_ram`, `max_ram` and each live sample; the host independently bounds grants.
 Device size/block size remain live geometry. Sampling, steps, reserve/floor
-pairs, reclaim hysteresis/history and backoff use shared built-in defaults;
+pairs and reclaim hysteresis/history use shared built-in defaults;
 polling also determines freshness, request expiry and sample-gap bounds.
 Per-VM checkpoint and attestation paths are derived from the validated name.
 The resize sink requires its compatibility source explicitly; fixed evidence
@@ -235,8 +222,11 @@ attestation inputs rather than selecting files from previous test runs.
 Both diagnostic outputs are entirely optional: no path means no diagnostic
 writes, and output errors cannot stop memory control. Required policy sampling
 and request/reply traffic use a built-in channel path (historically named
-`telemetry.json`), independently of optional telemetry. Control publication
-retention is disabled; diagnostics cannot alias control files, config or binary.
+`telemetry.json`), independently of optional telemetry. The publication is
+replaced atomically every poll without a disk flush; only the request state is
+written durably. Diagnostics cannot alias control files, config or binary.
+The host rewrites `.host-status` over the guest agent only when its device
+state or result changes, or after a third of the freshness bound.
 
 One controller unit `virtio-mem-host@INSTANCE.service` runs
 `/etc/virtio-mem-host/host_list.toml` with sibling settings files. Never run
@@ -270,17 +260,20 @@ refused every check and the controller could not start. Resizes,
 suspend/resume, version and QMP evidence still run `virsh`. Checkpoint paths must be
 absolute without `..`; symlink/hard-link checkpoint files are rejected. The
 daemon and operator mutations lock the libvirt domain UUID, and checkpoint
-writers hold a sidecar file lock. Do not unlink lock files. Stop the controller
-before `resize` or `clear-latch`.
+writers hold a sidecar file lock. Do not unlink lock files. Besides running
+the daemon, the host binary has two operator commands: read-only `status`
+and `clear-latch` (stop the controller first).
 
 Checkpoints are version 2 (journal, intent, latch); any other version is
-refused rather than discarded. Guest telemetry is schema version 3 only.
+refused rather than discarded. Guest telemetry is schema version 4: memory
+counters, Windows' native signal as one optional `native_pressure`
+(`low`/`neutral`/`high`, absent when unreadable) and the pending request.
 Controller status is version 5 and includes the admitted request, its result,
 `observe_only` and a read-only view of the guest input. Use matching host,
 xtask and Windows builds.
 
 Windows loads generated `C:\ProgramData\VirtioMemService\config.json`
-(schema 7, [defined in core](../crates/virtio-mem-core/src/windows_service_config.rs)).
+(schema 8, [defined in core](../crates/virtio-mem-core/src/windows_service_config.rs)).
 It carries derived policy/timing/control details and explicit total-RAM limits;
 edit the source TOML rather than this deployment output. The service validates
 it before startup. Configuration is bounded to 64 KiB; Windows paths use

@@ -23,11 +23,8 @@ pub use controller_status::{
     RecoveryState, CONTROLLER_STATUS_VERSION, MAX_CONTROLLER_STATUS_BYTES,
 };
 pub use demand::{
-    AllocationProvenance, DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot,
-    OptionalTelemetrySignal, PagingActivitySnapshot, RawTelemetryContractMode,
-    RawTelemetryEnvelope, ReusableMemorySnapshot, TelemetryCapability, TelemetrySignalStatus,
-    TelemetrySource, TelemetryWarmup, WindowsNativeTelemetry, WindowsTelemetryCapabilities,
-    RAW_TELEMETRY_VERSION, WINDOWS_NATIVE_TELEMETRY_VERSION,
+    DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot, RawTelemetryEnvelope,
+    RAW_TELEMETRY_VERSION,
 };
 pub use error::VirtioMemError;
 pub use guest_policy::{

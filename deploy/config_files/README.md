@@ -88,16 +88,16 @@ Windows requests and host grants honour these bounds. The underlying VM must
 have enough supported memory capacity; impossible limits fail closed. This
 change does not edit libvirt VM definitions.
 
-Guest reserve/floor thresholds, grow/reclaim steps, reclaim history, hysteresis,
-backoff and stop timeout have conservative built-in defaults. One polling
+Guest reserve/floor thresholds, grow/reclaim steps, reclaim history, hysteresis
+and stop timeout have conservative built-in defaults. One polling
 interval drives host polling and guest sampling; freshness, request lifetime
 and maximum sample gaps follow it. Device size and block size come from live
 state. `/usr/bin/virsh`, the Windows service name and control-file path are
 built in. Per-VM state and attestation paths are derived from the validated name.
 The current memory-policy defaults are: 2 GiB physical/commit reserves,
 1 GiB safety floors, demand-sized growth (at least 1 GiB for native Low
-pressure), 3 GiB reclaim steps, 10-second reclaim
-history, 256 MiB hysteresis, up to 16 backoff windows and 30-second stop timeout.
+pressure), 3 GiB reclaim steps, 1-second reclaim
+history, 256 MiB hysteresis and 30-second stop timeout.
 Freshness/request lifetime is six poll intervals and the maximum sample gap is
 three. Windows service identity is `VirtioMemService`.
 
@@ -142,7 +142,7 @@ configs are backed up. The unit now reads `host_list.toml`. Run one controller
 for the host list: separate controllers cannot share pool accounting.
 
 `make win11-deploy` reads the selected `<vm_name>_settings.toml` and sibling
-global settings and generates Windows runtime `config.json` schema 7. This
+global settings and generates Windows runtime `config.json` schema 8. This
 JSON is a deployment output, not another administrator settings file. Deploy
 matching new host and Windows binaries before runtime verification.
 
