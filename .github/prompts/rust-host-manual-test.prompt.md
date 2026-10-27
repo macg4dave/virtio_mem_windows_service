@@ -1,23 +1,15 @@
 ---
 mode: agent
-description: Prepare a bounded manual test of the host controller run with sudo
+description: Prepare and run an authorised bounded host-controller trial
 ---
 
-Goal: `${input:goal:what the test should demonstrate}`
+Goal: `${input:goal:what the trial should demonstrate}`
 
-Do not run anything against the VM until the user approves the exact plan.
-
-1. Build the host binary: `cargo build -p virtio-mem-host --locked`.
-2. Write the plan: VM name, device alias, baseline `requested`/`current` in
-   bytes, block size, target in bytes and KiB, host reserve, timeouts, and the
-   recovery steps if unplug stalls. The daemon sizes RAM in both directions;
-   there is no grow-only mode.
-3. Write a test config file from `host/systemd/virtio-mem-host.toml.example`
-   (set `observe_only = true` for a run that must not resize). Run it under
-   the fake systemd runner, never as an installed unit:
-   `cargo xtask host-run --config FILE --max-run-seconds N --min-host-available-bytes BYTES --sudo`.
-   It stops the daemon at the run limit, on low host memory, or on Ctrl-C,
-   and logs to `.artifacts/host-run/`.
-4. The program does all polling and resizing. Do not run a manual virsh loop.
-5. Once it has run, record the results (convergence time, stalls, final live
-   state) in `PLAN.md`. If this finishes an acceptance step, delete that step.
+1. Read the roadmap's qualification evidence and Development's runner guidance.
+   Prepare the config, bounds and recovery plan required by the operational rules.
+2. Once the exact trial is authorised, use `cargo xtask host-run` with the
+   reviewed config, runtime limit and host-memory floor. Set `observe_only = true`
+   when allocation must remain unchanged.
+3. Inspect logs, convergence times, actual returned memory and final live state.
+   Summarise acceptance evidence in the roadmap and trim the corresponding
+   backlog task. Distinguish interruption from a completed timeout or recovery.
