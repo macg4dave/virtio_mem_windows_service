@@ -1,0 +1,52 @@
+# Copy to /etc/virtio-mem-host/<instance>.toml and replace every "REQUIRED_*"
+# marker from reviewed deployment evidence. The file is refused while any
+# marker remains, and unknown keys are refused. It contains no secrets.
+
+# All operational timing is selected for this deployment. Record the rationale
+# and ensure the service manager stop bound is compatible with these values.
+poll_interval_seconds = "REQUIRED_POLL_INTERVAL_SECONDS"
+command_timeout_seconds = "REQUIRED_COMMAND_TIMEOUT_SECONDS"
+convergence_timeout_seconds = "REQUIRED_CONVERGENCE_TIMEOUT_SECONDS"
+# Growth is refused while host MemAvailable would fall below this.
+host_min_headroom_bytes = "REQUIRED_HOST_HEADROOM_BYTES"
+# Set to true to evaluate and log every decision without ever resizing.
+observe_only = false
+# virsh_binary = "virsh"   # only when the standard executable is not used
+
+# One table per VM. Until the shared pool is wired (PLAN.md Phase 4) the
+# controller serves exactly one VM. Larger priority is served first.
+[[vm]]
+name = "REQUIRED_VM_NAME"
+alias = "REQUIRED_DEVICE_ALIAS"
+priority = "REQUIRED_PRIORITY"
+
+# These byte counts are deployment inputs. Derive device geometry and current
+# allocation from live XML; calibrate policy bounds and reserves for this VM.
+min_memory_bytes = "REQUIRED_MINIMUM_BYTES"
+max_memory_bytes = "REQUIRED_MAXIMUM_BYTES"
+grow_step_bytes = "REQUIRED_GROWTH_QUANTUM_BYTES"
+shrink_step_bytes = "REQUIRED_RECLAIM_QUANTUM_BYTES"
+fixed_visible_base_bytes = "REQUIRED_CALIBRATED_BASE_BYTES"
+physical_reserve_bytes = "REQUIRED_PHYSICAL_RESERVE_BYTES"
+commit_reserve_bytes = "REQUIRED_COMMIT_RESERVE_BYTES"
+safe_floor_physical_reserve_bytes = "REQUIRED_FLOOR_PHYSICAL_RESERVE_BYTES"
+safe_floor_commit_reserve_bytes = "REQUIRED_FLOOR_COMMIT_RESERVE_BYTES"
+reclaim_history_seconds = "REQUIRED_RECLAIM_HISTORY_SECONDS"
+# reclaim_max_gap_seconds defaults to twice the polling interval.
+downward_hysteresis_bytes = "REQUIRED_DOWNWARD_HYSTERESIS_BYTES"
+
+# Start grow-only. Enable reclaim only after live unplug has been qualified
+# for this deployment.
+automatic_windows_shrink = false
+
+# Persistent state paths must be absolute, instance-scoped, and provisioned
+# with the documented least-privilege ownership and ACLs.
+policy_state_path = "/var/lib/virtio-mem-host/state/REQUIRED_INSTANCE-policy.json"
+compatibility_attestation_path = "REQUIRED_ABSOLUTE_ATTESTATION_PATH"
+
+# Windows telemetry. Single quotes keep Windows backslashes literal.
+telemetry_transport = "qga-file"
+telemetry_path = 'REQUIRED_ABSOLUTE_WINDOWS_TELEMETRY_PATH'
+telemetry_service_name = "REQUIRED_WINDOWS_SERVICE_NAME"
+telemetry_max_age_seconds = "REQUIRED_TELEMETRY_MAX_AGE_SECONDS"
+telemetry_future_tolerance_seconds = "REQUIRED_TELEMETRY_FUTURE_TOLERANCE_SECONDS"

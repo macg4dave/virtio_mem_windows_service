@@ -1,20 +1,41 @@
-use std::env;
+use std::collections::BTreeSet;
+use std::path::Path;
 use std::time::Duration;
 
+use serde::Deserialize;
 use thiserror::Error;
 
 /// Unplug must be qualified on the deployment before automatic reclaim is enabled.
 pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = false;
 
+/// Bounds a configuration read; a real file is a few kilobytes.
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HostConfigError {
-    #[error("required environment variable is missing or empty: {0}")]
-    Missing(&'static str),
-    #[error("environment variable {name} must be a positive decimal integer: {value}")]
-    InvalidPositiveInteger { name: &'static str, value: String },
-    #[error("environment variable {name} must be an unsigned decimal integer: {value}")]
-    InvalidUnsignedInteger { name: &'static str, value: String },
-    #[error("VIRTIO_MEM_ALIAS contains unsupported characters")]
+    #[error("read host config {path}: {message}")]
+    Read { path: String, message: String },
+    #[error("host config is invalid TOML or has unknown keys: {0}")]
+    Parse(String),
+    #[error("host config must list at least one [[vm]]")]
+    NoVm,
+    #[error("host config lists {0} VMs; the shared pool is not wired yet, so configure exactly one [[vm]]")]
+    PoolNotWired(usize),
+    #[error("vm {0} is configured more than once")]
+    DuplicateVm(String),
+    #[error("policy_state_path {0} is shared by more than one VM")]
+    SharedPolicyState(String),
+    #[error("vm {vm}: {source}")]
+    Vm {
+        vm: String,
+        #[source]
+        source: Box<HostConfigError>,
+    },
+    #[error("{0} must be non-empty")]
+    Empty(&'static str),
+    #[error("priority must be greater than zero")]
+    InvalidPriority,
+    #[error("alias contains unsupported characters")]
     InvalidAlias,
     #[error("minimum memory must not exceed maximum memory")]
     InvalidMemoryRange,
@@ -22,38 +43,26 @@ pub enum HostConfigError {
     InvalidResizeStep,
     #[error("host-controller durations must be greater than zero")]
     InvalidDuration,
-    #[error("VIRTIO_MEM_DEMAND_SOURCE={0} was removed; only 'raw' telemetry remains")]
-    RetiredDemandSource(String),
-    #[error("VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT must be 'file' or 'qga-file': {0}")]
-    InvalidRawTelemetryTransport(String),
-    #[error("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH must be non-empty")]
-    InvalidAttestationPath,
-    #[error("VIRTIO_MEM_RAW_TELEMETRY_PATH must be non-empty")]
-    InvalidRawTelemetryPath,
-    #[error("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME must be non-empty")]
-    InvalidRawTelemetryServiceName,
-    #[error("VIRTIO_MEM_POLICY_STATE_PATH must be non-empty")]
-    InvalidPolicyStatePath,
-    #[error("VIRTIO_MEM_PRESSURE_POLICY_MODE={0} was removed; only 'legacy' remains. Set VIRTIO_MEM_OBSERVE_ONLY=true for a run that must not resize")]
-    RetiredPressurePolicyMode(String),
     #[error("safe-floor reserves must not exceed normal reserves")]
     InvalidReserveOrder,
     #[error("target policy configuration is invalid: {0}")]
     InvalidTargetPolicy(&'static str),
-    #[error("environment variable {name} must be 'true' or 'false': {value}")]
-    InvalidBoolean { name: &'static str, value: String },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RawTelemetryTransport {
     File,
     QgaFile,
 }
 
+/// One VM's resolved settings: the file's global keys plus its `[[vm]]` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostConfig {
     pub vm_name: String,
     pub alias: String,
+    /// Pool priority; larger is served first. Used once the pool is wired.
+    pub priority: u32,
     pub min_memory_bytes: u64,
     pub max_memory_bytes: u64,
     pub grow_step_bytes: u64,
@@ -83,73 +92,150 @@ pub struct HostConfig {
     pub observe_only: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfigFile {
+    poll_interval_seconds: u64,
+    command_timeout_seconds: u64,
+    convergence_timeout_seconds: u64,
+    host_min_headroom_bytes: u64,
+    #[serde(default = "default_virsh_binary")]
+    virsh_binary: String,
+    #[serde(default)]
+    observe_only: bool,
+    #[serde(default, rename = "vm")]
+    vms: Vec<VmTable>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VmTable {
+    name: String,
+    alias: String,
+    priority: u32,
+    min_memory_bytes: u64,
+    max_memory_bytes: u64,
+    grow_step_bytes: u64,
+    shrink_step_bytes: u64,
+    fixed_visible_base_bytes: u64,
+    physical_reserve_bytes: u64,
+    commit_reserve_bytes: u64,
+    safe_floor_physical_reserve_bytes: u64,
+    safe_floor_commit_reserve_bytes: u64,
+    reclaim_history_seconds: u64,
+    /// Derived from the polling interval when absent.
+    reclaim_max_gap_seconds: Option<u64>,
+    downward_hysteresis_bytes: u64,
+    policy_state_path: String,
+    compatibility_attestation_path: String,
+    #[serde(default = "default_automatic_windows_shrink")]
+    automatic_windows_shrink: bool,
+    telemetry_transport: RawTelemetryTransport,
+    telemetry_path: String,
+    telemetry_service_name: String,
+    telemetry_max_age_seconds: u64,
+    telemetry_future_tolerance_seconds: u64,
+}
+
+fn default_virsh_binary() -> String {
+    "virsh".to_owned()
+}
+
+fn default_automatic_windows_shrink() -> bool {
+    DEFAULT_AUTOMATIC_WINDOWS_SHRINK
+}
+
 impl HostConfig {
-    pub fn from_env() -> Result<Self, HostConfigError> {
-        let vm_name = required("VIRTIO_MEM_VM_NAME")?;
-        let alias = required("VIRTIO_MEM_ALIAS")?;
-        reject_retired_demand_source(
-            env::var_os("VIRTIO_MEM_DEMAND_SOURCE")
-                .map(|value| value.to_string_lossy().into_owned()),
-        )?;
-        let raw_telemetry_transport =
-            parse_raw_telemetry_transport(required("VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT")?)?;
-        reject_retired_pressure_policy_mode(
-            env::var_os("VIRTIO_MEM_PRESSURE_POLICY_MODE")
-                .map(|value| value.to_string_lossy().into_owned()),
-        )?;
-        let poll_interval_seconds = positive("VIRTIO_MEM_POLL_INTERVAL_SECONDS")?;
-        let default_maximum_gap = poll_interval_seconds.checked_mul(2).ok_or_else(|| {
-            HostConfigError::InvalidPositiveInteger {
-                name: "VIRTIO_MEM_RECLAIM_MAX_GAP_SECONDS",
-                value: "derived value overflowed".to_owned(),
+    /// Load every configured VM. Each is validated, and VM names and policy
+    /// state paths must be unique so two controllers never share state.
+    pub fn load(path: &Path) -> Result<Vec<Self>, HostConfigError> {
+        let read_error = |message: String| HostConfigError::Read {
+            path: path.display().to_string(),
+            message,
+        };
+        let length = std::fs::metadata(path)
+            .map_err(|error| read_error(error.to_string()))?
+            .len();
+        if length > MAX_CONFIG_BYTES {
+            return Err(read_error(format!("larger than {MAX_CONFIG_BYTES} bytes")));
+        }
+        let text = std::fs::read_to_string(path).map_err(|error| read_error(error.to_string()))?;
+        Self::parse(&text)
+    }
+
+    /// Load the one VM the controller serves until the shared pool is wired.
+    pub fn load_single(path: &Path) -> Result<Self, HostConfigError> {
+        let mut vms = Self::load(path)?;
+        match vms.len() {
+            1 => Ok(vms.remove(0)),
+            count => Err(HostConfigError::PoolNotWired(count)),
+        }
+    }
+
+    pub fn parse(text: &str) -> Result<Vec<Self>, HostConfigError> {
+        let file: ConfigFile =
+            toml::from_str(text).map_err(|error| HostConfigError::Parse(error.to_string()))?;
+        if file.vms.is_empty() {
+            return Err(HostConfigError::NoVm);
+        }
+        let mut names = BTreeSet::new();
+        let mut state_paths = BTreeSet::new();
+        let mut configs = Vec::with_capacity(file.vms.len());
+        for vm in &file.vms {
+            let config = Self::resolve(&file, vm).map_err(|source| HostConfigError::Vm {
+                vm: vm.name.clone(),
+                source: Box::new(source),
+            })?;
+            if !names.insert(config.vm_name.clone()) {
+                return Err(HostConfigError::DuplicateVm(config.vm_name));
             }
-        })?;
+            if !state_paths.insert(config.policy_state_path.clone()) {
+                return Err(HostConfigError::SharedPolicyState(config.policy_state_path));
+            }
+            configs.push(config);
+        }
+        Ok(configs)
+    }
+
+    fn resolve(file: &ConfigFile, vm: &VmTable) -> Result<Self, HostConfigError> {
+        let reclaim_max_gap_seconds = match vm.reclaim_max_gap_seconds {
+            Some(seconds) => seconds,
+            None => file.poll_interval_seconds.checked_mul(2).ok_or(
+                HostConfigError::InvalidTargetPolicy("derived reclaim maximum gap overflowed"),
+            )?,
+        };
         let config = Self {
-            vm_name,
-            alias,
-            min_memory_bytes: positive("VIRTIO_MEM_MIN_MEMORY_BYTES")?,
-            max_memory_bytes: positive("VIRTIO_MEM_MAX_MEMORY_BYTES")?,
-            grow_step_bytes: positive("VIRTIO_MEM_GROW_STEP_BYTES")?,
-            shrink_step_bytes: positive("VIRTIO_MEM_SHRINK_STEP_BYTES")?,
-            fixed_visible_base_bytes: unsigned("VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES")?,
-            physical_reserve_bytes: positive("VIRTIO_MEM_PHYSICAL_RESERVE_BYTES")?,
-            commit_reserve_bytes: positive("VIRTIO_MEM_COMMIT_RESERVE_BYTES")?,
-            safe_floor_physical_reserve_bytes: positive(
-                "VIRTIO_MEM_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES",
-            )?,
-            safe_floor_commit_reserve_bytes: positive(
-                "VIRTIO_MEM_SAFE_FLOOR_COMMIT_RESERVE_BYTES",
-            )?,
-            reclaim_history: Duration::from_secs(positive("VIRTIO_MEM_RECLAIM_HISTORY_SECONDS")?),
-            reclaim_max_gap: Duration::from_secs(positive_or_derived(
-                "VIRTIO_MEM_RECLAIM_MAX_GAP_SECONDS",
-                default_maximum_gap,
-            )?),
-            downward_hysteresis_bytes: positive("VIRTIO_MEM_DOWNWARD_HYSTERESIS_BYTES")?,
-            policy_state_path: required("VIRTIO_MEM_POLICY_STATE_PATH")?,
-            poll_interval: Duration::from_secs(poll_interval_seconds),
-            command_timeout: Duration::from_secs(positive("VIRTIO_MEM_COMMAND_TIMEOUT_SECONDS")?),
-            convergence_timeout: Duration::from_secs(positive(
-                "VIRTIO_MEM_CONVERGENCE_TIMEOUT_SECONDS",
-            )?),
-            virsh_binary: env::var("VIRTIO_MEM_VIRSH_BINARY")
-                .unwrap_or_else(|_| "virsh".to_owned()),
-            raw_telemetry_path: required("VIRTIO_MEM_RAW_TELEMETRY_PATH")?,
-            raw_telemetry_transport,
-            raw_telemetry_service_name: required("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME")?,
-            raw_telemetry_max_age: Duration::from_secs(positive(
-                "VIRTIO_MEM_RAW_TELEMETRY_MAX_AGE_SECONDS",
-            )?),
-            raw_telemetry_future_tolerance: Duration::from_secs(positive(
-                "VIRTIO_MEM_RAW_TELEMETRY_FUTURE_TOLERANCE_SECONDS",
-            )?),
-            host_min_headroom_bytes: positive("VIRTIO_MEM_HOST_MIN_HEADROOM_BYTES")?,
-            compatibility_attestation_path: required("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH")?,
-            automatic_windows_shrink: optional_bool(
-                "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
-                DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
-            )?,
-            observe_only: optional_bool("VIRTIO_MEM_OBSERVE_ONLY", false)?,
+            vm_name: vm.name.clone(),
+            alias: vm.alias.clone(),
+            priority: vm.priority,
+            min_memory_bytes: vm.min_memory_bytes,
+            max_memory_bytes: vm.max_memory_bytes,
+            grow_step_bytes: vm.grow_step_bytes,
+            shrink_step_bytes: vm.shrink_step_bytes,
+            fixed_visible_base_bytes: vm.fixed_visible_base_bytes,
+            physical_reserve_bytes: vm.physical_reserve_bytes,
+            commit_reserve_bytes: vm.commit_reserve_bytes,
+            safe_floor_physical_reserve_bytes: vm.safe_floor_physical_reserve_bytes,
+            safe_floor_commit_reserve_bytes: vm.safe_floor_commit_reserve_bytes,
+            reclaim_history: Duration::from_secs(vm.reclaim_history_seconds),
+            reclaim_max_gap: Duration::from_secs(reclaim_max_gap_seconds),
+            downward_hysteresis_bytes: vm.downward_hysteresis_bytes,
+            policy_state_path: vm.policy_state_path.clone(),
+            poll_interval: Duration::from_secs(file.poll_interval_seconds),
+            command_timeout: Duration::from_secs(file.command_timeout_seconds),
+            convergence_timeout: Duration::from_secs(file.convergence_timeout_seconds),
+            virsh_binary: file.virsh_binary.clone(),
+            raw_telemetry_path: vm.telemetry_path.clone(),
+            raw_telemetry_transport: vm.telemetry_transport,
+            raw_telemetry_service_name: vm.telemetry_service_name.clone(),
+            raw_telemetry_max_age: Duration::from_secs(vm.telemetry_max_age_seconds),
+            raw_telemetry_future_tolerance: Duration::from_secs(
+                vm.telemetry_future_tolerance_seconds,
+            ),
+            host_min_headroom_bytes: file.host_min_headroom_bytes,
+            compatibility_attestation_path: vm.compatibility_attestation_path.clone(),
+            automatic_windows_shrink: vm.automatic_windows_shrink,
+            observe_only: file.observe_only,
         };
         config.validate()?;
         Ok(config)
@@ -157,7 +243,10 @@ impl HostConfig {
 
     pub fn validate(&self) -> Result<(), HostConfigError> {
         if self.vm_name.trim().is_empty() {
-            return Err(HostConfigError::Missing("VIRTIO_MEM_VM_NAME"));
+            return Err(HostConfigError::Empty("name"));
+        }
+        if self.priority == 0 {
+            return Err(HostConfigError::InvalidPriority);
         }
         if self.alias.is_empty()
             || !self
@@ -167,7 +256,7 @@ impl HostConfig {
         {
             return Err(HostConfigError::InvalidAlias);
         }
-        if self.min_memory_bytes > self.max_memory_bytes {
+        if self.min_memory_bytes == 0 || self.min_memory_bytes > self.max_memory_bytes {
             return Err(HostConfigError::InvalidMemoryRange);
         }
         if self.grow_step_bytes == 0 || self.shrink_step_bytes == 0 {
@@ -181,6 +270,11 @@ impl HostConfig {
         {
             return Err(HostConfigError::InvalidTargetPolicy(
                 "reserves and hysteresis must be positive",
+            ));
+        }
+        if self.host_min_headroom_bytes == 0 {
+            return Err(HostConfigError::InvalidTargetPolicy(
+                "host minimum headroom must be positive",
             ));
         }
         if self.safe_floor_physical_reserve_bytes > self.physical_reserve_bytes
@@ -203,115 +297,21 @@ impl HostConfig {
                 "reclaim maximum gap exceeds history window",
             ));
         }
-        if self.compatibility_attestation_path.trim().is_empty() {
-            return Err(HostConfigError::InvalidAttestationPath);
-        }
-        if self.raw_telemetry_path.trim().is_empty() {
-            return Err(HostConfigError::InvalidRawTelemetryPath);
-        }
-        if self.raw_telemetry_service_name.trim().is_empty() {
-            return Err(HostConfigError::InvalidRawTelemetryServiceName);
-        }
-        if self.policy_state_path.trim().is_empty() {
-            return Err(HostConfigError::InvalidPolicyStatePath);
+        for (key, value) in [
+            ("virsh_binary", &self.virsh_binary),
+            (
+                "compatibility_attestation_path",
+                &self.compatibility_attestation_path,
+            ),
+            ("telemetry_path", &self.raw_telemetry_path),
+            ("telemetry_service_name", &self.raw_telemetry_service_name),
+            ("policy_state_path", &self.policy_state_path),
+        ] {
+            if value.trim().is_empty() {
+                return Err(HostConfigError::Empty(key));
+            }
         }
         Ok(())
-    }
-}
-
-fn optional_bool(name: &'static str, default: bool) -> Result<bool, HostConfigError> {
-    match env::var(name) {
-        Ok(value) => parse_optional_bool(name, Some(value), default),
-        Err(env::VarError::NotPresent) => parse_optional_bool(name, None, default),
-        Err(env::VarError::NotUnicode(value)) => Err(HostConfigError::InvalidBoolean {
-            name,
-            value: value.to_string_lossy().into_owned(),
-        }),
-    }
-}
-
-fn parse_raw_telemetry_transport(value: String) -> Result<RawTelemetryTransport, HostConfigError> {
-    match value.as_str() {
-        "file" => Ok(RawTelemetryTransport::File),
-        "qga-file" => Ok(RawTelemetryTransport::QgaFile),
-        _ => Err(HostConfigError::InvalidRawTelemetryTransport(value)),
-    }
-}
-
-/// The guest-stats source was removed. Selecting it must fail rather than
-/// silently switch the daemon to a different telemetry path.
-fn reject_retired_demand_source(value: Option<String>) -> Result<(), HostConfigError> {
-    match value {
-        Some(value) if !value.trim().is_empty() && !value.eq_ignore_ascii_case("raw") => {
-            Err(HostConfigError::RetiredDemandSource(value))
-        }
-        _ => Ok(()),
-    }
-}
-
-/// Shadow and growth modes ran a separate experimental policy. A deployment that
-/// still selects one must fail loudly: silently ignoring `shadow` would turn a
-/// configured non-actuating run into one that resizes.
-fn reject_retired_pressure_policy_mode(value: Option<String>) -> Result<(), HostConfigError> {
-    match value {
-        Some(value) if !value.trim().is_empty() && value != "legacy" => {
-            Err(HostConfigError::RetiredPressurePolicyMode(value))
-        }
-        _ => Ok(()),
-    }
-}
-
-fn parse_optional_bool(
-    name: &'static str,
-    value: Option<String>,
-    default: bool,
-) -> Result<bool, HostConfigError> {
-    match value {
-        None => Ok(default),
-        Some(value) if value.eq_ignore_ascii_case("true") => Ok(true),
-        Some(value) if value.eq_ignore_ascii_case("false") => Ok(false),
-        Some(value) if value.trim().is_empty() => Ok(default),
-        Some(value) => Err(HostConfigError::InvalidBoolean { name, value }),
-    }
-}
-
-fn required(name: &'static str) -> Result<String, HostConfigError> {
-    let value = env::var(name).unwrap_or_default();
-    if value.trim().is_empty() {
-        Err(HostConfigError::Missing(name))
-    } else {
-        Ok(value)
-    }
-}
-
-fn positive(name: &'static str) -> Result<u64, HostConfigError> {
-    let value = required(name)?;
-    value
-        .parse::<u64>()
-        .ok()
-        .filter(|value| *value > 0)
-        .ok_or(HostConfigError::InvalidPositiveInteger { name, value })
-}
-
-fn unsigned(name: &'static str) -> Result<u64, HostConfigError> {
-    let value = required(name)?;
-    value
-        .parse::<u64>()
-        .map_err(|_| HostConfigError::InvalidUnsignedInteger { name, value })
-}
-
-fn positive_or_derived(name: &'static str, derived: u64) -> Result<u64, HostConfigError> {
-    match env::var(name) {
-        Err(env::VarError::NotPresent) => Ok(derived),
-        Err(env::VarError::NotUnicode(value)) => Err(HostConfigError::InvalidPositiveInteger {
-            name,
-            value: value.to_string_lossy().into_owned(),
-        }),
-        Ok(value) => value
-            .parse::<u64>()
-            .ok()
-            .filter(|value| *value > 0)
-            .ok_or(HostConfigError::InvalidPositiveInteger { name, value }),
     }
 }
 
@@ -319,198 +319,259 @@ fn positive_or_derived(name: &'static str, derived: u64) -> Result<u64, HostConf
 mod tests {
     use super::*;
 
-    const TEST_GROW_STEP_BYTES: u64 = 1024 * 1024 * 1024;
-    const TEST_SHRINK_STEP_BYTES: u64 = 64 * 1024 * 1024;
-    const TEST_PHYSICAL_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-    const TEST_COMMIT_RESERVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
-    const TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
-    const TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES: u64 = 1024 * 1024 * 1024;
-    const TEST_RECLAIM_HISTORY_SECONDS: u64 = 600;
-    const TEST_DOWNWARD_HYSTERESIS_BYTES: u64 = 256 * 1024 * 1024;
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    const ONE_VM: &str = r#"
+poll_interval_seconds = 10
+command_timeout_seconds = 30
+convergence_timeout_seconds = 120
+host_min_headroom_bytes = 4294967296
+
+[[vm]]
+name = "win11"
+alias = "ua-virtiomem0"
+priority = 100
+min_memory_bytes = 1073741824
+max_memory_bytes = 17179869184
+grow_step_bytes = 1073741824
+shrink_step_bytes = 67108864
+fixed_visible_base_bytes = 8589934592
+physical_reserve_bytes = 2147483648
+commit_reserve_bytes = 2147483648
+safe_floor_physical_reserve_bytes = 1073741824
+safe_floor_commit_reserve_bytes = 1073741824
+reclaim_history_seconds = 600
+downward_hysteresis_bytes = 268435456
+policy_state_path = "/var/lib/virtio-mem-host/state/win11-policy.json"
+compatibility_attestation_path = "/etc/virtio-mem-host/win11.attestation.json"
+telemetry_transport = "qga-file"
+telemetry_path = 'C:\ProgramData\VirtioMem\telemetry.jsonl'
+telemetry_service_name = "VirtioMemService"
+telemetry_max_age_seconds = 60
+telemetry_future_tolerance_seconds = 5
+"#;
+
+    fn second_vm(name: &str, priority: u32, state: &str) -> String {
+        ONE_VM
+            .split_once("[[vm]]")
+            .expect("fixture vm table")
+            .1
+            .replace("\"win11\"", &format!("\"{name}\""))
+            .replace("priority = 100", &format!("priority = {priority}"))
+            .replace("/var/lib/virtio-mem-host/state/win11-policy.json", state)
+    }
+
+    fn parse_one(text: &str) -> Result<HostConfig, HostConfigError> {
+        HostConfig::parse(text).map(|mut vms| vms.remove(0))
+    }
+
+    fn vm_error(source: HostConfigError) -> HostConfigError {
+        HostConfigError::Vm {
+            vm: "win11".to_owned(),
+            source: Box::new(source),
+        }
+    }
 
     #[test]
-    fn automatic_shrink_requires_explicit_opt_in() {
+    fn resolves_global_and_vm_settings_with_safe_defaults() {
+        let config = parse_one(ONE_VM).expect("valid config");
+        assert_eq!(config.vm_name, "win11");
+        assert_eq!(config.priority, 100);
+        assert_eq!(config.max_memory_bytes, 16 * GIB);
+        assert_eq!(config.poll_interval, Duration::from_secs(10));
+        assert_eq!(config.host_min_headroom_bytes, 4 * GIB);
         assert_eq!(
-            parse_optional_bool(
-                "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
-                None,
-                DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
-            ),
-            Ok(false)
+            config.raw_telemetry_transport,
+            RawTelemetryTransport::QgaFile
         );
         assert_eq!(
-            parse_optional_bool(
-                "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
-                Some("true".to_owned()),
-                DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
-            ),
-            Ok(true)
+            config.raw_telemetry_path,
+            r"C:\ProgramData\VirtioMem\telemetry.jsonl"
         );
+        assert_eq!(config.virsh_binary, "virsh");
+        assert_eq!(config.reclaim_max_gap, Duration::from_secs(20));
+        assert!(!config.automatic_windows_shrink);
+        assert!(!config.observe_only);
+    }
+
+    #[test]
+    fn unknown_and_retired_keys_fail_instead_of_being_ignored() {
+        // A retired `shadow` mode silently ignored would turn a configured
+        // non-actuating run into one that resizes.
+        for retired in [
+            "pressure_policy_mode = \"shadow\"\n",
+            "demand_source = \"guest-stats\"\n",
+            "shrink_renotification = true\n",
+        ] {
+            let error = HostConfig::parse(&format!("{retired}{ONE_VM}"))
+                .expect_err("unknown top-level key");
+            assert!(matches!(error, HostConfigError::Parse(_)), "{error}");
+        }
+        let error =
+            HostConfig::parse(&ONE_VM.replace("priority = 100", "priority = 100\nweight = 3"))
+                .expect_err("unknown vm key");
+        assert!(matches!(error, HostConfigError::Parse(_)), "{error}");
     }
 
     #[test]
     fn raw_telemetry_transport_is_explicit_and_closed() {
+        let file = parse_one(&ONE_VM.replace("\"qga-file\"", "\"file\"")).expect("file");
+        assert_eq!(file.raw_telemetry_transport, RawTelemetryTransport::File);
+        assert!(matches!(
+            HostConfig::parse(&ONE_VM.replace("\"qga-file\"", "\"ssh\"")),
+            Err(HostConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
+    fn automatic_shrink_and_observe_only_require_explicit_opt_in() {
+        let config = parse_one(&format!(
+            "observe_only = true\n{}",
+            ONE_VM.replace(
+                "priority = 100",
+                "priority = 100\nautomatic_windows_shrink = true"
+            )
+        ))
+        .expect("opted-in config");
+        assert!(config.automatic_windows_shrink);
+        assert!(config.observe_only);
+    }
+
+    #[test]
+    fn several_vms_carry_their_priorities_but_the_controller_serves_one() {
+        let text = format!(
+            "{ONE_VM}\n[[vm]]{}",
+            second_vm(
+                "win10_test",
+                80,
+                "/var/lib/virtio-mem-host/state/win10-policy.json"
+            )
+        );
+        let vms = HostConfig::parse(&text).expect("two-member pool");
         assert_eq!(
-            parse_raw_telemetry_transport("file".to_owned()),
-            Ok(RawTelemetryTransport::File)
+            vms.iter()
+                .map(|vm| (vm.vm_name.as_str(), vm.priority))
+                .collect::<Vec<_>>(),
+            [("win11", 100), ("win10_test", 80)]
+        );
+
+        let directory =
+            std::env::temp_dir().join(format!("virtio-mem-host-config-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("fixture directory");
+        let path = directory.join("pool.toml");
+        std::fs::write(&path, &text).expect("write fixture");
+        assert_eq!(
+            HostConfig::load_single(&path),
+            Err(HostConfigError::PoolNotWired(2))
+        );
+        std::fs::write(&path, ONE_VM).expect("write fixture");
+        assert_eq!(
+            HostConfig::load_single(&path).map(|vm| vm.vm_name),
+            Ok("win11".to_owned())
+        );
+        std::fs::remove_dir_all(&directory).expect("remove fixture");
+    }
+
+    #[test]
+    fn vms_must_not_share_a_name_or_policy_state() {
+        let duplicate_name = format!(
+            "{ONE_VM}\n[[vm]]{}",
+            second_vm("win11", 80, "/var/lib/virtio-mem-host/state/other.json")
         );
         assert_eq!(
-            parse_raw_telemetry_transport("qga-file".to_owned()),
-            Ok(RawTelemetryTransport::QgaFile)
+            HostConfig::parse(&duplicate_name),
+            Err(HostConfigError::DuplicateVm("win11".to_owned()))
+        );
+        let shared_state = format!(
+            "{ONE_VM}\n[[vm]]{}",
+            second_vm(
+                "win10_test",
+                80,
+                "/var/lib/virtio-mem-host/state/win11-policy.json"
+            )
         );
         assert_eq!(
-            parse_raw_telemetry_transport("ssh".to_owned()),
-            Err(HostConfigError::InvalidRawTelemetryTransport(
-                "ssh".to_owned()
+            HostConfig::parse(&shared_state),
+            Err(HostConfigError::SharedPolicyState(
+                "/var/lib/virtio-mem-host/state/win11-policy.json".to_owned()
             ))
         );
-    }
-
-    #[test]
-    fn retired_demand_sources_fail_instead_of_being_ignored() {
-        for accepted in [None, Some(""), Some("raw")] {
-            assert_eq!(
-                reject_retired_demand_source(accepted.map(str::to_owned)),
-                Ok(())
-            );
-        }
         assert_eq!(
-            reject_retired_demand_source(Some("guest-stats".to_owned())),
-            Err(HostConfigError::RetiredDemandSource(
-                "guest-stats".to_owned()
-            ))
+            HostConfig::parse("poll_interval_seconds = 1\ncommand_timeout_seconds = 1\nconvergence_timeout_seconds = 1\nhost_min_headroom_bytes = 1\n"),
+            Err(HostConfigError::NoVm)
         );
     }
 
     #[test]
-    fn retired_pressure_policy_modes_fail_instead_of_being_ignored() {
-        for accepted in [None, Some(""), Some("legacy")] {
+    fn invalid_vm_settings_name_the_vm() {
+        for (from, to, expected) in [
+            (
+                "priority = 100",
+                "priority = 0",
+                HostConfigError::InvalidPriority,
+            ),
+            (
+                "\"ua-virtiomem0\"",
+                "\"bad;alias\"",
+                HostConfigError::InvalidAlias,
+            ),
+            (
+                "min_memory_bytes = 1073741824",
+                "min_memory_bytes = 34359738368",
+                HostConfigError::InvalidMemoryRange,
+            ),
+            (
+                "safe_floor_commit_reserve_bytes = 1073741824",
+                "safe_floor_commit_reserve_bytes = 4294967296",
+                HostConfigError::InvalidReserveOrder,
+            ),
+            (
+                "telemetry_max_age_seconds = 60",
+                "telemetry_max_age_seconds = 0",
+                HostConfigError::InvalidDuration,
+            ),
+            (
+                "\"/etc/virtio-mem-host/win11.attestation.json\"",
+                "\" \"",
+                HostConfigError::Empty("compatibility_attestation_path"),
+            ),
+            (
+                r"'C:\ProgramData\VirtioMem\telemetry.jsonl'",
+                "''",
+                HostConfigError::Empty("telemetry_path"),
+            ),
+        ] {
             assert_eq!(
-                reject_retired_pressure_policy_mode(accepted.map(str::to_owned)),
-                Ok(())
+                HostConfig::parse(&ONE_VM.replace(from, to)),
+                Err(vm_error(expected)),
+                "{to}"
             );
         }
-        for retired in ["shadow", "growth"] {
-            assert_eq!(
-                reject_retired_pressure_policy_mode(Some(retired.to_owned())),
-                Err(HostConfigError::RetiredPressurePolicyMode(
-                    retired.to_owned()
-                ))
-            );
-        }
     }
 
     #[test]
-    fn rejects_unsafe_aliases() {
-        let config = HostConfig {
-            vm_name: "guest".to_owned(),
-            alias: "bad;alias".to_owned(),
-            min_memory_bytes: 1,
-            max_memory_bytes: 2,
-            grow_step_bytes: TEST_GROW_STEP_BYTES,
-            shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
-            fixed_visible_base_bytes: 1,
-            physical_reserve_bytes: TEST_PHYSICAL_RESERVE_BYTES,
-            commit_reserve_bytes: TEST_COMMIT_RESERVE_BYTES,
-            safe_floor_physical_reserve_bytes: TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
-            safe_floor_commit_reserve_bytes: TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
-            reclaim_history: Duration::from_secs(TEST_RECLAIM_HISTORY_SECONDS),
-            reclaim_max_gap: Duration::from_secs(2),
-            downward_hysteresis_bytes: TEST_DOWNWARD_HYSTERESIS_BYTES,
-            policy_state_path: "state.json".to_owned(),
-            poll_interval: Duration::from_secs(1),
-            command_timeout: Duration::from_secs(1),
-            convergence_timeout: Duration::from_secs(1),
-            virsh_binary: "virsh".to_owned(),
-            raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
-            raw_telemetry_transport: RawTelemetryTransport::File,
-            raw_telemetry_service_name: "VirtioMemService".to_owned(),
-            raw_telemetry_max_age: Duration::from_secs(60),
-            raw_telemetry_future_tolerance: Duration::from_secs(5),
-            host_min_headroom_bytes: 1,
-            compatibility_attestation_path: "/etc/virtio-mem-host/guest.attestation.json"
-                .to_owned(),
-            automatic_windows_shrink: false,
-            observe_only: false,
-        };
-        assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
-    }
-
-    #[test]
-    fn rejects_empty_attestation_path() {
-        let mut config = HostConfig {
-            vm_name: "guest".to_owned(),
-            alias: "memory0".to_owned(),
-            min_memory_bytes: 1,
-            max_memory_bytes: 2,
-            grow_step_bytes: TEST_GROW_STEP_BYTES,
-            shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
-            fixed_visible_base_bytes: 1,
-            physical_reserve_bytes: TEST_PHYSICAL_RESERVE_BYTES,
-            commit_reserve_bytes: TEST_COMMIT_RESERVE_BYTES,
-            safe_floor_physical_reserve_bytes: TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
-            safe_floor_commit_reserve_bytes: TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
-            reclaim_history: Duration::from_secs(TEST_RECLAIM_HISTORY_SECONDS),
-            reclaim_max_gap: Duration::from_secs(2),
-            downward_hysteresis_bytes: TEST_DOWNWARD_HYSTERESIS_BYTES,
-            policy_state_path: "state.json".to_owned(),
-            poll_interval: Duration::from_secs(1),
-            command_timeout: Duration::from_secs(1),
-            convergence_timeout: Duration::from_secs(1),
-            virsh_binary: "virsh".to_owned(),
-            raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
-            raw_telemetry_transport: RawTelemetryTransport::File,
-            raw_telemetry_service_name: "VirtioMemService".to_owned(),
-            raw_telemetry_max_age: Duration::from_secs(60),
-            raw_telemetry_future_tolerance: Duration::from_secs(5),
-            host_min_headroom_bytes: 1,
-            compatibility_attestation_path: "valid".to_owned(),
-            automatic_windows_shrink: false,
-            observe_only: false,
-        };
-        config.compatibility_attestation_path = " ".to_owned();
-        assert_eq!(
-            config.validate(),
-            Err(HostConfigError::InvalidAttestationPath)
-        );
-    }
-
-    #[test]
-    fn rejects_empty_raw_telemetry_path() {
-        let mut config = HostConfig {
-            vm_name: "guest".to_owned(),
-            alias: "memory0".to_owned(),
-            min_memory_bytes: 1,
-            max_memory_bytes: 2,
-            grow_step_bytes: TEST_GROW_STEP_BYTES,
-            shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
-            fixed_visible_base_bytes: 1,
-            physical_reserve_bytes: TEST_PHYSICAL_RESERVE_BYTES,
-            commit_reserve_bytes: TEST_COMMIT_RESERVE_BYTES,
-            safe_floor_physical_reserve_bytes: TEST_SAFE_FLOOR_PHYSICAL_RESERVE_BYTES,
-            safe_floor_commit_reserve_bytes: TEST_SAFE_FLOOR_COMMIT_RESERVE_BYTES,
-            reclaim_history: Duration::from_secs(TEST_RECLAIM_HISTORY_SECONDS),
-            reclaim_max_gap: Duration::from_secs(2),
-            downward_hysteresis_bytes: TEST_DOWNWARD_HYSTERESIS_BYTES,
-            policy_state_path: "state.json".to_owned(),
-            poll_interval: Duration::from_secs(1),
-            command_timeout: Duration::from_secs(1),
-            convergence_timeout: Duration::from_secs(1),
-            virsh_binary: "virsh".to_owned(),
-            raw_telemetry_path: "valid".to_owned(),
-            raw_telemetry_transport: RawTelemetryTransport::File,
-            raw_telemetry_service_name: "VirtioMemService".to_owned(),
-            raw_telemetry_max_age: Duration::from_secs(60),
-            raw_telemetry_future_tolerance: Duration::from_secs(5),
-            host_min_headroom_bytes: 1,
-            compatibility_attestation_path: "valid".to_owned(),
-            automatic_windows_shrink: false,
-            observe_only: false,
-        };
-        config.raw_telemetry_path = " ".to_owned();
-        assert_eq!(
-            config.validate(),
-            Err(HostConfigError::InvalidRawTelemetryPath)
-        );
+    fn shipped_example_is_refused_until_its_markers_are_replaced() {
+        let example = include_str!("../systemd/virtio-mem-host.toml.example");
+        assert!(matches!(
+            HostConfig::parse(example),
+            Err(HostConfigError::Parse(_))
+        ));
+        // Replacing only the numeric markers proves the example's keys are the
+        // loader's keys; string markers stay as harmless placeholders.
+        let filled = example
+            .lines()
+            .map(|line| match line.split_once(" = \"REQUIRED_") {
+                Some((key, _)) if key.ends_with("_bytes") || key == "priority" => {
+                    format!("{key} = {GIB}")
+                }
+                Some(("reclaim_history_seconds", _)) => "reclaim_history_seconds = 600".to_owned(),
+                Some((key, _)) if key.ends_with("_seconds") => format!("{key} = 60"),
+                _ => line.to_owned(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let config = parse_one(&filled).expect("filled example");
+        assert_eq!(config.vm_name, "REQUIRED_VM_NAME");
+        assert!(!config.automatic_windows_shrink && !config.observe_only);
     }
 }

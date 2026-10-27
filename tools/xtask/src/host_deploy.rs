@@ -42,7 +42,6 @@ struct Evidence {
     active_state: String,
     unit_file_state: String,
     restart_policy: String,
-    environment_files: Vec<String>,
     backup_path: Option<String>,
 }
 
@@ -156,15 +155,18 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             ));
         }
     }
-    let values = parse_environment(
-        &std::fs::read_to_string(&config_source)
-            .map_err(|error| format!("read host config: {error}"))?,
-    )?;
-    validate_config(&values)?;
+    let config = HostConfig::load_single(&config_source)
+        .map_err(|error| format!("validate host configuration: {error}"))?;
+    if config.vm_name != command.instance {
+        return Err(format!(
+            "host-deploy INSTANCE {} does not match the configured VM {}",
+            command.instance, config.vm_name
+        ));
+    }
     let attestation_text = std::fs::read_to_string(&attestation_source)
         .map_err(|error| format!("read compatibility attestation: {error}"))?;
     CompatibilityAttestation::parse(&attestation_text)?;
-    validate_live_attestation(&values, &attestation_source, command.timeout)?;
+    validate_live_attestation(&config, &attestation_source, command.timeout)?;
     let unit = format!("virtio-mem-host@{}.service", command.instance);
     let before = properties(&unit, repo, command.timeout)?;
     require_inactive(&before, &unit)?;
@@ -197,9 +199,8 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             "installed unit is not fail-stop: Restart={restart_policy}"
         ));
     }
-    let environment_files = after.get("EnvironmentFiles").cloned().unwrap_or_default();
     Ok(Evidence {
-        schema_version: 1,
+        schema_version: 2,
         captured_unix_millis: now_millis()?,
         applied: command.apply,
         instance: command.instance.clone(),
@@ -222,7 +223,6 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
         active_state: one(&after, "ActiveState")?,
         unit_file_state: one(&after, "UnitFileState")?,
         restart_policy,
-        environment_files,
         backup_path,
     })
 }
@@ -272,7 +272,7 @@ fn install(
         repo,
         command.timeout,
     )?;
-    let target_config = PathBuf::from(format!("/etc/virtio-mem-host/{}.conf", command.instance));
+    let target_config = PathBuf::from(format!("/etc/virtio-mem-host/{}.toml", command.instance));
     let target_attestation = PathBuf::from(format!(
         "/etc/virtio-mem-host/{}.attestation.json",
         command.instance
@@ -301,13 +301,17 @@ fn install(
         std::fs::rename(&dropin, backup.join("instance-dropins"))
             .map_err(|error| format!("backup obsolete instance drop-ins: {error}"))?;
     }
-    let legacy = PathBuf::from(format!(
-        "/etc/virtio-mem-host/{}-memory-quanta.conf",
-        command.instance
-    ));
-    if legacy.exists() {
-        std::fs::rename(&legacy, backup.join("legacy-memory-quanta.conf"))
-            .map_err(|error| format!("backup obsolete split config: {error}"))?;
+    // Environment-file configuration was replaced by the TOML file; move the
+    // old files aside so they cannot be mistaken for live settings.
+    for (suffix, kept_as) in [
+        ("-memory-quanta.conf", "legacy-memory-quanta.conf"),
+        (".conf", "legacy-environment.conf"),
+    ] {
+        let legacy = PathBuf::from(format!("/etc/virtio-mem-host/{}{suffix}", command.instance));
+        if legacy.exists() {
+            std::fs::rename(&legacy, backup.join(kept_as))
+                .map_err(|error| format!("backup obsolete environment config: {error}"))?;
+        }
     }
     install_file(
         candidate,
@@ -433,30 +437,15 @@ fn install_directory(
     .map(|_| ())
 }
 
-fn validate_config(values: &BTreeMap<String, String>) -> Result<(), String> {
-    for (name, value) in values {
-        std::env::set_var(name, value);
-    }
-    HostConfig::from_env()
-        .map(|_| ())
-        .map_err(|error| format!("validate host configuration: {error}"))
-}
-
 fn validate_live_attestation(
-    values: &BTreeMap<String, String>,
+    config: &HostConfig,
     path: &Path,
     timeout: Duration,
 ) -> Result<(), String> {
-    let vm = values
-        .get("VIRTIO_MEM_VM_NAME")
-        .ok_or_else(|| "host config lacks VM identity".to_owned())?;
-    let alias = values
-        .get("VIRTIO_MEM_ALIAS")
-        .ok_or_else(|| "host config lacks alias identity".to_owned())?;
     AttestedCompatibilitySource::new(
         Virsh::with_connection("virsh", timeout, "qemu:///system"),
-        vm,
-        alias,
+        &config.vm_name,
+        &config.alias,
         path,
     )
     .compatibility()?
@@ -464,57 +453,22 @@ fn validate_live_attestation(
     .map_err(|error| format!("validate live compatibility attestation: {error}"))
 }
 
-pub(crate) fn parse_environment(text: &str) -> Result<BTreeMap<String, String>, String> {
-    let mut values = BTreeMap::new();
-    for line in text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-    {
-        let (name, encoded_value) = line
-            .split_once('=')
-            .ok_or_else(|| format!("malformed host environment line: {line}"))?;
-        let value = parse_environment_value(encoded_value)?;
-        if name.is_empty()
-            || !name
-                .bytes()
-                .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
-        {
-            return Err(format!("unsafe host environment line: {line}"));
-        }
-        if values.insert(name.to_owned(), value).is_some() {
-            return Err(format!("duplicate host environment variable: {name}"));
-        }
-    }
-    Ok(values)
-}
-
-fn parse_environment_value(value: &str) -> Result<String, String> {
-    if value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2 {
-        let decoded = &value[1..value.len() - 1];
-        if decoded.is_empty() || decoded.contains('\'') || decoded.chars().any(char::is_control) {
-            return Err("unsafe single-quoted host environment value".to_owned());
-        }
-        return Ok(decoded.to_owned());
-    }
-    if value.is_empty()
-        || value.contains(['\\', '\'', '"'])
-        || value.chars().any(char::is_whitespace)
-    {
-        return Err(
-            "host environment values containing backslashes or whitespace must use single quotes"
-                .to_owned(),
-        );
-    }
-    Ok(value.to_owned())
-}
-
 fn properties(
     unit: &str,
     repo: &Path,
     timeout: Duration,
 ) -> Result<BTreeMap<String, Vec<String>>, String> {
-    let text = process::bounded_text("systemctl", &[process::os("show"), process::os(unit), process::os("--property=ActiveState,SubState,UnitFileState,Restart,EnvironmentFiles,DropInPaths"), process::os("--no-pager")], repo, timeout)?;
+    let text = process::bounded_text(
+        "systemctl",
+        &[
+            process::os("show"),
+            process::os(unit),
+            process::os("--property=ActiveState,SubState,UnitFileState,Restart,DropInPaths"),
+            process::os("--no-pager"),
+        ],
+        repo,
+        timeout,
+    )?;
     let mut result = BTreeMap::new();
     for line in text.lines().filter(|line| !line.is_empty()) {
         let (key, value) = line
@@ -691,7 +645,7 @@ mod tests {
         let args = [
             "guest",
             "--config",
-            "host.conf",
+            "host.toml",
             "--attestation",
             "attestation.json",
             "--output",
@@ -710,17 +664,5 @@ mod tests {
                 ..
             })
         ));
-    }
-    #[test]
-    fn environment_parser_rejects_duplicates_and_shell_syntax() {
-        assert!(parse_environment("A=1\nB=two\n").is_ok());
-        assert!(parse_environment("A=1\nA=2\n").is_err());
-        assert!(parse_environment("export A=1\n").is_err());
-        assert!(parse_environment(r"PATH=C:\ProgramData\telemetry.json").is_err());
-        assert_eq!(
-            parse_environment(r"PATH='C:\ProgramData\telemetry.json'")
-                .expect("quoted Windows path")["PATH"],
-            r"C:\ProgramData\telemetry.json"
-        );
     }
 }

@@ -4,6 +4,7 @@ use std::sync::{atomic::AtomicBool, Arc};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
+use virtio_mem_host::cli::CliCommand;
 use virtio_mem_host::config::{HostConfig, RawTelemetryTransport};
 use virtio_mem_host::host_memory::ProcMeminfoSource;
 use virtio_mem_host::qga::VirshQgaFileReader;
@@ -18,8 +19,9 @@ use virtio_mem_host::xml_source::VirshXmlSource;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match virtio_mem_host::cli::parse_args(&args) {
-        Ok(Some(command)) => {
+    let config_path = match virtio_mem_host::cli::parse_args(&args) {
+        Ok(CliCommand::Run { config }) => config,
+        Ok(command) => {
             return match virtio_mem_host::cli::run(command) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
@@ -32,9 +34,8 @@ fn main() -> ExitCode {
             eprintln!("{error}");
             return ExitCode::FAILURE;
         }
-        Ok(None) => {}
-    }
-    let config = match HostConfig::from_env() {
+    };
+    let config = match HostConfig::load_single(&config_path) {
         Ok(config) => config,
         Err(error) => {
             eprintln!("virtio-mem-host configuration error: {error}");

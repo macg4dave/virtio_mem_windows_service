@@ -7,7 +7,9 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
-use crate::{host_deploy, process};
+use virtio_mem_host::config::HostConfig;
+
+use crate::process;
 
 const EVIDENCE_VERSION: u16 = 1;
 const DEFAULT_CONNECTION: &str = "qemu:///system";
@@ -173,27 +175,23 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
         command.timeout,
     )?;
     let properties = parse_properties(&properties)?;
-    let config_path = PathBuf::from(format!("/etc/virtio-mem-host/{}.conf", command.instance));
-    let environment_text = std::fs::read_to_string(&config_path)
-        .map_err(|error| format!("read protected host instance configuration: {error}"))?;
-    let mut environment = host_deploy::parse_environment(&environment_text)?;
-    validate_status_environment(&environment)?;
-    let configured_vm = environment
-        .get("VIRTIO_MEM_VM_NAME")
-        .ok_or_else(|| "host instance configuration lacks VIRTIO_MEM_VM_NAME".to_owned())?;
-    if configured_vm != &command.instance {
+    let config_path = PathBuf::from(format!("/etc/virtio-mem-host/{}.toml", command.instance));
+    let configured = HostConfig::load_single(&config_path)
+        .map_err(|error| format!("protected host instance configuration: {error}"))?;
+    if configured.vm_name != command.instance {
         return Err("controller-status instance does not match configured VM identity".to_owned());
     }
-    environment.insert("LIBVIRT_DEFAULT_URI".to_owned(), command.connection.clone());
-    environment.insert("HOME".to_owned(), "/run/virtio-mem-host".to_owned());
-    environment.insert(
-        "XDG_CACHE_HOME".to_owned(),
-        "/run/virtio-mem-host/.cache".to_owned(),
-    );
+    let environment = [
+        ("LIBVIRT_DEFAULT_URI", command.connection.as_str()),
+        ("HOME", "/run/virtio-mem-host"),
+        ("XDG_CACHE_HOME", "/run/virtio-mem-host/.cache"),
+    ];
     let output = process::bounded_output_with_env(
         &command.host_cli,
         &[
             process::os("status"),
+            process::os("--config"),
+            config_path.as_os_str().to_owned(),
             process::os("--connect"),
             process::os(&command.connection),
         ],
@@ -366,20 +364,6 @@ fn validate_identity(value: &str) -> Result<(), String> {
     }
 }
 
-fn validate_status_environment(
-    environment: &std::collections::BTreeMap<String, String>,
-) -> Result<(), String> {
-    if let Some(name) = environment
-        .keys()
-        .find(|name| !name.starts_with("VIRTIO_MEM_"))
-    {
-        return Err(format!(
-            "controller-status rejects unrelated environment variable: {name}"
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 fn effective_uid() -> u32 {
     unsafe extern "C" {
@@ -455,19 +439,5 @@ mod tests {
                 .expect("properties");
         assert_eq!(one(&parsed, "ActiveState"), Ok("inactive"));
         assert!(parse_properties("ActiveState=inactive\nActiveState=active\n").is_err());
-    }
-
-    #[test]
-    fn privileged_child_rejects_unrelated_environment_variables() {
-        let valid = std::collections::BTreeMap::from([(
-            "VIRTIO_MEM_VM_NAME".to_owned(),
-            "guest".to_owned(),
-        )]);
-        assert_eq!(validate_status_environment(&valid), Ok(()));
-        let invalid = std::collections::BTreeMap::from([(
-            "LD_PRELOAD".to_owned(),
-            "/tmp/injected.so".to_owned(),
-        )]);
-        assert!(validate_status_environment(&invalid).is_err());
     }
 }

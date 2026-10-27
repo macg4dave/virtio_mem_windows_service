@@ -515,7 +515,7 @@ mod tests {
             "--text-file",
             "/etc/systemd/system/virtio-mem-host@.service",
             "--text-file",
-            "/etc/virtio-mem-host/guest.conf",
+            "/etc/virtio-mem-host/guest.toml",
             "--output",
             ".artifacts/deployment/guest.json",
             "--command-timeout-seconds",
@@ -552,7 +552,7 @@ mod tests {
             8..8,
             [
                 "--text-file".to_owned(),
-                "/etc/virtio-mem-host/guest.conf".to_owned(),
+                "/etc/virtio-mem-host/guest.toml".to_owned(),
             ],
         );
         assert!(parse(&duplicate).unwrap_err().contains("duplicated"));

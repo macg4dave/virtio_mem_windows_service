@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use virtio_mem_core::{parse_virtio_mem_xml_for_alias, RawTelemetryEnvelope};
+use virtio_mem_host::config::HostConfig;
 use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
 use virtio_mem_host::virsh::Virsh;
 use wait_timeout::ChildExt;
@@ -1955,30 +1956,32 @@ fn require_controller_active_and_shrink(config: &Config, repo: &Path) -> Result<
     if pid == 0 {
         return Err("controller has no running MainPID".to_owned());
     }
-    let environment = std::fs::read(format!("/proc/{pid}/environ"))
-        .map_err(|error| format!("read controller environment: {error}"))?;
-    let environment_value = |name: &[u8]| {
-        environment.split(|byte| *byte == 0).find_map(|entry| {
-            entry
-                .strip_prefix(name)
-                .map(|value| String::from_utf8_lossy(value).into_owned())
-        })
-    };
-    let shrink = environment_value(b"VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK=");
-    if shrink.as_deref().is_some_and(|value| value != "true") {
-        return Err(format!(
-            "automatic Windows shrink is not enabled for qualification: {shrink:?}"
-        ));
+    let command_line = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map_err(|error| format!("read controller command line: {error}"))?;
+    let running = HostConfig::load_single(&controller_config_path(&command_line)?)
+        .map_err(|error| format!("running controller configuration: {error}"))?;
+    if !running.automatic_windows_shrink {
+        return Err("automatic Windows shrink is not enabled for qualification".to_owned());
     }
-    if config.expect_no_resize {
-        let observe_only = environment_value(b"VIRTIO_MEM_OBSERVE_ONLY=");
-        if observe_only.as_deref() != Some("true") {
-            return Err(format!(
-                "--expect-no-resize requires the running controller with VIRTIO_MEM_OBSERVE_ONLY=true: {observe_only:?}"
-            ));
-        }
+    if config.expect_no_resize && !running.observe_only {
+        return Err(
+            "--expect-no-resize requires the running controller with observe_only = true"
+                .to_owned(),
+        );
     }
     Ok(())
+}
+
+/// The controller's `--config PATH` argument from a NUL-separated command line.
+fn controller_config_path(command_line: &[u8]) -> Result<PathBuf, String> {
+    let arguments = command_line
+        .split(|byte| *byte == 0)
+        .filter(|argument| !argument.is_empty())
+        .collect::<Vec<_>>();
+    match arguments.as_slice() {
+        [_, b"--config", path] => Ok(PathBuf::from(String::from_utf8_lossy(path).into_owned())),
+        _ => Err("running controller was not started with exactly --config PATH".to_owned()),
+    }
 }
 
 fn write_root_guard_status(
@@ -2723,5 +2726,22 @@ mod tests {
         assert!(artifacts.contains(&"status.json"));
         assert!(!artifacts.contains(&"result.json"));
         std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn controller_config_comes_only_from_its_exact_command_line() {
+        assert_eq!(
+            controller_config_path(
+                b"/usr/local/libexec/virtio-mem-host\0--config\0/etc/virtio-mem-host/guest.toml\0"
+            ),
+            Ok(PathBuf::from("/etc/virtio-mem-host/guest.toml"))
+        );
+        for unexpected in [
+            &b"/usr/local/libexec/virtio-mem-host\0"[..],
+            b"/usr/local/libexec/virtio-mem-host\0status\0--config\0a.toml\0",
+            b"/usr/local/libexec/virtio-mem-host\0--config\0a.toml\0--config\0b.toml\0",
+        ] {
+            assert!(controller_config_path(unexpected).is_err());
+        }
     }
 }

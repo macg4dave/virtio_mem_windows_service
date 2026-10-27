@@ -36,11 +36,11 @@ platform risk: Windows virtio-mem unplug has already stalled once (Phase 0).
 | Item | Reality |
 | --- | --- |
 | Code size | 29,641 Rust source lines, including tests, comments, and blanks; not a production-code count |
-| Non-Windows tests | 2026-10-26: core 65, host 88, xtask 45 pass with `--locked` |
+| Non-Windows tests | 2026-10-27: core 65, host 90, xtask 44 pass with `--locked` |
 | `windows` crate | `cargo clippy -p virtio-mem-service --all-targets --target x86_64-pc-windows-gnu` passes on Linux (type-check only; no MinGW linker installed, so no binary). Native service behaviour requires Windows execution |
 | Automatic resizing | Earlier "never enabled" claim was wrong. Archived workload run `qualification-1789231813766-72447` records 1,098,907,648 bytes of peak growth but zero accepted reclaim; the later passing run explicitly required no resizing. The installed host unit is currently disabled/inactive |
 | Multi-VM pool (`global_pool.rs`, `pool_ledger.rs`, ~2.4k lines) | Pure arbitration with strict priority, plus a ledger; unit-tested but not yet wired into the host. This is the product's core goal (Phase 4) |
-| Host config | ~30 `VIRTIO_MEM_*` env vars; raw Windows telemetry only (file or QGA-file transport); one target policy plus `VIRTIO_MEM_OBSERVE_ONLY` |
+| Host config | One TOML file (`--config FILE`): global timing/host settings plus a `[[vm]]` table per VM with its `priority`. Unknown keys are refused. The controller serves exactly one VM until the pool is wired (Phase 4) |
 
 Growth has occurred in an earlier automatic workload run. That does not prove
 reliable shrink or unattended operation. Those outcomes still require direct
@@ -167,10 +167,8 @@ Keep:
   5. one command in flight; wait for `current == requested` with a timeout;
      on timeout, stop resizing and log loudly
   6. refuse to grow if host MemAvailable is below a reserve
-- One small host config file (TOML proposed): vm, alias, device min/max,
-  headroom, step, poll interval, shrink cooldown, host reserve, enable_shrink,
-  and necessary transport/timeout inputs. Shrink defaults off. Reduce the
-  existing modes with the migration; do not add TOML as a parallel config path.
+- **Done:** one host config file, `host/systemd/virtio-mem-host.toml.example`;
+  the environment-variable path is gone. Shrink defaults off.
 - Unit tests for the target math and the XML parsing.
 
 The earlier shorthand `target = clamp(commit_used + headroom, min, max)` is not
@@ -213,24 +211,23 @@ is a simplification aim, not a measured reduction or correctness criterion.
 - Manual runs need no password: `dave` is in the `libvirt` group (see Phase 0
   evidence). `sudo` also works, as the startup authorization error says.
 - No current Windows binary build or live deployment of the Phase 1 changes.
-- Before redeploying the host daemon: telemetry acceptance moved from the
-  `VIRTIO_MEM_RAW_TELEMETRY_ACK_PATH` file into the policy checkpoint
-  (`accepted_telemetry`). The setting is ignored and the old file is unused.
-  The first record after the upgrade is treated as new; retired-session
-  history starts empty, while freshness and identity checks still apply.
-- Before redeploying the host daemon: `VIRTIO_MEM_DEMAND_SOURCE` other than
-  `raw` now refuses to start; the stats-source, threshold, stats-age and
-  shrink re-notification settings are ignored if still present.
-- Before redeploying the host daemon: shadow/growth pressure modes are gone.
-  A config with `VIRTIO_MEM_PRESSURE_POLICY_MODE` other than `legacy` now
-  refuses to start (deliberately, so a non-actuating `shadow` deployment never
-  silently starts resizing). Use `VIRTIO_MEM_OBSERVE_ONLY=true` for a
-  no-resize run; xtask `--expect-no-resize` requires it. The deployed
-  `/etc/virtio-mem-host/win11_gpu.conf` carries shadow-mode margin settings and
-  a shadow log path, so it was a shadow (non-resizing) deployment. When the new
-  binary is deployed, and not before, replace its `VIRTIO_MEM_PRESSURE_*` lines
-  with `VIRTIO_MEM_OBSERVE_ONLY=true`. The old binary ignores that setting and
-  would resize if started with the shadow lines removed.
+- Before redeploying the host daemon, the configuration moves from
+  `/etc/virtio-mem-host/<instance>.conf` (environment variables) to
+  `/etc/virtio-mem-host/<instance>.toml`, and the unit runs
+  `virtio-mem-host --config` that file. Copy each value into the TOML keys of
+  the example; settings that were removed (demand/stats source, thresholds,
+  re-notification, ack path, pressure modes) have no key and are refused if
+  added. `xtask host-deploy` installs the `.toml` and moves an old `.conf`
+  into the deployment backup. **The deployed `win11_gpu.conf` was a shadow
+  (non-resizing) deployment** (it has shadow margin settings and a shadow log
+  path), so its new TOML must set `observe_only = true` to stay non-resizing.
+  `controller-status` and `qualification` read the same file; qualification
+  now requires `automatic_windows_shrink = true` explicitly (the old check let
+  an unset value pass).
+- After the upgrade, telemetry acceptance lives in the policy checkpoint
+  (`accepted_telemetry`); the old ack file is unused. The first record is
+  treated as new; retired-session history starts empty, while freshness and
+  identity checks still apply.
 - Controller status JSON is now version 4 (pressure fields removed). xtask and
   the host binary must be the same build. Existing policy checkpoints that
   carry the retired `pressure_shadow` field still load; it is dropped on save.
@@ -292,9 +289,10 @@ own authorization.
   priority = 80
   ```
 
-  The exact keys are settled with the Phase 1 config-file migration; this is
-  one config file, not a second config path. The first pool is Windows-only;
-  Linux members wait until the Windows pool works (see "Later").
+  The `[[vm]]` tables and `priority` exist now (with the other per-VM keys in
+  the example file); `pool_bytes` is added when the pool is wired, and the
+  one-VM limit in `HostConfig::load_single` is lifted then. The first pool is
+  Windows-only; Linux members wait until the Windows pool works (see "Later").
 - Persist pool state through the host (`pool_ledger` today keeps filesystem
   persistence in core; move it to host per the ownership table).
 - Each VM keeps its own one-command-in-flight and convergence rules. A guest
@@ -367,15 +365,6 @@ belong to future work after the current phase's exit criteria.
 - **Benefit:** simplify without confusing total RAM and device allocation.
 - **Verification/risk:** preserve physical floors, capacity limits, alignment,
   and overflow handling. A different policy is an intentional behavior change.
-
-### 7. IMPROVE — Configuration file
-
-- **Evidence/callers:** `host/src/config.rs`, `HostConfig::from_env`, reads
-  about 30 environment variables. One demand source and one policy remain; the
-  `file` raw transport serves local testing and `qga-file` production.
-- **Canonical direction:** the one config file with per-VM priority (row 8).
-- **Verification/risk:** migrate the systemd example with it; preserve
-  required transport settings, timeouts, permissions, and deliberate defaults.
 
 ### 8. KEEP / IMPROVE — Pool arbitration and ledger (Phase 4)
 
@@ -467,7 +456,6 @@ milestone system.
 | --- | --- | --- |
 | 0 | Complete the existing platform investigation | Record repeated grow/shrink outcomes, timing, stalls, and dommemstat usefulness here. Separately authorized live work; no implementation expansion. |
 | 1 | Define the minimum loop's contract | Specify telemetry source, whole-guest/device mapping, physical floor, aligned maximum, default-off shrink, timeout, restart ownership, and recovery before replacing policy. |
-| 8 | Move to the config file | Move settings to the one config file with per-VM priority. Remove settings and feature paths together; update xtask, Make targets, and IDE tasks to match. |
 | 9 | Finish Windows verification | Build a Windows binary and run the `windows` crate tests on Windows (they type-check on Linux but cannot run there; this includes the stop-signal interleaving test). Then verify native service behaviour. |
 
 For authorized implementation changes, the Linux regression gate while xtask

@@ -853,6 +853,7 @@ mod tests {
         HostConfig {
             vm_name: "guest".to_owned(),
             alias: "memory0".to_owned(),
+            priority: 100,
             min_memory_bytes: 2 * GIB,
             max_memory_bytes: 20 * GIB,
             grow_step_bytes: GIB,

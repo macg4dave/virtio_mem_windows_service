@@ -10,11 +10,10 @@ Group=virtio-mem-host
 # Provision non-interactive libvirt management authorization for this account
 # during installation. The daemon checks it before polling and never requests
 # a desktop password dialog or elevates itself.
-EnvironmentFile=/etc/virtio-mem-host/%i.conf
 Environment=LIBVIRT_DEFAULT_URI=qemu:///system
 Environment=HOME=/run/virtio-mem-host
 Environment=XDG_CACHE_HOME=/run/virtio-mem-host/.cache
-ExecStart=/usr/local/libexec/virtio-mem-host
+ExecStart=/usr/local/libexec/virtio-mem-host --config /etc/virtio-mem-host/%i.toml
 # Failure is fail-stop. Deployment monitoring decides when a reviewed restart
 # is appropriate; the unit does not create an automatic restart loop.
 Restart=no

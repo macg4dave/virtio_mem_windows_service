@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use virtio_mem_core::{
@@ -22,7 +23,12 @@ const DEFAULT_CONNECTION: &str = "qemu:///system";
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
+    /// Run the controller daemon.
+    Run {
+        config: PathBuf,
+    },
     Status {
+        config: PathBuf,
         connection: String,
     },
     Attest {
@@ -67,40 +73,55 @@ pub enum CliCommand {
     },
     ClearLatch {
         reason: String,
+        config: PathBuf,
         connection: String,
         apply: bool,
     },
 }
 
-pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
+pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
     let Some(mode) = args.first().map(String::as_str) else {
-        return Ok(None);
+        return Err(usage().to_owned());
     };
+    if mode == "--config" {
+        return match args {
+            [_, path] if !path.trim().is_empty() => Ok(CliCommand::Run {
+                config: PathBuf::from(path),
+            }),
+            _ => Err(usage().to_owned()),
+        };
+    }
     if !matches!(
         mode,
         "status" | "attest" | "snapshot" | "validate" | "resize" | "abandon-shrink" | "clear-latch"
     ) {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
     }
-    if mode == "status" {
-        let connection = match args {
-            [_] => DEFAULT_CONNECTION.to_owned(),
-            [_, option, value] if option == "--connect" && !value.is_empty() => value.clone(),
-            _ => return Err(usage().to_owned()),
+    if matches!(mode, "status" | "clear-latch") {
+        let mut index = 1;
+        let reason = if mode == "clear-latch" {
+            index += 1;
+            args.get(1)
+                .filter(|reason| !reason.trim().is_empty())
+                .ok_or_else(|| usage().to_owned())?
+                .clone()
+        } else {
+            String::new()
         };
-        return Ok(Some(CliCommand::Status { connection }));
-    }
-    if mode == "clear-latch" {
-        if args.len() < 2 || args.len() > 5 || args[1].trim().is_empty() {
-            return Err(usage().to_owned());
-        }
-        let reason = args[1].clone();
+        let mut config = None;
         let mut connection = DEFAULT_CONNECTION.to_owned();
         let mut apply = false;
-        let mut index = 2;
         while index < args.len() {
             match args[index].as_str() {
-                "--apply" if !apply => apply = true,
+                "--apply" if mode == "clear-latch" && !apply => apply = true,
+                "--config" if config.is_none() => {
+                    index += 1;
+                    config = Some(PathBuf::from(
+                        args.get(index)
+                            .filter(|value| !value.trim().is_empty())
+                            .ok_or_else(|| "--config requires a file path".to_owned())?,
+                    ));
+                }
                 "--connect" => {
                     index += 1;
                     connection = args
@@ -113,11 +134,17 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
             }
             index += 1;
         }
-        return Ok(Some(CliCommand::ClearLatch {
-            reason,
-            connection,
-            apply,
-        }));
+        let config = required_option(config, "--config")?;
+        return Ok(if mode == "status" {
+            CliCommand::Status { config, connection }
+        } else {
+            CliCommand::ClearLatch {
+                reason,
+                config,
+                connection,
+                apply,
+            }
+        });
     }
     let (minimum, maximum) = match mode {
         "resize" => (10, 13),
@@ -317,7 +344,7 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
         },
         _ => return Err(format!("unknown CLI command: {mode}")),
     };
-    Ok(Some(command))
+    Ok(command)
 }
 
 fn positive_option(value: Option<&String>, name: &str) -> Result<u64, String> {
@@ -332,7 +359,7 @@ fn required_option<T>(value: Option<T>, name: &str) -> Result<T, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host status [--connect URI]\n       virtio-mem-host clear-latch REASON [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
+    "Usage: virtio-mem-host --config FILE\n       virtio-mem-host status --config FILE [--connect URI]\n       virtio-mem-host clear-latch REASON --config FILE [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -346,13 +373,17 @@ fn run_with<H: HostMemorySource, W: Write>(
     output: &mut W,
 ) -> Result<(), String> {
     match command {
-        CliCommand::Status { connection } => run_configured_status(&connection, output),
+        CliCommand::Run { .. } => Err("the controller runs from main, not the CLI".to_owned()),
+        CliCommand::Status { config, connection } => {
+            run_configured_status(&config, &connection, output)
+        }
         CliCommand::ClearLatch {
             reason,
+            config,
             connection,
             apply,
         } => {
-            let config = HostConfig::from_env().map_err(|error| error.to_string())?;
+            let config = HostConfig::load_single(&config).map_err(|error| error.to_string())?;
             let virsh = Virsh::with_connection(
                 config.virsh_binary.clone(),
                 config.command_timeout,
@@ -498,8 +529,12 @@ fn run_with<H: HostMemorySource, W: Write>(
     }
 }
 
-fn run_configured_status<W: Write>(connection: &str, output: &mut W) -> Result<(), String> {
-    let config = HostConfig::from_env().map_err(|error| error.to_string())?;
+fn run_configured_status<W: Write>(
+    config: &Path,
+    connection: &str,
+    output: &mut W,
+) -> Result<(), String> {
+    let config = HostConfig::load_single(config).map_err(|error| error.to_string())?;
     let virsh = Virsh::with_connection(
         config.virsh_binary.clone(),
         config.command_timeout,
@@ -802,10 +837,18 @@ mod tests {
     #[test]
     fn parses_snapshot_and_resize_modes() {
         assert_eq!(
-            parse_args(&args(&["status", "--connect", "test:///default"])).expect("status"),
-            Some(CliCommand::Status {
+            parse_args(&args(&[
+                "status",
+                "--config",
+                "/etc/virtio-mem-host/guest.toml",
+                "--connect",
+                "test:///default"
+            ]))
+            .expect("status"),
+            CliCommand::Status {
+                config: PathBuf::from("/etc/virtio-mem-host/guest.toml"),
                 connection: "test:///default".to_owned(),
-            })
+            }
         );
         assert_eq!(
             parse_args(&args(&[
@@ -813,13 +856,16 @@ mod tests {
                 "reviewed recovery",
                 "--connect",
                 "test:///default",
+                "--config",
+                "guest.toml",
             ]))
             .expect("clear-latch"),
-            Some(CliCommand::ClearLatch {
+            CliCommand::ClearLatch {
                 reason: "reviewed recovery".to_owned(),
+                config: PathBuf::from("guest.toml"),
                 connection: "test:///default".to_owned(),
                 apply: false,
-            })
+            }
         );
         assert_eq!(
             parse_args(&args(&[
@@ -838,7 +884,7 @@ mod tests {
                 "--apply",
             ]))
             .expect("abandon-shrink"),
-            Some(CliCommand::AbandonShrink {
+            CliCommand::AbandonShrink {
                 vm: "guest".to_owned(),
                 alias: "memory0".to_owned(),
                 immutable_target_bytes: 4 * GIB,
@@ -848,7 +894,7 @@ mod tests {
                 command_timeout_seconds: 4,
                 sample_interval_seconds: 2,
                 convergence_timeout_seconds: 8,
-            })
+            }
         );
         assert_eq!(
             parse_args(&args(&[
@@ -859,12 +905,12 @@ mod tests {
                 "4"
             ]))
             .expect("snapshot"),
-            Some(CliCommand::Snapshot {
+            CliCommand::Snapshot {
                 vm: "guest".to_owned(),
                 alias: "memory0".to_owned(),
                 connection: DEFAULT_CONNECTION.to_owned(),
                 command_timeout_seconds: 4,
-            })
+            }
         );
         assert!(matches!(
             parse_args(&args(&[
@@ -881,7 +927,7 @@ mod tests {
                 "--apply"
             ]))
             .expect("resize"),
-            Some(CliCommand::Resize { apply: true, .. })
+            CliCommand::Resize { apply: true, .. }
         ));
         assert!(matches!(
             parse_args(&args(&[
@@ -893,8 +939,18 @@ mod tests {
                 "4"
             ]))
             .expect("attest"),
-            Some(CliCommand::Attest { .. })
+            CliCommand::Attest { .. }
         ));
+    }
+
+    #[test]
+    fn the_controller_runs_from_one_config_file() {
+        assert_eq!(
+            parse_args(&args(&["--config", "/etc/virtio-mem-host/guest.toml"])),
+            Ok(CliCommand::Run {
+                config: PathBuf::from("/etc/virtio-mem-host/guest.toml"),
+            })
+        );
     }
 
     #[test]
@@ -903,6 +959,11 @@ mod tests {
         assert!(parse_args(&args(&["snapshot", "guest", "memory0", "--connect"])).is_err());
         assert!(parse_args(&args(&["snapshot", "guest", "memory0", "--unknown"])).is_err());
         assert!(parse_args(&args(&["unknown"])).is_err());
+        assert!(parse_args(&[]).is_err());
+        assert!(parse_args(&args(&["--config"])).is_err());
+        assert!(parse_args(&args(&["status"])).is_err());
+        assert!(parse_args(&args(&["status", "--config", "a", "--apply"])).is_err());
+        assert!(parse_args(&args(&["clear-latch", "reason", "--apply"])).is_err());
         assert!(parse_args(&args(&["validate", "guest", "bad/alias"])).is_err());
         assert!(parse_args(&args(&[
             "resize",
