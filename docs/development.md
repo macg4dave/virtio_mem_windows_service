@@ -157,9 +157,10 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   never retries them.
 - **Temporary viomem workaround** (`VIOMEM WORKAROUND` markers in
   `host/src/runtime.rs`; remove once a patched driver is deployed): each time
-  a held shrink stops moving, the host requests less: one block (8 MiB on
-  `win11_gpu`) at first, doubling up to 32 blocks while each step is released
-  in full, back to one after a short release, never past the guest's goal. Observed live: each new, lower requested size frees exactly
+  a held shrink stops moving, the host requests less: one block (64 MiB on
+  `win11_gpu`) at first, doubling up to 256 MiB while each step is released
+  in full, back to one block after a short release, never past the guest's
+  goal. Observed live with 8 MiB blocks: each new, lower requested size frees exactly
   the block it adds to viomem's removal window (`plugged - requested` from the
   lowest plugged block), and the unmovable gap below `current` stays the same;
   re-sending a target already tried frees nothing. Extension stops, and the

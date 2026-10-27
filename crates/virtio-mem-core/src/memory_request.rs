@@ -128,6 +128,32 @@ pub enum MemoryOutcome {
     Uncertain,
 }
 
+/// Longest accepted result or latch reason, in bytes.
+pub const MAX_REASON_BYTES: usize = 1024;
+
+/// Make free text, such as an external command's error, a valid reason:
+/// control characters (newlines included) become spaces, the text is cut to
+/// `MAX_REASON_BYTES` on a character boundary, and it is never empty.
+pub fn bounded_reason(text: &str) -> String {
+    let mut reason = text
+        .split(|character: char| character.is_control() || character.is_whitespace())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    if reason.len() > MAX_REASON_BYTES {
+        let mut end = MAX_REASON_BYTES;
+        while !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        reason.truncate(end);
+    }
+    if reason.is_empty() {
+        "unspecified".to_owned()
+    } else {
+        reason
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MemoryResult {
@@ -159,7 +185,9 @@ impl MemoryResult {
             return Err("memory result has invalid observation/actual bytes".to_owned());
         }
         if self.reason.as_ref().is_some_and(|reason| {
-            reason.is_empty() || reason.len() > 1024 || reason.chars().any(char::is_control)
+            reason.is_empty()
+                || reason.len() > MAX_REASON_BYTES
+                || reason.chars().any(char::is_control)
         }) {
             return Err("invalid memory result reason".to_owned());
         }
@@ -323,8 +351,11 @@ impl MemoryRequestJournal {
         Ok(RequestAdmission::New)
     }
 
-    pub fn record_result(&mut self, result: MemoryResult) -> Result<(), String> {
+    /// Reasons are bounded first, so an external error's text cannot make
+    /// an otherwise valid result unrecordable.
+    pub fn record_result(&mut self, mut result: MemoryResult) -> Result<(), String> {
         self.validate()?;
+        result.reason = result.reason.as_deref().map(bounded_reason);
         let request = self
             .request
             .as_ref()
@@ -346,6 +377,20 @@ impl MemoryRequestJournal {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bounded_reason_makes_external_errors_recordable() {
+        let reason = bounded_reason(
+            "read live QEMU argv: error: failed to connect\nerror: authentication failed:\r\n",
+        );
+        assert_eq!(
+            reason,
+            "read live QEMU argv: error: failed to connect error: authentication failed:"
+        );
+        assert_eq!(bounded_reason("\n\t"), "unspecified");
+        let long = bounded_reason(&"é".repeat(MAX_REASON_BYTES));
+        assert!(long.len() <= MAX_REASON_BYTES && long.chars().all(|c| c == 'é'));
+    }
+
     fn request() -> MemoryRequest {
         MemoryRequest {
             version: MEMORY_REQUEST_VERSION,

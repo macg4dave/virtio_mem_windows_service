@@ -8,7 +8,7 @@ use std::sync::atomic::AtomicBool;
 use virtio_mem_core::{GuestInputStatus, VirtioMemState};
 
 use crate::attestation::AttestedCompatibilitySource;
-use crate::checkpoint::{clear_actuation_latch, read_controller_status};
+use crate::checkpoint::{actuation_latched, clear_actuation_latch, read_controller_status};
 use crate::compatibility_source::CompatibilitySource;
 use crate::config::HostConfig;
 use crate::guest_channel::{GuestChannel, GuestLink, SystemUnixClock, UnixClock};
@@ -168,6 +168,11 @@ fn run_clear_latch<W: Write>(
         config.alias.clone(),
         attested(&config, &virsh),
     );
+    // Settling moves the device: never do it under a controller that is not
+    // latched, whose pending resize it would turn into a conflict.
+    if !actuation_latched(&config, fingerprint(&config)?)? {
+        return Err("target-controller actuation is not latched".to_owned());
+    }
     let live = settle_stuck_shrink(&state_source, &sink, apply, output)?;
     let message = clear_actuation_latch(
         &config,

@@ -1,7 +1,7 @@
 # Total guest RAM limits, including all memory Windows can see. No boot/base
 # RAM setting is needed: the policy derives the device portion from live state.
 # Sizes are binary ("1GB" = 2^30 bytes). Use multiples of the live device
-# block size: 8 MiB for this VM. The block size is configured in libvirt XML.
+# block size: 64 MiB for this VM. The block size is configured in libvirt XML.
 # The VM's live memory geometry must be capable of reaching these limits.
 min_ram = "6GB"
 max_ram = "27GB"

@@ -299,6 +299,16 @@ pub fn read_controller_status(
     Ok(snapshot)
 }
 
+/// Whether the checkpoint is latched. The checkpoint lock is released on
+/// return, so a later `clear_actuation_latch` can take it.
+pub fn actuation_latched(
+    config: &HostConfig,
+    compatibility_fingerprint: String,
+) -> Result<bool, String> {
+    let (_checkpoint, control) = Checkpoint::open_with(config, compatibility_fingerprint, true)?;
+    Ok(control.latched())
+}
+
 /// Clears a latch on converged live state, stamps the current attestation and
 /// gives any unresolved request a terminal result from the observed movement,
 /// so the guest can reassess. Dry-run unless `apply`.

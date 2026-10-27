@@ -283,6 +283,21 @@ fn draw_header(frame: &mut Frame, area: Rect, command: &Command, live: &Live) {
         )),
         Span::styled(live.directory.display().to_string(), DIM),
     ]);
+    let incidents = live.summary.incident_total();
+    let line = if incidents == 0 {
+        line
+    } else {
+        let badge = format!(
+            " {incidents} INCIDENT{} ",
+            if incidents == 1 { "" } else { "S" }
+        );
+        let mut spans = vec![Span::styled(
+            badge,
+            Style::new().fg(Color::White).bg(BAD).bold(),
+        )];
+        spans.extend(line.spans);
+        Line::from(spans)
+    };
     frame.render_widget(Paragraph::new(line), area);
 }
 
@@ -340,16 +355,32 @@ fn draw_host(frame: &mut Frame, area: Rect, live: &Live) {
                 .qemu_rss_bytes
                 .map_or_else(|| "unknown".to_owned(), gib),
         ),
-        row(
-            "controller",
-            if sample.controller_active {
-                Span::styled("active", GOOD)
-            } else {
-                Span::styled("INACTIVE", Style::new().fg(BAD).bold())
-            },
-        ),
+        row("controller", controller_span(sample)),
     ];
     frame.render_widget(Paragraph::new(lines), rest);
+}
+
+fn controller_span(sample: &super::Sample) -> Span<'static> {
+    let alarm = Style::new().fg(BAD).bold();
+    match &sample.controller {
+        Some(status) if status.active() => {
+            let mut text = status
+                .main_pid
+                .map_or_else(|| "active".to_owned(), |pid| format!("pid {pid}"));
+            if let Some(bytes) = status.memory_bytes {
+                text.push_str(&format!(", {} MiB", mib(bytes)));
+            }
+            if let Some(percent) = sample.controller_cpu_pct {
+                text.push_str(&format!(", {percent:.1}% cpu"));
+            }
+            Span::styled(text, GOOD)
+        }
+        Some(status) if status.failed() => {
+            Span::styled(format!("FAILED: {}", status.exit()), alarm)
+        }
+        Some(status) => Span::styled(format!("INACTIVE ({})", status.active_state), alarm),
+        None => Span::styled("INACTIVE (systemctl unreadable)", alarm),
+    }
 }
 
 fn draw_device(frame: &mut Frame, area: Rect, live: &Live) {
@@ -632,6 +663,7 @@ fn minimum(stat: &Stat) -> String {
 fn draw_requests(frame: &mut Frame, area: Rect, live: &Live) {
     let summary = &live.summary;
     let count = |name: &str| summary.events.get(name).copied().unwrap_or(0);
+    let incidents = |component: &str| summary.incident_counts.get(component).copied().unwrap_or(0);
     let mut lines: Vec<Line> = summary
         .requests
         .iter()
@@ -678,6 +710,12 @@ fn draw_requests(frame: &mut Frame, area: Rect, live: &Live) {
             problem("read failures", summary.guest_read_failures),
             problem("stale", summary.guest_stale_reads),
         ]),
+        Line::from(vec![
+            Span::styled(format!("{:<14}", "incidents"), DIM),
+            problem("controller", incidents("controller")),
+            problem("guest service", incidents("guest_service")),
+            problem("vm", incidents("vm")),
+        ]),
         row(
             "minimum avail",
             format!(
@@ -709,7 +747,18 @@ fn problem(label: &str, count: u64) -> Span<'static> {
 
 fn event_colour(event: &JournalEvent) -> Color {
     match event.name.as_deref() {
-        Some("actuation_latched" | "ownership_conflict" | "live_state_unavailable") => BAD,
+        Some(
+            "actuation_latched"
+            | "ownership_conflict"
+            | "live_state_unavailable"
+            | "metrics_controller_failed"
+            | "metrics_qemu_exited"
+            | "metrics_qemu_restarted"
+            | "metrics_guest_session_changed"
+            | "metrics_guest_agent_lost"
+            | "metrics_guest_publication_stalled",
+        ) => BAD,
+        Some(name) if name.starts_with("metrics_") => WARN,
         Some("guest_input_invalid" | "guest_status_unpublished" | "resize_settled_short") => WARN,
         Some("request_completed") => GOOD,
         Some("controller_decision" | "resize_requested") => INFO,
@@ -737,7 +786,10 @@ fn draw_events(frame: &mut Frame, area: Rect, live: &Live) {
             ListItem::new(Line::styled(line, event_colour(event)))
         })
         .collect();
-    frame.render_widget(List::new(items).block(panel("Controller events")), area);
+    frame.render_widget(
+        List::new(items).block(panel("Controller and lifecycle events")),
+        area,
+    );
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, live: &Live, ui: &Ui) {
@@ -890,18 +942,25 @@ mod tests {
                 swap_free: 3 << 30,
             },
             qemu_rss_bytes: Some(9 << 30),
-            controller_active: false,
+            controller: Some(super::super::UnitStatus::parse(
+                "ActiveState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=101",
+            )),
             device: Some(device),
             guest: Some(GuestRead {
                 elapsed: Duration::from_millis(280),
                 telemetry: Ok(telemetry.clone()),
             }),
+            ..Sample::default()
         });
+        live.summary
+            .add_incident(&serde_json::json!({"component": "controller"}));
         live.guest = Some((unix_millis(), telemetry));
         live.mark("started 12 GB allocation".to_owned());
         let text = screen(&live, &Ui::default(), 120, 40);
         for expected in [
-            "INACTIVE",
+            "1 INCIDENT ",
+            "FAILED: exit status 101",
+            "controller 1",
             "shrinking, 992M to go",
             "-1.00G",
             "load  55%",

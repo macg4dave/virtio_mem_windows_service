@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use virtio_mem_core::{
-    allocate_pool, CommandDirection, CommandOwnership, HostMemoryStatus, MemoryOperation,
-    MemoryOutcome, MemoryRequest, MemoryResourceNotificationState, MemoryResult, PoolMember,
-    RequestAdmission, VirtioMemState, MEMORY_REQUEST_VERSION, MIN_BLOCK_SIZE_BYTES,
+    allocate_pool, bounded_reason, CommandDirection, CommandOwnership, HostMemoryStatus,
+    MemoryOperation, MemoryOutcome, MemoryRequest, MemoryResourceNotificationState, MemoryResult,
+    PoolMember, RequestAdmission, VirtioMemState, MEMORY_REQUEST_VERSION, MIN_BLOCK_SIZE_BYTES,
 };
 
 use crate::checkpoint::{
@@ -688,21 +688,22 @@ where
     // starts at the lowest plugged block and is `plugged - requested` long,
     // once per device notification. Memory at the bottom of that window that
     // Windows cannot evacuate stops the removal for good. Observed live on
-    // win11_gpu: each request one block (8 MiB) lower frees exactly the block
+    // win11_gpu: each request one block (8 MiB then) lower frees exactly the block
     // it adds to the window, and the gap below `current` stays the same;
     // re-sending a target already tried (bouncing up and back) frees nothing.
     // So each time a held shrink stops moving, request less, and settle as
     // soon as `current` reaches the guest's goal: the admitted request's
     // bytes below the allocation it started from, never below `min_ram`.
     // The step starts at one block and doubles, up to
-    // `MAX_EXTENSION_BLOCKS`, while each step is released in full; a short
+    // `MAX_EXTENSION_BYTES`, while each step is released in full; a short
     // release drops it back to one block. It never steps past the goal.
     //
     // TO REMOVE once a patched viomem is deployed: delete this block and
     // the marked branch in `observe_pending`.
     // =====================================================================
 
-    const MAX_EXTENSION_BLOCKS: u64 = 32;
+    /// Largest single extension, whatever the device block size.
+    const MAX_EXTENSION_BYTES: u64 = 256 * 1024 * 1024;
 
     fn extend_shrink(
         &mut self,
@@ -753,7 +754,7 @@ where
                 if operation == operation_id
                     && from.saturating_sub(state.current_bytes) >= step * block =>
             {
-                (step * 2).min(Self::MAX_EXTENSION_BLOCKS)
+                (step * 2).min((Self::MAX_EXTENSION_BYTES / block).max(1))
             }
             _ => 1,
         };
@@ -1092,6 +1093,7 @@ where
         if self.control.latched() {
             return Ok(());
         }
+        let reason = &bounded_reason(reason);
         self.control.latch_reason = Some(reason.to_owned());
         if let (Some(request), None) = (&self.control.journal.request, &self.control.journal.result)
         {

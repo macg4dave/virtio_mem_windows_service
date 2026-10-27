@@ -4,6 +4,9 @@
 //! controller journal entries go to `events.jsonl`; `summary.json` keeps
 //! running minima, maxima, request latencies and event counts, and is
 //! rewritten every minute and at exit, so a killed run still leaves one.
+//! `health` follows the controller unit, QEMU, the domain and the guest
+//! service; crashes and restarts go to `incidents.jsonl` with an evidence
+//! bundle each under `incidents/`.
 //!
 //! On a terminal it runs a live UI (`ui`) where the sample and guest-read
 //! periods can be changed, logging paused and markers added while it records;
@@ -12,6 +15,7 @@
 //! Like `watch`, it never resizes, clears latches or restarts anything, and
 //! never reads `.host-status`.
 
+mod health;
 mod ui;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -29,6 +33,7 @@ use virtio_mem_host::config::HostConfig;
 use virtio_mem_host::qga::{GuestFileReader, VirshGuestFiles};
 use virtio_mem_host::virsh::Virsh;
 
+use self::health::{BundleContext, CpuMeter, Incident, Lifecycle, UnitStatus};
 use crate::process;
 use crate::watch::{self, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES};
 
@@ -38,6 +43,8 @@ const SUMMARY_PERIOD: Duration = Duration::from_secs(60);
 const HISTORY: usize = 5000;
 /// Journal events kept for the UI list.
 const RECENT_EVENTS: usize = 200;
+/// `samples.csv` rows copied into an incident bundle.
+const BUNDLE_ROWS: usize = 60;
 
 pub const HELP: &str = "Metrics options (read-only stress-test recorder):
   --config PATH                 Required host_list.toml; loads sibling global
@@ -54,7 +61,9 @@ pub const HELP: &str = "Metrics options (read-only stress-test recorder):
   --duration-seconds N          Stop after N seconds; default until quit.
   --plain                       One line per sample instead of the live UI
                                 (also used when stdout is not a terminal).
-Writes samples.csv, events.jsonl and summary.json into the run directory.
+Writes samples.csv, events.jsonl, incidents.jsonl and summary.json into the
+run directory, and an evidence bundle per incident (controller failure, guest
+service restart, QEMU exit, crashed domain) under incidents/.
 Guest memory is read from the built-in request/control publication over QGA.
 In the UI: -/+ sample period, [/] guest-read period, space pause logging,
 n sample now, m add a marker, s save summary, w chart window, q quit.
@@ -231,8 +240,13 @@ fn lock(live: &Mutex<Live>) -> MutexGuard<'_, Live> {
 
 /// The run directory's open output files.
 struct Recorder {
+    directory: PathBuf,
     samples: BufWriter<File>,
     events: BufWriter<File>,
+    incidents: BufWriter<File>,
+    incident_count: u32,
+    /// The newest `samples.csv` rows, logged or not, for incident bundles.
+    recent_rows: VecDeque<String>,
 }
 
 impl Recorder {
@@ -244,13 +258,58 @@ impl Recorder {
             .and_then(|()| samples.flush())
             .map_err(write_error)?;
         Ok(Self {
+            directory: directory.to_owned(),
             samples,
             events: create(&directory.join("events.jsonl"))?,
+            incidents: create(&directory.join("incidents.jsonl"))?,
+            incident_count: 0,
+            recent_rows: VecDeque::new(),
         })
     }
 
     fn event(&mut self, event: &JournalEvent) -> Result<(), String> {
         writeln!(self.events, "{}", event.to_json()).map_err(write_error)
+    }
+
+    fn remember(&mut self, row: String) {
+        self.recent_rows.push_back(row);
+        if self.recent_rows.len() > BUNDLE_ROWS {
+            self.recent_rows.pop_front();
+        }
+    }
+
+    /// Writes the incident's bundle and `incidents.jsonl` record, returning
+    /// the record.
+    fn incident(
+        &mut self,
+        incident: &Incident,
+        command: &Command,
+        repo: &Path,
+    ) -> Result<Value, String> {
+        self.incident_count += 1;
+        let number = self.incident_count;
+        let name = format!(
+            "incidents/{number:03}-{}-{}.txt",
+            compact_utc(incident.unix_millis),
+            incident.component.name()
+        );
+        let context = BundleContext {
+            vm: &command.vm,
+            unit: &command.unit,
+            repo,
+            recent_rows: std::iter::once(CSV_HEADER.to_owned())
+                .chain(self.recent_rows.iter().cloned())
+                .collect(),
+        };
+        let path = self.directory.join(&name);
+        std::fs::create_dir_all(self.directory.join("incidents"))
+            .and_then(|()| std::fs::write(&path, health::bundle_text(number, incident, &context)))
+            .map_err(|error| format!("write {}: {error}", path.display()))?;
+        let record = health::record(number, incident, &name);
+        writeln!(self.incidents, "{record}")
+            .and_then(|()| self.incidents.flush())
+            .map_err(write_error)?;
+        Ok(record)
     }
 }
 
@@ -272,7 +331,8 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
     let live = Mutex::new(Live::new(command, directory.clone(), started_millis));
     let result = if !command.plain && std::io::stdout().is_terminal() {
         std::thread::scope(|scope| {
-            let sampler = scope.spawn(|| record(command, repo, recorder, &live, &stop, |_, _| {}));
+            let sampler =
+                scope.spawn(|| record(command, repo, recorder, &live, &stop, |_, _, _| {}));
             let shown = ui::run(command, &live, &stop);
             stop.store(true, Ordering::Release);
             let recorded = sampler
@@ -286,9 +346,26 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
             command.vm,
             directory.display()
         );
-        record(command, repo, recorder, &live, &stop, |sample, events| {
-            println!("{}", sample.progress(events));
-        })
+        record(
+            command,
+            repo,
+            recorder,
+            &live,
+            &stop,
+            |sample, events, incidents| {
+                println!("{}", sample.progress(events));
+                for incident in incidents {
+                    println!(
+                        "INCIDENT {}: {} -> {}",
+                        incident["number"],
+                        incident["summary"].as_str().unwrap_or_default(),
+                        directory
+                            .join(incident["bundle"].as_str().unwrap_or_default())
+                            .display()
+                    );
+                }
+            },
+        )
     };
     let live = lock(&live);
     live.write_summary()?;
@@ -298,20 +375,23 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
 }
 
 /// Samples until `stop` or `--duration-seconds`, writing each sample and new
-/// journal entry unless paused.
+/// journal entry unless paused. Lifecycle events and incidents are written
+/// even while paused, like markers.
 fn record(
     command: &Command,
     repo: &Path,
     mut recorder: Recorder,
     live: &Mutex<Live>,
     stop: &AtomicBool,
-    mut progress: impl FnMut(&Sample, usize),
+    mut progress: impl FnMut(&Sample, usize, &[Value]),
 ) -> Result<(), String> {
     let virsh = Virsh::with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
     let guest_files = VirshGuestFiles::new(virsh.clone(), &command.vm);
     let started_millis = lock(live).started_millis;
     let mut journal = JournalFollower::start(&command.unit, started_millis, repo);
     let mut qemu = QemuProcess::default();
+    let mut cpu = CpuMeter::default();
+    let mut lifecycle = Lifecycle::new(command.telemetry_max_age.as_millis() as u64);
     let mut guest_read: Option<Instant> = None;
     let mut summary_written = Instant::now();
     let clock = Instant::now();
@@ -335,29 +415,41 @@ fn record(
             } else {
                 None
             };
+            let controller = UnitStatus::read(&command.unit, repo);
+            let (qemu_pid, qemu_rss_bytes) = qemu.sample(&command.vm);
             let sample = Sample {
                 unix_millis: now,
                 elapsed: clock.elapsed(),
                 host: watch::read_meminfo()?,
-                qemu_rss_bytes: qemu.rss_bytes(&command.vm),
-                controller_active: unit_active(&command.unit, repo),
+                qemu_pid,
+                qemu_rss_bytes,
+                controller_cpu_pct: cpu.percent(controller.as_ref(), now),
+                controller,
                 device: watch::device_state(&virsh, &command.vm, &command.alias),
+                vm_state: health::vm_state(&virsh, &command.vm),
                 guest,
             };
             let new_events = journal.read(repo);
+            let observed = lifecycle.observe(&sample, &new_events);
+            let row = sample.csv_row(command.host_floor_bytes);
             if !controls.paused {
-                writeln!(
-                    recorder.samples,
-                    "{}",
-                    sample.csv_row(command.host_floor_bytes)
-                )
-                .and_then(|()| recorder.samples.flush())
-                .map_err(write_error)?;
+                writeln!(recorder.samples, "{row}")
+                    .and_then(|()| recorder.samples.flush())
+                    .map_err(write_error)?;
                 for event in &new_events {
                     recorder.event(event)?;
                 }
             }
+            recorder.remember(row);
+            for event in &observed.events {
+                recorder.event(event)?;
+            }
             recorder.events.flush().map_err(write_error)?;
+            let incidents = observed
+                .incidents
+                .iter()
+                .map(|incident| recorder.incident(incident, command, repo))
+                .collect::<Result<Vec<_>, _>>()?;
             {
                 let mut live = lock(live);
                 if !controls.paused {
@@ -369,6 +461,16 @@ fn record(
                 }
                 for event in &new_events {
                     live.show_event(event.clone());
+                }
+                for event in &observed.events {
+                    live.summary.add_event(event);
+                    live.show_event(event.clone());
+                }
+                for incident in &incidents {
+                    live.summary.add_incident(incident);
+                }
+                if !incidents.is_empty() {
+                    live.write_summary()?;
                 }
                 if let Some(read) = &sample.guest {
                     match &read.telemetry {
@@ -396,7 +498,11 @@ fn record(
                 }
                 live.latest = Some(sample.clone());
             }
-            progress(&sample, new_events.len());
+            progress(
+                &sample,
+                new_events.len() + observed.events.len(),
+                &incidents,
+            );
 
             if summary_written.elapsed() >= SUMMARY_PERIOD {
                 lock(live).write_summary()?;
@@ -455,12 +561,6 @@ fn unix_millis() -> u64 {
     crate::process::unix_millis().unwrap_or_default()
 }
 
-fn unit_active(unit: &str, repo: &Path) -> bool {
-    let arguments = ["is-active", unit].map(process::os);
-    process::bounded_text("systemctl", &arguments, repo, COMMAND_TIMEOUT)
-        .is_ok_and(|state| state.trim() == "active")
-}
-
 // ---- Guest ------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -492,12 +592,13 @@ struct QemuProcess {
 }
 
 impl QemuProcess {
-    fn rss_bytes(&mut self, vm: &str) -> Option<u64> {
+    /// The process id and resident set size; no pid when no QEMU runs the VM.
+    fn sample(&mut self, vm: &str) -> (Option<u32>, Option<u64>) {
         if let Some(rss) = self.pid.and_then(read_rss) {
-            return Some(rss);
+            return (self.pid, Some(rss));
         }
         self.pid = find_qemu(vm);
-        self.pid.and_then(read_rss)
+        (self.pid, self.pid.and_then(read_rss))
     }
 }
 
@@ -538,14 +639,19 @@ fn parse_rss(status: &str) -> Option<u64> {
 
 // ---- Samples ----------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 struct Sample {
     unix_millis: u64,
     elapsed: Duration,
     host: HostMemory,
+    qemu_pid: Option<u32>,
     qemu_rss_bytes: Option<u64>,
-    controller_active: bool,
+    /// `None` when `systemctl show` failed.
+    controller: Option<UnitStatus>,
+    controller_cpu_pct: Option<f64>,
     device: Option<VirtioMemState>,
+    /// `virsh domstate --reason`, e.g. `running (booted)`.
+    vm_state: Option<String>,
     /// Present only on samples that read the guest.
     guest: Option<GuestRead>,
 }
@@ -558,7 +664,10 @@ guest_read_ok,guest_read_ms,guest_publication_age_ms,guest_sequence,\
 guest_total_mib,guest_available_mib,guest_load_pct,\
 guest_commit_mib,guest_commit_limit_mib,guest_commit_headroom_mib,guest_cache_mib,\
 guest_signal,\
-guest_request,guest_request_mib,guest_request_sequence";
+guest_request,guest_request_mib,guest_request_sequence,\
+controller_state,controller_pid,controller_memory_mib,controller_cpu_pct,controller_restarts,\
+qemu_pid,vm_state,\
+guest_session,guest_commit_peak_mib,guest_kernel_paged_mib,guest_kernel_nonpaged_mib";
 
 fn mib(bytes: u64) -> u64 {
     bytes / MIB
@@ -578,6 +687,10 @@ fn signal_name(telemetry: &RawTelemetryEnvelope) -> &'static str {
 }
 
 impl Sample {
+    fn controller_active(&self) -> bool {
+        self.controller.as_ref().is_some_and(UnitStatus::active)
+    }
+
     fn telemetry(&self) -> Option<&RawTelemetryEnvelope> {
         self.guest.as_ref()?.telemetry.as_ref().ok()
     }
@@ -593,7 +706,7 @@ impl Sample {
             signed_mib(host.available, host_floor_bytes).to_string(),
             mib(host.swap_total.saturating_sub(host.swap_free)).to_string(),
             optional(self.qemu_rss_bytes.map(|rss| mib(rss).to_string())),
-            u8::from(self.controller_active).to_string(),
+            u8::from(self.controller_active()).to_string(),
         ];
         match self.device {
             Some(device) => columns.extend([
@@ -632,6 +745,39 @@ impl Sample {
                 ]);
             }
             None => columns.extend(std::iter::repeat_n(String::new(), 13)),
+        }
+        let controller = self.controller.as_ref();
+        columns.extend([
+            optional(controller.map(UnitStatus::state)),
+            optional(
+                controller
+                    .and_then(|status| status.main_pid)
+                    .map(|pid| pid.to_string()),
+            ),
+            optional(
+                controller
+                    .and_then(|status| status.memory_bytes)
+                    .map(|bytes| mib(bytes).to_string()),
+            ),
+            optional(
+                self.controller_cpu_pct
+                    .map(|percent| format!("{percent:.1}")),
+            ),
+            optional(controller.map(|status| status.restarts.to_string())),
+            optional(self.qemu_pid.map(|pid| pid.to_string())),
+            optional(self.vm_state.as_ref().map(|state| state.replace(',', ";"))),
+        ]);
+        match self.telemetry() {
+            Some(telemetry) => {
+                let memory = &telemetry.memory;
+                columns.extend([
+                    telemetry.session_id.replace(',', ";"),
+                    mib(memory.commit_peak_bytes).to_string(),
+                    mib(memory.kernel_paged_bytes).to_string(),
+                    mib(memory.kernel_nonpaged_bytes).to_string(),
+                ]);
+            }
+            None => columns.extend(std::iter::repeat_n(String::new(), 4)),
         }
         columns.join(",")
     }
@@ -675,8 +821,12 @@ impl Sample {
             (Some(_), None) => line.push_str(" | guest read failed"),
             (None, None) => {}
         }
-        if !self.controller_active {
-            line.push_str(" | CONTROLLER INACTIVE");
+        match &self.controller {
+            Some(status) if status.failed() => {
+                line.push_str(&format!(" | CONTROLLER FAILED ({})", status.exit()));
+            }
+            Some(status) if status.active() => {}
+            _ => line.push_str(" | CONTROLLER INACTIVE"),
         }
         if new_events > 0 {
             line.push_str(&format!(" | +{new_events} events"));
@@ -898,7 +1048,18 @@ struct Summary {
     refusals: BTreeMap<String, u64>,
     events: BTreeMap<String, u64>,
     controller_pids: Vec<u32>,
+    controller_memory_mib: Stat,
+    controller_cpu_pct: Stat,
+    vm_states: BTreeMap<String, u64>,
+    guest_sessions: Vec<String>,
+    guest_kernel_paged_mib: Stat,
+    guest_kernel_nonpaged_mib: Stat,
+    publication_stall_seconds: Stat,
+    agent_outage_seconds: Stat,
     notable: Vec<Value>,
+    /// `incidents.jsonl` records, also kept here.
+    incidents: Vec<Value>,
+    incident_counts: BTreeMap<String, u64>,
 }
 
 /// Events copied in full into the summary.
@@ -944,14 +1105,52 @@ impl Summary {
             refusals: BTreeMap::new(),
             events: BTreeMap::new(),
             controller_pids: Vec::new(),
+            controller_memory_mib: Stat::default(),
+            controller_cpu_pct: Stat::default(),
+            vm_states: BTreeMap::new(),
+            guest_sessions: Vec::new(),
+            guest_kernel_paged_mib: Stat::default(),
+            guest_kernel_nonpaged_mib: Stat::default(),
+            publication_stall_seconds: Stat::default(),
+            agent_outage_seconds: Stat::default(),
             notable: Vec::new(),
+            incidents: Vec::new(),
+            incident_counts: BTreeMap::new(),
         }
+    }
+
+    fn add_incident(&mut self, record: &Value) {
+        let component = record["component"].as_str().unwrap_or("unknown");
+        *self
+            .incident_counts
+            .entry(component.to_owned())
+            .or_default() += 1;
+        if self.incidents.len() < 200 {
+            self.incidents.push(record.clone());
+        }
+    }
+
+    fn incident_total(&self) -> u64 {
+        self.incident_counts.values().sum()
     }
 
     fn add_sample(&mut self, sample: &Sample) {
         self.samples += 1;
-        if !sample.controller_active {
+        if !sample.controller_active() {
             self.controller_inactive_samples += 1;
+        }
+        if let Some(bytes) = sample
+            .controller
+            .as_ref()
+            .and_then(|status| status.memory_bytes)
+        {
+            self.controller_memory_mib.add(mib(bytes) as f64);
+        }
+        if let Some(percent) = sample.controller_cpu_pct {
+            self.controller_cpu_pct.add(percent);
+        }
+        if let Some(state) = &sample.vm_state {
+            *self.vm_states.entry(state.clone()).or_default() += 1;
         }
         let host = &sample.host;
         self.host_available_mib.add(mib(host.available) as f64);
@@ -999,6 +1198,13 @@ impl Summary {
             .add(signed_mib(memory.commit_limit_bytes, memory.commit_total_bytes) as f64);
         self.guest_load_pct
             .add(f64::from(memory.memory_load_percent));
+        self.guest_kernel_paged_mib
+            .add(mib(memory.kernel_paged_bytes) as f64);
+        self.guest_kernel_nonpaged_mib
+            .add(mib(memory.kernel_nonpaged_bytes) as f64);
+        if !self.guest_sessions.contains(&telemetry.session_id) {
+            self.guest_sessions.push(telemetry.session_id.clone());
+        }
         *self
             .guest_signals
             .entry(signal_name(telemetry))
@@ -1050,9 +1256,21 @@ impl Summary {
                         .add((event.unix_micros / 1000).saturating_sub(issued) as f64 / 1000.0);
                 }
             }
+            "metrics_guest_publication_resumed" => {
+                if let Ok(seconds) = field("stalled_seconds").parse() {
+                    self.publication_stall_seconds.add(seconds);
+                }
+            }
+            "metrics_guest_agent_restored" => {
+                if let Ok(seconds) = field("outage_seconds").parse() {
+                    self.agent_outage_seconds.add(seconds);
+                }
+            }
             _ => {}
         }
+        // Lifecycle events from `health` are all notable.
         let notable = NOTABLE_EVENTS.contains(&name.as_str())
+            || name.starts_with("metrics_")
             || (event.name.is_none() && event.pid == Some(1));
         if notable && self.notable.len() < 200 {
             self.notable.push(event.to_json());
@@ -1092,6 +1310,9 @@ impl Summary {
                 "qemu_rss_mib": self.qemu_rss_mib.json(),
                 "controller_inactive_samples": self.controller_inactive_samples,
                 "controller_pids": self.controller_pids,
+                "controller_memory_mib": self.controller_memory_mib.json(),
+                "controller_cpu_pct": self.controller_cpu_pct.json(),
+                "vm_state_samples": self.vm_states,
             },
             "device": {
                 "current_mib": self.device_current_mib.json(),
@@ -1107,13 +1328,22 @@ impl Summary {
                 "available_mib": self.guest_available_mib.json(),
                 "commit_headroom_mib": self.guest_commit_headroom_mib.json(),
                 "load_pct": self.guest_load_pct.json(),
+                "kernel_paged_mib": self.guest_kernel_paged_mib.json(),
+                "kernel_nonpaged_mib": self.guest_kernel_nonpaged_mib.json(),
                 "signal_samples": self.guest_signals,
+                "service_sessions": self.guest_sessions,
+                "publication_stall_seconds": self.publication_stall_seconds.json(),
+                "agent_outage_seconds": self.agent_outage_seconds.json(),
             },
             "requests": {
                 "completed": requests,
                 "grant_to_completion_seconds": self.grant_to_completion_seconds.json(),
                 "issue_to_completion_seconds": self.issue_to_completion_seconds.json(),
                 "refusals": self.refusals,
+            },
+            "incidents": {
+                "counts": self.incident_counts,
+                "records": self.incidents,
             },
             "event_counts": self.events,
             "notable_events": self.notable,
@@ -1139,7 +1369,7 @@ impl Summary {
         };
         format!(
             "{} samples; min host avail {} MiB, min guest avail {} MiB; \
-             {} completed requests; {} latches; {} guest read failures",
+             {} completed requests; {} latches; {} guest read failures; {} incidents",
             self.samples,
             minimum(&self.host_available_mib),
             minimum(&self.guest_available_mib),
@@ -1149,6 +1379,7 @@ impl Summary {
                 .sum::<u64>(),
             self.events.get("actuation_latched").copied().unwrap_or(0),
             self.guest_read_failures,
+            self.incident_total(),
         )
     }
 }
@@ -1351,15 +1582,16 @@ service_account='NT AUTHORITY\LocalService'
                     unix_millis: 1000,
                     elapsed: Duration::ZERO,
                     host: HostMemory::default(),
-                    qemu_rss_bytes: None,
-                    controller_active: true,
-                    device: None,
+                    controller: Some(UnitStatus::parse("ActiveState=active")),
                     guest: Some(read_guest(&ControlFile(contents), &command.telemetry_path)),
+                    ..Sample::default()
                 };
                 let row = sample.csv_row(command.host_floor_bytes);
                 let columns: BTreeMap<_, _> = CSV_HEADER.split(',').zip(row.split(',')).collect();
                 assert_eq!(row.split(',').count(), CSV_HEADER.split(',').count());
                 if sample.telemetry().is_some() {
+                    assert_eq!(columns["guest_session"], "session");
+                    assert_eq!(columns["guest_commit_peak_mib"], "8192");
                     assert_eq!(columns["guest_total_mib"], "14336");
                     assert_eq!(columns["guest_available_mib"], "3072");
                 } else {
@@ -1478,10 +1710,9 @@ service_account='NT AUTHORITY\LocalService'
                 unix_millis: millis,
                 elapsed: Duration::from_millis(millis),
                 host: HostMemory::default(),
-                qemu_rss_bytes: None,
-                controller_active: true,
+                controller: Some(UnitStatus::parse("ActiveState=active")),
                 device: Some(state),
-                guest: None,
+                ..Sample::default()
             });
         }
         assert_eq!(summary.divergence_seconds.count, 1);
@@ -1492,6 +1723,20 @@ service_account='NT AUTHORITY\LocalService'
             json["requests"]["completed"]["Add Completed"]["actual_mib"],
             1024
         );
+
+        summary.add_event(&event(
+            30_000_000,
+            "event=metrics_guest_agent_restored outage_seconds=4.5",
+        ));
+        summary.add_incident(&json!({"component": "controller", "summary": "controller failed"}));
+        let json = summary.json(30_000);
+        assert_eq!(json["guest"]["agent_outage_seconds"]["max"], 4.5);
+        assert_eq!(json["incidents"]["counts"]["controller"], 1);
+        assert_eq!(
+            json["notable_events"][0]["event"],
+            "metrics_guest_agent_restored"
+        );
+        assert!(summary.headline().ends_with("; 1 incidents"));
     }
 
     #[test]
@@ -1506,13 +1751,14 @@ service_account='NT AUTHORITY\LocalService'
                 swap_total: 0,
                 swap_free: 0,
             },
+            qemu_pid: Some(42),
             qemu_rss_bytes: Some(9 << 30),
-            controller_active: false,
-            device: None,
+            vm_state: Some("running (booted)".to_owned()),
             guest: Some(GuestRead {
                 elapsed: Duration::from_millis(250),
                 telemetry: Err("agent unavailable".to_owned()),
             }),
+            ..Sample::default()
         };
         let row = sample.csv_row(4 << 30);
         assert_eq!(row.split(',').count(), columns);
@@ -1520,6 +1766,25 @@ service_account='NT AUTHORITY\LocalService'
         assert!(sample
             .progress(2)
             .ends_with("guest read failed | CONTROLLER INACTIVE | +2 events"));
+
+        let failed = Sample {
+            controller: Some(UnitStatus::parse(
+                "ActiveState=failed\nSubState=failed\nResult=signal\nExecMainPID=7\n\
+                 ExecMainCode=2\nExecMainStatus=9\nNRestarts=0\nMemoryCurrent=[not set]",
+            )),
+            controller_cpu_pct: None,
+            ..sample
+        };
+        let row = failed.csv_row(4 << 30);
+        assert_eq!(row.split(',').count(), columns);
+        let named: BTreeMap<_, _> = CSV_HEADER.split(',').zip(row.split(',')).collect();
+        assert_eq!(named["controller_state"], "failed/failed");
+        assert_eq!(named["controller_pid"], "");
+        assert_eq!(named["qemu_pid"], "42");
+        assert_eq!(named["vm_state"], "running (booted)");
+        assert!(failed
+            .progress(0)
+            .ends_with("CONTROLLER FAILED (killed by SIGKILL)"));
     }
 
     #[test]

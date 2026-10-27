@@ -24,8 +24,10 @@ cargo xtask metrics --config deploy/config_files/host_list.toml [--duration-seco
 
 Read-only, like `watch`. On a terminal it opens a live UI: host, device and
 Windows panels, a memory chart (host available, Windows available, device
-current and requested), request results and latencies, problem counters and
-the controller's events. `--plain`, or output that is not a terminal, prints
+current and requested), request results and latencies, problem and incident
+counters, and the controller's events alongside lifecycle events. A red
+`N INCIDENTS` badge in the header means a crash or restart was recorded.
+The controller row shows its pid, memory and CPU, or how it exited. `--plain`, or output that is not a terminal, prints
 one line per sample instead. It records until `q`/Ctrl+C or
 `--duration-seconds`.
 
@@ -47,9 +49,21 @@ writes one directory under `.artifacts/metrics/win11_gpu-<UTC time>/` (or
 
 | File | Contents |
 |---|---|
-| `samples.csv` | Every sample period (`--interval-seconds`): host total/available RAM, headroom over `host_min_headroom_bytes`, swap used, QEMU RSS, controller active, device size/requested/current. Every guest read (`--guest-interval-seconds`, default 5): agent read time and success, publication age, Windows available RAM, load, commit and commit headroom, cache, memory signal, pending request. Sizes in MiB. |
-| `events.jsonl` | Every controller journal entry written during the run, with its fields split out, plus markers. |
-| `summary.json` | Min/max/mean of the above, time spent with requested ≠ current, guest read failures and stale publications, completed requests by operation and outcome (MiB asked and got), grant→completion and Windows issue→completion latency, refusals, event counts, controller restarts and latches. Rewritten every minute and at exit. |
+| `samples.csv` | Every sample period (`--interval-seconds`): host total/available RAM, headroom over `host_min_headroom_bytes`, swap used, QEMU RSS, controller active, device size/requested/current. Every guest read (`--guest-interval-seconds`, default 5): agent read time and success, publication age, Windows available RAM, load, commit and commit headroom, cache, memory signal, pending request. Appended after those: controller unit state, pid, memory, CPU % and restart count; QEMU pid; libvirt domain state (`virsh domstate --reason`); and per guest read the service session, commit peak and kernel paged/non-paged pools. Sizes in MiB. |
+| `events.jsonl` | Every controller journal entry written during the run, with its fields split out, plus markers and `metrics_*` lifecycle events: controller failed/stopped/started/restarted, QEMU exited/started/restarted, domain state changes, guest service session changes, guest publication stalled/resumed, guest agent lost/restored. |
+| `incidents.jsonl` | One record per incident, with its bundle path, pid and details (exit status, systemd result, panic text, last controller lines, core dump flag, publication gap). Empty when nothing crashed. |
+| `incidents/NNN-TIME-COMPONENT.txt` | Evidence bundle per incident, collected at detection: panic text and last controller lines, `systemctl status`, `coredumpctl info` when the controller dumped core, the unit's last 400 journal lines, the QEMU log tail (root only) for VM incidents, the guest's last and first publication around a service restart, and the 60 `samples.csv` rows before detection. |
+| `summary.json` | Min/max/mean of the above, time spent with requested ≠ current, guest read failures and stale publications, publication stall and agent outage durations, completed requests by operation and outcome (MiB asked and got), grant→completion and Windows issue→completion latency, refusals, event counts, controller pids, memory and CPU, samples per domain state, guest service sessions, incident counts and records, and latches. Rewritten every minute, at exit and after each incident. |
+
+An incident is a controller that stops other than cleanly (any systemd
+`Result` except `success`, including one already failed when recording
+starts), a new guest service session (service restart or guest reboot; the
+host cannot tell which), a QEMU process exit or replacement, or a domain in
+`crashed`/`panicked` state. A `systemctl stop` is an event, not an incident.
+Lifecycle events and incidents are written even while logging is paused.
+Windows' own record of a service crash stays in the guest: System log,
+Service Control Manager 7031/7034, and Application log, Application Error
+1000; guest bundles include a `Get-WinEvent` query for the right time.
 
 ## Recovering a latched controller
 
@@ -81,7 +95,7 @@ letter or digit, at most 64 characters. The exact filename and internal name
 must agree. Duplicate entries and unknown keys fail validation.
 
 `min_ram` and `max_ram` describe **total guest RAM**, in binary size units or
-bytes, aligned to the live device block size (8 MiB for `win11_gpu`).
+bytes, aligned to the live device block size (64 MiB for `win11_gpu`).
 The policy derives the device allocation from observed
 RAM and live device state; there is no configured boot/base-RAM value. Both
 Windows requests and host grants honour these bounds. The underlying VM must

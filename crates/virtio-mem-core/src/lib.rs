@@ -31,9 +31,9 @@ pub use guest_policy::{
     plan_request, GuestDecision, GuestMemoryPolicy, GuestRequestState, GuestRequester,
 };
 pub use memory_request::{
-    host_status_path, request_state_path, HostMemoryStatus, MemoryOperation, MemoryOutcome,
-    MemoryRequest, MemoryRequestJournal, MemoryResult, RequestAdmission, RequestIdentity,
-    MAX_HOST_STATUS_BYTES, MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
+    bounded_reason, host_status_path, request_state_path, HostMemoryStatus, MemoryOperation,
+    MemoryOutcome, MemoryRequest, MemoryRequestJournal, MemoryResult, RequestAdmission,
+    RequestIdentity, MAX_HOST_STATUS_BYTES, MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
     MEMORY_WAKE_CHANNEL_NAME,
 };
 pub use pool::{allocate_pool, PoolAllocation, PoolError, PoolMember};
