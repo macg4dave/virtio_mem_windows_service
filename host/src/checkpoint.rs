@@ -489,6 +489,9 @@ mod tests {
                 .display()
                 .to_string(),
             observe_only: false,
+            min_ram: 0,
+            max_ram: u64::MAX,
+            telemetry_path: None,
         }
     }
 

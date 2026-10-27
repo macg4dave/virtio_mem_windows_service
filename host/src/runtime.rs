@@ -99,6 +99,7 @@ enum Observed {
 
 /// A converged device and a guest request that may be executed.
 struct Ready {
+    base_ram: u64,
     state: VirtioMemState,
     request: MemoryRequest,
     admission: RequestAdmission,
@@ -376,17 +377,35 @@ where
                 return Ok(Observed::Stop(error));
             }
         }
-        let request = match self.guest.read() {
+        let (request, base_ram) = match self.guest.read() {
             Ok(envelope) => {
                 self.guest_unavailable_reported = false;
-                envelope.request
+                if let Some(path) = &self.config.telemetry_path {
+                    let result = serde_json::to_vec(&envelope)
+                        .map_err(|error| error.to_string())
+                        .and_then(|bytes| {
+                            crate::guest_channel::write_local(std::path::Path::new(path), &bytes)
+                        });
+                    if let Err(error) = result {
+                        self.log(&format!("event=optional_telemetry_failed reason={error}"));
+                    }
+                }
+                let Some(base) = envelope
+                    .memory
+                    .physical_total_bytes
+                    .checked_sub(state.current_bytes)
+                else {
+                    self.publish(state, None);
+                    return Ok(held);
+                };
+                (envelope.request, base)
             }
             Err(error) => {
                 if !self.guest_unavailable_reported {
                     self.log(&format!("event=guest_input_invalid reason={error}"));
                     self.guest_unavailable_reported = true;
                 }
-                None
+                (None, 0)
             }
         };
         let Some(request) = request else {
@@ -413,6 +432,7 @@ where
             ),
             Ok(admission) => {
                 return Ok(Observed::Ready(Ready {
+                    base_ram,
                     state,
                     request,
                     admission,
@@ -468,7 +488,12 @@ where
                 ready.state.current_bytes,
                 ready.state.block_size_bytes,
                 match ready.request.operation {
-                    MemoryOperation::Add => ready.request.bytes,
+                    MemoryOperation::Add => ready.request.bytes.min(
+                        self.config
+                            .max_ram
+                            .saturating_sub(ready.base_ram)
+                            .saturating_sub(ready.state.current_bytes),
+                    ),
                     MemoryOperation::Remove => 0,
                 },
             ),
@@ -643,6 +668,7 @@ where
         stop: &AtomicBool,
     ) -> Result<Step, HostRuntimeError> {
         let Ready {
+            base_ram,
             state,
             request,
             admission,
@@ -674,6 +700,12 @@ where
                 let free = request
                     .bytes
                     .min(
+                        self.config
+                            .max_ram
+                            .saturating_sub(base_ram)
+                            .saturating_sub(state.current_bytes),
+                    )
+                    .min(
                         state
                             .maximum_target_bytes()
                             .saturating_sub(state.current_bytes),
@@ -684,7 +716,12 @@ where
                     .min(host_room);
                 free - free % state.block_size_bytes
             }
-            MemoryOperation::Remove => request.bytes.min(state.current_bytes),
+            MemoryOperation::Remove => {
+                let minimum = self.config.min_ram.saturating_sub(base_ram);
+                let removable = state.current_bytes.saturating_sub(minimum);
+                let grant = request.bytes.min(removable);
+                grant - grant % state.block_size_bytes
+            }
         };
         self.log(&format!(
             "event=controller_decision action=grant {} grant_bytes={grant} pool_ceiling_bytes={ceiling:?} requested_bytes={} current_bytes={}",
@@ -1265,6 +1302,9 @@ mod tests {
             host_min_headroom_bytes: 4 * GIB,
             compatibility_attestation_path: "attestation.json".to_owned(),
             observe_only: false,
+            min_ram: 0,
+            max_ram: u64::MAX,
+            telemetry_path: None,
         }
     }
 
@@ -1329,6 +1369,44 @@ mod tests {
 
     fn round(runtime: &mut Runtime) -> Step {
         runtime.round(&AtomicBool::new(false)).expect("round")
+    }
+
+    #[test]
+    fn host_enforces_vm_ram_bounds_without_optional_telemetry() {
+        for (name, operation, minimum, maximum, expected) in [
+            ("ram-max", MemoryOperation::Add, 0, 9 * GIB, 5 * GIB),
+            (
+                "ram-min",
+                MemoryOperation::Remove,
+                7 * GIB,
+                20 * GIB,
+                3 * GIB,
+            ),
+        ] {
+            let mut fixture = Fixture::new(name, 100, 4 * GIB);
+            fixture.config.min_ram = minimum;
+            fixture.config.max_ram = maximum;
+            fixture.guest.send(Some(request(1, operation, 4 * GIB)));
+            let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
+            round(&mut runtime);
+            assert_eq!(*fixture.targets.borrow(), [expected]);
+        }
+    }
+
+    #[test]
+    fn optional_diagnostic_failure_does_not_block_memory_control() {
+        let mut fixture = Fixture::new("optional-diagnostic", 100, 4 * GIB);
+        // A checkpoint file is a regular file, so it cannot be a directory.
+        fixture.config.telemetry_path = Some(format!(
+            "{}/diagnostic.json",
+            fixture.config.policy_state_path
+        ));
+        fixture
+            .guest
+            .send(Some(request(1, MemoryOperation::Add, GIB)));
+        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
+        round(&mut runtime);
+        assert_eq!(*fixture.targets.borrow(), [5 * GIB]);
     }
 
     #[test]

@@ -1,0 +1,9 @@
+# VMs managed together by this host controller. Higher priority receives free
+# pool RAM first; ties use entry order. Aliases must match libvirt domain XML.
+# Each vm_name loads <vm_name>_settings.toml from this directory.
+# Optional telemetry_path here names a diagnostic file on the Linux host;
+# omit it to disable host telemetry output. It never names a guest file.
+[[vm]]
+vm_name = "win11_gpu"
+alias = "ua-virtiomem0"
+priority = 100

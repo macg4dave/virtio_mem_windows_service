@@ -157,7 +157,7 @@ fn read_local(path: &Path, maximum_bytes: u64) -> Result<Vec<u8>, String> {
 }
 
 /// Readers must never see a partial status, so replace it by rename.
-fn write_local(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_local(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
     std::fs::write(&temporary, bytes)
         .and_then(|()| std::fs::rename(&temporary, path))

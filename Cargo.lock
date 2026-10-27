@@ -927,6 +927,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror",
+ "toml",
 ]
 
 [[package]]
@@ -939,7 +940,6 @@ dependencies = [
  "sha2",
  "signal-hook",
  "thiserror",
- "toml",
  "virtio-mem-core",
 ]
 

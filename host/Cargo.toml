@@ -13,7 +13,6 @@ sha2 = "0.10"
 thiserror = "2.0.20"
 signal-hook = "0.3"
 virtio-mem-core = { path = "../crates/virtio-mem-core" }
-toml = "1.1.8"
 
 [[bin]]
 name = "virtio-mem-host"

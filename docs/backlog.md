@@ -11,6 +11,21 @@ was skipped). Everything below needs live evidence on the running deployment.
 
 ## Phase 2 — Single-VM qualification
 
+### CFG-001 — Verify the consolidated configuration upgrade (P1)
+
+Source consolidation is complete; no live changes were made. With matching
+new host and Windows binaries, verify the upgrade from installed schema 6 to
+generated schema 7, retained pending requests/checkpoints/latches, the installed
+host list plus sibling files, and binary/config/registry backups. Check clear
+refusal of unsupported custom legacy channel or policy settings. Verify
+LocalService ACLs and optional guest/host diagnostic outputs, including an
+unwritable output path, while requests and replies continue with no telemetry
+configured. Exercise user-set total min/max RAM through growth, reclaim and
+restart, and confirm the live VM geometry can reach those limits.
+
+Complete when recorded native and live evidence identifies the exact builds,
+shows independent per-VM bounds and demonstrates telemetry-free operation.
+
 ### WIN-001 — Verify the installed Windows service (P1)
 
 Native build and tests pass via `make win11-gate` (64 tests, including the

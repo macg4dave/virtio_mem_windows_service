@@ -1,0 +1,16 @@
+# Total guest RAM limits, including all memory Windows can see. No boot/base
+# RAM setting is needed: the policy derives the device portion from live state.
+# Sizes are binary ("1GB" = 2^30 bytes) and must be multiples of 2 MiB.
+# The VM's live memory geometry must be capable of reaching these limits.
+min_ram = "8GB"
+max_ram = "27GB"
+
+# This identity must match host_list.toml and the libvirt domain name. Filenames
+# are exactly <vm_name>_settings.toml; names use lower-case ASCII, digits, - or _.
+vm_name = "win11_gpu"
+install_path = 'C:\Program Files\VirtioMemService\virtio-mem-service.exe'
+service_account = 'NT AUTHORITY\LocalService'
+
+# Optional Windows diagnostic output; omitted means no diagnostic file writes.
+# It must differ from the internal control file and configuration/binary paths.
+# telemetry_path = 'C:\ProgramData\VirtioMemService\diagnostics.json'

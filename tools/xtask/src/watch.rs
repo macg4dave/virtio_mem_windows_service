@@ -1052,7 +1052,7 @@ mod tests {
     fn reads_the_vm_from_the_host_config_and_options() {
         let config = crate::repo_root()
             .expect("repository root")
-            .join("deploy/win11_gpu/host.toml");
+            .join("deploy/config_files/host_list.toml");
         let config = config.to_str().expect("UTF-8 path");
         let expected = HostConfig::load_vm(Path::new(config), None).expect("tracked config");
         let defaults = parse(&["--config", config].map(str::to_owned)).expect("defaults");
@@ -1156,7 +1156,7 @@ mod tests {
     fn plain_frames_keep_every_line_within_the_width() {
         let config = crate::repo_root()
             .expect("repository root")
-            .join("deploy/win11_gpu/host.toml");
+            .join("deploy/config_files/host_list.toml");
         let command =
             parse(&["--config".to_owned(), config.to_string_lossy().into_owned()]).unwrap();
         let device = VirtioMemState {

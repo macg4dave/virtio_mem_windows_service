@@ -179,6 +179,10 @@ impl GuestRequester {
         })
     }
 
+    pub fn set_ram_limits(&mut self, minimum: u64, maximum: u64) -> Result<(), String> {
+        self.estimator.set_ram_limits(minimum, maximum)
+    }
+
     pub fn invalidate_history(&mut self) {
         self.estimator.invalidate_history();
     }

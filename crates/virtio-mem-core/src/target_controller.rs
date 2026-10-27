@@ -139,6 +139,8 @@ impl TargetPolicyConfig {
 #[derive(Debug, Clone)]
 pub struct TargetEstimator {
     config: TargetPolicyConfig,
+    min_ram: u64,
+    max_ram: u64,
     state: TargetEstimatorState,
 }
 
@@ -147,8 +149,20 @@ impl TargetEstimator {
         config.validate()?;
         Ok(Self {
             config,
+            min_ram: 0,
+            max_ram: u64::MAX,
             state: TargetEstimatorState::default(),
         })
+    }
+
+    pub fn set_ram_limits(&mut self, minimum: u64, maximum: u64) -> Result<(), String> {
+        if minimum > maximum {
+            return Err("min_ram exceeds max_ram".to_owned());
+        }
+        self.state.invalidate_history();
+        self.min_ram = minimum;
+        self.max_ram = maximum;
+        Ok(())
     }
 
     /// Discard reclaim evidence after an observation failure or missing geometry.
@@ -161,19 +175,36 @@ impl TargetEstimator {
         sample: TargetSample,
         geometry: TargetGeometry,
     ) -> Result<TargetEstimate, TargetEstimatorError> {
-        let instantaneous = match calculate_instantaneous(&self.config, &sample.memory, geometry) {
-            Ok(value) => value,
-            Err(error) => {
-                self.state.invalidate_history();
-                return Err(error);
-            }
-        };
+        let mut instantaneous =
+            match calculate_instantaneous(&self.config, &sample.memory, geometry) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.state.invalidate_history();
+                    return Err(error);
+                }
+            };
         if let Err(error) = self.prepare_sample(&sample) {
             self.state.invalidate_history();
             return Err(error);
         }
 
         let visible_base = sample.memory.physical_total_bytes - geometry.current_bytes;
+        // The administrator chooses total RAM, with no configured boot/base RAM.
+        // Derive the removable device portion from the same validated sample.
+        let block = geometry.block_size_bytes;
+        let minimum = align_up(self.min_ram.saturating_sub(visible_base), block)?;
+        let maximum = self.max_ram.saturating_sub(visible_base) / block * block;
+        let maximum = maximum.min(instantaneous.effective_maximum_bytes);
+        if minimum > maximum || self.max_ram < visible_base {
+            self.state.invalidate_history();
+            return Err(TargetEstimatorError::InvalidGeometry(
+                "configured RAM limits cannot be met by this VM's live memory geometry",
+            ));
+        }
+        instantaneous.effective_maximum_bytes = maximum;
+        instantaneous.desired_now_bytes = instantaneous.desired_now_bytes.clamp(minimum, maximum);
+        instantaneous.floor_now_bytes = instantaneous.floor_now_bytes.clamp(minimum, maximum);
+
         if self
             .state
             .last_visible_base_bytes
@@ -531,6 +562,44 @@ mod tests {
             memory,
             native_pressure: Some(MemoryResourceNotificationState::High),
         }
+    }
+
+    #[test]
+    fn total_ram_limits_derive_device_bounds_from_each_live_sample() {
+        let mut estimator = TargetEstimator::new(config()).unwrap();
+        estimator.set_ram_limits(14 * GIB, 16 * GIB).unwrap();
+        let result = estimator
+            .estimate(
+                sample(1, 0, memory(4 * GIB, 0, 32 * GIB)),
+                geometry(4 * GIB),
+            )
+            .unwrap();
+        assert_eq!(
+            result.desired_bytes,
+            6 * GIB,
+            "minimum total is 14 with observed base 8"
+        );
+        let mut estimator = TargetEstimator::new(config()).unwrap();
+        estimator.set_ram_limits(4 * GIB, 13 * GIB).unwrap();
+        let result = estimator
+            .estimate(sample(1, 0, memory(4 * GIB, 4 * GIB, 0)), geometry(4 * GIB))
+            .unwrap();
+        assert_eq!(
+            result.desired_bytes,
+            5 * GIB,
+            "growth respects maximum total 13"
+        );
+        assert_eq!(result.effective_maximum_bytes, 5 * GIB);
+        estimator.set_ram_limits(GIB, 4 * GIB).unwrap();
+        assert!(
+            estimator
+                .estimate(
+                    sample(2, 1, memory(4 * GIB, 0, 32 * GIB)),
+                    geometry(4 * GIB)
+                )
+                .is_err(),
+            "maximum below observable non-device memory is impossible"
+        );
     }
 
     #[test]

@@ -1,0 +1,33 @@
+# Server-wide settings shared by every VM controlled on this host.
+# VM identities, devices and paths belong in their own files. Guest memory
+# policy uses built-in defaults, with total-RAM limits in each VM settings file.
+# Loaded beside host_list.toml and each <vm_name>_settings.toml.
+# Omitted keys use built-in defaults; unknown or obsolete keys are rejected.
+# Edit here, then run install-host.sh to deploy the host configuration set.
+# Existing running controllers do not reload changes automatically.
+#
+# Memory sizes use binary units: "1GB" = 1024MB = 2^30 bytes.
+# Plain byte counts and fractional sizes such as "8.5GB" are also accepted.
+
+# Total virtio-mem device RAM available across the controller's VMs; excludes
+# fixed boot RAM. Each VM occupies max(requested, current) bytes of this pool.
+# Growth uses only free pool capacity, highest VM priority first; the host
+# never reclaims another VM's RAM to satisfy a request. Each device is also
+# capped at its size minus 1 GiB. Required when controlling multiple VMs.
+pool_bytes = "15GB"
+
+# Minimum MemAvailable to leave for the Linux host. Growth is reduced or
+# refused if it would cross this floor, even when pool capacity remains.
+host_min_headroom_bytes = "4GB"
+
+# true evaluates and logs requests but refuses them before resizing devices.
+# false permits admitted requests to resize devices.
+observe_only = false
+
+# Seconds between both host polls and guest samples (1–10). Freshness and
+# maximum sample gaps are derived from this interval.
+poll_interval_seconds = 5
+# Maximum duration of each external host command (for example, virsh).
+command_timeout_seconds = 10
+# Maximum wait for requested device RAM to converge to the observed amount.
+convergence_timeout_seconds = 300

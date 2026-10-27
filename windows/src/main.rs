@@ -153,6 +153,9 @@ mod tests {
 
     fn test_config() -> ServiceConfig {
         ServiceConfig {
+            min_ram: 1 << 30,
+            max_ram: 64 << 30,
+            telemetry_path: None,
             vm_name: "test-vm".to_owned(),
             service_name: "TestService".to_owned(),
             display_name: "Test service".to_owned(),

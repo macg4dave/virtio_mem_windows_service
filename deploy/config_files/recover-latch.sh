@@ -4,14 +4,14 @@
 # installed attestation, start it again. Prompts for sudo. Install the
 # current host build and attestation first (install-host.sh).
 #
-#   deploy/win11_gpu/recover-latch.sh "reason recorded in the checkpoint"
+#   deploy/config_files/recover-latch.sh "reason recorded in the checkpoint"
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 reason=${1:?usage: recover-latch.sh REASON}
 vm=win11_gpu
 alias=ua-virtiomem0
 unit=virtio-mem-host@$vm.service
-config=/etc/virtio-mem-host/$vm.toml
+config=/etc/virtio-mem-host/host_list.toml
 attestation=/etc/virtio-mem-host/$vm.attestation.json
 host=(sudo -u virtio-mem-host /usr/local/libexec/virtio-mem-host)
 connect=qemu:///system

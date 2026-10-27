@@ -21,6 +21,9 @@ pub struct ServiceConfig {
     pub poll_interval: Duration,
     pub shutdown_timeout: Duration,
     pub policy: GuestMemoryPolicy,
+    pub min_ram: u64,
+    pub max_ram: u64,
+    pub telemetry_path: Option<String>,
 }
 
 impl ServiceConfig {
@@ -63,7 +66,13 @@ impl ServiceConfig {
             .and_then(|()| wire.validate_paths(&self.config_path))
             .map_err(ConfigurationError::InvalidFile)?;
         #[cfg(windows)]
-        validate_file_identity(&self.config_path, &self.demand_report_path)?;
+        {
+            validate_file_identity(&self.config_path, &self.demand_report_path)?;
+            if let Some(path) = &self.telemetry_path {
+                validate_file_identity(&self.config_path, path)?;
+                validate_file_identity(&self.demand_report_path, path)?;
+            }
+        }
         Ok(())
     }
 
@@ -110,6 +119,9 @@ impl ServiceConfig {
             poll_interval: Duration::from_millis(persisted.poll_interval_millis),
             shutdown_timeout: Duration::from_millis(persisted.shutdown_timeout_millis),
             policy: persisted.policy,
+            min_ram: persisted.min_ram,
+            max_ram: persisted.max_ram,
+            telemetry_path: persisted.telemetry_path,
         };
         config.validate()?;
         Ok(config)
@@ -135,6 +147,9 @@ impl TryFrom<&ServiceConfig> for WindowsServiceConfigFile {
             poll_interval_millis,
             shutdown_timeout_millis,
             policy: config.policy,
+            min_ram: config.min_ram,
+            max_ram: config.max_ram,
+            telemetry_path: config.telemetry_path.clone(),
         })
     }
 }
@@ -185,6 +200,9 @@ pub(crate) fn validate_file_identity(config: &str, report: &str) -> Result<(), C
 pub(crate) fn test_config() -> ServiceConfig {
     const MIB: u64 = 1024 * 1024;
     ServiceConfig {
+        min_ram: 1 << 30,
+        max_ram: 64 << 30,
+        telemetry_path: None,
         vm_name: "test-vm".to_owned(),
         service_name: "TestService".to_owned(),
         display_name: "Test service".to_owned(),
@@ -317,6 +335,9 @@ mod tests {
         let path = test_path("config-schema");
         let fixture = WindowsServiceConfigFile {
             schema_version: 99,
+            min_ram: 1 << 30,
+            max_ram: 64 << 30,
+            telemetry_path: None,
             vm_name: "test-vm".to_owned(),
             service_name: "TestService".to_owned(),
             display_name: "Test service".to_owned(),

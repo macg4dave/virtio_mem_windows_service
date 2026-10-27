@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install deploy/win11_gpu/host.toml and (re)start the win11_gpu controller.
+# Install deploy/config_files/host_list.toml and (re)start the win11_gpu controller.
 # Prompts for sudo. Stopping the controller does not change the device.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
@@ -15,7 +15,7 @@ cargo build --release --locked -p virtio-mem-host
 # host-deploy requires the unit inactive.
 sudo systemctl stop "$unit"
 cargo xtask host-deploy win11_gpu \
-  --config deploy/win11_gpu/host.toml \
+  --config deploy/config_files/host_list.toml \
   --attestation "win11_gpu=$attestation" \
   --output ".artifacts/deploy/host-deploy-$(date +%Y%m%dT%H%M%S).json" \
   --command-timeout-seconds 60 --apply --elevate

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::GuestMemoryPolicy;
 
-pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 6;
+pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 7;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +20,10 @@ pub struct WindowsServiceConfigFile {
     pub poll_interval_millis: u64,
     pub shutdown_timeout_millis: u64,
     pub policy: GuestMemoryPolicy,
+    pub min_ram: u64,
+    pub max_ram: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub telemetry_path: Option<String>,
 }
 
 impl WindowsServiceConfigFile {
@@ -58,6 +62,7 @@ impl WindowsServiceConfigFile {
                 return Err("configuration timing is zero or too large".to_owned());
             }
         }
+        crate::settings::validate_ram_limits(self.min_ram, self.max_ram)?;
         self.policy.validate()
     }
 
@@ -66,6 +71,18 @@ impl WindowsServiceConfigFile {
     /// configuration must be none of them.
     pub fn validate_paths(&self, config_path: &str) -> Result<(), String> {
         let config = normalize_windows_path(config_path)?;
+        if let Some(path) = &self.telemetry_path {
+            let telemetry = normalize_windows_path(path)?;
+            let control = normalize_windows_path(&self.demand_report_path)?;
+            if telemetry == config
+                || telemetry == control
+                || telemetry.starts_with(&format!("{control}."))
+            {
+                return Err(
+                    "optional telemetry collides with configuration or control files".to_owned(),
+                );
+            }
+        }
         let report = normalize_windows_path(&self.demand_report_path)?;
         if config == report || config.starts_with(&format!("{report}.")) {
             return Err(
@@ -168,6 +185,9 @@ mod tests {
     #[test]
     fn configuration_cannot_alias_any_derived_publication_file() {
         let config = WindowsServiceConfigFile {
+            min_ram: 1 << 30,
+            max_ram: 64 << 30,
+            telemetry_path: None,
             schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
             vm_name: "guest".to_owned(),
             service_name: "VirtioMemService".to_owned(),

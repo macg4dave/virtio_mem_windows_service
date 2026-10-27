@@ -40,8 +40,9 @@ const HISTORY: usize = 5000;
 const RECENT_EVENTS: usize = 200;
 
 pub const HELP: &str = "Metrics options (read-only stress-test recorder):
-  --config PATH                 Required host TOML; the VM, device alias,
-                                telemetry path and host floor come from it.
+  --config PATH                 Required host_list.toml; loads sibling global
+                                and per-VM settings. Optional diagnostic
+                                telemetry paths are not needed or read.
   --vm NAME                     The [[vm]] to record; required with several.
   --instance NAME               Controller unit virtio-mem-host@NAME.service;
                                 default the VM name.
@@ -54,6 +55,7 @@ pub const HELP: &str = "Metrics options (read-only stress-test recorder):
   --plain                       One line per sample instead of the live UI
                                 (also used when stdout is not a terminal).
 Writes samples.csv, events.jsonl and summary.json into the run directory.
+Guest memory is read from the built-in request/control publication over QGA.
 In the UI: -/+ sample period, [/] guest-read period, space pause logging,
 n sample now, m add a marker, s save summary, w chart window, q quit.
 ";
@@ -1237,7 +1239,7 @@ mod tests {
     fn tracked_config() -> String {
         crate::repo_root()
             .expect("repository root")
-            .join("deploy/win11_gpu/host.toml")
+            .join("deploy/config_files/host_list.toml")
             .to_string_lossy()
             .into_owned()
     }
@@ -1249,6 +1251,11 @@ mod tests {
         let defaults = parse(&["--config".to_owned(), config.clone()]).expect("defaults");
         assert_eq!(defaults.vm, expected.vm_name);
         assert_eq!(defaults.host_floor_bytes, expected.host_min_headroom_bytes);
+        assert_eq!(
+            defaults.telemetry_path,
+            virtio_mem_core::settings::CONTROL_PATH
+        );
+        assert_eq!(defaults.telemetry_max_age, expected.raw_telemetry_max_age);
         assert_eq!(defaults.interval, Duration::from_secs(5));
         assert_eq!(defaults.duration, None);
         let command = parse(
@@ -1276,6 +1283,143 @@ mod tests {
         ] {
             assert!(parse(&bad.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
         }
+    }
+
+    #[test]
+    fn consolidated_settings_record_control_data_with_or_without_diagnostics() {
+        use virtio_mem_core::settings::{CONTROL_PATH, SERVICE_NAME};
+
+        struct ControlFile(Result<Vec<u8>, String>);
+        impl GuestFileReader for ControlFile {
+            fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
+                assert_eq!(
+                    path, CONTROL_PATH,
+                    "never read optional outputs or host status"
+                );
+                assert_eq!(maximum_bytes, MAX_TELEMETRY_BYTES);
+                self.0.clone()
+            }
+        }
+
+        let root =
+            std::env::temp_dir().join(format!("virtio-mem-metrics-config-{}", std::process::id()));
+        std::fs::create_dir_all(&root).expect("fixture directory");
+        let config_path = root.join("host_list.toml");
+        std::fs::write(
+            root.join("global-settings.toml"),
+            "pool_bytes='16GB'\nhost_min_headroom_bytes='6GB'\npoll_interval_seconds=2\n",
+        )
+        .expect("global settings");
+        for diagnostics in [false, true] {
+            let mut list = String::new();
+            for (name, alias) in [("alpha", "memory0"), ("beta", "memory1")] {
+                list.push_str(&format!(
+                    "[[vm]]\nvm_name='{name}'\nalias='{alias}'\npriority=100\n"
+                ));
+                let mut vm = format!(
+                    r#"
+vm_name='{name}'
+min_ram='4GB'
+max_ram='16GB'
+install_path='C:\Program Files\VirtioMemService\virtio-mem-service.exe'
+service_account='NT AUTHORITY\LocalService'
+"#
+                );
+                if diagnostics {
+                    list.push_str(&format!("telemetry_path='/tmp/{name}-diagnostics.json'\n"));
+                    vm.push_str(
+                        "telemetry_path='C:\\ProgramData\\VirtioMemService\\diagnostics.json'\n",
+                    );
+                }
+                std::fs::write(root.join(format!("{name}_settings.toml")), vm)
+                    .expect("VM settings");
+            }
+            std::fs::write(&config_path, list).expect("host list");
+            let args = vec![
+                "--config".to_owned(),
+                config_path.to_string_lossy().into_owned(),
+            ];
+            assert!(parse(&args).is_err(), "multiple VMs require selection");
+            let mut args = args;
+            args.extend(["--vm".to_owned(), "beta".to_owned()]);
+            let command = parse(&args).expect("new configuration");
+            assert_eq!(command.vm, "beta");
+            assert_eq!(command.alias, "memory1");
+            assert_eq!(command.host_floor_bytes, 6 << 30);
+            assert_eq!(command.telemetry_max_age, Duration::from_secs(12));
+
+            let envelope = RawTelemetryEnvelope::new(
+                "beta",
+                SERVICE_NAME,
+                "session",
+                1000,
+                1,
+                0,
+                virtio_mem_core::MemoryTelemetrySnapshot {
+                    physical_total_bytes: 14 << 30,
+                    physical_available_bytes: 3 << 30,
+                    memory_load_percent: 79,
+                    commit_total_bytes: 8 << 30,
+                    commit_limit_bytes: 16 << 30,
+                    commit_peak_bytes: 8 << 30,
+                    system_cache_bytes: 0,
+                    kernel_paged_bytes: 0,
+                    kernel_nonpaged_bytes: 0,
+                },
+            );
+            let directory = root.join(if diagnostics {
+                "diagnostics-on"
+            } else {
+                "diagnostics-off"
+            });
+            let mut recorder = Recorder::create(&directory).expect("recorder");
+            let mut summary = Summary::new(&command, 1000);
+            for contents in [
+                Ok(serde_json::to_vec(&envelope).expect("control publication")),
+                Ok(b"{\"version\":".to_vec()),
+                Err("agent unavailable".to_owned()),
+            ] {
+                let sample = Sample {
+                    unix_millis: 1000,
+                    elapsed: Duration::ZERO,
+                    host: HostMemory::default(),
+                    qemu_rss_bytes: None,
+                    controller_active: true,
+                    device: None,
+                    guest: Some(read_guest(&ControlFile(contents), &command.telemetry_path)),
+                };
+                let row = sample.csv_row(command.host_floor_bytes);
+                let columns: BTreeMap<_, _> = CSV_HEADER.split(',').zip(row.split(',')).collect();
+                assert_eq!(row.split(',').count(), CSV_HEADER.split(',').count());
+                if sample.telemetry().is_some() {
+                    assert_eq!(columns["guest_total_mib"], "14336");
+                    assert_eq!(columns["guest_available_mib"], "3072");
+                } else {
+                    assert_eq!(columns["guest_read_ok"], "0");
+                    assert_eq!(columns["guest_total_mib"], "");
+                }
+                writeln!(recorder.samples, "{row}").expect("sample row");
+                summary.add_sample(&sample);
+            }
+            recorder.samples.flush().expect("flush samples");
+            summary
+                .write(&directory.join("summary.json"), 1000)
+                .expect("summary");
+            let json: Value = serde_json::from_str(
+                &std::fs::read_to_string(directory.join("summary.json")).expect("read summary"),
+            )
+            .expect("JSON");
+            assert_eq!(json["samples"], 3);
+            assert_eq!(json["guest"]["read_failures"], 2);
+            assert_eq!(
+                std::fs::read_to_string(directory.join("samples.csv"))
+                    .expect("CSV")
+                    .lines()
+                    .count(),
+                4
+            );
+        }
+        std::fs::remove_dir_all(root).expect("remove fixtures");
     }
 
     #[test]

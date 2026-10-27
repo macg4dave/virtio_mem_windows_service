@@ -23,7 +23,7 @@ under the enabled `virtio-mem-host@win11_gpu.service`
 (`/etc/virtio-mem-host/win11_gpu.toml`, `observe_only = false`, 20 GiB pool,
 4 GiB host headroom). Install evidence: `.artifacts/install/`. The live loop
 can be watched read-only with
-`cargo xtask watch --config deploy/win11_gpu/host.toml` and recorded for
+`cargo xtask watch --config deploy/config_files/host_list.toml` and recorded for
 stress tests with `cargo xtask metrics` (see the deploy README).
 
 Source checks pass: core 67, host 79 and xtask 68 tests
@@ -63,7 +63,7 @@ Live findings so far (details and rules in development):
   pre-command check saw the QEMU argv change: libvirtd's tap `fd`/`vhostfd`
   numbers differ between argv generations. The controller then held
   requested 76 MiB / current 1068 MiB. The scrubber now ignores those
-  numbers; the regenerated attestation and `deploy/win11_gpu/recover-latch.sh`
+  numbers; the regenerated attestation and `deploy/config_files/recover-latch.sh`
   await install. The "4 hours without crashes" run before 15:30 was mostly
   latched, so it does not count as a stability run.
 
@@ -72,6 +72,29 @@ Not yet established: native SCM/ACL/Event Log checks, QGA replacing
 outstanding, workload-driven growth/reclaim cycles and stability over time.
 The archived pre-request-model workload runs (peak growth 1.10 GB, no accepted
 reclaim) do not qualify the current flow.
+
+## Configuration consolidation — source complete
+
+Administrator settings now use one `global-settings.toml`, one `host_list.toml`
+and one `<vm_name>_settings.toml` per VM. Core owns parsing, defaults and
+validation. VM settings expose total `min_ram`/`max_ram`, installation identity
+and optional diagnostic output; the former fixed-RAM configuration assumption
+is removed. Host state/attestation paths and service/control identity are
+derived. Policy knobs and overlapping timing/freshness settings have been
+replaced by conservative defaults and shared polling.
+
+Telemetry diagnostics are optional on both sides and failures do not prevent
+control. Policy sampling and the internal request channel continue without
+telemetry settings. Host deployment snapshots/hashes/backs up the whole source
+set; Windows receives generated schema-7 runtime settings. Old administrator
+formats fail with migration guidance; existing state and deployment backups
+are retained. This source change has not been installed on the live system.
+Native upgrade/ACL/optional-output checks and live RAM-bound convergence remain
+separate qualification work (CFG-001 in the backlog). Source verification:
+`cargo xtask gate local` passed (core 72, host 73, xtask 68 tests, release
+builds, formatting, Clippy and whitespace), as did Windows GNU cross-target
+Clippy including test targets. Linking Windows binaries remains blocked by
+the missing MinGW linker; native tests were not run for this change.
 
 ## Retained architecture
 
@@ -86,8 +109,8 @@ checkpoint errors can still stop the daemon.
 
 Windows owns demand/reclaim; Linux owns priority allocation and execution. The
 request rides in the existing atomic publication and the host answers through
-a status file beside it, so both sides derive every path from the one
-configured telemetry path and no second transport exists. Partial/empty
+a status file beside it. Both sides use the built-in control channel and
+derive its sidecar paths; optional diagnostic outputs do not carry authority. Partial/empty
 responses end a request without a host remainder queue; Windows reassesses on
 its next sample. Zero is supported but requires unplug qualification.
 
@@ -115,8 +138,8 @@ guest and moved to Phase 2 (WIN-001).
 Running on `win11_gpu` with resizing enabled. Remaining: the native service
 checks, workload-driven growth/reclaim with restarts and retransmissions,
 installing the zero-byte removal backoff, and a week of real-time
-sizing without intervention. All remaining work is live; no source task is
-open.
+sizing without intervention. Remaining configuration-upgrade and controller qualification work is live;
+source consolidation is complete.
 
 Exit: recorded convergence and recovery outcomes, acceptable guest memory
 behaviour, and a week of real-time sizing on `win11_gpu` without intervention.

@@ -4,10 +4,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-use virtio_mem_core::{
-    GuestMemoryPolicy, WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
-};
+use serde::Serialize;
+use virtio_mem_core::settings::{self, VmSettings, CONTROL_PATH, SERVICE_NAME};
 use virtio_mem_host::qga::encode_base64;
 
 use crate::build_identity::{
@@ -61,22 +59,6 @@ pub enum Command {
     },
 }
 
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DeploymentManifest {
-    schema_version: u32,
-    vm_name: String,
-    service_name: String,
-    display_name: String,
-    description: String,
-    telemetry_path: String,
-    service_account: String,
-    poll_interval_millis: u64,
-    shutdown_timeout_millis: u64,
-    policy: GuestMemoryPolicy,
-    install_path: String,
-}
-
 #[derive(Debug, Serialize)]
 struct DeploymentEvidence {
     schema_version: u32,
@@ -84,21 +66,10 @@ struct DeploymentEvidence {
     source_revision: String,
     build_id: String,
     candidate_sha256: String,
-    manifest: DeploymentManifestEvidence,
+    manifest: VmSettings,
+    service_config: virtio_mem_core::WindowsServiceConfigFile,
     #[serde(skip_serializing_if = "Option::is_none")]
     windows: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Serialize)]
-struct DeploymentManifestEvidence {
-    vm_name: String,
-    service_name: String,
-    telemetry_path: String,
-    service_account: String,
-    poll_interval_millis: u64,
-    shutdown_timeout_millis: u64,
-    policy: GuestMemoryPolicy,
-    install_path: String,
 }
 
 #[derive(Debug, Clone)]
@@ -921,14 +892,11 @@ fn deploy(
 ) -> Result<(), String> {
     let manifest_path = resolve_local(repo, manifest_path);
     let output_path = resolve_local(repo, output_path);
-    let manifest_text = std::fs::read_to_string(&manifest_path).map_err(|error| {
-        format!(
-            "read Windows deployment manifest {}: {error}",
-            manifest_path.display()
-        )
-    })?;
-    let manifest = parse_deployment_manifest(&manifest_path, &manifest_text)?;
-    validate_deployment_manifest(&manifest)?;
+    let manifest = settings::load_vm(&manifest_path)?;
+    let globals = settings::load_globals(manifest_path.parent().unwrap_or(Path::new(".")))?;
+    let service_config = manifest.service_config(&globals);
+    service_config.validate()?;
+    service_config.validate_paths(r"C:\ProgramData\VirtioMemService\config.json")?;
     let record = required_record(config)?;
 
     let candidate_path = release_path(config, SERVICE_EXE);
@@ -955,13 +923,17 @@ fn deploy(
     .to_owned();
 
     let windows = if apply {
-        let service_config = service_config(&manifest);
         let config_base64 = encode_base64(
             serde_json::to_string_pretty(&service_config)
                 .map_err(|error| format!("encode Windows service configuration: {error}"))?
                 .as_bytes(),
         );
-        let script = deployment_powershell(&manifest, &candidate_path, &config_base64);
+        let script = deployment_powershell(
+            &manifest,
+            &candidate_path,
+            &config_base64,
+            service_config.poll_interval_millis,
+        );
         let output = remote_powershell(config, repo, &script)?;
         Some(parse_last_json_line(&output)?)
     } else {
@@ -977,16 +949,8 @@ fn deploy(
         source_revision,
         build_id: record.identity.build_id.clone(),
         candidate_sha256,
-        manifest: DeploymentManifestEvidence {
-            vm_name: manifest.vm_name,
-            service_name: manifest.service_name,
-            telemetry_path: manifest.telemetry_path,
-            service_account: manifest.service_account,
-            poll_interval_millis: manifest.poll_interval_millis,
-            shutdown_timeout_millis: manifest.shutdown_timeout_millis,
-            policy: manifest.policy,
-            install_path: manifest.install_path,
-        },
+        manifest,
+        service_config,
         windows,
     };
     persist_json(&output_path, &evidence)?;
@@ -1283,67 +1247,17 @@ fn parse_last_json_line(output: &str) -> Result<serde_json::Value, String> {
         })
 }
 
-fn service_config(manifest: &DeploymentManifest) -> WindowsServiceConfigFile {
-    WindowsServiceConfigFile {
-        schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
-        vm_name: manifest.vm_name.clone(),
-        service_name: manifest.service_name.clone(),
-        display_name: manifest.display_name.clone(),
-        description: manifest.description.clone(),
-        demand_report_path: manifest.telemetry_path.clone(),
-        service_account: manifest.service_account.clone(),
-        poll_interval_millis: manifest.poll_interval_millis,
-        shutdown_timeout_millis: manifest.shutdown_timeout_millis,
-        policy: manifest.policy,
-    }
-}
-
-/// A `.toml` manifest is TOML (commented, for hand editing); anything else is
-/// JSON.
-fn parse_deployment_manifest(path: &Path, text: &str) -> Result<DeploymentManifest, String> {
-    let parsed = if path
-        .extension()
-        .is_some_and(|extension| extension == "toml")
-    {
-        toml::from_str(text).map_err(|error| error.to_string())
-    } else {
-        serde_json::from_str(text).map_err(|error| error.to_string())
-    };
-    parsed.map_err(|error| {
-        format!(
-            "parse Windows deployment manifest {}: {error}",
-            path.display()
-        )
-    })
-}
-
-fn validate_deployment_manifest(manifest: &DeploymentManifest) -> Result<(), String> {
-    if manifest.schema_version != 2 {
-        return Err(format!(
-            "unsupported Windows deployment manifest schema version: {}",
-            manifest.schema_version
-        ));
-    }
-    let wire = service_config(manifest);
-    wire.validate()?;
-    wire.validate_paths(r"C:\ProgramData\VirtioMemService\config.json")?;
-    virtio_mem_core::windows_service_config::normalize_windows_path(&manifest.install_path)?;
-    if !manifest.install_path.to_ascii_lowercase().ends_with(".exe") {
-        return Err("Windows deployment install_path must name an .exe file".to_owned());
-    }
-    Ok(())
-}
-
 fn deployment_powershell(
-    manifest: &DeploymentManifest,
+    manifest: &VmSettings,
     candidate_path: &str,
     config_base64: &str,
+    poll_interval_millis: u64,
 ) -> String {
-    let service = ps_literal(&manifest.service_name);
+    let service = ps_literal(SERVICE_NAME);
     let candidate = ps_literal(candidate_path);
     let install = ps_literal(&manifest.install_path);
-    let telemetry = ps_literal(&manifest.telemetry_path);
-    let wait_millis = manifest.poll_interval_millis.saturating_mul(3).max(1000);
+    let telemetry = ps_literal(CONTROL_PATH);
+    let wait_millis = poll_interval_millis.saturating_mul(3).max(1000);
     format!(
         r#"{PS_BUILD_FUNCTIONS}
 $ErrorActionPreference='Stop'
@@ -1360,6 +1274,23 @@ New-Item -ItemType Directory -Force -Path $backup | Out-Null
 if(Test-Path $install){{Copy-Item -LiteralPath $install -Destination (Join-Path $backup 'service.exe') -Force}}
 if(Test-Path $config){{Copy-Item -LiteralPath $config -Destination (Join-Path $backup 'config.json') -Force}}
 if($null -ne $prior){{& reg.exe export ('HKLM\SYSTEM\CurrentControlSet\Services\'+$service) (Join-Path $backup 'service.reg') /y | Out-Null}}
+# Refuse unsupported automatic migrations before stopping or replacing a service.
+# Original config, binary and registry have already been retained above.
+function Assert-LegacySetting($old,$new,[string]$name) {{
+  if($null -eq $old -or $null -eq $new) {{throw ("Cannot migrate missing setting "+$name+"; retain and review the old configuration")}}
+  if($new -is [System.Management.Automation.PSCustomObject]) {{
+    foreach($property in $new.PSObject.Properties) {{Assert-LegacySetting $old.($property.Name) $property.Value ($name+'.'+$property.Name)}}
+  }} elseif([string]$old -cne [string]$new) {{throw ("Legacy setting "+$name+" differs; migrate the custom setting/state explicitly before deployment")}}
+}}
+if(Test-Path $config) {{
+  $oldConfig=Get-Content -LiteralPath $config -Raw | ConvertFrom-Json
+  $newConfig=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{config_base64}')) | ConvertFrom-Json
+  if($oldConfig.schema_version -ne $newConfig.schema_version) {{
+    foreach($field in @('vm_name','service_name','service_account','demand_report_path','poll_interval_millis','shutdown_timeout_millis','policy')) {{
+      Assert-LegacySetting $oldConfig.$field $newConfig.$field $field
+    }}
+  }}
+}}
 try {{
   if($null -ne $prior){{if($prior.State -ne 'Stopped'){{Stop-Service -Name $service -Force; (Get-Service $service).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))}}; & sc.exe delete $service | Out-Null; Start-Sleep -Milliseconds 500}}
   New-Item -ItemType Directory -Force -Path (Split-Path -Parent $install),$root | Out-Null
@@ -1716,119 +1647,22 @@ mod tests {
     }
 
     #[test]
-    fn deployment_manifest_requires_explicit_safe_paths_and_timings() {
-        let mut manifest = DeploymentManifest {
-            schema_version: 2,
-            vm_name: "guest".to_owned(),
-            service_name: "VirtioMemService".to_owned(),
-            display_name: "Virtio memory telemetry".to_owned(),
-            description: "Publishes telemetry".to_owned(),
-            telemetry_path: r"C:\ProgramData\VirtioMemService\telemetry.json".to_owned(),
-            service_account: r"NT AUTHORITY\LocalService".to_owned(),
-            poll_interval_millis: 5_000,
-            shutdown_timeout_millis: 30_000,
-            policy: GuestMemoryPolicy {
-                target: virtio_mem_core::TargetPolicyConfig {
-                    configured_minimum_bytes: 0,
-                    physical_reserve_bytes: 2 << 30,
-                    commit_reserve_bytes: 2 << 30,
-                    safe_floor_physical_reserve_bytes: 1 << 30,
-                    safe_floor_commit_reserve_bytes: 1 << 30,
-                    history_window_millis: 600_000,
-                    maximum_gap_millis: 15_000,
-                    downward_hysteresis_bytes: 256 << 20,
-                },
-                grow_step_bytes: 1 << 30,
-                shrink_step_bytes: 64 << 20,
-                host_status_max_age_millis: 30_000,
-                request_lifetime_millis: 30_000,
-                max_removal_pause_windows: 16,
-            },
-            install_path: r"C:\Program Files\VirtioMemService\virtio-mem-service.exe".to_owned(),
-        };
-        assert!(validate_deployment_manifest(&manifest).is_ok());
-        manifest.telemetry_path = r"relative\telemetry.json".to_owned();
-        assert!(validate_deployment_manifest(&manifest).is_err());
-        manifest.telemetry_path = r"C:\ProgramData\..\unsafe.json".to_owned();
-        assert!(validate_deployment_manifest(&manifest).is_err());
-        manifest.telemetry_path = r"C:\ProgramData\VirtioMemService\telemetry.json".to_owned();
-        manifest.policy.request_lifetime_millis = 0;
-        assert!(validate_deployment_manifest(&manifest).is_err());
-    }
-
-    #[test]
-    fn tracked_manifest_sizes_are_written_to_windows_as_byte_counts() {
+    fn tracked_vm_deploys_without_optional_telemetry() {
         let path = crate::repo_root()
-            .expect("repository root")
-            .join("deploy/win11_gpu/windows-manifest.toml");
-        let text = std::fs::read_to_string(&path).expect("read tracked manifest");
-        let manifest = parse_deployment_manifest(&path, &text).expect("parse manifest");
-        validate_deployment_manifest(&manifest).expect("valid manifest");
-        // Values are edited by hand; only their wire form is fixed.
-        let wire = serde_json::to_value(service_config(&manifest)).expect("serialise config");
-        let policy = &wire["policy"];
-        assert_eq!(
-            policy["shrink_step_bytes"],
-            manifest.policy.shrink_step_bytes
-        );
-        assert!(policy["shrink_step_bytes"].is_u64());
-        assert!(policy["target"]["configured_minimum_bytes"].is_u64());
-        assert_eq!(wire["demand_report_path"], manifest.telemetry_path);
-    }
-
-    #[test]
-    fn toml_and_json_manifests_read_the_same() {
-        let toml_text = r#"
-schema_version = 2
-vm_name = "guest"
-service_name = "VirtioMemService"
-display_name = "Display"
-description = "Description"
-telemetry_path = 'C:\ProgramData\VirtioMemService\telemetry.json'
-service_account = 'NT AUTHORITY\LocalService'
-install_path = 'C:\Program Files\VirtioMemService\virtio-mem-service.exe'
-poll_interval_millis = 5000
-shutdown_timeout_millis = 30000
-[policy]
-grow_step_bytes = "1GB"
-shrink_step_bytes = "3GB"
-host_status_max_age_millis = 30000
-request_lifetime_millis = 30000
-max_removal_pause_windows = 16
-[policy.target]
-configured_minimum_bytes = "0GB"
-physical_reserve_bytes = "2GB"
-commit_reserve_bytes = "2GB"
-safe_floor_physical_reserve_bytes = "1GB"
-safe_floor_commit_reserve_bytes = "1GB"
-history_window_millis = 300000
-maximum_gap_millis = 15000
-downward_hysteresis_bytes = "256MB"
-"#;
-        let from_toml =
-            parse_deployment_manifest(Path::new("m.toml"), toml_text).expect("TOML manifest");
-        let json_text = serde_json::to_string(&service_config(&from_toml)).unwrap();
-        let mut json: serde_json::Value = serde_json::from_str(&json_text).unwrap();
-        // The wire config renames and adds fields; rebuild manifest JSON.
-        let wire = json.as_object_mut().unwrap();
-        let manifest_json = serde_json::json!({
-            "schema_version": 2,
-            "vm_name": wire["vm_name"],
-            "service_name": wire["service_name"],
-            "display_name": wire["display_name"],
-            "description": wire["description"],
-            "telemetry_path": wire["demand_report_path"],
-            "service_account": wire["service_account"],
-            "install_path": from_toml.install_path,
-            "poll_interval_millis": wire["poll_interval_millis"],
-            "shutdown_timeout_millis": wire["shutdown_timeout_millis"],
-            "policy": wire["policy"],
-        });
-        let from_json = parse_deployment_manifest(Path::new("m.json"), &manifest_json.to_string())
-            .expect("JSON manifest");
-        assert_eq!(from_json.policy, from_toml.policy);
-        assert_eq!(from_json.telemetry_path, from_toml.telemetry_path);
-        assert!(parse_deployment_manifest(Path::new("m.json"), toml_text).is_err());
+            .expect("repo")
+            .join("deploy/config_files/win11_gpu_settings.toml");
+        let vm = settings::load_vm(&path).expect("VM settings");
+        let globals = settings::load_globals(path.parent().unwrap()).expect("globals");
+        let wire = vm.service_config(&globals);
+        wire.validate().expect("valid service config");
+        wire.validate_paths(r"C:\ProgramData\VirtioMemService\config.json")
+            .expect("distinct paths");
+        assert!(wire.telemetry_path.is_none());
+        assert_eq!(wire.demand_report_path, CONTROL_PATH);
+        let script = deployment_powershell(&vm, "candidate.exe", "e30=", wire.poll_interval_millis);
+        assert!(script.contains(CONTROL_PATH));
+        assert!(script.contains("deployment-backups"));
+        assert!(script.contains("Assert-LegacySetting"));
     }
 
     #[test]

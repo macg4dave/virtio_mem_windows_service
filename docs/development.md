@@ -172,24 +172,46 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
 ## Configuration and deployment
 
 The reviewed `win11_gpu` configuration, with every RAM setting explained, is
-in [deploy/win11_gpu/](../deploy/win11_gpu/README.md).
+in [deploy/config_files/](../deploy/config_files/README.md).
 
-[The host TOML example](../host/systemd/virtio-mem-host.toml.example) owns the
-key inventory; `pool_bytes` and `host_min_headroom_bytes` accept the same size
-strings as the Windows policy; replace every `REQUIRED_*` marker using reviewed deployment
-values. Unknown keys are rejected, including the retired demand-policy keys
-(`min_memory_bytes`, steps, reserves, reclaim history and hysteresis), which
-now live in the Windows configuration. Global timing/reserve settings apply to
-all `[[vm]]` tables; `pool_bytes` is required for multiple VMs. The example
-starts with `observe_only = true`: requests are evaluated, logged with their
-would-be grant and refused before any command.
+Administrator settings have three TOML formats, defined and validated in
+[core settings](../crates/virtio-mem-core/src/settings.rs):
 
-One deployment instance is one controller: unit
-`virtio-mem-host@INSTANCE.service` runs `/etc/virtio-mem-host/INSTANCE.toml`,
-which may list several VMs. Each VM names its own checkpoint (distinct paths are
-enforced) and an attestation file directly in `/etc/virtio-mem-host/`.
-`xtask host-deploy INSTANCE --config FILE --attestation VM=FILE ...` requires one
-attestation per configured VM and installs each at its configured path.
+- `global-settings.toml`: pool, host headroom, observe-only and shared timing.
+- `host_list.toml`: `[[vm]]` entries with `vm_name`, `alias`, `priority` and an
+  optional host-local diagnostic `telemetry_path`.
+- `<vm_name>_settings.toml`: total guest `min_ram`/`max_ram`, `install_path`,
+  `service_account`, `vm_name` and optional Windows diagnostic `telemetry_path`.
+
+Only the global keys have built-in defaults; each VM has independent required
+settings. A missing global file uses defaults, but multiple VMs require an
+explicit `pool_bytes`. VM names are validated lower-case ASCII identifiers;
+filenames must match exactly. Unknown keys and legacy manifests are rejected
+with migration guidance. Files are loaded relative to the host list, without
+nested imports or VM-level overrides. The deployment README records defaults,
+units, migration and adding a VM.
+
+There is no configured fixed-RAM base. The guest derives device bounds from
+`min_ram`, `max_ram` and each live sample; the host independently bounds grants.
+Device size/block size remain live geometry. Sampling, steps, reserve/floor
+pairs, reclaim hysteresis/history and backoff use shared built-in defaults;
+polling also determines freshness, request expiry and sample-gap bounds.
+Per-VM checkpoint and attestation paths are derived from the validated name.
+
+Both diagnostic outputs are entirely optional: no path means no diagnostic
+writes, and output errors cannot stop memory control. Required policy sampling
+and request/reply traffic use a built-in channel path (historically named
+`telemetry.json`), independently of optional telemetry. Control publication
+retention is disabled; diagnostics cannot alias control files, config or binary.
+
+One controller unit `virtio-mem-host@INSTANCE.service` runs
+`/etc/virtio-mem-host/host_list.toml` with sibling settings files. Never run
+multiple controllers for the same list/pool. `xtask host-deploy INSTANCE
+--config FILE --attestation VM=FILE ...` requires one attestation per VM and
+snapshots all configuration files before validation, hashing and installation.
+Deployment evidence schema 4 hashes an index of every snapshot file; the index
+and snapshot remain in `.artifacts/deploy/`. Installed settings and obsolete
+instance configs are backed up; pending requests and latches are retained.
 The attested domain XML hash ignores the virtio-mem allocation, the domain
 `id` and `type='dynamic'` security labels, which change on every VM start.
 The attested QEMU argv hash ignores `requested-size` and the tap `fd`/`vhostfd`
@@ -218,19 +240,16 @@ Controller status is version 5 and includes the admitted request, its result,
 `observe_only` and a read-only view of the guest input. Use matching host,
 xtask and Windows builds.
 
-Windows loads `C:\ProgramData\VirtioMemService\config.json` (schema 6,
-[defined in core](../crates/virtio-mem-core/src/windows_service_config.rs)),
-which now carries the guest `policy`: target reserves, history, hysteresis,
-minimum, steps, status age and request lifetime. Steps must be multiples of the
-device block size. Policy `*_bytes` values accept a byte count or a binary
-size string (`"8GB"`, `"8.5GB"`, `"1024MB"`; `GB` = `GiB`); they are always
-written back as byte counts. VM/service identity and the telemetry path must match the
-host. The publication path also names its backups, handoff files, the host
-status and the request state as `<path>.<suffix>`; the configuration may be
-none of them. Configuration is bounded to 64 KiB; paths use absolute drive
-syntax and ambiguous Win32 forms are rejected. Installation keeps the
-configuration administrator-owned and read-only to LocalService and applies
-explicit modify-without-delete ACLs to every existing publication file.
+Windows loads generated `C:\ProgramData\VirtioMemService\config.json`
+(schema 7, [defined in core](../crates/virtio-mem-core/src/windows_service_config.rs)).
+It carries derived policy/timing/control details and explicit total-RAM limits;
+edit the source TOML rather than this deployment output. The service validates
+it before startup. Configuration is bounded to 64 KiB; Windows paths use
+absolute drive syntax and ambiguous Win32 forms are rejected. Installation
+keeps configuration administrator-owned and read-only to LocalService and
+applies explicit ACLs to existing control files. Optional output directories
+need write access for the selected service account. The existing automatic
+ACL provisioner supports LocalService.
 
 `help` documents recovery when configuration is missing or damaged: in an
 administrator terminal, `sc.exe stop SERVICE_NAME` and, when removing the
@@ -322,7 +341,7 @@ Every remote build is traceable from source to the installed service:
   are retained and listed. Without `--apply` it only reports.
 
 The presets read the SSH alias, guest workspace, timeouts, manifest and
-service name from [windows-build.mk](../deploy/win11_gpu/windows-build.mk).
+service name from [windows-build.mk](../deploy/config_files/windows-build.mk).
 Configure the alias in
 `~/.ssh/config` with the guest's current address, user and identity, and retain
 its verified host key. All `VIRTIO_MEM_WINDOWS_*` settings can be overridden
@@ -330,9 +349,9 @@ through the environment or Make command line. An unreachable endpoint fails
 the check before source sync; the preset does not start the VM or configure SSH.
 
 The configurable remote workflow is `cargo xtask windows sync`, `build`, `test` (or `all`),
-then manifest-based `windows deploy` when authorised. Deployment manifests are
-schema 2 and include the guest `policy`; a `.toml` manifest is read as TOML
-and any other as JSON. [The win11_gpu manifest](../deploy/win11_gpu/windows-manifest.toml)
+then TOML-based `windows deploy` when authorised. Deployment reads a validated
+`<vm_name>_settings.toml` and sibling global settings; JSON and schema-2
+administrator manifests have been removed. [The win11_gpu settings](../deploy/config_files/win11_gpu_settings.toml)
 explains every setting. Required environment values are
 `VIRTIO_MEM_WINDOWS_SSH`, `VIRTIO_MEM_WINDOWS_DIR`,
 `VIRTIO_MEM_WINDOWS_ARTIFACTS`, `VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS` and
@@ -394,9 +413,9 @@ history chart, and the controller's latest journal events, colour-coded with
 repeats collapsed.
 
 ```bash
-cargo xtask watch --config deploy/win11_gpu/host.toml
-cargo xtask watch --config deploy/win11_gpu/host.toml --interval-seconds 1
-cargo xtask watch --config deploy/win11_gpu/host.toml --once   # one snapshot
+cargo xtask watch --config deploy/config_files/host_list.toml
+cargo xtask watch --config deploy/config_files/host_list.toml --interval-seconds 1
+cargo xtask watch --config deploy/config_files/host_list.toml --once   # one snapshot
 ```
 
 The VM, device alias, telemetry path and host floor come from the host

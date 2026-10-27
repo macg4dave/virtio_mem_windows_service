@@ -4,6 +4,7 @@
 Shows Windows-visible physical RAM using a fresh native snapshot on every tick.
 .DESCRIPTION
 Runs on Windows 11 in Windows PowerShell 5.1 or PowerShell 7 without elevation.
+Reads Windows directly; no TOML configuration, service or telemetry file is needed.
 Use Ctrl+C to stop. An in-place, colour dashboard on a blue console shows the
 memory table, usage bars, rolling physical RAM history and total-RAM change
 events. Redirected output uses the same layout as plain ASCII snapshots.

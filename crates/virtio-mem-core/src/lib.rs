@@ -7,6 +7,7 @@ pub mod error;
 pub mod guest_policy;
 pub mod memory_request;
 pub mod pool;
+pub mod settings;
 pub mod shrink_recovery;
 pub mod target_controller;
 pub mod units;

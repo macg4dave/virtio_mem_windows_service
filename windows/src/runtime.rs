@@ -3,8 +3,8 @@ use std::time::Duration;
 use virtio_mem_core::TargetSample;
 
 use crate::demand::{
-    MemoryResourceNotificationTelemetry, MemoryTelemetry, RawTelemetryEnvelope,
-    RawTelemetryPublisher, TelemetryClock,
+    AtomicRawTelemetryPublisher, MemoryResourceNotificationTelemetry, MemoryTelemetry,
+    RawTelemetryEnvelope, RawTelemetryPublisher, TelemetryClock,
 };
 use crate::requests::GuestRequests;
 use crate::service_host::{ServiceWorker, StopSignal};
@@ -12,7 +12,7 @@ use crate::service_host::{ServiceWorker, StopSignal};
 use crate::{
     config::ServiceConfig,
     demand::{
-        native_memory_resource_notifications, process_session_id, AtomicRawTelemetryPublisher,
+        native_memory_resource_notifications, process_session_id,
         MemoryResourceNotificationCollector, NativeMemoryTelemetry, SystemTelemetryClock,
         WindowsMemoryResourceNotificationApi,
     },
@@ -27,6 +27,7 @@ pub struct GuestMemoryWorker<T, P, C, N> {
     telemetry: T,
     memory_resource_notifications: N,
     publisher: P,
+    diagnostics: Option<AtomicRawTelemetryPublisher>,
     clock: C,
     requests: GuestRequests,
     next_sequence: u64,
@@ -59,6 +60,7 @@ where
             telemetry,
             memory_resource_notifications,
             publisher,
+            diagnostics: None,
             clock,
             requests,
             next_sequence: 0,
@@ -67,6 +69,14 @@ where
             last_native_low: false,
             collection_failed: false,
         })
+    }
+
+    pub fn with_diagnostics(mut self, path: Option<&str>) -> Self {
+        self.diagnostics = path.map(|path| {
+            AtomicRawTelemetryPublisher::with_retention(path, 0)
+                .with_retry_timeout(Duration::from_millis(100))
+        });
+        self
     }
 
     pub fn poll_once(&mut self) -> Result<RawTelemetryEnvelope, String> {
@@ -136,6 +146,13 @@ where
         self.publisher
             .publish_cancellable(&envelope, stop)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
+        if let Some(publisher) = &mut self.diagnostics {
+            if let Err(error) = publisher.publish_cancellable(&envelope, stop) {
+                // Diagnostic output is optional; its failure cannot prevent
+                // admission or completion of a durable memory request.
+                eprintln!("optional telemetry output failed: {error}");
+            }
+        }
         self.previous_monotonic_millis = Some(monotonic_millis);
         self.next_sequence = self
             .next_sequence
@@ -204,7 +221,7 @@ pub type NativeWorker = GuestMemoryWorker<
 pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiringError> {
     let session_id =
         process_session_id(&config.service_name).map_err(RuntimeWiringError::WorkerConstruction)?;
-    let requests = GuestRequests::open(
+    let mut requests = GuestRequests::open(
         config.policy,
         &config.vm_name,
         &config.service_name,
@@ -213,15 +230,19 @@ pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiri
         config.shutdown_timeout,
     )
     .map_err(RuntimeWiringError::WorkerConstruction)?;
+    requests
+        .set_ram_limits(config.min_ram, config.max_ram)
+        .map_err(RuntimeWiringError::WorkerConstruction)?;
     GuestMemoryWorker::new(
         NativeMemoryTelemetry,
         native_memory_resource_notifications(),
-        AtomicRawTelemetryPublisher::new(&config.demand_report_path)
+        AtomicRawTelemetryPublisher::with_retention(&config.demand_report_path, 0)
             .with_retry_timeout(config.shutdown_timeout),
         SystemTelemetryClock::default(),
         requests,
         config.poll_interval,
     )
+    .map(|worker| worker.with_diagnostics(config.telemetry_path.as_deref()))
     .map_err(RuntimeWiringError::WorkerConstruction)
 }
 
@@ -368,6 +389,28 @@ mod tests {
             Duration::from_secs(1),
         )
         .expect("worker should be valid")
+    }
+
+    #[test]
+    fn optional_diagnostics_do_not_control_request_publication() {
+        let path = publication("optional-diagnostics");
+        let mut worker = worker(
+            UnavailableMemoryResourceNotifications,
+            requests(&path, "session"),
+        );
+        assert!(worker.diagnostics.is_none());
+        worker
+            .poll_once()
+            .expect("control publication without diagnostics");
+        assert_eq!(worker.publisher().0.len(), 1);
+        let blocked =
+            std::env::temp_dir().join(format!("virtio-mem-diagnostic-file-{}", std::process::id()));
+        std::fs::write(&blocked, "not a directory").unwrap();
+        let output = blocked.join("diagnostic.json");
+        let mut worker = worker.with_diagnostics(output.to_str());
+        worker.poll_once().expect("diagnostic failure is nonfatal");
+        assert_eq!(worker.publisher().0.len(), 2);
+        std::fs::remove_file(blocked).unwrap();
     }
 
     #[test]

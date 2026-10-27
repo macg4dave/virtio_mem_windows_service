@@ -12,6 +12,6 @@ WIN11_ARTIFACTS ?= .artifacts/windows/win11_gpu
 WIN11_CONNECT_TIMEOUT_SECONDS ?= 10
 WIN11_OPERATION_TIMEOUT_SECONDS ?= 1200
 # The service settings deployed by make win11-deploy.
-WIN11_MANIFEST ?= deploy/win11_gpu/windows-manifest.toml
-# Must match service_name in that manifest.
+WIN11_MANIFEST ?= deploy/config_files/win11_gpu_settings.toml
+# Built-in Windows service identity.
 WIN11_SERVICE ?= VirtioMemService

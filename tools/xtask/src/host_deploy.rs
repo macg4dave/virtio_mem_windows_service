@@ -51,7 +51,7 @@ struct AttestationEvidence {
 }
 
 /// The deployment layout: unit `virtio-mem-host@INSTANCE.service` runs the
-/// config `/etc/virtio-mem-host/INSTANCE.toml`, which may hold several VMs.
+/// config `/etc/virtio-mem-host/host_list.toml` and its sibling settings files.
 /// Returns INSTANCE for a controller unit name.
 pub fn controller_instance(unit: &str) -> Result<&str, String> {
     unit.strip_prefix("virtio-mem-host@")
@@ -159,6 +159,82 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn snapshot_configuration(source: &Path, directory: &Path) -> Result<PathBuf, String> {
+    use virtio_mem_core::settings::{self, GLOBAL_FILE, HOST_LIST_FILE};
+    let (globals, list, vms) = settings::load_configuration(source)?;
+    let serialize = |result: Result<String, toml::ser::Error>| {
+        result.map_err(|error| format!("serialize configuration: {error}"))
+    };
+    persist(
+        &directory.join(GLOBAL_FILE),
+        serialize(toml::to_string(&globals))?.as_bytes(),
+    )?;
+    persist(
+        &directory.join(HOST_LIST_FILE),
+        serialize(toml::to_string(&list))?.as_bytes(),
+    )?;
+    for vm in &vms {
+        persist(
+            &directory.join(settings::vm_filename(&vm.vm_name)?),
+            serialize(toml::to_string(vm))?.as_bytes(),
+        )?;
+    }
+    Ok(directory.join(HOST_LIST_FILE))
+}
+
+fn configuration_paths(list_path: &Path) -> Result<Vec<PathBuf>, String> {
+    use virtio_mem_core::settings::{self, GLOBAL_FILE};
+    let (_, _, vms) = settings::load_configuration(list_path)?;
+    let directory = list_path
+        .parent()
+        .ok_or("host list has no parent directory")?;
+    let mut paths = vec![directory.join(GLOBAL_FILE), list_path.to_path_buf()];
+    for vm in &vms {
+        paths.push(directory.join(settings::vm_filename(&vm.vm_name)?));
+    }
+    Ok(paths)
+}
+
+/// An upgrade must not abandon retained request state by changing a formerly
+/// configurable path/identity to a default. This is a migration guard only;
+/// legacy settings are never accepted as the running configuration.
+fn validate_legacy_paths(text: &str, configs: &[HostConfig]) -> Result<(), String> {
+    let old: toml::Table = toml::from_str(text)
+        .map_err(|error| format!("read legacy host config for migration: {error}"))?;
+    let entries = old
+        .get("vm")
+        .and_then(toml::Value::as_array)
+        .ok_or("legacy host config has no VM list; review migration explicitly")?;
+    for entry in entries {
+        let name = entry
+            .get("name")
+            .and_then(toml::Value::as_str)
+            .ok_or("legacy VM has no name")?;
+        let Some(config) = configs.iter().find(|config| config.vm_name == name) else {
+            return Err(format!(
+                "legacy VM {name} would be removed; review its retained state before migration"
+            ));
+        };
+        for (key, expected) in [
+            ("policy_state_path", config.policy_state_path.as_str()),
+            (
+                "compatibility_attestation_path",
+                config.compatibility_attestation_path.as_str(),
+            ),
+            ("telemetry_path", config.raw_telemetry_path.as_str()),
+            (
+                "telemetry_service_name",
+                config.raw_telemetry_service_name.as_str(),
+            ),
+        ] {
+            if entry.get(key).and_then(toml::Value::as_str) != Some(expected) {
+                return Err(format!("legacy VM {name} {key} differs from derived {expected}; migrate retained state/identity explicitly before deployment"));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     let config_source = resolve(repo, &command.config);
     let candidate = repo.join("target/release/virtio-mem-host");
@@ -172,8 +248,32 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             ));
         }
     }
+    // Snapshot all three formats together; validation, hashing and installation
+    // consume the same bytes even if the administrator edits the source later.
+    let config_source = snapshot_configuration(
+        &config_source,
+        &repo.join(format!(
+            ".artifacts/deploy/{}-{}-{}-config",
+            command.instance,
+            now_millis()?,
+            std::process::id()
+        )),
+    )?;
     let settings = HostSettings::load(&config_source)
         .map_err(|error| format!("validate host configuration: {error}"))?;
+    let legacy_path = PathBuf::from(format!("/etc/virtio-mem-host/{}.toml", command.instance));
+    if legacy_path.file_name().and_then(|name| name.to_str()) != Some("host_list.toml") {
+        match std::fs::read_to_string(&legacy_path) {
+            Ok(text) => validate_legacy_paths(&text, &settings.vms)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "read legacy configuration {}: {error}",
+                    legacy_path.display()
+                ))
+            }
+        }
+    }
     let attestations = pair_attestations(&command.attestations, repo, &settings.vms)?;
     for (attestation, config) in attestations.iter().zip(&settings.vms) {
         let text = std::fs::read_to_string(&attestation.source)
@@ -186,7 +286,20 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     require_inactive(&before, &unit)?;
 
     let candidate_hash = hash(&candidate, repo, command.timeout)?;
-    let config_hash = hash(&config_source, repo, command.timeout)?;
+    let config_files = configuration_paths(&config_source)?;
+    let mut config_index = String::new();
+    for path in &config_files {
+        config_index.push_str(&format!(
+            "{}  {}\n",
+            hash(path, repo, command.timeout)?,
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or("configuration filename is not UTF-8")?
+        ));
+    }
+    let index_path = config_source.with_file_name("config-index.sha256");
+    persist(&index_path, config_index.as_bytes())?;
+    let config_hash = hash(&index_path, repo, command.timeout)?;
     let attestation_evidence = attestations
         .iter()
         .map(|attestation| {
@@ -223,7 +336,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
         ));
     }
     Ok(Evidence {
-        schema_version: 3,
+        schema_version: 4,
         captured_unix_millis: now_millis()?,
         applied: command.apply,
         instance: command.instance.clone(),
@@ -342,14 +455,19 @@ fn install(
         repo,
         command.timeout,
     )?;
-    let target_config = format!("/etc/virtio-mem-host/{}.toml", command.instance);
+    let config_files = configuration_paths(config)?;
     let targets = [
         PathBuf::from("/usr/local/libexec/virtio-mem-host"),
         PathBuf::from("/etc/systemd/system/virtio-mem-host@.service"),
-        PathBuf::from(&target_config),
         PathBuf::from("/etc/polkit-1/rules.d/50-virtio-mem-host.rules"),
     ]
     .into_iter()
+    .chain(
+        config_files
+            .iter()
+            .filter_map(|path| path.file_name())
+            .map(|name| Path::new("/etc/virtio-mem-host").join(name)),
+    )
     .chain(
         attestations
             .iter()
@@ -414,15 +532,28 @@ fn install(
         repo,
         command.timeout,
     )?;
-    install_file(
-        config,
-        &target_config,
-        "root",
-        "virtio-mem-host",
-        "0640",
-        repo,
-        command.timeout,
-    )?;
+    for source in &config_files {
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("invalid configuration filename")?;
+        install_file(
+            source,
+            &format!("/etc/virtio-mem-host/{name}"),
+            "root",
+            "virtio-mem-host",
+            "0640",
+            repo,
+            command.timeout,
+        )?;
+    }
+    let legacy_config = PathBuf::from(format!("/etc/virtio-mem-host/{}.toml", command.instance));
+    if legacy_config.exists()
+        && legacy_config.file_name().and_then(|name| name.to_str()) != Some("host_list.toml")
+    {
+        std::fs::rename(&legacy_config, backup.join("legacy-host.toml"))
+            .map_err(|error| format!("archive obsolete host config: {error}"))?;
+    }
     for attestation in attestations {
         install_file(
             &attestation.source,
@@ -717,29 +848,31 @@ mod tests {
 
     #[test]
     fn every_configured_vm_needs_exactly_one_attestation_in_the_config_directory() {
-        let vm = |name: &str| {
-            format!(
-                r#"
-[[vm]]
-name = "{name}"
-alias = "memory0"
-priority = 1
-policy_state_path = "/var/lib/virtio-mem-host/state/{name}.json"
-compatibility_attestation_path = "/etc/virtio-mem-host/{name}.attestation.json"
-telemetry_transport = "qga-file"
-telemetry_path = 'C:\ProgramData\VirtioMemService\telemetry.json'
-telemetry_service_name = "VirtioMemService"
-telemetry_max_age_seconds = 60
-telemetry_future_tolerance_seconds = 5
-"#
-            )
-        };
-        let settings = HostSettings::parse(&format!(
-            "pool_bytes = 8589934592\npoll_interval_seconds = 10\ncommand_timeout_seconds = 30\nconvergence_timeout_seconds = 120\nhost_min_headroom_bytes = 4294967296\n{}{}",
-            vm("a"),
-            vm("b")
-        ))
-        .expect("shared config");
+        let directory =
+            std::env::temp_dir().join(format!("virtio-mem-deploy-test-{}", std::process::id()));
+        let source = crate::repo_root()
+            .expect("root")
+            .join("deploy/config_files/host_list.toml");
+        let snapshot = snapshot_configuration(&source, &directory).expect("snapshot");
+        let original = HostSettings::load(&snapshot).expect("settings");
+        let config = &original.vms[0];
+        let legacy = format!("[[vm]]\nname={:?}\npolicy_state_path={:?}\ncompatibility_attestation_path={:?}\ntelemetry_path={:?}\ntelemetry_service_name={:?}", config.vm_name, config.policy_state_path, config.compatibility_attestation_path, config.raw_telemetry_path, config.raw_telemetry_service_name);
+        validate_legacy_paths(&legacy, &original.vms).expect("preserve tracked paths");
+        assert!(validate_legacy_paths(
+            &legacy.replace("-requests.json", "-custom.json"),
+            &original.vms
+        )
+        .is_err());
+
+        let mut settings = original;
+        settings.vms[0].vm_name = "a".to_owned();
+        settings.vms[0].compatibility_attestation_path =
+            "/etc/virtio-mem-host/a.attestation.json".to_owned();
+        let mut other = settings.vms[0].clone();
+        other.vm_name = "b".to_owned();
+        other.compatibility_attestation_path = "/etc/virtio-mem-host/b.attestation.json".to_owned();
+        settings.vms.push(other);
+        std::fs::remove_dir_all(directory).expect("remove fixture");
         let repo = Path::new("/repo");
         let both = BTreeMap::from([
             ("a".to_owned(), PathBuf::from("a.json")),

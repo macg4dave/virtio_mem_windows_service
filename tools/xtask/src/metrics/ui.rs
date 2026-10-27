@@ -833,7 +833,7 @@ mod tests {
     fn test_command() -> Command {
         let config = crate::repo_root()
             .expect("repository root")
-            .join("deploy/win11_gpu/host.toml");
+            .join("deploy/config_files/host_list.toml");
         super::super::parse(&["--config".to_owned(), config.to_string_lossy().into_owned()])
             .expect("command")
     }

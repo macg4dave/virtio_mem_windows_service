@@ -18,7 +18,7 @@ windows-gate:
 	cargo xtask windows all
 
 # The win11_gpu build workspace and deployment, set in this file.
-include deploy/win11_gpu/windows-build.mk
+include deploy/config_files/windows-build.mk
 WIN11_TARGETS := win11-build win11-gate win11-status win11-deploy
 $(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_SSH ?= $(WIN11_SSH)
 $(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_DIR ?= $(WIN11_DIR)

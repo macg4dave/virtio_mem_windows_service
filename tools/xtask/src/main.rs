@@ -66,10 +66,10 @@ Attestation options:
   --command-timeout-seconds N   Required external-command bound.
   --connect URI                 Libvirt URI; default qemu:///system.
 
-Host deployment options (INSTANCE names the unit and /etc/virtio-mem-host/INSTANCE.toml):
-  --config PATH                 Required reviewed TOML config; may hold several VMs.
-  --attestation VM=PATH         Required once per configured VM; installed at its
-                                compatibility_attestation_path in /etc/virtio-mem-host.
+Host deployment options (INSTANCE names the unit; settings install under /etc/virtio-mem-host/):
+  --config PATH                 Reviewed host_list.toml with sibling global/VM settings.
+  --attestation VM=PATH         Required per VM; installed as
+                                /etc/virtio-mem-host/<vm_name>.attestation.json.
   --output PATH                 Required structured JSON evidence path.
   --command-timeout-seconds N   Required external-command bound.
   --apply                       Install; otherwise validate only.
