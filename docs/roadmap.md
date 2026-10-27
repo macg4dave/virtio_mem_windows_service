@@ -20,18 +20,20 @@ viomem driver behaviour that shapes reclaim, and validation.
 
 The guest-driven flow is implemented, installed on `win11_gpu` and resizing
 under the enabled `virtio-mem-host@win11_gpu.service`
-(`/etc/virtio-mem-host/win11_gpu.toml`, `observe_only = false`, 20 GiB pool,
+(`/etc/virtio-mem-host/host_list.toml` and sibling settings,
+`observe_only = false`, 15 GiB device pool,
 4 GiB host headroom). Install evidence: `.artifacts/install/`. The live loop
 can be watched read-only with
 `cargo xtask watch --config deploy/config_files/host_list.toml` and recorded for
 stress tests with `cargo xtask metrics` (see the deploy README).
 
-Source checks pass: core 67, host 79 and xtask 68 tests
-(`.artifacts/install/local-gate-9.log`); 64 native Windows tests via
-`make win11-gate` before the backoff change on ice101 (MSVC, Rust 1.97.1), formatting, release
-builds and Clippy with warnings denied. A local Windows GNU build is still
-blocked by the missing `x86_64-w64-mingw32-gcc` linker; the native gate
-replaces it.
+Source checks pass: core 72, host 73 and xtask 69 tests
+(`.artifacts/install/config-install-local-gate.log`), release builds,
+formatting and Clippy with warnings denied. The native MSVC gate on ice101
+passed all 65 Windows tests with Rust 1.97.1
+(`.artifacts/install/config-install-windows-gate.log`). The Windows service
+and workload executables were linked and hash-verified there; the absent local
+MinGW linker does not block the native build.
 
 Live findings so far (details and rules in development):
 
@@ -88,13 +90,65 @@ control. Policy sampling and the internal request channel continue without
 telemetry settings. Host deployment snapshots/hashes/backs up the whole source
 set; Windows receives generated schema-7 runtime settings. Old administrator
 formats fail with migration guidance; existing state and deployment backups
-are retained. This source change has not been installed on the live system.
-Native upgrade/ACL/optional-output checks and live RAM-bound convergence remain
-separate qualification work (CFG-001 in the backlog). Source verification:
-`cargo xtask gate local` passed (core 72, host 73, xtask 68 tests, release
-builds, formatting, Clippy and whitespace), as did Windows GNU cross-target
-Clippy including test targets. Linking Windows binaries remains blocked by
-the missing MinGW linker; native tests were not run for this change.
+are retained.
+
+Installed on 27 October: Windows build `af0cc3a6b6a3-dirty.b03ef5350961`
+with schema 7, total-RAM limits 6–27 GiB and optional telemetry omitted; the
+new host binary, host list, sibling settings and fresh compatibility attestation
+were installed after sudo authentication in the operator terminal. Host and
+Windows executable hashes match their candidates. Evidence is in
+`.artifacts/install/config-install-*.json`, native/local gate logs and
+`.artifacts/windows/win11_gpu/deploy.json`.
+
+The retained descriptor-drift shrink latch was recovered using the guarded
+abandon-shrink and clear-latch tools; the checkpoint was preserved. QGA then
+could not open `.host-status` for writing until QEMU Guest Agent was restarted,
+consistent with a retained open reader. After restart, host replies were fresh,
+the pending guest request resolved, both services remained running, and four
+metrics samples had zero guest-read failures and no new latches. The current
+`Watch-Ram.ps1` copy was hash-checked and exercised natively for object output
+and the plain dashboard. No allocation stress test or VM reboot was performed.
+The VM still supplies 8 GiB boot RAM, so the configured 6 GiB lower bound does
+not enable reducing this VM below its underlying boot-memory allocation.
+
+The VM's persisted virtio-mem block size was then changed from 2 MiB to
+8 MiB while it was shut off, with the original XML retained. It was started
+for verification: the 20 GiB device now has 2,560 blocks, and Windows
+recognised the new geometry. Fresh compatibility evidence was installed and the host
+controller restarted with its checkpoint preserved. Status reported converged,
+no latch and no recovery required. Evidence and original/candidate XML are in
+`.artifacts/block-size-8m/`. No workload comparison has yet qualified reclaim
+behaviour with the larger blocks.
+
+A subsequent cleanup removed the stale startup memory request from the
+persistent libvirt definition. Future boots start with zero plugged device RAM;
+the running allocation remains owned by the guest request protocol. The installer
+now requires explicit attestation inputs instead of choosing an old test-run
+artifact, and generic Make targets no longer load the local Windows test preset.
+The resize adapter now requires an evidence source in its constructor; its
+fixed compatibility fixture is compiled only for tests, with no production
+default or replacement builder. A duplicated block-alignment error string now
+uses the actual validation constant. The fixed 1 GiB device reserve has been removed: targets may reach full
+device capacity, while the user sets Linux host reserve protection with
+`host_min_headroom_bytes`. Pool and VM RAM limits, alignment, attestation and
+guarded reclaim still apply. Evidence and the original VM
+XML are in `.artifacts/startup-allocation-cleanup/`.
+
+A growth failure after the block-size change exposed a historical-result
+validation bug: the retained 20 MiB partial removal from the 2 MiB device was
+rejected against today's 8 MiB geometry, so Windows ignored fresh host status
+and issued no requests. Historical results now retain their original byte
+counts while current geometry, result identity and outcome remain validated.
+A regression test reproduces the 98%-full hold before the fix and growth after
+it. The fixed Windows service was installed, and an authorised bounded 5 GiB
+resident workload completed in 54 seconds: the host completed a 1 GiB growth
+and an 8 MiB top-up. Evidence is in `.artifacts/ram-growth-fix/`. This verifies
+growth on the current geometry; it does not qualify reclaim or a cold boot.
+
+Remaining upgrade/ACL/optional-output checks and live RAM-bound qualification
+are tracked separately as CFG-001 in the backlog. Source checks and native
+builds pass; neither an idle sample nor successful installation qualifies
+workload-driven growth/reclaim or long-term stability.
 
 ## Retained architecture
 

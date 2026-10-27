@@ -13,22 +13,40 @@ was skipped). Everything below needs live evidence on the running deployment.
 
 ### CFG-001 — Verify the consolidated configuration upgrade (P1)
 
-Source consolidation is complete; no live changes were made. With matching
-new host and Windows binaries, verify the upgrade from installed schema 6 to
-generated schema 7, retained pending requests/checkpoints/latches, the installed
-host list plus sibling files, and binary/config/registry backups. Check clear
-refusal of unsupported custom legacy channel or policy settings. Verify
-LocalService ACLs and optional guest/host diagnostic outputs, including an
-unwritable output path, while requests and replies continue with no telemetry
-configured. Exercise user-set total min/max RAM through growth, reclaim and
-restart, and confirm the live VM geometry can reach those limits.
+The consolidated host configuration and Windows schema 7 are now installed.
+The native MSVC gate passed 65 tests; installed binaries match their candidates,
+backups were retained, the old shrink latch was recovered without deleting its
+checkpoint, and the pending guest request resolved. The live recorder works
+with optional telemetry omitted. An initial `.host-status` sharing violation
+stopped after restarting QEMU Guest Agent; qualify recurrence and recovery.
+Evidence: `.artifacts/install/config-install-*` and Windows deploy evidence.
+
+The VM was subsequently started with 8 MiB device blocks, and fresh attestation
+was installed. Windows recognised the new device geometry; the controller
+reported converged with no latch. Workload/reclaim results from 2 MiB blocks do not
+qualify the changed geometry; include 8 MiB blocks in the remaining trials.
+A subsequent growth regression caused by validating an old result against the
+new block size was fixed and deployed. A bounded resident workload verified
+completed growth of 1 GiB plus 8 MiB; retain reclaim and cold-boot qualification
+as open work. Evidence: `.artifacts/ram-growth-fix/`.
+
+The saved startup request is now zero; verify the next cold boot starts with
+no plugged device RAM before any guest policy request. No live forced unplug
+was used to achieve this configuration change.
+
+Remaining: native ACL checks, optional guest/host diagnostic outputs including
+an unwritable output path, and explicit refusal of unsupported custom legacy
+settings during an upgrade. Exercise independent user-set min/max bounds under
+growth, reclaim and restart. The installed source lower bound is 6 GiB, but the
+VM still has 8 GiB boot RAM; a VM-definition change and reboot would be needed
+to make 6 GiB physically reachable and are not part of this installation.
 
 Complete when recorded native and live evidence identifies the exact builds,
 shows independent per-VM bounds and demonstrates telemetry-free operation.
 
 ### WIN-001 — Verify the installed Windows service (P1)
 
-Native build and tests pass via `make win11-gate` (64 tests, including the
+Native build and tests pass via `make win11-gate` (65 tests, including the
 request-state worker tests) and the service runs under SCM on `win11_gpu`.
 Remaining: verify stop and restart, panic/timeout recovery, quoted executable
 paths, effective ACLs on pre-existing publication and configuration files, and

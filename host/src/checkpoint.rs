@@ -629,7 +629,7 @@ mod tests {
         let cold = read_controller_status(&config, live(0, 0), input.clone(), "a".repeat(64), 1)
             .expect("cold status");
         assert_eq!(cold.control_health, ControlHealth::Converged);
-        assert_eq!(cold.maximum_target_bytes, 23 * GIB);
+        assert_eq!(cold.maximum_target_bytes, 24 * GIB);
         assert!(!Path::new(&config.policy_state_path).exists());
 
         let (checkpoint, _) = Checkpoint::open(&config, "a".repeat(64)).expect("open");

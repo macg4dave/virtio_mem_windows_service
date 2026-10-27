@@ -78,6 +78,16 @@ impl Virsh {
         Ok(())
     }
 
+    #[cfg(unix)]
+    pub(crate) fn event_command(&self) -> Command {
+        self.command(&[
+            "event".to_owned(),
+            "--event".to_owned(),
+            "memory-device-size-change".to_owned(),
+            "--loop".to_owned(),
+        ])
+    }
+
     fn command(&self, arguments: &[String]) -> Command {
         let mut command = Command::new(&self.binary);
         command.args(["-c", &self.connection]);

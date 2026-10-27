@@ -484,6 +484,39 @@ fn scrub_runtime_identity(xml: &str) -> String {
             }
         }
     }
+    // Virtio-serial target connection state is runtime status. Preserve its
+    // configured name, source socket and address, but not this status attribute.
+    let mut channel_offset = 0;
+    while let Some(found) = scrubbed[channel_offset..].find("<channel ") {
+        let start = channel_offset + found;
+        let Some(close) = scrubbed[start..].find("</channel>") else {
+            break;
+        };
+        let end = start + close;
+        let mut block = scrubbed[start..end].to_owned();
+        if let Some(target) = block.find("<target ") {
+            let target_end = block[target..]
+                .find('>')
+                .map_or(block.len(), |i| target + i);
+            if block[target..target_end].contains("type='virtio'")
+                || block[target..target_end].contains("type=\"virtio\"")
+            {
+                for quote in ['\'', '"'] {
+                    let attribute = format!(" state={quote}");
+                    if let Some(at) = block[target..target_end].find(&attribute) {
+                        let at = target + at;
+                        let value = at + attribute.len();
+                        if let Some(close) = block[value..target_end].find(quote) {
+                            block.replace_range(at..value + close + 1, "");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        scrubbed.replace_range(start..end, &block);
+        channel_offset = start + block.len() + "</channel>".len();
+    }
     let mut offset = 0;
     while let Some(start) = scrubbed[offset..].find("<seclabel") {
         let start = offset + start;
@@ -729,6 +762,29 @@ mod tests {
             .expect("valid attestation before version change");
         unsupported.version += 1;
         assert!(unsupported.validate_integrity().is_err());
+    }
+
+    #[test]
+    fn channel_connection_status_is_runtime_but_binding_is_attested() {
+        let xml = "<domain><devices><channel type='unix'><source path='/wake'/><target type='virtio' name='org.virtio-mem.wake.0' state='connected'/><address port='2'/></channel></devices></domain>";
+        assert_eq!(
+            scrub_runtime_identity(xml),
+            scrub_runtime_identity(&xml.replace("connected", "disconnected"))
+        );
+        assert_eq!(
+            scrub_runtime_identity(xml),
+            scrub_runtime_identity(&xml.replace(" state='connected'", ""))
+        );
+        for changed in [
+            xml.replace("/wake", "/other"),
+            xml.replace("wake.0", "other.0"),
+            xml.replace("port='2'", "port='3'"),
+        ] {
+            assert_ne!(
+                scrub_runtime_identity(xml),
+                scrub_runtime_identity(&changed)
+            );
+        }
     }
 
     #[test]

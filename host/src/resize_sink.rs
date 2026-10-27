@@ -1,13 +1,11 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use virtio_mem_core::{
-    bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemState, MIN_HEADROOM_BYTES,
-};
+use virtio_mem_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemState};
 
-use crate::compatibility_source::{CompatibilitySource, FixedCompatibilitySource};
+use crate::compatibility_source::CompatibilitySource;
 use crate::runtime::{ResizeSink, ResizeSinkError};
 use crate::virsh::VirshCommand;
 
-pub struct VirshResizeSink<C, E = FixedCompatibilitySource> {
+pub struct VirshResizeSink<C, E> {
     command: C,
     vm_name: String,
     alias: String,
@@ -35,33 +33,19 @@ impl PreparedResize {
     }
 }
 
-impl<C> VirshResizeSink<C, FixedCompatibilitySource> {
-    pub fn new(command: C, vm_name: impl Into<String>, alias: impl Into<String>) -> Self {
+impl<C, E: CompatibilitySource> VirshResizeSink<C, E> {
+    /// Every resize adapter requires its evidence source explicitly. Production
+    /// passes live attestation checks; tests inject their own source.
+    pub fn new(
+        command: C,
+        vm_name: impl Into<String>,
+        alias: impl Into<String>,
+        compatibility_source: E,
+    ) -> Self {
         Self {
             command,
             vm_name: vm_name.into(),
             alias: alias.into(),
-            compatibility_source: FixedCompatibilitySource::default(),
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_external_compatibility(
-        mut self,
-        compatibility: virtio_mem_core::VirtioMemCompatibility,
-    ) -> Self {
-        self.compatibility_source = FixedCompatibilitySource::new(compatibility);
-        self
-    }
-}
-
-impl<C, E> VirshResizeSink<C, E> {
-    /// Replace static compatibility evidence with a live or injected source.
-    pub fn with_compatibility_source<N>(self, compatibility_source: N) -> VirshResizeSink<C, N> {
-        VirshResizeSink {
-            command: self.command,
-            vm_name: self.vm_name,
-            alias: self.alias,
             compatibility_source,
         }
     }
@@ -115,12 +99,9 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
             Ok(())
         };
         // The largest valid target; QEMU adds its extent above it.
-        let ceiling = expected.size_bytes.saturating_sub(MIN_HEADROOM_BYTES);
+        let ceiling = expected.maximum_target_bytes();
         let widen = self
-            .prepare(
-                ceiling - ceiling % expected.block_size_bytes.max(1),
-                converged,
-            )
+            .prepare(ceiling, converged)
             .map_err(ResizeSinkError::Rejected)?;
         let restore = self
             .prepare(expected.requested_bytes, converged)
@@ -279,6 +260,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::compatibility_source::FixedCompatibilitySource;
     use crate::virsh::{VirshCommand, VirshError};
     use virtio_mem_core::VirtioMemCompatibility;
 
@@ -367,8 +349,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
         let result = sink.widen_usable_region_guarded(converged(), &AtomicBool::new(false));
         let actions = calls
             .borrow()
@@ -386,10 +368,10 @@ mod tests {
     fn widening_pauses_requests_the_ceiling_restores_and_resumes() {
         let (result, actions) = widen_with(usize::MAX);
         result.expect("widening succeeds");
-        // An 8 GiB device: the 7 GiB ceiling, then the converged 4 GiB again.
+        // An 8 GiB device: the 8 GiB ceiling, then the converged 4 GiB again.
         assert_eq!(
             actions,
-            ["suspend", "update 7340032", "update 4194304", "resume"]
+            ["suspend", "update 8388608", "update 4194304", "resume"]
         );
     }
 
@@ -404,7 +386,7 @@ mod tests {
             actions,
             [
                 "suspend",
-                "update 7340032",
+                "update 8388608",
                 "update 4194304",
                 "update 4194304"
             ]
@@ -426,8 +408,12 @@ mod tests {
             xml: CONVERGED_XML,
             calls: Rc::clone(&calls),
         };
-        let sink = VirshResizeSink::new(fake, "guest", "memory0")
-            .with_external_compatibility(VirtioMemCompatibility::confirmed());
+        let sink = VirshResizeSink::new(
+            fake,
+            "guest",
+            "memory0",
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
 
         sink.request_resize_guarded(
             converged(),
@@ -478,8 +464,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_compatibility_source(Cancelling(&stop));
+            Cancelling(&stop),
+        );
         assert!(matches!(
             sink.request_resize_guarded(expected, 5 << 30, &stop, &|| Ok(())),
             Err(ResizeSinkError::Rejected(_))
@@ -493,8 +479,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
         let drifted = VirtioMemState {
             current_bytes: 3 << 30,
             requested_bytes: 3 << 30,
@@ -520,8 +506,12 @@ mod tests {
             xml: PENDING_XML,
             calls: Rc::clone(&calls),
         };
-        let sink = VirshResizeSink::new(fake, "guest", "memory0")
-            .with_external_compatibility(VirtioMemCompatibility::confirmed());
+        let sink = VirshResizeSink::new(
+            fake,
+            "guest",
+            "memory0",
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
 
         assert!(sink.prepare_resize(6 * 1024 * 1024).is_err());
         assert_eq!(calls.take().len(), 1);
@@ -536,8 +526,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
 
         let error = sink
             .request_resize_guarded(
@@ -562,8 +552,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
         let pending = parse_virtio_mem_xml_for_alias(SHRINK_PENDING_XML, "memory0")
             .unwrap()
             .memory;
@@ -595,8 +585,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
 
         let prepared = sink
             .prepare_abandon_to_current(
@@ -630,7 +620,12 @@ mod tests {
             xml: UNKNOWN_COMPATIBILITY_XML,
             calls: Rc::clone(&calls),
         };
-        let sink = VirshResizeSink::new(fake, "guest", "memory0");
+        let sink = VirshResizeSink::new(
+            fake,
+            "guest",
+            "memory0",
+            FixedCompatibilitySource::new(VirtioMemCompatibility::unknown()),
+        );
 
         let error = sink
             .prepare_resize(6 * 1024 * 1024)
@@ -652,8 +647,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_compatibility_source(DriftedAttestation);
+            DriftedAttestation,
+        );
 
         let error = sink
             .prepare_resize(6 * 1024 * 1024)

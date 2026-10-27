@@ -7,7 +7,7 @@ help:
 	@echo "  make win11-build   - sync, build and fetch the service from win11_gpu"
 	@echo "  make win11-gate    - full native Windows gate on win11_gpu"
 	@echo "  make win11-status  - compare the installed service with the fetched build"
-	@echo "  make win11-deploy  - install the fetched build with $(WIN11_MANIFEST)"
+	@echo "  make win11-deploy  - install the fetched build using the Windows test preset"
 	@echo "  make all-gates     - cargo xtask gate all"
 	@echo "  make clean         - remove Cargo build output"
 
@@ -17,9 +17,11 @@ local-gate:
 windows-gate:
 	cargo xtask windows all
 
-# The win11_gpu build workspace and deployment, set in this file.
-include deploy/config_files/windows-build.mk
+# Load this machine-specific test preset only for its explicit targets.
 WIN11_TARGETS := win11-build win11-gate win11-status win11-deploy
+ifneq ($(filter $(WIN11_TARGETS),$(MAKECMDGOALS)),)
+include deploy/config_files/windows-build.mk
+endif
 $(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_SSH ?= $(WIN11_SSH)
 $(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_DIR ?= $(WIN11_DIR)
 $(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_ARTIFACTS ?= $(WIN11_ARTIFACTS)

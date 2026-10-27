@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn reuses_shared_target_validation() {
-        let options = parse(&valid_arguments()).expect("valid arguments");
+        let mut options = parse(&valid_arguments()).expect("valid arguments");
         let state = VirtioMemState {
             size_bytes: 8 << 30,
             block_size_bytes: 2 << 20,
@@ -541,14 +541,10 @@ mod tests {
             current_bytes: 4 << 30,
         };
         assert!(validate_target(&options, state).is_ok());
-        assert!(validate_target(
-            &Options {
-                target_bytes: 8 << 30,
-                ..options
-            },
-            state
-        )
-        .is_err());
+        options.target_bytes = state.size_bytes;
+        assert!(validate_target(&options, state).is_ok());
+        options.target_bytes = state.size_bytes + state.block_size_bytes;
+        assert!(validate_target(&options, state).is_err());
     }
 
     #[test]

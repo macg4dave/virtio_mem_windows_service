@@ -7,6 +7,7 @@ pub mod requests;
 pub mod runtime;
 pub mod service_host;
 pub mod service_scm;
+mod wake;
 
 /// Build identity stamped by `xtask windows build` from the synchronised
 /// source (`<commit>` or `<commit>-dirty.<source digest>`); local builds

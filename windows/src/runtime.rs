@@ -35,6 +35,7 @@ pub struct GuestMemoryWorker<T, P, C, N> {
     interval: Duration,
     last_native_low: bool,
     collection_failed: bool,
+    wake: crate::wake::WakeChannel,
 }
 
 impl<T, P, C, N> GuestMemoryWorker<T, P, C, N>
@@ -68,6 +69,7 @@ where
             interval,
             last_native_low: false,
             collection_failed: false,
+            wake: crate::wake::WakeChannel::default(),
         })
     }
 
@@ -84,6 +86,7 @@ where
     }
 
     fn poll_once_with_stop(&mut self, stop: &StopSignal) -> Result<RawTelemetryEnvelope, String> {
+        self.wake.refresh();
         self.collection_failed = true;
         let memory = self
             .telemetry
@@ -146,6 +149,7 @@ where
         self.publisher
             .publish_cancellable(&envelope, stop)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
+        self.wake.notify(stop);
         if let Some(publisher) = &mut self.diagnostics {
             if let Err(error) = publisher.publish_cancellable(&envelope, stop) {
                 // Diagnostic output is optional; its failure cannot prevent
@@ -195,8 +199,14 @@ where
 
     fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
         while !stop.is_cancelled() {
-            self.memory_resource_notifications
-                .wait(stop, self.interval, !self.last_native_low);
+            if !self.requests.resolved_last_poll() {
+                self.memory_resource_notifications.wait(
+                    stop,
+                    self.interval,
+                    !self.last_native_low,
+                    self.wake.event(),
+                );
+            }
             // A level transition can wake within the preceding millisecond.
             // Preserve the strict timestamp ordering without busy-looping.
             stop.wait(Duration::from_millis(1));
@@ -242,7 +252,10 @@ pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiri
         requests,
         config.poll_interval,
     )
-    .map(|worker| worker.with_diagnostics(config.telemetry_path.as_deref()))
+    .map(|mut worker| {
+        worker.wake = crate::wake::WakeChannel::enabled(&config.service_name);
+        worker.with_diagnostics(config.telemetry_path.as_deref())
+    })
     .map_err(RuntimeWiringError::WorkerConstruction)
 }
 
@@ -619,7 +632,13 @@ mod tests {
         fn collect(&self, at: u64) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
             OptionalTelemetrySignal::supported(at, MemoryResourceNotificationState::Low)
         }
-        fn wait(&mut self, stop: &StopSignal, _timeout: Duration, watch_low: bool) {
+        fn wait(
+            &mut self,
+            stop: &StopSignal,
+            _timeout: Duration,
+            watch_low: bool,
+            _wake: Option<usize>,
+        ) {
             self.0.push(watch_low);
             if self.0.len() == 2 {
                 stop.cancel();

@@ -58,11 +58,14 @@ fn main() -> ExitCode {
     // Device owners are held until the runtime ends.
     let mut owners = Vec::with_capacity(settings.vms.len());
     let mut vms = Vec::with_capacity(settings.vms.len());
+    let mut wake = Vec::with_capacity(settings.vms.len());
     for config in settings.vms {
-        match vm_controller(&virsh, config) {
+        let peer = virtio_mem_host::wake::WakePeer::new(virsh.clone(), config.vm_name.clone());
+        match vm_controller(&virsh, config, Arc::clone(&peer)) {
             Ok((owner, vm)) => {
                 owners.push(owner);
                 vms.push(vm);
+                wake.push(peer);
             }
             Err(error) => {
                 eprintln!("virtio-mem-host controller setup error: {error}");
@@ -77,6 +80,14 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let events = match virtio_mem_host::wake::MemoryEvents::start(&virsh) {
+        Ok(events) => Some(events),
+        Err(error) => {
+            eprintln!("libvirt events unavailable; polling continues: {error}");
+            None
+        }
+    };
+    runtime = runtime.with_wake(wake, events);
     let result = runtime.run(&stop);
     drop(owners);
     match result {
@@ -97,7 +108,11 @@ type Controller = VmController<
     VirshResizeSink<Virsh, AttestedCompatibilitySource<Virsh>>,
 >;
 
-fn vm_controller(virsh: &Virsh, config: HostConfig) -> Result<(DeviceOwner, Controller), String> {
+fn vm_controller(
+    virsh: &Virsh,
+    config: HostConfig,
+    wake: Arc<virtio_mem_host::wake::WakePeer>,
+) -> Result<(DeviceOwner, Controller), String> {
     let transport = match config.raw_telemetry_transport {
         RawTelemetryTransport::File => Transport::LocalFile,
         RawTelemetryTransport::QgaFile => {
@@ -115,15 +130,20 @@ fn vm_controller(virsh: &Virsh, config: HostConfig) -> Result<(DeviceOwner, Cont
             &config.raw_telemetry_service_name,
             config.raw_telemetry_max_age,
             config.raw_telemetry_future_tolerance,
-        ),
+        )
+        .with_wake(wake),
         VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),
-        VirshResizeSink::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
-            .with_compatibility_source(AttestedCompatibilitySource::new(
+        VirshResizeSink::new(
+            virsh.clone(),
+            config.vm_name.clone(),
+            config.alias.clone(),
+            AttestedCompatibilitySource::new(
                 virsh.clone(),
                 config.vm_name.clone(),
                 config.alias.clone(),
                 config.compatibility_attestation_path.clone(),
-            )),
+            ),
+        ),
         config,
         fingerprint,
     )?;

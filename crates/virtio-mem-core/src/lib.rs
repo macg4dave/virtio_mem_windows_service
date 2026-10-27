@@ -38,6 +38,7 @@ pub use memory_request::{
     host_status_path, request_state_path, HostMemoryStatus, MemoryOperation, MemoryOutcome,
     MemoryRequest, MemoryRequestJournal, MemoryResult, RequestAdmission, RequestIdentity,
     MAX_HOST_STATUS_BYTES, MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
+    MEMORY_WAKE_CHANNEL_NAME,
 };
 pub use pool::{allocate_pool, PoolAllocation, PoolError, PoolMember};
 pub use shrink_recovery::{AbandonAction, AbandonToCurrent, ShrinkObservation};
@@ -46,7 +47,7 @@ pub use target_controller::{
     TargetSample,
 };
 pub use units::{bytes_to_kibibytes, kibibytes_to_bytes, parse_byte_size, BYTES_PER_KIB};
-pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES, MIN_HEADROOM_BYTES};
+pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES};
 pub use virtio_mem_xml::{
     parse_virtio_mem_xml, parse_virtio_mem_xml_for_alias, VirtioMemXmlError, VirtioMemXmlState,
 };

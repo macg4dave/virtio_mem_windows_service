@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{MemoryResourceNotificationState, MemoryTelemetrySnapshot, MIN_HEADROOM_BYTES};
+use crate::{MemoryResourceNotificationState, MemoryTelemetrySnapshot};
 
 const MAX_TARGET_HISTORY_ENTRIES: usize = 4096;
 #[cfg(test)]
@@ -405,9 +405,9 @@ fn calculate_effective_maximum(
     geometry: TargetGeometry,
 ) -> Result<u64, TargetEstimatorError> {
     config.validate()?;
-    if geometry.device_size_bytes <= MIN_HEADROOM_BYTES {
+    if geometry.device_size_bytes == 0 {
         return Err(TargetEstimatorError::InvalidGeometry(
-            "device size does not leave one GiB of headroom",
+            "device size must be greater than zero",
         ));
     }
     if geometry.block_size_bytes == 0 || !geometry.block_size_bytes.is_power_of_two() {
@@ -653,22 +653,47 @@ mod tests {
         let too_small = TargetGeometry {
             device_size_bytes: 2 * GIB,
             block_size_bytes: 2 * MIB,
-            current_bytes: 2 * GIB,
+            current_bytes: 2 * GIB + 2 * MIB,
         };
         assert!(calculate_instantaneous(&config(), &memory(2 * GIB, GIB, GIB), too_small).is_err());
+    }
+
+    #[test]
+    fn accepts_small_devices_and_full_current_allocation() {
+        let policy = TargetPolicyConfig {
+            configured_minimum_bytes: 0,
+            ..config()
+        };
+        for size in [512 * MIB, GIB, 24 * GIB] {
+            let geometry = TargetGeometry {
+                device_size_bytes: size,
+                block_size_bytes: 2 * MIB,
+                current_bytes: size,
+            };
+            assert_eq!(calculate_effective_maximum(&policy, geometry), Ok(size));
+        }
+        assert!(calculate_effective_maximum(
+            &policy,
+            TargetGeometry {
+                device_size_bytes: 0,
+                block_size_bytes: 2 * MIB,
+                current_bytes: 0,
+            }
+        )
+        .is_err());
     }
 
     #[test]
     fn reports_capacity_limited_and_preserves_alignment() {
         let result = calculate_instantaneous(
             &config(),
-            &memory(22 * GIB, 22 * GIB, 0),
-            geometry(22 * GIB),
+            &memory(24 * GIB, 24 * GIB, 0),
+            geometry(24 * GIB),
         )
         .expect("bounded target");
-        // The device size, less the one GiB of headroom, is the only limit.
-        assert_eq!(result.effective_maximum_bytes, 23 * GIB);
-        assert_eq!(result.desired_now_bytes, 23 * GIB);
+        // The full device size is the only limit.
+        assert_eq!(result.effective_maximum_bytes, 24 * GIB);
+        assert_eq!(result.desired_now_bytes, 24 * GIB);
         assert!(result.capacity_limited);
     }
 

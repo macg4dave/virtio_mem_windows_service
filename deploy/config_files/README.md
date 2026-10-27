@@ -6,8 +6,8 @@ long-term location will change later. Edit here, then apply. Generated files
 
 | File | Installed as | Apply |
 |---|---|---|
-| [global-settings.toml](global-settings.toml) | merged into the host config | `deploy/config_files/install-host.sh` |
-| [host_list.toml](host_list.toml) | `/etc/virtio-mem-host/host_list.toml` | `deploy/config_files/install-host.sh` |
+| [global-settings.toml](global-settings.toml) | `/etc/virtio-mem-host/global-settings.toml` | `install-host.sh INSTANCE VM=ATTESTATION ...` |
+| [host_list.toml](host_list.toml) | `/etc/virtio-mem-host/host_list.toml` | `install-host.sh INSTANCE VM=ATTESTATION ...` |
 | [recover-latch.sh](recover-latch.sh) | — | see below |
 | [win11_gpu_settings.toml](win11_gpu_settings.toml) | `C:\ProgramData\VirtioMemService` config + service | `make win11-deploy` |
 
@@ -81,7 +81,8 @@ letter or digit, at most 64 characters. The exact filename and internal name
 must agree. Duplicate entries and unknown keys fail validation.
 
 `min_ram` and `max_ram` describe **total guest RAM**, in binary size units or
-bytes, aligned to 2 MiB. The policy derives the device allocation from observed
+bytes, aligned to the live device block size (8 MiB for `win11_gpu`).
+The policy derives the device allocation from observed
 RAM and live device state; there is no configured boot/base-RAM value. Both
 Windows requests and host grants honour these bounds. The underlying VM must
 have enough supported memory capacity; impossible limits fail closed. This
@@ -93,8 +94,9 @@ interval drives host polling and guest sampling; freshness, request lifetime
 and maximum sample gaps follow it. Device size and block size come from live
 state. `/usr/bin/virsh`, the Windows service name and control-file path are
 built in. Per-VM state and attestation paths are derived from the validated name.
-The defaults preserve the reviewed policy: 2 GiB physical/commit reserves,
-1 GiB safety floors, 1 GiB growth steps, 3 GiB reclaim steps, 5-minute reclaim
+The current memory-policy defaults are: 2 GiB physical/commit reserves,
+1 GiB safety floors, demand-sized growth (at least 1 GiB for native Low
+pressure), 3 GiB reclaim steps, 10-second reclaim
 history, 256 MiB hysteresis, up to 16 backoff windows and 30-second stop timeout.
 Freshness/request lifetime is six poll intervals and the maximum sample gap is
 three. Windows service identity is `VirtioMemService`.
@@ -116,7 +118,22 @@ sidecars are derived automatically. Do not use this path or its sidecars as an
 optional diagnostic output. `watch` and `metrics` read the control data when
 explicitly run and require no telemetry settings.
 
+## Startup memory
+
+The persistent libvirt definition starts virtio-mem with zero requested bytes.
+No startup allocation is stored in these application settings. Windows requests
+device RAM when its memory policy needs it; the boot-memory allocation remains
+a property of the VM definition. Updating the saved startup setting does not
+force-unplug memory from an already running guest.
+
 ## Deployment and migration
+
+The installer requires the controller instance and one explicit, current
+attestation per VM; it never selects evidence from an old test run:
+
+```bash
+deploy/config_files/install-host.sh win11_gpu win11_gpu=/path/to/current-attestation.json
+```
 
 `install-host.sh` validates and snapshots the global settings, host list and
 all listed VM files, hashes the complete snapshot and installs the same files
@@ -131,7 +148,7 @@ matching new host and Windows binaries before runtime verification.
 
 The tracked values were carried over: 15 GiB device pool, 4 GiB host headroom,
 5/10/300-second timings, priority 100, Windows account and executable path.
-The reviewed VM now has explicit total-RAM limits of 8–27 GiB. Its previous
+The reviewed VM now has explicit total-RAM limits of 6–27 GiB. Its previous
 telemetry path remains the internal channel, so no optional output is enabled.
 
 For other deployments, keep copies of the old files before migration. Rename
@@ -156,3 +173,25 @@ The installed attestation is `/etc/virtio-mem-host/<vm_name>.attestation.json`;
 retained state is `/var/lib/virtio-mem-host/state/<vm_name>-requests.json`.
 Deploy the Windows service separately for each guest. `pool_bytes` describes
 shared **device** RAM; the per-VM bounds describe total RAM.
+
+### Prompt memory notifications
+
+Add the optional dedicated port while the controller is stopped, then refresh
+compatibility attestation before restarting it. Do not reuse the QEMU guest-agent
+port. Libvirt supplies the Unix socket path; the host discovers it in domain XML.
+
+```xml
+<channel type='unix'>
+  <target type='virtio' name='org.virtio-mem.wake.0'/>
+  <alias name='ua-virtiomem-wake'/>
+</channel>
+```
+
+The host service needs the `qemu` supplementary group to connect to libvirt's
+socket. Windows deployment provisions LocalService read/write access only on
+the named wake-port device instance, backs up its previous security property
+and restarts that port if changed. It does not alter the QEMU guest-agent port.
+Installations without this port continue polling and report the missing wake
+channel. Polling remains a fallback; native Low pressure, result arrival and
+libvirt size-change events can wake earlier. Notification bytes carry no RAM
+values or authorisation. The same durable protocol and reserve checks apply.

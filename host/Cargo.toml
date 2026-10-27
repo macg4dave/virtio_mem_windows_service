@@ -12,6 +12,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 thiserror = "2.0.20"
 signal-hook = "0.3"
+quick-xml = "0.41.0"
 virtio-mem-core = { path = "../crates/virtio-mem-core" }
 
 [[bin]]

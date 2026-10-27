@@ -84,7 +84,7 @@ enum Step {
     Stop(HostRuntimeError),
 }
 
-/// One VM's phase-one result. Only `Ready` may act, and only after the pool
+/// One VM's observation for this round. Only `Ready` may act after the pool
 /// has allocated the round.
 enum Observed {
     /// Nothing to execute this round. The pool charge and block size, from
@@ -182,6 +182,10 @@ pub struct HostRuntime<G, S, R, H> {
     /// device and the host reserve.
     pool_bytes: Option<u64>,
     poll_interval: Duration,
+    #[cfg(unix)]
+    wake: Vec<std::sync::Arc<crate::wake::WakePeer>>,
+    #[cfg(unix)]
+    memory_events: Option<crate::wake::MemoryEvents>,
 }
 
 impl<G, S, R, H> HostRuntime<G, S, R, H>
@@ -206,13 +210,38 @@ where
             host_memory,
             pool_bytes,
             poll_interval,
+            #[cfg(unix)]
+            wake: Vec::new(),
+            #[cfg(unix)]
+            memory_events: None,
         })
+    }
+
+    #[cfg(unix)]
+    pub fn with_wake(
+        mut self,
+        peers: Vec<std::sync::Arc<crate::wake::WakePeer>>,
+        events: Option<crate::wake::MemoryEvents>,
+    ) -> Self {
+        self.wake = peers;
+        self.memory_events = events;
+        self
     }
 
     pub fn run(&mut self, stop: &AtomicBool) -> Result<(), HostRuntimeError> {
         while !stop.load(Ordering::Acquire) {
             if let Step::Stop(error) = self.round(stop)? {
                 return Err(error);
+            }
+            #[cfg(unix)]
+            if !self.wake.is_empty() {
+                crate::wake::wait(
+                    &self.wake,
+                    self.memory_events.as_mut(),
+                    stop,
+                    self.poll_interval,
+                );
+                continue;
             }
             wait_interruptibly(stop, self.poll_interval);
         }

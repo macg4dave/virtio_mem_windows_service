@@ -560,8 +560,7 @@ fn run_with<H: HostMemorySource, W: Write>(
                 alias.clone(),
                 attestation_path,
             );
-            let sink = VirshResizeSink::new(virsh, vm, alias)
-                .with_compatibility_source(compatibility_source);
+            let sink = VirshResizeSink::new(virsh, vm, alias, compatibility_source);
             run_abandon_shrink_with(
                 &state_source,
                 &sink,
@@ -698,8 +697,7 @@ fn run_resize_with<C: VirshCommand, H: HostMemorySource, E: CompatibilitySource,
     compatibility_source: E,
     output: &mut W,
 ) -> Result<(), String> {
-    let sink = VirshResizeSink::new(command, options.vm, options.alias)
-        .with_compatibility_source(compatibility_source);
+    let sink = VirshResizeSink::new(command, options.vm, options.alias, compatibility_source);
     let prepared = sink.prepare_resize(options.target_bytes)?;
     if prepared.target_bytes() > prepared.current_bytes() {
         validate_grow_headroom(
@@ -1094,8 +1092,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
         let mut waits = Vec::new();
         let mut output = Vec::new();
 
@@ -1136,8 +1134,8 @@ mod tests {
             },
             "guest",
             "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
+            FixedCompatibilitySource::new(VirtioMemCompatibility::confirmed()),
+        );
 
         assert!(run_abandon_shrink_with(
             &state_source,

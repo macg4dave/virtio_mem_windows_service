@@ -273,7 +273,7 @@ mod tests {
             device_alias: "memory0".to_owned(),
             device_size_bytes: 16 * GIB,
             block_size_bytes: 2 * MIB,
-            maximum_target_bytes: 15 * GIB,
+            maximum_target_bytes: 16 * GIB,
             requested_bytes: 0,
             current_bytes: 0,
             observe_only: true,

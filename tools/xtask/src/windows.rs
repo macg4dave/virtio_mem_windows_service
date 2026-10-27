@@ -1298,6 +1298,8 @@ try {{
   [IO.File]::WriteAllBytes($config,[Convert]::FromBase64String('{config_base64}'))
   & $install install
   if($LASTEXITCODE -ne 0){{throw "candidate install failed with exit code $LASTEXITCODE"}}
+  {wake_access}
+  $wakeAccess=Set-VirtioMemWakeChannelAccess -BackupDirectory $backup
   & $install start
   if($LASTEXITCODE -ne 0){{throw "candidate start failed with exit code $LASTEXITCODE"}}
   (Get-Service $service).WaitForStatus('Running',[TimeSpan]::FromSeconds(30))
@@ -1317,6 +1319,7 @@ try {{
     binary_acl=(Get-Acl -LiteralPath $install).Sddl
     config_acl=(Get-Acl -LiteralPath $config).Sddl
     telemetry_acl=(Get-Acl -LiteralPath $telemetry).Sddl
+    wake_access=$wakeAccess
     service_name=$installed.Name
     service_state=$installed.State
     service_start_mode=$installed.StartMode
@@ -1336,6 +1339,7 @@ try {{
   throw
 }}"#,
         vm = ps_literal(&manifest.vm_name),
+        wake_access = include_str!("../../../tools/windows/Set-WakeChannelAccess.ps1"),
     )
 }
 

@@ -7,6 +7,8 @@ Wants=network-online.target
 Type=exec
 User=virtio-mem-host
 Group=virtio-mem-host
+# Access the dedicated libvirt-managed virtio-serial socket.
+SupplementaryGroups=qemu
 # Provision non-interactive libvirt management authorization for this account
 # during installation. The daemon checks it before polling and never requests
 # a desktop password dialog or elevates itself.

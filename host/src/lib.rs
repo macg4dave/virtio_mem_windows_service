@@ -13,3 +13,6 @@ pub mod resize_sink;
 pub mod runtime;
 pub mod virsh;
 pub mod xml_source;
+
+#[cfg(unix)]
+pub mod wake;

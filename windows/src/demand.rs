@@ -336,11 +336,12 @@ pub trait MemoryResourceNotificationApi {
     fn close(&self, handle: Self::Handle);
 
     /// True means the low-memory object woke the worker. Default is a timer.
-    fn wait_low(
+    fn wait_for_pressure(
         &self,
-        _handle: Self::Handle,
+        _handle: Option<Self::Handle>,
         stop: &StopSignal,
         timeout: Duration,
+        _wake: Option<usize>,
     ) -> Result<bool, u32> {
         stop.wait(timeout);
         Ok(false)
@@ -349,7 +350,13 @@ pub trait MemoryResourceNotificationApi {
 
 pub trait MemoryResourceNotificationTelemetry {
     /// Remain timer-driven once Low is observed, since notifications are level-triggered.
-    fn wait(&mut self, stop: &StopSignal, timeout: Duration, _watch_low: bool) {
+    fn wait(
+        &mut self,
+        stop: &StopSignal,
+        timeout: Duration,
+        _watch_low: bool,
+        _wake: Option<usize>,
+    ) {
         stop.wait(timeout);
     }
 
@@ -424,7 +431,7 @@ impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationCollector<A> {
 impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationTelemetry
     for MemoryResourceNotificationCollector<A>
 {
-    fn wait(&mut self, stop: &StopSignal, timeout: Duration, watch_low: bool) {
+    fn wait(&mut self, stop: &StopSignal, timeout: Duration, watch_low: bool, wake: Option<usize>) {
         if stop.is_cancelled() {
             return;
         }
@@ -443,15 +450,17 @@ impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationTelemetry
                 Err(_) => { /* Retry at the next bounded poll. */ }
             }
         }
-        if watch_low {
-            if let MemoryResourceNotificationHandles::Ready { low, .. } = self.handles {
-                match self.api.wait_low(low, stop, timeout) {
-                    Ok(_) => return,
-                    Err(error) => eprintln!("native memory notification wait failed: {error}"),
-                }
+        let low = match self.handles {
+            MemoryResourceNotificationHandles::Ready { low, .. } if watch_low => Some(low),
+            _ => None,
+        };
+        match self.api.wait_for_pressure(low, stop, timeout, wake) {
+            Ok(_) => {}
+            Err(error) => {
+                eprintln!("native memory notification wait failed: {error}");
+                stop.wait(timeout);
             }
         }
-        stop.wait(timeout);
     }
 
     fn capability(&self) -> TelemetryCapability {
@@ -566,51 +575,53 @@ impl MemoryResourceNotificationApi for WindowsMemoryResourceNotificationApi {
         }
     }
 
-    fn wait_low(
+    fn wait_for_pressure(
         &self,
-        handle: Self::Handle,
+        low: Option<Self::Handle>,
         stop: &StopSignal,
         timeout: Duration,
+        wake: Option<usize>,
     ) -> Result<bool, u32> {
         use winapi::shared::ntdef::HANDLE;
         use winapi::shared::winerror::WAIT_TIMEOUT;
         use winapi::um::synchapi::WaitForMultipleObjects;
         use winapi::um::winbase::WAIT_OBJECT_0;
-        // The owning collector and StopSignal outlive the wait. No handle is
-        // closed concurrently. With a native stop event this uses one kernel wait.
+        let mut handles = Vec::new();
+        if let Some(event) = stop.native_event() {
+            handles.push(event as HANDLE);
+        }
+        if let Some(event) = low {
+            handles.push(event as HANDLE);
+        }
+        if let Some(event) = wake {
+            handles.push(event as HANDLE);
+        }
+        if handles.is_empty() {
+            stop.wait(timeout);
+            return Ok(false);
+        }
         let started = Instant::now();
-        loop {
-            if stop.is_cancelled() {
-                return Ok(false);
-            }
+        while !stop.is_cancelled() && started.elapsed() < timeout {
             let remaining = timeout.saturating_sub(started.elapsed());
-            if remaining.is_zero() {
-                return Ok(false);
-            }
-            let stop_event = stop.native_event();
-            let handles = [handle as HANDLE, stop_event.unwrap_or(0) as HANDLE];
-            // If creating the stop event failed, retain bounded cancellation latency.
-            let bound = if stop_event.is_some() {
+            let bound = if stop.native_event().is_some() {
                 remaining
             } else {
                 remaining.min(Duration::from_millis(50))
             };
             let millis = bound.as_millis().max(1).min(u128::from(u32::MAX - 1)) as u32;
+            // SAFETY: each handle is owned by the collector, stop signal or
+            // wake channel, all borrowed for this wait and alive until it ends.
             let result = unsafe {
-                WaitForMultipleObjects(
-                    if stop_event.is_some() { 2 } else { 1 },
-                    handles.as_ptr(),
-                    0,
-                    millis,
-                )
+                WaitForMultipleObjects(handles.len() as u32, handles.as_ptr(), 0, millis)
             };
-            match result {
-                WAIT_OBJECT_0 => return Ok(true),
-                value if value == WAIT_OBJECT_0 + 1 => return Ok(false),
-                WAIT_TIMEOUT => {}
-                _ => return Err(last_windows_error_code()),
+            if result < WAIT_OBJECT_0 + handles.len() as u32 {
+                return Ok(!stop.is_cancelled());
+            }
+            if result != WAIT_TIMEOUT {
+                return Err(last_windows_error_code());
             }
         }
+        Ok(false)
     }
 
     fn close(&self, handle: Self::Handle) {
@@ -1049,13 +1060,35 @@ mod tests {
             collector.collect(1).status,
             virtio_mem_core::TelemetrySignalStatus::Failed
         );
-        collector.wait(&StopSignal::new(), Duration::ZERO, false);
+        collector.wait(&StopSignal::new(), Duration::ZERO, false, None);
         assert_eq!(
             collector.collect(2).value,
             Some(MemoryResourceNotificationState::High)
         );
         drop(collector);
         assert_eq!(state.lock().unwrap().closed, vec![1, 2]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn result_notification_wakes_even_when_low_is_not_watched() {
+        let api = WindowsMemoryResourceNotificationApi;
+        // SAFETY: private signalled event, owned until the bounded wait ends.
+        let handle = unsafe {
+            winapi::um::synchapi::CreateEventW(std::ptr::null_mut(), 1, 1, std::ptr::null())
+        };
+        assert!(!handle.is_null());
+        let start = Instant::now();
+        assert!(api
+            .wait_for_pressure(
+                None,
+                &StopSignal::new(),
+                Duration::from_secs(10),
+                Some(handle as usize)
+            )
+            .unwrap());
+        api.close(handle as usize);
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 
     #[cfg(windows)]
@@ -1076,7 +1109,7 @@ mod tests {
         assert!(!handle.is_null());
         let handle = handle as usize;
         let start = Instant::now();
-        api.wait_low(handle, &stop, Duration::from_secs(10))
+        api.wait_for_pressure(Some(handle), &stop, Duration::from_secs(10), None)
             .unwrap();
         api.close(handle);
         thread.join().unwrap();

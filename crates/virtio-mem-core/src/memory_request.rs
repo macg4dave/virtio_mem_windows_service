@@ -7,6 +7,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::VirtioMemState;
 
+/// Optional virtio-serial doorbell. Bytes only request a fresh observation;
+/// they never authorise a resize or acknowledge a durable request.
+pub const MEMORY_WAKE_CHANNEL_NAME: &str = "org.virtio-mem.wake.0";
+
 pub const MEMORY_REQUEST_VERSION: u16 = 1;
 /// Admission freshness. Execution/result resolution may outlive this interval.
 pub const MAX_REQUEST_LIFETIME_MILLIS: u64 = 60_000;
@@ -219,9 +223,9 @@ impl HostMemoryStatus {
             .map_err(|error| error.to_string())?;
         if let Some(result) = &self.result {
             result.validate_for(&result.request)?;
-            if !result.actual_bytes.is_multiple_of(self.block_size_bytes) {
-                return Err("memory result is not block aligned".to_owned());
-            }
+            // A retained result describes its original operation, which may
+            // predate a device block-size change. Validate its contract and
+            // identity, but do not apply current geometry to historical bytes.
             if result.request.identity.vm_name != vm
                 || result.request.identity.service_name != service
                 || result.observed_unix_millis > self.observed_unix_millis

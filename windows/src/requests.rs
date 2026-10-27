@@ -23,6 +23,7 @@ pub struct GuestRequests {
     status_path: PathBuf,
     state_path: PathBuf,
     retry_timeout: Duration,
+    resolved_last_poll: bool,
 }
 
 impl GuestRequests {
@@ -60,6 +61,7 @@ impl GuestRequests {
             status_path: PathBuf::from(host_status_path(publication_path)),
             state_path,
             retry_timeout,
+            resolved_last_poll: false,
         })
     }
 
@@ -69,6 +71,10 @@ impl GuestRequests {
 
     pub fn invalidate_history(&mut self) {
         self.requester.invalidate_history();
+    }
+
+    pub fn resolved_last_poll(&self) -> bool {
+        self.resolved_last_poll
     }
 
     pub fn requester(&self) -> &GuestRequester {
@@ -90,8 +96,10 @@ impl GuestRequests {
                 .commit_limit_bytes
                 .saturating_sub(sample.memory.commit_total_bytes),
         );
+        self.resolved_last_poll = false;
         let status = self.read_status()?;
         let decision = self.requester.poll(sample, status.as_ref())?;
+        self.resolved_last_poll = decision.resolved.is_some();
         if decision.persist {
             if let Some(request) = &decision.request {
                 eprintln!("memory request: operation={:?} bytes={} native={:?} available_bytes={} commit_headroom_bytes={}",

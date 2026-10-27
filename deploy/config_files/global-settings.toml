@@ -3,7 +3,7 @@
 # policy uses built-in defaults, with total-RAM limits in each VM settings file.
 # Loaded beside host_list.toml and each <vm_name>_settings.toml.
 # Omitted keys use built-in defaults; unknown or obsolete keys are rejected.
-# Edit here, then run install-host.sh to deploy the host configuration set.
+# Deploy with install-host.sh INSTANCE VM=ATTESTATION ... using current evidence.
 # Existing running controllers do not reload changes automatically.
 #
 # Memory sizes use binary units: "1GB" = 1024MB = 2^30 bytes.
@@ -12,20 +12,23 @@
 # Total virtio-mem device RAM available across the controller's VMs; excludes
 # fixed boot RAM. Each VM occupies max(requested, current) bytes of this pool.
 # Growth uses only free pool capacity, highest VM priority first; the host
-# never reclaims another VM's RAM to satisfy a request. Each device is also
-# capped at its size minus 1 GiB. Required when controlling multiple VMs.
+# never reclaims another VM's RAM to satisfy a request. Device targets may use
+# the full device capacity. Required when controlling multiple VMs.
 pool_bytes = "15GB"
 
 # Minimum MemAvailable to leave for the Linux host. Growth is reduced or
 # refused if it would cross this floor, even when pool capacity remains.
+# This is the host memory reserve; no fixed per-device reserve is subtracted.
 host_min_headroom_bytes = "4GB"
 
 # true evaluates and logs requests but refuses them before resizing devices.
 # false permits admitted requests to resize devices.
 observe_only = false
 
-# Seconds between both host polls and guest samples (1–10). Freshness and
-# maximum sample gaps are derived from this interval.
+# Periodic fallback seconds between host polls and guest samples (1–10).
+# Native pressure, virtio-serial hints and libvirt size events can wake earlier.
+# Freshness and maximum sample gaps are derived from this interval.
+# Reclaim needs 10 seconds of continuous qualifying history.
 poll_interval_seconds = 5
 # Maximum duration of each external host command (for example, virsh).
 command_timeout_seconds = 10

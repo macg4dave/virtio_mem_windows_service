@@ -22,6 +22,8 @@ pub enum ServiceEventId {
     WorkerFailed = 2_001,
     UnexpectedExit = 2_002,
     StatusPublishFailed = 2_003,
+    WakeUnavailable = 2_004,
+    WakeConnected = 1_004,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

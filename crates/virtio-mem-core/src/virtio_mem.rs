@@ -2,12 +2,6 @@ use crate::error::VirtioMemError;
 
 pub const MIN_BLOCK_SIZE_BYTES: u64 = 1 << 20;
 
-/// A virtio-mem target must never be requested that would leave less than
-/// this much of the device's declared size unplugged. This keeps a resize
-/// request from ever consuming the full device, independent of operator
-/// configuration.
-pub const MIN_HEADROOM_BYTES: u64 = 1 << 30;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VirtioMemState {
     pub size_bytes: u64,
@@ -44,8 +38,7 @@ impl VirtioMemState {
         self.validate_state_value(self.current_bytes, "current")
     }
 
-    /// The largest target `validate_target` accepts: one GiB of headroom
-    /// below the device size, aligned down to the block size.
+    /// The largest target `validate_target` accepts for valid device geometry.
     pub fn maximum_target_bytes(self) -> u64 {
         maximum_target_bytes(self.size_bytes, self.block_size_bytes)
     }
@@ -53,13 +46,6 @@ impl VirtioMemState {
     pub fn validate_target(self, target_bytes: u64) -> Result<(), VirtioMemError> {
         self.validate()?;
         self.validate_state_value(target_bytes, "target")?;
-        if self.size_bytes.saturating_sub(target_bytes) < MIN_HEADROOM_BYTES {
-            return Err(VirtioMemError::TargetLacksHeadroom {
-                target: target_bytes,
-                size: self.size_bytes,
-                minimum_headroom: MIN_HEADROOM_BYTES,
-            });
-        }
         Ok(())
     }
 
@@ -87,8 +73,7 @@ impl VirtioMemState {
 }
 
 pub(crate) fn maximum_target_bytes(size_bytes: u64, block_size_bytes: u64) -> u64 {
-    let ceiling = size_bytes.saturating_sub(MIN_HEADROOM_BYTES);
-    ceiling - ceiling % block_size_bytes.max(1)
+    size_bytes - size_bytes % block_size_bytes.max(1)
 }
 
 #[cfg(test)]
@@ -145,18 +130,25 @@ mod tests {
         assert!(valid_state().validate_target(0).is_ok());
     }
     #[test]
-    fn rejects_targets_that_would_consume_the_full_device() {
-        assert!(matches!(
-            valid_state().validate_target(8 * GIB),
-            Err(VirtioMemError::TargetLacksHeadroom { .. })
-        ));
-        assert!(matches!(
-            valid_state().validate_target(8 * GIB - MIN_HEADROOM_BYTES + BLOCK),
-            Err(VirtioMemError::TargetLacksHeadroom { .. })
-        ));
-        assert!(valid_state()
-            .validate_target(8 * GIB - MIN_HEADROOM_BYTES)
-            .is_ok());
+    fn accepts_full_capacity_and_rejects_targets_beyond_it() {
+        for size in [512 * 1024 * 1024, GIB, 8 * GIB] {
+            let state = VirtioMemState {
+                size_bytes: size,
+                requested_bytes: size,
+                current_bytes: size,
+                ..valid_state()
+            };
+            assert_eq!(state.maximum_target_bytes(), size);
+            assert!(state.validate_target(size).is_ok());
+            assert!(matches!(
+                state.validate_target(size + BLOCK),
+                Err(VirtioMemError::ValueOutsideSize { name: "target", .. })
+            ));
+            assert!(matches!(
+                state.validate_target(size - 1),
+                Err(VirtioMemError::ValueNotAligned { name: "target", .. })
+            ));
+        }
     }
 
     #[test]

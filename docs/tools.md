@@ -9,3 +9,10 @@ guest control publication over QGA; optional telemetry paths can be omitted.
 
 `Watch-Ram.ps1` reads Windows memory directly with `GetPerformanceInfo`. It
 does not load configuration or require the service or telemetry output.
+
+The Windows deployment helper also provisions access to the optional
+`org.virtio-mem.wake.0` serial port for LocalService. It saves the previous device
+security property with the deployment backup; a missing port retains polling.
+See [the deployment guide](../deploy/config_files/README.md#prompt-memory-notifications)
+for the VM channel and host group requirements. RAM growth requests cover the
+calculated shortage; reclaim uses a 10-second continuous history window.

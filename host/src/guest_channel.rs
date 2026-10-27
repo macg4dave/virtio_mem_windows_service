@@ -56,6 +56,9 @@ pub struct GuestChannel<Q, T = SystemUnixClock> {
     max_age: Duration,
     future_tolerance: Duration,
     clock: T,
+    #[cfg(unix)]
+    wake: Option<std::sync::Arc<crate::wake::WakePeer>>,
+    last_status: std::cell::RefCell<Option<HostMemoryStatus>>,
 }
 
 impl<Q> GuestChannel<Q, SystemUnixClock> {
@@ -80,6 +83,12 @@ impl<Q> GuestChannel<Q, SystemUnixClock> {
 }
 
 impl<Q, T> GuestChannel<Q, T> {
+    #[cfg(unix)]
+    pub fn with_wake(mut self, wake: std::sync::Arc<crate::wake::WakePeer>) -> Self {
+        self.wake = Some(wake);
+        self
+    }
+
     pub fn with_clock(
         transport: Transport<Q>,
         publication_path: impl Into<String>,
@@ -97,6 +106,9 @@ impl<Q, T> GuestChannel<Q, T> {
             max_age,
             future_tolerance,
             clock,
+            #[cfg(unix)]
+            wake: None,
+            last_status: std::cell::RefCell::new(None),
         }
     }
 }
@@ -138,7 +150,23 @@ impl<Q: GuestFileReader + GuestFileWriter, T: UnixClock> GuestLink for GuestChan
         match &self.transport {
             Transport::LocalFile => write_local(Path::new(&path), &bytes),
             Transport::Qga(files) => files.write_file(&path, &bytes),
+        }?;
+        // Timestamps change every poll, but only semantic changes need a wake.
+        let changed = self.last_status.borrow().as_ref().is_none_or(|last| {
+            last.requested_bytes != status.requested_bytes
+                || last.current_bytes != status.current_bytes
+                || last.result != status.result
+                || last.device_size_bytes != status.device_size_bytes
+                || last.block_size_bytes != status.block_size_bytes
+        });
+        if changed {
+            #[cfg(unix)]
+            if let Some(wake) = &self.wake {
+                wake.notify();
+            }
+            *self.last_status.borrow_mut() = Some(status.clone());
         }
+        Ok(())
     }
 }
 

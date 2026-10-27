@@ -19,6 +19,8 @@ use crate::{
 pub struct GuestMemoryPolicy {
     pub target: TargetPolicyConfig,
     #[serde(with = "crate::units::byte_size")]
+    /// Minimum extra RAM requested for native Low pressure when numeric
+    /// demand does not already call for a larger increase. Not a growth cap.
     pub grow_step_bytes: u64,
     #[serde(with = "crate::units::byte_size")]
     pub shrink_step_bytes: u64,
@@ -79,11 +81,10 @@ pub fn plan_request(
     }
     let current = device.current_bytes;
     if current < estimate.desired_bytes {
-        let target = current
-            .checked_add(policy.grow_step_bytes)
-            .ok_or("guest growth target overflowed")?
-            .min(estimate.desired_bytes);
-        return Ok(Some((MemoryOperation::Add, target - current)));
+        return Ok(Some((
+            MemoryOperation::Add,
+            estimate.desired_bytes - current,
+        )));
     }
     if current > estimate.desired_bytes && estimate.history_ready {
         let target = current
@@ -442,7 +443,7 @@ mod tests {
         let request = first.request.clone().expect("growth request");
         assert!(first.persist);
         assert_eq!(request.operation, MemoryOperation::Add);
-        assert_eq!(request.bytes, GIB);
+        assert_eq!(request.bytes, 2 * GIB);
         assert_eq!(guest.state().pending.as_ref(), Some(&request));
 
         // No result yet, then a stale status: retransmit the same identity.
@@ -529,6 +530,88 @@ mod tests {
             .expect("renewed pressure issues a new request");
         assert_eq!(next.identity.sequence, request.identity.sequence + 1);
         assert!(next.issued_unix_millis > request.issued_unix_millis);
+    }
+
+    #[test]
+    fn historical_result_from_smaller_blocks_does_not_block_pressure_growth() {
+        let mut guest = requester(GuestRequestState::default());
+        guest.set_ram_limits(6 * GIB, 27 * GIB).unwrap();
+        let old_request = MemoryRequest {
+            version: MEMORY_REQUEST_VERSION,
+            identity: RequestIdentity {
+                vm_name: "guest".to_owned(),
+                service_name: "service".to_owned(),
+                session_id: "previous-boot".to_owned(),
+                sequence: 0,
+            },
+            operation: MemoryOperation::Remove,
+            bytes: 1068 * MIB,
+            issued_unix_millis: 900_000,
+            expires_unix_millis: 920_000,
+        };
+        let mut live = status(
+            1,
+            GIB,
+            Some(MemoryResult {
+                request: old_request,
+                outcome: MemoryOutcome::Partial,
+                actual_bytes: 20 * MIB,
+                observed_unix_millis: 919_000,
+                reason: Some("guest returned only part of the removal".to_owned()),
+            }),
+        );
+        live.block_size_bytes = 8 * MIB;
+        live.device_size_bytes = 20 * GIB;
+        // Windows is 98% full. Its native signal need not be Low for numeric
+        // reserve pressure to request growth.
+        let decision = guest
+            .poll(sample(1, 180 * MIB, 9 * GIB), Some(&live))
+            .unwrap();
+        let request = decision
+            .request
+            .expect("growth despite a historical 2 MiB-block result");
+        assert_eq!(request.operation, MemoryOperation::Add);
+        assert_eq!(request.bytes, 1872 * MIB);
+        assert!(request.bytes.is_multiple_of(live.block_size_bytes));
+
+        // Current geometry and historical result identity remain validated.
+        live.current_bytes += 2 * MIB;
+        assert!(live.validate_for("guest", "service").is_err());
+        live.current_bytes = GIB;
+        live.result.as_mut().unwrap().request.identity.vm_name = "foreign".to_owned();
+        assert!(live.validate_for("guest", "service").is_err());
+    }
+
+    #[test]
+    fn shared_policy_reclaims_after_ten_seconds_of_continuous_high_memory() {
+        let mut guest = GuestRequester::new(
+            crate::settings::GlobalSettings::default().guest_policy(),
+            "guest",
+            "service",
+            "session",
+            GuestRequestState::default(),
+        )
+        .unwrap();
+        for second in 0..10 {
+            assert!(guest
+                .poll(
+                    sample(second, 8 * GIB, 12 * GIB),
+                    Some(&status(second, 4 * GIB, None))
+                )
+                .unwrap()
+                .request
+                .is_none());
+        }
+        let request = guest
+            .poll(
+                sample(10, 8 * GIB, 12 * GIB),
+                Some(&status(10, 4 * GIB, None)),
+            )
+            .unwrap()
+            .request
+            .expect("ten seconds qualify reclaim");
+        assert_eq!(request.operation, MemoryOperation::Remove);
+        assert_eq!(request.bytes, 3 * GIB);
     }
 
     #[test]
@@ -799,14 +882,14 @@ mod tests {
             safe_floor_bytes: 6 * GIB,
             desired_now_bytes: 6 * GIB,
             floor_now_bytes: 6 * GIB,
-            effective_maximum_bytes: 31 * GIB,
+            effective_maximum_bytes: 32 * GIB,
             history_ready: false,
             capacity_limited: false,
         };
         let mut device = status(1, 4 * GIB, None).device();
         assert_eq!(
             plan_request(&estimate, device, &policy()).unwrap(),
-            Some((MemoryOperation::Add, GIB))
+            Some((MemoryOperation::Add, 2 * GIB))
         );
         device.requested_bytes = 5 * GIB;
         assert_eq!(plan_request(&estimate, device, &policy()).unwrap(), None);
@@ -833,7 +916,7 @@ mod tests {
         let mut observation = sample(1, 8 * GIB, 35 * GIB);
         observation.native_pressure = Some(MemoryResourceNotificationState::Low);
         assert!(requester
-            .poll(observation, Some(&status(1, 31 * GIB, None)))
+            .poll(observation, Some(&status(1, 32 * GIB, None)))
             .unwrap()
             .request
             .is_none());

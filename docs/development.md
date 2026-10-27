@@ -122,11 +122,29 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   A retransmission of an admitted request is recognised before expiry checks
   and never regranted. Expiry and identity are rechecked at the effect
   boundary, after blocking preparation.
+- Wake-ups: `org.virtio-mem.wake.0` is an optional duplex virtio-serial
+  doorbell. Windows sends a byte after publishing telemetry; the host sends a
+  byte after publishing a changed device state or result. Bytes only trigger
+  a fresh read of the durable protocol files and never authorise a resize.
+  Libvirt memory-device-size-change events wake convergence observation.
+  Missing channels and ended subscriptions fall back to periodic polling.
+  Windows waits for native Low pressure, result notifications or the sampling
+  deadline; after resolving a request it promptly samples again.
+- Growth requests cover the entire aligned shortage up to the VM/device
+  maximum. The 1 GiB policy increment is only the minimum response to native
+  Low pressure; it no longer caps a request. Reclaim requires 10 seconds of
+  continuous qualifying High observations, and retains safe floors and backoff.
 - Grants: removals take `min(bytes, current)`. Additions take the least of the
-  request, the device ceiling (size minus 1 GiB, block aligned), the member's
+  request, the device ceiling (full size, block aligned), the member's
   pool ceiling (free bytes, larger `priority` first, configuration order on
   ties) and host `MemAvailable` minus pending growth and `host_min_headroom_bytes`.
   A zero addition is `pool_empty`. Nothing unfulfilled is queued.
+  There is no fixed per-device reserve. Deploy the host and Windows service
+  together when upgrading from the old 1 GiB device-reserve rule: status
+  geometry validation rejects a ceiling calculated under the other rule.
+  Historical request results retain their original byte counts across device
+  block-size changes. Their identity and outcome remain validated, but current
+  block alignment applies to live geometry and new targets, not old results.
 - Admission and command intent are saved together before the command. On
   convergence the result reports the actual movement (`completed` or
   `partial`). A refusal before any command (latched, observe-only, expired,
@@ -197,6 +215,9 @@ Device size/block size remain live geometry. Sampling, steps, reserve/floor
 pairs, reclaim hysteresis/history and backoff use shared built-in defaults;
 polling also determines freshness, request expiry and sample-gap bounds.
 Per-VM checkpoint and attestation paths are derived from the validated name.
+The resize sink requires its compatibility source explicitly; fixed evidence
+fixtures exist only in unit tests. Deployment helpers require current explicit
+attestation inputs rather than selecting files from previous test runs.
 
 Both diagnostic outputs are entirely optional: no path means no diagnostic
 writes, and output errors cannot stop memory control. Required policy sampling
