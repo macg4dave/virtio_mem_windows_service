@@ -24,6 +24,9 @@ pub struct GuestRequests {
     state_path: PathBuf,
     retry_timeout: Duration,
     resolved_last_poll: bool,
+    last_consumed_result: Option<virtio_mem_core::MemoryResult>,
+    result_consumed_unix_millis: Option<u64>,
+    driver_file_version: Result<String, String>,
 }
 
 impl GuestRequests {
@@ -62,6 +65,9 @@ impl GuestRequests {
             state_path,
             retry_timeout,
             resolved_last_poll: false,
+            last_consumed_result: None,
+            result_consumed_unix_millis: None,
+            driver_file_version: crate::diagnostics::driver_version(),
         })
     }
 
@@ -98,6 +104,7 @@ impl GuestRequests {
         );
         self.resolved_last_poll = false;
         let status = self.read_status()?;
+        let observed = sample.observed_unix_millis;
         let decision = self.requester.poll(sample, status.as_ref())?;
         self.resolved_last_poll = decision.resolved.is_some();
         if decision.persist {
@@ -110,7 +117,25 @@ impl GuestRequests {
             replace_file(&self.state_path, &bytes, true, stop, self.retry_timeout)
                 .map_err(|error| format!("persist request state: {error}"))?;
         }
+        if let Some(result) = decision.resolved {
+            self.last_consumed_result = Some(result);
+            self.result_consumed_unix_millis = Some(observed);
+        }
         Ok(decision.request)
+    }
+
+    pub fn diagnostics(
+        &self,
+        boot_uptime_millis: Option<u64>,
+    ) -> virtio_mem_core::demand::GuestDiagnostics {
+        virtio_mem_core::demand::GuestDiagnostics {
+            build_id: crate::BUILD_ID.to_owned(),
+            boot_uptime_millis,
+            driver_file_version: self.driver_file_version.clone(),
+            policy: self.requester.diagnostics().clone(),
+            last_consumed_result: self.last_consumed_result.clone(),
+            result_consumed_unix_millis: self.result_consumed_unix_millis,
+        }
     }
 
     /// The latest complete host status, or `None` while there is none to use:

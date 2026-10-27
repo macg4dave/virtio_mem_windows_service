@@ -210,6 +210,9 @@ fn retry_atomic_replace(
 pub trait TelemetryClock {
     fn now_unix_millis(&self) -> Result<u64, String>;
     fn monotonic_millis(&self) -> Result<u64, String>;
+    fn boot_uptime_millis(&self) -> Option<u64> {
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +229,16 @@ impl Default for SystemTelemetryClock {
 }
 
 impl TelemetryClock for SystemTelemetryClock {
+    fn boot_uptime_millis(&self) -> Option<u64> {
+        #[cfg(windows)]
+        {
+            // SAFETY: GetTickCount64 takes no pointers or handles.
+            Some(unsafe { winapi::um::sysinfoapi::GetTickCount64() })
+        }
+        #[cfg(not(windows))]
+        None
+    }
+
     fn now_unix_millis(&self) -> Result<u64, String> {
         let duration = SystemTime::now()
             .duration_since(UNIX_EPOCH)

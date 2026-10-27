@@ -141,7 +141,7 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         signal_hook::flag::register(signal, Arc::clone(&stop))
             .map_err(|error| format!("install signal handler: {error}"))?;
     }
-    let virsh = Virsh::with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
+    let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
     let guest_files = VirshGuestFiles::new(virsh.clone(), &command.vm);
     let mut stdout = std::io::stdout().lock();
     if interactive {

@@ -75,6 +75,27 @@ impl Virsh {
         }
     }
 
+    /// Share a connection for an observer's repeated XML and QGA reads too.
+    /// Other commands retain their bounded process implementation.
+    pub fn persistent_with_connection(
+        binary: impl Into<String>,
+        timeout: Duration,
+        connection: impl Into<String>,
+    ) -> Self {
+        let virsh = Self::with_connection(binary, timeout, connection);
+        #[cfg(unix)]
+        {
+            let mut virsh = virsh;
+            virsh.session = Some(std::sync::Arc::new(crate::libvirt::LibvirtSession::new(
+                virsh.connection.clone(),
+                timeout,
+            )));
+            virsh
+        }
+        #[cfg(not(unix))]
+        virsh
+    }
+
     /// Check the local RHEL polkit policy once, at daemon startup, without
     /// permitting a password dialog, so a missing grant fails with a clear
     /// message. libvirt authorizes every connection itself; repeating this

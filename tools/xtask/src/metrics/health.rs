@@ -173,11 +173,13 @@ pub(super) enum Component {
     Controller,
     GuestService,
     Vm,
+    Performance,
 }
 
 impl Component {
     pub(super) fn name(self) -> &'static str {
         match self {
+            Self::Performance => "performance",
             Self::Controller => "controller",
             Self::GuestService => "guest_service",
             Self::Vm => "vm",
@@ -206,7 +208,13 @@ pub(super) struct Observed {
 }
 
 impl Observed {
-    fn event(&mut self, unix_millis: u64, name: &str, fields: &[(&str, String)], message: String) {
+    pub(super) fn event(
+        &mut self,
+        unix_millis: u64,
+        name: &str,
+        fields: &[(&str, String)],
+        message: String,
+    ) {
         self.events.push(JournalEvent {
             unix_micros: unix_millis * 1000,
             pid: None,
@@ -235,7 +243,7 @@ pub(super) struct Lifecycle {
     guest: Option<RawTelemetryEnvelope>,
     /// When the guest last published before the current stall.
     stalled_since: Option<u64>,
-    agent_lost_since: Option<u64>,
+    agent_lost_since: Option<(u64, bool)>,
 }
 
 impl Lifecycle {
@@ -505,11 +513,17 @@ impl Lifecycle {
         let telemetry = match &read.telemetry {
             Err(error) => {
                 if self.agent_lost_since.is_none() {
-                    self.agent_lost_since = Some(now);
-                    let error: String = error.chars().take(160).collect();
+                    let disconnected =
+                        error.contains("not connected") || error.contains("not responding");
+                    self.agent_lost_since = Some((now, disconnected));
+                    let error = error.clone();
                     observed.event(
                         now,
-                        "metrics_guest_agent_lost",
+                        if disconnected {
+                            "metrics_guest_agent_lost"
+                        } else {
+                            "metrics_guest_read_failed"
+                        },
                         &[("error", error.clone())],
                         format!("guest publication unreadable: {error}"),
                     );
@@ -518,11 +532,15 @@ impl Lifecycle {
             }
             Ok(telemetry) => telemetry,
         };
-        if let Some(since) = self.agent_lost_since.take() {
+        if let Some((since, disconnected)) = self.agent_lost_since.take() {
             let seconds = seconds_between(since, now);
             observed.event(
                 now,
-                "metrics_guest_agent_restored",
+                if disconnected {
+                    "metrics_guest_agent_restored"
+                } else {
+                    "metrics_guest_read_restored"
+                },
                 &[("outage_seconds", seconds.clone())],
                 format!("guest publication readable again after {seconds}s"),
             );
@@ -593,6 +611,29 @@ impl Lifecycle {
             &[("stalled_seconds", seconds.clone())],
             format!("guest service publishing again; {seconds}s between publications"),
         );
+    }
+}
+
+pub(super) fn performance_incident(sample: &Sample, reason: &str) -> Incident {
+    Incident {
+        component: Component::Performance,
+        unix_millis: sample.unix_millis,
+        summary: format!("sustained performance problem: {reason}"),
+        pid: sample
+            .controller
+            .as_ref()
+            .and_then(|status| status.main_pid),
+        details: [("reason".to_owned(), json!(reason))].into_iter().collect(),
+        sections: vec![(
+            "guest publication at detection".to_owned(),
+            sample.telemetry().map_or_else(
+                || "unavailable".to_owned(),
+                |publication| {
+                    serde_json::to_string_pretty(publication)
+                        .unwrap_or_else(|error| error.to_string())
+                },
+            ),
+        )],
     }
 }
 
@@ -953,6 +994,23 @@ mod tests {
     }
 
     #[test]
+    fn file_read_failures_preserve_the_full_error_without_claiming_agent_loss() {
+        let mut lifecycle = Lifecycle::new(12_000);
+        let error = format!(
+            "guest-file-open failed: {}: being used by another process",
+            "long/path/".repeat(30)
+        );
+        let mut failed = sample(1000);
+        failed.guest = Some(super::super::GuestRead {
+            elapsed: std::time::Duration::ZERO,
+            telemetry: Err(error.clone()),
+        });
+        let observed = lifecycle.observe(&failed, &[]);
+        assert_eq!(names(&observed), ["metrics_guest_read_failed"]);
+        assert_eq!(observed.events[0].fields["error"], error);
+    }
+
+    #[test]
     fn guest_restarts_stalls_and_agent_outages() {
         let envelope = |session: &str, observed: u64, sequence: u64| {
             RawTelemetryEnvelope::new(
@@ -988,8 +1046,8 @@ mod tests {
         for sample in [
             read(1_000, Ok(envelope("s1", 1_000, 1))),
             read(20_000, Ok(envelope("s1", 1_000, 1))),
-            read(21_000, Err("agent unavailable".to_owned())),
-            read(22_000, Err("agent unavailable".to_owned())),
+            read(21_000, Err("QEMU guest agent is not connected".to_owned())),
+            read(22_000, Err("QEMU guest agent is not connected".to_owned())),
             read(30_000, Ok(envelope("s2", 29_000, 1))),
         ] {
             let observed = lifecycle.observe(&sample, &[]);

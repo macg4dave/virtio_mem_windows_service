@@ -15,7 +15,9 @@
 //! Like `watch`, it never resizes, clears latches or restarts anything, and
 //! never reads `.host-status`.
 
+mod diagnostics;
 mod health;
+mod pressure;
 mod ui;
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -71,6 +73,7 @@ n sample now, m add a marker, s save summary, w chart window, q quit.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Command {
+    config_path: PathBuf,
     vm: String,
     alias: String,
     unit: String,
@@ -90,6 +93,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     let mut vm = None;
     let mut instance = None;
     let mut command = Command {
+        config_path: PathBuf::new(),
         vm: String::new(),
         alias: String::new(),
         unit: String::new(),
@@ -137,6 +141,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         index += 1;
     }
     let config_path = config_path.ok_or_else(|| format!("metrics requires --config\n\n{HELP}"))?;
+    command.config_path = config_path.clone();
     let config = HostConfig::load_vm(&config_path, vm.as_deref())
         .map_err(|error| format!("{}: {error}", config_path.display()))?;
     command.unit = format!(
@@ -328,6 +333,7 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         ))
     });
     let recorder = Recorder::create(&directory)?;
+    diagnostics::write_manifest(command, repo, &directory, started_millis)?;
     let live = Mutex::new(Live::new(command, directory.clone(), started_millis));
     let result = if !command.plain && std::io::stdout().is_terminal() {
         std::thread::scope(|scope| {
@@ -367,6 +373,7 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
             },
         )
     };
+    diagnostics::finish_manifest(&directory, &result)?;
     let live = lock(&live);
     live.write_summary()?;
     println!("{}", live.summary.headline());
@@ -385,13 +392,15 @@ fn record(
     stop: &AtomicBool,
     mut progress: impl FnMut(&Sample, usize, &[Value]),
 ) -> Result<(), String> {
-    let virsh = Virsh::with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
+    let virsh = Virsh::persistent_with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
     let guest_files = VirshGuestFiles::new(virsh.clone(), &command.vm);
     let started_millis = lock(live).started_millis;
     let mut journal = JournalFollower::start(&command.unit, started_millis, repo);
     let mut qemu = QemuProcess::default();
     let mut cpu = CpuMeter::default();
+    let mut pressure = pressure::Meter::default();
     let mut lifecycle = Lifecycle::new(command.telemetry_max_age.as_millis() as u64);
+    let mut diagnostics = diagnostics::Diagnostics::new(&recorder.directory)?;
     let mut guest_read: Option<Instant> = None;
     let mut summary_written = Instant::now();
     let clock = Instant::now();
@@ -428,9 +437,18 @@ fn record(
                 device: watch::device_state(&virsh, &command.vm, &command.alias),
                 vm_state: health::vm_state(&virsh, &command.vm),
                 guest,
+                pressure: pressure.sample(),
+                collection_millis: started.elapsed().as_secs_f64() * 1000.0,
             };
             let new_events = journal.read(repo);
-            let observed = lifecycle.observe(&sample, &new_events);
+            let mut observed = lifecycle.observe(&sample, &new_events);
+            diagnostics.observe(
+                &sample,
+                &new_events,
+                command,
+                &mut observed,
+                !controls.paused,
+            )?;
             let row = sample.csv_row(command.host_floor_bytes);
             if !controls.paused {
                 writeln!(recorder.samples, "{row}")
@@ -654,6 +672,8 @@ struct Sample {
     vm_state: Option<String>,
     /// Present only on samples that read the guest.
     guest: Option<GuestRead>,
+    pressure: pressure::Pressure,
+    collection_millis: f64,
 }
 
 const CSV_HEADER: &str = "time_utc,elapsed_s,\
@@ -667,7 +687,11 @@ guest_signal,\
 guest_request,guest_request_mib,guest_request_sequence,\
 controller_state,controller_pid,controller_memory_mib,controller_cpu_pct,controller_restarts,\
 qemu_pid,vm_state,\
-guest_session,guest_commit_peak_mib,guest_kernel_paged_mib,guest_kernel_nonpaged_mib";
+guest_session,guest_commit_peak_mib,guest_kernel_paged_mib,guest_kernel_nonpaged_mib,\
+host_memory_psi_some_avg10,host_memory_psi_full_avg10,host_swap_in_pages_s,\
+host_swap_out_pages_s,host_major_faults_s,collection_ms,\
+guest_policy_reason,guest_desired_mib,guest_safe_floor_mib,guest_history_ready,\
+guest_retry_remaining_ms,guest_boot_uptime_ms";
 
 fn mib(bytes: u64) -> u64 {
     bytes / MIB
@@ -778,6 +802,42 @@ impl Sample {
                 ]);
             }
             None => columns.extend(std::iter::repeat_n(String::new(), 4)),
+        }
+        for value in [
+            self.pressure.some_avg10,
+            self.pressure.full_avg10,
+            self.pressure.swap_in_pages_s,
+            self.pressure.swap_out_pages_s,
+            self.pressure.major_faults_s,
+        ] {
+            columns.push(value.map_or_else(String::new, |value| format!("{value:.3}")));
+        }
+        columns.push(format!("{:.1}", self.collection_millis));
+        if let Some(diagnostics) = self
+            .telemetry()
+            .and_then(|guest| guest.diagnostics.as_ref())
+        {
+            columns.extend([
+                serde_json::to_value(diagnostics.policy.reason).map_or_else(
+                    |error| format!("serialization_error:{error}"),
+                    |value| value.as_str().unwrap_or("unknown").to_owned(),
+                ),
+                diagnostics
+                    .policy
+                    .desired_bytes
+                    .map_or_else(String::new, |bytes| mib(bytes).to_string()),
+                diagnostics
+                    .policy
+                    .safe_floor_bytes
+                    .map_or_else(String::new, |bytes| mib(bytes).to_string()),
+                u8::from(diagnostics.policy.history_ready).to_string(),
+                diagnostics.policy.retry_remaining_millis.to_string(),
+                diagnostics
+                    .boot_uptime_millis
+                    .map_or_else(String::new, |uptime| uptime.to_string()),
+            ]);
+        } else {
+            columns.extend(std::iter::repeat_n(String::new(), 6));
         }
         columns.join(",")
     }
@@ -898,7 +958,7 @@ fn parse_event(message: &str) -> (Option<String>, BTreeMap<String, String>) {
     let name = words.next().unwrap_or_default().to_owned();
     let mut fields = BTreeMap::new();
     let mut last: Option<String> = None;
-    for word in words {
+    while let Some(word) = words.next() {
         match word.split_once('=').filter(|(key, _)| {
             !key.is_empty()
                 && key
@@ -906,6 +966,18 @@ fn parse_event(message: &str) -> (Option<String>, BTreeMap<String, String>) {
                     .all(|character| character.is_ascii_alphanumeric() || character == '_')
         }) {
             Some((key, value)) => {
+                if matches!(key, "reason" | "error" | "command_result") {
+                    let tail = words.collect::<Vec<_>>().join(" ");
+                    fields.insert(
+                        key.to_owned(),
+                        if tail.is_empty() {
+                            value.to_owned()
+                        } else {
+                            format!("{value} {tail}")
+                        },
+                    );
+                    break;
+                }
                 fields.insert(key.to_owned(), value.to_owned());
                 last = Some(key.to_owned());
             }
@@ -1038,12 +1110,22 @@ struct Summary {
     guest_commit_headroom_mib: Stat,
     guest_load_pct: Stat,
     guest_signals: BTreeMap<&'static str, u64>,
+    guest_policy_reasons: BTreeMap<String, u64>,
     /// Guest `issued_unix_millis` by (session, sequence).
     guest_issued: HashMap<(String, String), u64>,
     /// Controller grant time (microseconds) by (session, sequence).
     granted: HashMap<(String, String), u64>,
+    grant_goals: HashMap<(String, String), (String, u64)>,
+    latest_device: Option<VirtioMemState>,
+    zero_byte_grants: u64,
     grant_to_completion_seconds: Stat,
     issue_to_completion_seconds: Stat,
+    grant_latency_by_operation: BTreeMap<String, Stat>,
+    issue_latency_by_operation: BTreeMap<String, Stat>,
+    pending_request: Option<virtio_mem_core::MemoryRequest>,
+    host_below_reserve_samples: u64,
+    pressure_stats: [Stat; 5],
+    collection_ms: Stat,
     requests: BTreeMap<String, RequestTotals>,
     refusals: BTreeMap<String, u64>,
     events: BTreeMap<String, u64>,
@@ -1056,6 +1138,7 @@ struct Summary {
     guest_kernel_nonpaged_mib: Stat,
     publication_stall_seconds: Stat,
     agent_outage_seconds: Stat,
+    read_outage_seconds: Stat,
     notable: Vec<Value>,
     /// `incidents.jsonl` records, also kept here.
     incidents: Vec<Value>,
@@ -1097,10 +1180,20 @@ impl Summary {
             guest_commit_headroom_mib: Stat::default(),
             guest_load_pct: Stat::default(),
             guest_signals: BTreeMap::new(),
+            guest_policy_reasons: BTreeMap::new(),
             guest_issued: HashMap::new(),
             granted: HashMap::new(),
+            grant_goals: HashMap::new(),
+            latest_device: None,
+            zero_byte_grants: 0,
             grant_to_completion_seconds: Stat::default(),
             issue_to_completion_seconds: Stat::default(),
+            grant_latency_by_operation: BTreeMap::new(),
+            issue_latency_by_operation: BTreeMap::new(),
+            pending_request: None,
+            host_below_reserve_samples: 0,
+            pressure_stats: [Stat::default(); 5],
+            collection_ms: Stat::default(),
             requests: BTreeMap::new(),
             refusals: BTreeMap::new(),
             events: BTreeMap::new(),
@@ -1113,6 +1206,7 @@ impl Summary {
             guest_kernel_nonpaged_mib: Stat::default(),
             publication_stall_seconds: Stat::default(),
             agent_outage_seconds: Stat::default(),
+            read_outage_seconds: Stat::default(),
             notable: Vec::new(),
             incidents: Vec::new(),
             incident_counts: BTreeMap::new(),
@@ -1136,6 +1230,18 @@ impl Summary {
 
     fn add_sample(&mut self, sample: &Sample) {
         self.samples += 1;
+        self.collection_ms.add(sample.collection_millis);
+        for (stat, value) in self.pressure_stats.iter_mut().zip([
+            sample.pressure.some_avg10,
+            sample.pressure.full_avg10,
+            sample.pressure.swap_in_pages_s,
+            sample.pressure.swap_out_pages_s,
+            sample.pressure.major_faults_s,
+        ]) {
+            if let Some(value) = value {
+                stat.add(value);
+            }
+        }
         if !sample.controller_active() {
             self.controller_inactive_samples += 1;
         }
@@ -1154,6 +1260,9 @@ impl Summary {
         }
         let host = &sample.host;
         self.host_available_mib.add(mib(host.available) as f64);
+        if host.available < self.host_floor_bytes {
+            self.host_below_reserve_samples += 1;
+        }
         self.host_headroom_over_floor_mib
             .add(signed_mib(host.available, self.host_floor_bytes) as f64);
         self.host_swap_used_mib
@@ -1163,6 +1272,7 @@ impl Summary {
         }
         match sample.device {
             Some(device) => {
+                self.latest_device = Some(device);
                 self.device_current_mib
                     .add(mib(device.current_bytes) as f64);
                 let diverged = device.requested_bytes != device.current_bytes;
@@ -1209,6 +1319,14 @@ impl Summary {
             .guest_signals
             .entry(signal_name(telemetry))
             .or_default() += 1;
+        if let Some(diagnostics) = &telemetry.diagnostics {
+            let reason = serde_json::to_value(diagnostics.policy.reason).map_or_else(
+                |error| format!("serialization_error:{error}"),
+                |value| value.as_str().unwrap_or("unknown").to_owned(),
+            );
+            *self.guest_policy_reasons.entry(reason).or_default() += 1;
+        }
+        self.pending_request = telemetry.request.clone();
         if let Some(request) = &telemetry.request {
             self.guest_issued
                 .entry((
@@ -1232,14 +1350,28 @@ impl Summary {
         match name.as_str() {
             "controller_decision" if field("action") == "grant" => {
                 self.granted.insert(key(), event.unix_micros);
+                let grant = field("grant_bytes").parse::<u64>().unwrap_or(0);
+                if field("grant_bytes") == "0" {
+                    self.zero_byte_grants += 1;
+                }
+                if let Ok(current) = field("current_bytes").parse::<u64>() {
+                    let operation = field("operation");
+                    let goal = if operation == "Add" {
+                        current.saturating_add(grant)
+                    } else {
+                        current.saturating_sub(grant)
+                    };
+                    self.grant_goals.insert(key(), (operation, goal));
+                }
             }
             "controller_decision" => {
-                *self
-                    .refusals
-                    .entry(field("reason").chars().take(80).collect())
-                    .or_default() += 1;
+                *self.refusals.entry(field("reason")).or_default() += 1;
             }
             "request_completed" => {
+                self.grant_goals.remove(&key());
+                if matches!(field("outcome").as_str(), "PoolEmpty" | "Rejected") {
+                    *self.refusals.entry(field("reason")).or_default() += 1;
+                }
                 let totals = self
                     .requests
                     .entry(format!("{} {}", field("operation"), field("outcome")))
@@ -1248,12 +1380,20 @@ impl Summary {
                 totals.requested_bytes += field("bytes").parse::<u64>().unwrap_or(0);
                 totals.actual_bytes += field("actual_bytes").parse::<u64>().unwrap_or(0);
                 if let Some(granted) = self.granted.remove(&key()) {
-                    self.grant_to_completion_seconds
-                        .add(event.unix_micros.saturating_sub(granted) as f64 / 1e6);
+                    let seconds = event.unix_micros.saturating_sub(granted) as f64 / 1e6;
+                    self.grant_to_completion_seconds.add(seconds);
+                    self.grant_latency_by_operation
+                        .entry(field("operation"))
+                        .or_default()
+                        .add(seconds);
                 }
                 if let Some(issued) = self.guest_issued.remove(&key()) {
-                    self.issue_to_completion_seconds
-                        .add((event.unix_micros / 1000).saturating_sub(issued) as f64 / 1000.0);
+                    let seconds = (event.unix_micros / 1000).saturating_sub(issued) as f64 / 1000.0;
+                    self.issue_to_completion_seconds.add(seconds);
+                    self.issue_latency_by_operation
+                        .entry(field("operation"))
+                        .or_default()
+                        .add(seconds);
                 }
             }
             "metrics_guest_publication_resumed" => {
@@ -1266,11 +1406,20 @@ impl Summary {
                     self.agent_outage_seconds.add(seconds);
                 }
             }
+            "metrics_guest_read_restored" => {
+                if let Ok(seconds) = field("outage_seconds").parse() {
+                    self.read_outage_seconds.add(seconds);
+                }
+            }
             _ => {}
         }
         // Lifecycle events from `health` are all notable.
         let notable = NOTABLE_EVENTS.contains(&name.as_str())
-            || name.starts_with("metrics_")
+            || (name.starts_with("metrics_")
+                && !matches!(
+                    name.as_str(),
+                    "metrics_guest_decision" | "metrics_guest_result_consumed"
+                ))
             || (event.name.is_none() && event.pid == Some(1));
         if notable && self.notable.len() < 200 {
             self.notable.push(event.to_json());
@@ -1296,6 +1445,25 @@ impl Summary {
                 )
             })
             .collect();
+        let latency_json = |values: &BTreeMap<String, Stat>| {
+            values
+                .iter()
+                .map(|(operation, stat)| (operation.clone(), stat.json()))
+                .collect::<Map<String, Value>>()
+        };
+        let pending = self.pending_request.as_ref().map(|request| json!({
+            "session_id": request.identity.session_id,
+            "sequence": request.identity.sequence,
+            "operation": request.operation,
+            "requested_mib": mib(request.bytes),
+            "age_seconds": now_millis.saturating_sub(request.issued_unix_millis) as f64 / 1000.0,
+        }));
+        let pending_operations = self.grant_goals.iter().map(|(key, (operation, goal))| {
+            let remaining = self.latest_device.map(|device| if operation == "Add" { goal.saturating_sub(device.current_bytes) } else { device.current_bytes.saturating_sub(*goal) });
+            json!({ "session_id": key.0, "sequence": key.1, "operation": operation,
+                "allocation_goal_mib": mib(*goal), "remaining_mib": remaining.map(mib),
+                "age_seconds": self.granted.get(key).map(|micros| now_millis.saturating_sub(micros / 1000) as f64 / 1000.0) })
+        }).collect::<Vec<_>>();
         json!({
             "vm": self.vm,
             "unit": self.unit,
@@ -1305,6 +1473,13 @@ impl Summary {
             "samples": self.samples,
             "host": {
                 "available_mib": self.host_available_mib.json(),
+                "below_reserve_samples": self.host_below_reserve_samples,
+                "memory_psi_some_avg10": self.pressure_stats[0].json(),
+                "memory_psi_full_avg10": self.pressure_stats[1].json(),
+                "swap_in_pages_s": self.pressure_stats[2].json(),
+                "swap_out_pages_s": self.pressure_stats[3].json(),
+                "major_faults_s": self.pressure_stats[4].json(),
+                "collection_ms": self.collection_ms.json(),
                 "headroom_over_floor_mib": self.host_headroom_over_floor_mib.json(),
                 "swap_used_mib": self.host_swap_used_mib.json(),
                 "qemu_rss_mib": self.qemu_rss_mib.json(),
@@ -1331,12 +1506,19 @@ impl Summary {
                 "kernel_paged_mib": self.guest_kernel_paged_mib.json(),
                 "kernel_nonpaged_mib": self.guest_kernel_nonpaged_mib.json(),
                 "signal_samples": self.guest_signals,
+                "policy_reason_samples": self.guest_policy_reasons,
                 "service_sessions": self.guest_sessions,
                 "publication_stall_seconds": self.publication_stall_seconds.json(),
                 "agent_outage_seconds": self.agent_outage_seconds.json(),
+                "read_outage_seconds": self.read_outage_seconds.json(),
             },
             "requests": {
                 "completed": requests,
+                "grant_to_completion_seconds_by_operation": latency_json(&self.grant_latency_by_operation),
+                "issue_to_completion_seconds_by_operation": latency_json(&self.issue_latency_by_operation),
+                "latest_guest_pending_request": pending,
+                "pending_operations": pending_operations,
+                "zero_byte_grants": self.zero_byte_grants,
                 "grant_to_completion_seconds": self.grant_to_completion_seconds.json(),
                 "issue_to_completion_seconds": self.issue_to_completion_seconds.json(),
                 "refusals": self.refusals,
@@ -1737,6 +1919,35 @@ service_account='NT AUTHORITY\LocalService'
             "metrics_guest_agent_restored"
         );
         assert!(summary.headline().ends_with("; 1 incidents"));
+    }
+
+    #[test]
+    fn failed_results_and_nested_errors_remain_visible() {
+        let command = parse(&["--config".to_owned(), tracked_config()]).unwrap();
+        let mut summary = Summary::new(&command, 0);
+        for (sequence, outcome, reason) in [
+            (1, "PoolEmpty", "host reserve"),
+            (2, "Rejected", "available=123 grow=64"),
+        ] {
+            let message = format!("event=request_completed session_id=s sequence={sequence} operation=Add bytes=1024 outcome={outcome} actual_bytes=0 reason={reason}");
+            let (name, fields) = parse_event(&message);
+            assert_eq!(fields["reason"], reason);
+            summary.add_event(&JournalEvent {
+                unix_micros: 1_000_000,
+                pid: Some(7),
+                name,
+                fields,
+                message,
+            });
+        }
+        let json = summary.json(2000);
+        assert_eq!(json["requests"]["completed"]["Add PoolEmpty"]["count"], 1);
+        assert_eq!(json["requests"]["refusals"]["available=123 grow=64"], 1);
+        let (_, fields) = parse_event("event=resize_requested operation_id=1 command_result=Err(Rejected(available=123 grow=64))");
+        assert_eq!(
+            fields["command_result"],
+            "Err(Rejected(available=123 grow=64))"
+        );
     }
 
     #[test]

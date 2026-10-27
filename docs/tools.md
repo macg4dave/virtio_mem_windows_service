@@ -15,4 +15,9 @@ The Windows deployment helper also provisions access to the optional
 security property with the deployment backup; a missing port retains polling.
 See [the deployment guide](../deploy/config_files/README.md#prompt-memory-notifications)
 for the VM channel and host group requirements. RAM growth requests cover the
-calculated shortage; reclaim uses a 10-second continuous history window.
+calculated shortage; reclaim uses a 1-second continuous history window.
+
+Metrics captures include `run.json` provenance and `guest-publications.jsonl`
+state-change/30-second snapshots. CSV includes guest policy explanations;
+sustained performance problems produce incident bundles alongside crashes.
+See [capture diagnostics](../deploy/config_files/README.md#diagnostic-evidence-in-metrics-captures).

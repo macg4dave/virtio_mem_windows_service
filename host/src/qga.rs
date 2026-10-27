@@ -141,7 +141,18 @@ impl<C: VirshCommand> GuestFileWriter for VirshGuestFiles<C> {
 
 impl<C: VirshCommand> GuestFileReader for VirshGuestFiles<C> {
     fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
-        let handle = self.open(path, "r")?;
+        let handle = match self.open(path, "r") {
+            Err(error)
+                if error.contains("being used by another process")
+                    || error.contains("sharing violation") =>
+            {
+                // The publisher atomically replaces this file. Retry only a
+                // known transient collision, never an ambiguous read/close.
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                self.open(path, "r")?
+            }
+            result => result?,
+        };
         self.with_handle(handle, || {
             let mut contents = Vec::new();
             for _ in 0..MAX_GUEST_FILE_READS {
@@ -290,6 +301,29 @@ mod tests {
                 .pop_front()
                 .expect("response"))
         }
+    }
+
+    #[test]
+    fn retries_a_sharing_collision_before_opening_a_read_handle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct SharingFake(AtomicUsize);
+        impl VirshCommand for SharingFake {
+            fn run(&self, _: &[String]) -> Result<String, VirshError> {
+                match self.0.fetch_add(1, Ordering::SeqCst) {
+                    0 => Err(VirshError::Failed {
+                        status: "1".to_owned(),
+                        stderr: "being used by another process".to_owned(),
+                    }),
+                    1 => Ok(r#"{"return":7}"#.to_owned()),
+                    2 => Ok(r#"{"return":{"count":3,"buf-b64":"YWJj","eof":true}}"#.to_owned()),
+                    3 => Ok(r#"{"return":{}}"#.to_owned()),
+                    _ => panic!("retry must be bounded"),
+                }
+            }
+        }
+        let files = VirshGuestFiles::new(SharingFake(AtomicUsize::new(0)), "guest");
+        assert_eq!(files.read_file("publication", 3).unwrap(), b"abc");
+        assert_eq!(files.command.0.load(Ordering::SeqCst), 4);
     }
 
     #[test]

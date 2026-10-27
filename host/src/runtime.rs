@@ -21,7 +21,7 @@ use crate::checkpoint::{
 };
 use crate::config::HostConfig;
 use crate::guest_channel::{GuestLink, SystemUnixClock, UnixClock};
-use crate::host_memory::{validate_grow_headroom, HostMemorySource};
+use crate::host_memory::{validate_grow_headroom, HostMemorySource, GROW_ADMISSION_MARGIN_BYTES};
 
 pub trait MemoryStateSource {
     fn memory_state(&self) -> Result<VirtioMemState, String>;
@@ -148,6 +148,8 @@ pub struct VmController<G, S, R> {
     /// Separate from `guest_unavailable_reported`: a successful status write
     /// every poll must not re-arm the read-failure report.
     status_unpublished_reported: bool,
+    health_report: Option<(Instant, u64, u64)>,
+    last_observed_request: Option<virtio_mem_core::RequestIdentity>,
 }
 
 impl<G, S, R> VmController<G, S, R> {
@@ -180,6 +182,8 @@ impl<G, S, R> VmController<G, S, R> {
             state_unavailable_reported: false,
             guest_unavailable_reported: false,
             status_unpublished_reported: false,
+            health_report: None,
+            last_observed_request: None,
         })
     }
 }
@@ -450,6 +454,14 @@ where
             self.publish(state, None);
             return Ok(held);
         };
+        if self.last_observed_request.as_ref() != Some(&request.identity) {
+            self.log(&format!(
+                "event=guest_request_observed {} issued_unix_millis={}",
+                describe(&request),
+                request.issued_unix_millis
+            ));
+            self.last_observed_request = Some(request.identity.clone());
+        }
         let now = self.now()?;
         let mut journal = self.control.journal.clone();
         let refusal = match journal.admit(
@@ -621,14 +633,16 @@ where
             return Ok(Step::Wait);
         };
         // A grow or shrink holds its target until the guest reaches it: no
-        // stall settle and no convergence timeout. Two exceptions settle it at
+        // general stall settle or convergence timeout. Exceptions settle it at
         // its current allocation (`partial`), when commands are allowed:
         // - a grow that has plugged nothing before the one-time widening:
         //   QEMU rejects plugs past its usable region and the driver never
         //   retries, so it settles and the widening lets the next plug land;
         // - a shrink while Windows reports Low memory: the held shrink
         //   occupies the guest's only request slot, so release it and let
-        //   the guest ask for memory again.
+        //   the guest ask for memory again;
+        // - a shrink stuck at its minimum target for the convergence timeout,
+        //   where the driver workaround cannot make another attempt.
         let can_settle = !self.control.latched() && !self.config.observe_only;
         let settle = match direction {
             CommandDirection::Grow => {
@@ -666,10 +680,7 @@ where
             CommandDirection::SettleGrow | CommandDirection::SettleShrink => self.pending_elapsed(),
         };
         if !settle {
-            self.log(&format!(
-                "event=control_health direction={direction:?} requested_bytes={} current_bytes={}",
-                state.requested_bytes, state.current_bytes
-            ));
+            self.log_pending_health(direction, state, None);
             return Ok(Step::Wait);
         }
         match direction {
@@ -765,10 +776,17 @@ where
             .map(|target| target.max(floor))
             .filter(|target| *target < state.requested_bytes)
         else {
-            self.log(&format!(
-                "event=control_health direction=Shrink requested_bytes={} current_bytes={} floor_bytes={floor}",
-                state.requested_bytes, state.current_bytes
-            ));
+            // At the floor the driver workaround cannot widen its scan any
+            // further. Release a genuinely stalled request so it cannot
+            // occupy the guest's only request slot indefinitely.
+            if self
+                .pending_progress
+                .is_some_and(|(_, since)| since.elapsed() >= self.config.convergence_timeout)
+            {
+                self.log("event=held_shrink_released reason=minimum_target_stalled");
+                return self.settle_short(CommandDirection::Shrink, state, stop);
+            }
+            self.log_pending_health(CommandDirection::Shrink, state, Some(floor));
             return Ok(Step::Wait);
         };
         if stop.load(Ordering::Acquire) {
@@ -871,6 +889,7 @@ where
             admission,
         } = ready;
         let now = self.now()?;
+        let admission_started = Instant::now();
         if let Err(reason) = request.validate_at(
             &self.config.vm_name,
             &self.config.raw_telemetry_service_name,
@@ -889,34 +908,55 @@ where
         }
         let grant = match request.operation {
             MemoryOperation::Add => {
-                let host_room = host_memory
+                let available = host_memory
                     .available_bytes()
-                    .map_err(HostRuntimeError::HostMemory)?
-                    .saturating_sub(host.committed)
-                    .saturating_sub(self.config.host_min_headroom_bytes);
-                let free = request
-                    .bytes
-                    .min(
+                    .map_err(HostRuntimeError::HostMemory)?;
+                let caps = [
+                    ("request", request.bytes),
+                    (
+                        "guest_maximum",
                         self.config
                             .max_ram
                             .saturating_sub(base_ram)
                             .saturating_sub(state.current_bytes),
-                    )
-                    .min(
+                    ),
+                    (
+                        "device_capacity",
                         state
                             .maximum_target_bytes()
                             .saturating_sub(state.current_bytes),
-                    )
-                    .min(ceiling.map_or(u64::MAX, |ceiling| {
-                        ceiling.saturating_sub(state.current_bytes)
-                    }))
-                    .min(host_room);
+                    ),
+                    (
+                        "pool",
+                        ceiling.map_or(u64::MAX, |ceiling| {
+                            ceiling.saturating_sub(state.current_bytes)
+                        }),
+                    ),
+                    (
+                        "host_headroom",
+                        available
+                            .saturating_sub(host.committed)
+                            .saturating_sub(self.config.host_min_headroom_bytes)
+                            .saturating_sub(GROW_ADMISSION_MARGIN_BYTES),
+                    ),
+                ];
+                let free = caps.iter().map(|(_, bytes)| *bytes).min().unwrap_or(0);
+                let limiting = caps
+                    .iter()
+                    .filter(|(_, bytes)| *bytes == free)
+                    .map(|(name, _)| *name)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                self.log(&format!("event=grant_limits {} available_bytes={available} committed_bytes={} reserve_bytes={} margin_bytes={} guest_maximum_bytes={} device_capacity_bytes={} pool_bytes={} host_room_bytes={} limiting_factors={limiting} alignment_remainder_bytes={}",
+                    describe(&request), host.committed, self.config.host_min_headroom_bytes, GROW_ADMISSION_MARGIN_BYTES,
+                    caps[1].1, caps[2].1, caps[3].1, caps[4].1, free % state.block_size_bytes));
                 free - free % state.block_size_bytes
             }
             MemoryOperation::Remove => {
                 let minimum = self.config.min_ram.saturating_sub(base_ram);
                 let removable = state.current_bytes.saturating_sub(minimum);
                 let grant = request.bytes.min(removable);
+                self.log(&format!("event=grant_limits {} minimum_device_bytes={minimum} removable_bytes={removable} limiting_factors={}", describe(&request), if removable < request.bytes { "guest_minimum" } else { "request" }));
                 grant - grant % state.block_size_bytes
             }
         };
@@ -999,12 +1039,16 @@ where
                 headroom,
             )
         };
+        let command_started_unix_millis = now.saturating_add(
+            u64::try_from(admission_started.elapsed().as_millis()).unwrap_or(u64::MAX),
+        );
+        let command_started = Instant::now();
         let command =
             self.resize_sink
                 .request_resize_guarded(state, target_bytes, stop, &authorize);
         self.log(&format!(
-            "event=resize_requested operation_id={operation_id} direction={direction:?} target_bytes={target_bytes} requested_bytes={} current_bytes={} command_result={command:?}",
-            state.requested_bytes, state.current_bytes
+            "event=resize_requested operation_id={operation_id} direction={direction:?} target_bytes={target_bytes} requested_bytes={} current_bytes={} command_started_unix_millis={command_started_unix_millis} command_elapsed_ms={} command_result={command:?}",
+            state.requested_bytes, state.current_bytes, command_started.elapsed().as_millis()
         ));
         match command {
             Ok(()) => {
@@ -1016,13 +1060,11 @@ where
             Err(ResizeSinkError::Rejected(reason)) => {
                 self.control.intent = None;
                 self.outstanding_growth = Some(0);
-                self.control
-                    .journal
-                    .record_result(MemoryResult::rejected(request, now, reason))
-                    .map_err(HostRuntimeError::Controller)?;
-                self.save()?;
-                self.publish(state, None);
-                Ok(Step::Wait)
+                self.record_unexecuted(
+                    state,
+                    RequestAdmission::Replay,
+                    MemoryResult::rejected(request, now, reason),
+                )
             }
             Err(error @ ResizeSinkError::CommandUnknown(_)) => {
                 self.latch(&format!("resize command failed: {error}"))?;
@@ -1066,6 +1108,12 @@ where
         admission: RequestAdmission,
         result: MemoryResult,
     ) -> Result<Step, HostRuntimeError> {
+        let event =
+            format!(
+            "event=request_completed operation_id=none {} outcome={:?} actual_bytes={} reason={}",
+            describe(&result.request), result.outcome, result.actual_bytes,
+            result.reason.as_deref().unwrap_or("unspecified")
+        );
         if admission == RequestAdmission::New {
             self.control
                 .journal
@@ -1083,6 +1131,7 @@ where
             .record_result(result)
             .map_err(HostRuntimeError::Controller)?;
         self.save()?;
+        self.log(&event);
         self.publish(state, None);
         Ok(Step::Wait)
     }
@@ -1225,6 +1274,49 @@ where
             }
             Err(_) => {}
         }
+    }
+
+    fn log_pending_health(
+        &mut self,
+        direction: CommandDirection,
+        state: VirtioMemState,
+        floor: Option<u64>,
+    ) {
+        if self
+            .health_report
+            .is_some_and(|(when, requested, current)| {
+                requested == state.requested_bytes
+                    && current == state.current_bytes
+                    && when.elapsed() < Duration::from_secs(30)
+            })
+        {
+            return;
+        }
+        self.health_report = Some((Instant::now(), state.requested_bytes, state.current_bytes));
+        let now = match SystemUnixClock.now_unix_millis() {
+            Ok(now) => now,
+            Err(error) => {
+                self.log(&format!("event=diagnostic_clock_failed reason={error}"));
+                return;
+            }
+        };
+        let age = self
+            .control
+            .intent
+            .as_ref()
+            .map_or(0, |intent| now.saturating_sub(intent.started_unix_millis));
+        let idle = self
+            .pending_progress
+            .map_or(0, |(_, since)| since.elapsed().as_millis());
+        let timeout = self.config.convergence_timeout.as_millis();
+        let identity = self
+            .control
+            .journal
+            .request
+            .as_ref()
+            .map_or_else(String::new, describe);
+        self.log(&format!("event=control_health direction={direction:?} {identity} requested_bytes={} current_bytes={} remaining_to_device_target_bytes={} pending_age_ms={age} idle_ms={idle} idle_timeout_remaining_ms={} floor_bytes={floor:?}",
+            state.requested_bytes, state.current_bytes, state.current_bytes.abs_diff(state.requested_bytes), timeout.saturating_sub(idle)));
     }
 
     fn next_operation_id(&mut self) -> String {
@@ -1675,15 +1767,19 @@ mod tests {
         fixture
             .guest
             .send(Some(request(1, MemoryOperation::Add, 4 * GIB)));
-        // 6 GiB available with a 4 GiB reserve leaves 2 GiB to grant.
+        // Admission retains 256 MiB above the hard 4 GiB reserve.
         let mut runtime = runtime(vec![fixture.controller(None)], 6 * GIB, None);
         round(&mut runtime);
         round(&mut runtime);
         let partial = fixture.guest.last_result().expect("result");
         assert_eq!(partial.outcome, MemoryOutcome::Partial);
-        assert_eq!(partial.actual_bytes, 2 * GIB);
+        assert_eq!(partial.actual_bytes, 2 * GIB - 256 * MIB);
         round(&mut runtime);
-        assert_eq!(*fixture.targets.borrow(), [6 * GIB], "no remainder queue");
+        assert_eq!(
+            *fixture.targets.borrow(),
+            [6 * GIB - 256 * MIB],
+            "no remainder queue"
+        );
     }
 
     #[test]
@@ -1834,11 +1930,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stalled_removal_holds_its_target_until_the_guest_reaches_it() {
-        let mut fixture = Fixture::new("hold-shrink", 100, 8 * GIB);
-        fixture.config.poll_interval = Duration::from_millis(2);
-        fixture.config.convergence_timeout = Duration::from_millis(1);
-        // No fixed RAM: at its min_ram floor the shrink cannot be extended.
+    fn a_removal_stalled_at_the_floor_settles_without_losing_its_result() {
+        let mut fixture = Fixture::new("floor-shrink", 100, 8 * GIB);
+        fixture.config.convergence_timeout = Duration::from_millis(20);
         fixture.guest.track(&fixture.device);
         fixture.config.min_ram = 7 * GIB;
         fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
@@ -1846,22 +1940,27 @@ mod tests {
             .guest
             .send(Some(request(1, MemoryOperation::Remove, GIB)));
         let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        // Well past the stall bound and the convergence timeout: held.
-        for _ in 0..4 {
-            round(&mut runtime);
-            thread::sleep(Duration::from_millis(5));
-        }
+        round(&mut runtime);
+        round(&mut runtime);
         assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
         assert!(fixture.guest.last_result().is_none());
-
-        // Once the guest releases the rest, the request completes in full.
-        fixture.device.0.borrow_mut().stall_at = None;
+        thread::sleep(Duration::from_millis(30));
         round(&mut runtime);
         round(&mut runtime);
-        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
-        let result = fixture.guest.last_result().expect("result");
-        assert_eq!(result.outcome, MemoryOutcome::Completed);
-        assert_eq!(result.actual_bytes, GIB);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
+        let result = fixture.guest.last_result().expect("partial result");
+        assert_eq!(result.outcome, MemoryOutcome::Partial);
+        assert_eq!(result.actual_bytes, 512 * MIB);
+        // Pressure can now issue a fresh addition rather than remaining blocked.
+        fixture
+            .guest
+            .send(Some(request(2, MemoryOperation::Add, GIB)));
+        round(&mut runtime);
+        round(&mut runtime);
+        assert_eq!(
+            fixture.guest.last_result().unwrap().outcome,
+            MemoryOutcome::Completed
+        );
         drop(runtime);
         assert!(!fixture.journal().latched());
     }

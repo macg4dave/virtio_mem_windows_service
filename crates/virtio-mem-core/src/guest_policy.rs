@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::memory_request::{
-    valid_identity, HostMemoryStatus, MemoryOperation, MemoryRequest, MemoryResult,
+    valid_identity, HostMemoryStatus, MemoryOperation, MemoryOutcome, MemoryRequest, MemoryResult,
     RequestIdentity, MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
 };
 use crate::{
@@ -109,6 +109,38 @@ pub struct GuestDecision {
     pub resolved: Option<MemoryResult>,
 }
 
+/// Explanations are diagnostic only; they never authorise a request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuestPolicyReason {
+    #[default]
+    WaitingForStatus,
+    AwaitingResult,
+    ResultConsumed,
+    WaitingForHistory,
+    NativeNotHigh,
+    NoChange,
+    CapacityLimit,
+    RetryBackoff,
+    ClockWatermark,
+    PhysicalReserve,
+    CommitReserve,
+    NativeLow,
+    ReclaimSurplus,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuestPolicyDiagnostics {
+    pub reason: GuestPolicyReason,
+    pub desired_bytes: Option<u64>,
+    pub safe_floor_bytes: Option<u64>,
+    pub history_ready: bool,
+    pub retry_remaining_millis: u64,
+    pub physical_deficit_bytes: u64,
+    pub commit_deficit_bytes: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct GuestRequester {
     policy: GuestMemoryPolicy,
@@ -118,6 +150,12 @@ pub struct GuestRequester {
     service_name: String,
     session_id: String,
     next_sequence: u64,
+    /// Advisory throttling never changes a retained request.
+    retry: Option<(MemoryOperation, u64, u64)>,
+    retry_delay_millis: u64,
+    native_low: bool,
+    numeric_critical: bool,
+    diagnostics: GuestPolicyDiagnostics,
 }
 
 impl GuestRequester {
@@ -156,6 +194,11 @@ impl GuestRequester {
             service_name: service_name.to_owned(),
             session_id: session_id.to_owned(),
             next_sequence: 0,
+            retry: None,
+            retry_delay_millis: 0,
+            native_low: false,
+            numeric_critical: false,
+            diagnostics: GuestPolicyDiagnostics::default(),
         })
     }
 
@@ -165,6 +208,10 @@ impl GuestRequester {
 
     pub fn invalidate_history(&mut self) {
         self.estimator.invalidate_history();
+    }
+
+    pub fn diagnostics(&self) -> &GuestPolicyDiagnostics {
+        &self.diagnostics
     }
 
     pub fn state(&self) -> &GuestRequestState {
@@ -190,7 +237,37 @@ impl GuestRequester {
         status: Option<&HostMemoryStatus>,
     ) -> Result<GuestDecision, String> {
         let native_low = sample.native_pressure == Some(MemoryResourceNotificationState::Low);
+        let newly_low = native_low && !self.native_low;
+        self.native_low = native_low;
+        let numeric_critical = sample.memory.physical_available_bytes
+            < self.policy.target.safe_floor_physical_reserve_bytes
+            || sample
+                .memory
+                .commit_limit_bytes
+                .saturating_sub(sample.memory.commit_total_bytes)
+                < self.policy.target.safe_floor_commit_reserve_bytes;
+        let newly_critical = numeric_critical && !self.numeric_critical;
+        self.numeric_critical = numeric_critical;
+        let monotonic = sample.monotonic_millis;
         let now = sample.observed_unix_millis;
+        let native_pressure = sample.native_pressure;
+        self.diagnostics = GuestPolicyDiagnostics {
+            physical_deficit_bytes: self
+                .policy
+                .target
+                .physical_reserve_bytes
+                .saturating_sub(sample.memory.physical_available_bytes),
+            commit_deficit_bytes: self.policy.target.commit_reserve_bytes.saturating_sub(
+                sample
+                    .memory
+                    .commit_limit_bytes
+                    .saturating_sub(sample.memory.commit_total_bytes),
+            ),
+            retry_remaining_millis: self.retry.map_or(0, |(_, since, delay)| {
+                delay.saturating_sub(monotonic.saturating_sub(since))
+            }),
+            ..GuestPolicyDiagnostics::default()
+        };
         let status = status.filter(|status| {
             status
                 .validate_for(&self.vm_name, &self.service_name)
@@ -225,12 +302,18 @@ impl GuestRequester {
             .transpose()
             .map_err(|error| error.to_string())?;
 
+        if let Some(estimate) = estimate.as_ref() {
+            self.diagnostics.desired_bytes = Some(estimate.desired_bytes);
+            self.diagnostics.safe_floor_bytes = Some(estimate.safe_floor_bytes);
+            self.diagnostics.history_ready = estimate.history_ready;
+        }
         if let Some(pending) = &self.state.pending {
             let resolved = status
                 .and_then(|status| status.result.as_ref())
                 .filter(|result| &result.request == pending && result.terminal())
                 .cloned();
             let Some(resolved) = resolved else {
+                self.diagnostics.reason = GuestPolicyReason::AwaitingResult;
                 return Ok(GuestDecision {
                     request: Some(pending.clone()),
                     persist: false,
@@ -240,6 +323,22 @@ impl GuestRequester {
             // Reassess with the next sample rather than chaining a new delta
             // onto this resolution.
             self.state.pending = None;
+            self.diagnostics.reason = GuestPolicyReason::ResultConsumed;
+            if resolved.outcome != MemoryOutcome::Completed {
+                self.retry_delay_millis = self
+                    .retry_delay_millis
+                    .saturating_mul(2)
+                    .clamp(1_000, 30_000);
+                self.retry = Some((
+                    resolved.request.operation,
+                    monotonic,
+                    self.retry_delay_millis,
+                ));
+            } else {
+                self.retry = None;
+                self.retry_delay_millis = 0;
+            }
+            self.diagnostics.retry_remaining_millis = self.retry.map_or(0, |(_, _, delay)| delay);
             return Ok(GuestDecision {
                 request: None,
                 persist: true,
@@ -260,14 +359,47 @@ impl GuestRequester {
                     .min(estimate.effective_maximum_bytes),
             );
         }
+        self.diagnostics.desired_bytes = Some(estimate.desired_bytes);
         let Some((operation, bytes)) = plan_request(&estimate, status.device(), &self.policy)?
         else {
+            self.diagnostics.reason = if estimate.capacity_limited
+                || (native_low && status.current_bytes >= estimate.effective_maximum_bytes)
+            {
+                GuestPolicyReason::CapacityLimit
+            } else if status.current_bytes <= estimate.desired_bytes {
+                GuestPolicyReason::NoChange
+            } else if native_pressure != Some(MemoryResourceNotificationState::High) {
+                GuestPolicyReason::NativeNotHigh
+            } else if !estimate.history_ready {
+                GuestPolicyReason::WaitingForHistory
+            } else {
+                GuestPolicyReason::NoChange
+            };
             return Ok(Self::hold());
         };
         // After a wall-clock rollback, wait until it passes the watermark.
         if now <= self.state.last_issued_unix_millis {
+            self.diagnostics.reason = GuestPolicyReason::ClockWatermark;
             return Ok(Self::hold());
         }
+        if self.retry.is_some_and(|(previous, since, delay)| {
+            previous == operation
+                && monotonic >= since
+                && monotonic - since < delay
+                && !(operation == MemoryOperation::Add && (newly_low || newly_critical))
+        }) {
+            self.diagnostics.reason = GuestPolicyReason::RetryBackoff;
+            return Ok(Self::hold());
+        }
+        self.diagnostics.reason = if operation == MemoryOperation::Remove {
+            GuestPolicyReason::ReclaimSurplus
+        } else if native_low {
+            GuestPolicyReason::NativeLow
+        } else if self.diagnostics.physical_deficit_bytes > 0 {
+            GuestPolicyReason::PhysicalReserve
+        } else {
+            GuestPolicyReason::CommitReserve
+        };
         let request = MemoryRequest {
             version: MEMORY_REQUEST_VERSION,
             identity: RequestIdentity {
@@ -377,6 +509,57 @@ mod tests {
     }
 
     #[test]
+    fn diagnostics_explain_waiting_growth_and_result_resolution() {
+        let mut guest = requester(GuestRequestState::default());
+        assert!(guest
+            .poll(sample(0, 0, 8 * GIB), None)
+            .unwrap()
+            .request
+            .is_none());
+        assert_eq!(
+            guest.diagnostics().reason,
+            GuestPolicyReason::WaitingForStatus
+        );
+        let first = guest
+            .poll(sample(1, 0, 8 * GIB), Some(&status(1, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .unwrap();
+        assert_eq!(
+            guest.diagnostics().reason,
+            GuestPolicyReason::PhysicalReserve
+        );
+        assert_eq!(guest.diagnostics().physical_deficit_bytes, 2 * GIB);
+        assert!(guest.diagnostics().desired_bytes.is_some());
+        let held = guest
+            .poll(sample(2, 0, 8 * GIB), Some(&status(2, 4 * GIB, None)))
+            .unwrap();
+        assert_eq!(held.request, Some(first.clone()));
+        assert_eq!(
+            guest.diagnostics().reason,
+            GuestPolicyReason::AwaitingResult
+        );
+        let done = MemoryResult::rejected(first, 1_003_000, "capacity changed".to_owned());
+        guest
+            .poll(sample(3, 0, 8 * GIB), Some(&status(3, 4 * GIB, Some(done))))
+            .unwrap();
+        assert_eq!(
+            guest.diagnostics().reason,
+            GuestPolicyReason::ResultConsumed
+        );
+        assert_eq!(guest.diagnostics().retry_remaining_millis, 1000);
+        let mut quick = sample(4, 0, 8 * GIB);
+        quick.monotonic_millis = 3501;
+        assert!(guest
+            .poll(quick, Some(&status(4, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .is_none());
+        assert_eq!(guest.diagnostics().reason, GuestPolicyReason::RetryBackoff);
+        assert_eq!(guest.diagnostics().retry_remaining_millis, 500);
+    }
+
+    #[test]
     fn pressure_issues_one_durable_add_and_retransmits_it_unchanged() {
         let mut guest = requester(GuestRequestState::default());
         // 4 GiB fixed + 4 GiB device, nothing available: demand needs growth.
@@ -411,6 +594,90 @@ mod tests {
             .poll(sample(4, 0, 8 * GIB), Some(&status(4, 4 * GIB, None)))
             .unwrap();
         assert_eq!(retry.request, Some(request));
+    }
+
+    #[test]
+    fn exhausted_capacity_backs_off_but_new_low_pressure_wakes_growth() {
+        let mut guest = requester(GuestRequestState::default());
+        let observation = |second| {
+            let mut value = sample(second, 0, 8 * GIB);
+            value.sequence *= 10;
+            value
+        };
+        for second in [1, 3, 6] {
+            let request = guest
+                .poll(observation(second), Some(&status(second, 4 * GIB, None)))
+                .unwrap()
+                .request
+                .expect("retry after bounded delay");
+            let done = MemoryResult {
+                request,
+                outcome: MemoryOutcome::PoolEmpty,
+                actual_bytes: 0,
+                observed_unix_millis: 1_000_000 + second * 1000,
+                reason: None,
+            };
+            let mut resolved_sample = observation(second);
+            resolved_sample.sequence += 1;
+            resolved_sample.monotonic_millis += 1;
+            guest
+                .poll(resolved_sample, Some(&status(second, 4 * GIB, Some(done))))
+                .unwrap();
+        }
+        // Third failure waits four seconds, even though numeric demand persists.
+        assert!(guest
+            .poll(observation(7), Some(&status(7, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .is_none());
+        let mut low = observation(8);
+        low.native_pressure = Some(MemoryResourceNotificationState::Low);
+        assert!(guest
+            .poll(low, Some(&status(8, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .is_some());
+    }
+
+    #[test]
+    fn sustained_pressure_has_a_bounded_retry_rate_and_numeric_emergencies_wake() {
+        let mut guest = requester(GuestRequestState::default());
+        // Model an already exhausted retry budget. A retained request is still
+        // retransmitted by the existing pending branch before this throttle.
+        guest.retry = Some((MemoryOperation::Add, 0, 30_000));
+        guest.retry_delay_millis = 30_000;
+        guest.numeric_critical = true;
+        guest.native_low = true;
+        for second in [1, 10, 29] {
+            let mut low = sample(second, 0, 8 * GIB);
+            low.native_pressure = Some(MemoryResourceNotificationState::Low);
+            assert!(guest
+                .poll(low, Some(&status(second, 4 * GIB, None)))
+                .unwrap()
+                .request
+                .is_none());
+        }
+        let mut low = sample(30, 0, 8 * GIB);
+        low.native_pressure = Some(MemoryResourceNotificationState::Low);
+        assert!(guest
+            .poll(low, Some(&status(30, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .is_some());
+
+        let mut guest = requester(GuestRequestState::default());
+        guest.retry = Some((MemoryOperation::Add, 0, 30_000));
+        // Native state remains High, but crossing a numeric safety floor is urgent.
+        assert!(guest
+            .poll(sample(1, 2 * GIB, 8 * GIB), Some(&status(1, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .is_none());
+        assert!(guest
+            .poll(sample(2, 0, 8 * GIB), Some(&status(2, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .is_some());
     }
 
     #[test]

@@ -129,6 +129,7 @@ where
                 stop,
             )
             .map_err(|error| format!("guest memory request failed: {error}"))?;
+        envelope.diagnostics = Some(self.requests.diagnostics(self.clock.boot_uptime_millis()));
         self.publisher
             .publish(&envelope, stop)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;

@@ -50,7 +50,7 @@ writes one directory under `.artifacts/metrics/win11_gpu-<UTC time>/` (or
 | File | Contents |
 |---|---|
 | `samples.csv` | Every sample period (`--interval-seconds`): host total/available RAM, headroom over `host_min_headroom_bytes`, swap used, QEMU RSS, controller active, device size/requested/current. Every guest read (`--guest-interval-seconds`, default 5): agent read time and success, publication age, Windows available RAM, load, commit and commit headroom, cache, memory signal, pending request. Appended after those: controller unit state, pid, memory, CPU % and restart count; QEMU pid; libvirt domain state (`virsh domstate --reason`); and per guest read the service session, commit peak and kernel paged/non-paged pools. Sizes in MiB. |
-| `events.jsonl` | Every controller journal entry written during the run, with its fields split out, plus markers and `metrics_*` lifecycle events: controller failed/stopped/started/restarted, QEMU exited/started/restarted, domain state changes, guest service session changes, guest publication stalled/resumed, guest agent lost/restored. |
+| `events.jsonl` | Every controller journal entry written during the run, with its fields split out, plus markers and `metrics_*` lifecycle events: controller failed/stopped/started/restarted, QEMU exited/started/restarted, domain state changes, guest service session changes, guest publication stalled/resumed, guest agent lost/restored and publication read failed/restored. |
 | `incidents.jsonl` | One record per incident, with its bundle path, pid and details (exit status, systemd result, panic text, last controller lines, core dump flag, publication gap). Empty when nothing crashed. |
 | `incidents/NNN-TIME-COMPONENT.txt` | Evidence bundle per incident, collected at detection: panic text and last controller lines, `systemctl status`, `coredumpctl info` when the controller dumped core, the unit's last 400 journal lines, the QEMU log tail (root only) for VM incidents, the guest's last and first publication around a service restart, and the 60 `samples.csv` rows before detection. |
 | `summary.json` | Min/max/mean of the above, time spent with requested ≠ current, guest read failures and stale publications, publication stall and agent outage durations, completed requests by operation and outcome (MiB asked and got), grant→completion and Windows issue→completion latency, refusals, event counts, controller pids, memory and CPU, samples per domain state, guest service sessions, incident counts and records, and latches. Rewritten every minute, at exit and after each incident. |
@@ -64,6 +64,63 @@ Lifecycle events and incidents are written even while logging is paused.
 Windows' own record of a service crash stays in the guest: System log,
 Service Control Manager 7031/7034, and Application log, Application Error
 1000; guest bundles include a `Get-WinEvent` query for the right time.
+
+The recorder uses a persistent libvirt connection for repeated XML/QGA reads.
+It appends host memory PSI (`some`/`full` avg10 percentages), swap-in/out pages
+per second, major faults per second and sample collection milliseconds to CSV.
+Rates are host-wide; the first sample has no rate. Unavailable interfaces leave
+blank values. Swap occupancy alone does not indicate active paging.
+
+Summary request totals include terminal PoolEmpty and Rejected results as well
+as completed/partial movements. Refusal counts include zero grants and final
+headroom rejections. Growth and removal latencies are also separate, and pending
+operations show age, original allocation goal and remaining bytes. The last
+observed guest request may persist briefly after host completion until the guest
+consumes its result. Full error messages remain in events; publication read
+failures are distinguished from explicit guest-agent connection loss.
+
+### Diagnostic evidence in metrics captures
+
+Each capture now also writes `run.json` and `guest-publications.jsonl`.
+`run.json` records the recorder checkout and executable hash, running host
+executable hash, requested and installed settings, live and saved domain XML,
+host boot ID, and readable initial checkpoint/attestation. Missing permissions
+and metadata are recorded as errors rather than requiring elevation. The first
+readable guest publication adds its build identity, initial request and on-disk
+`viomem.sys` version when available. File version is not proof of the loaded
+driver version. A final status distinguishes a finished run from a recording
+interrupted before its manifest could be finalised.
+
+Guest publication snapshots retain every published field when the request,
+service session, native signal or policy reason changes, and otherwise every
+30 seconds. Pausing recording pauses these snapshots. Policy reason, desired
+allocation, safety floor, history readiness, retry delay and Windows boot uptime
+are also appended to CSV. Desired targets may be unavailable while device
+geometry is pending; this is not zero demand. A new service session combined
+with decreased Windows boot uptime records a separate reboot event; a service
+restart alone does not establish a reboot.
+
+Host events record the observed request, per-request pool/device/guest/host
+limits, all tied limiting factors, alignment loss, command start and duration.
+Unchanged pending-device health is reduced to a 30-second heartbeat, retaining
+state changes, request identity, idle time and timeout remaining. Existing
+completion events identify convergence. Guest result-consumed events add the
+sample time at which Windows consumed the result; compare clocks with care
+when interpreting host-to-guest timing.
+
+Sustained host reserve shortfall, stale readable publications, device stalls,
+and repeated capacity failures create `performance` incident bundles with the
+same journal/sample context as lifecycle incidents. Shortfall/staleness requires
+30 seconds; a device must first stop moving for 30 seconds and remain stalled
+for another 30. Five or more zero grants or rejected commands within a minute
+must persist as a condition for 30 seconds. Bundles are emitted once per episode
+and rearm after recovery. Durations use the recorder's monotonic clock.
+
+These changes publish guest telemetry version 5. Updated readers accept version
+4, but older hosts reject version 5 and its new fields. Upgrade the host before
+the Windows service. The durable memory request and host-status schemas are
+unchanged; diagnostic fields never authorise memory changes. Existing captures
+without diagnostic fields remain readable.
 
 ## Recovering a latched controller
 
@@ -116,6 +173,23 @@ Freshness/request lifetime is six poll intervals and the maximum sample gap is
 three. Windows service identity is `VirtioMemService`.
 
 
+### Capacity and stalled removals
+
+Growth admission leaves an additional 256 MiB above the configured host reserve
+to absorb changes between planning and execution. The final check still enforces
+the configured hard reserve; other host activity can lower available memory
+later. Failed or partial guest requests retry with exponential delays from one
+to thirty seconds. A transition into native Low or across a numeric safety floor bypasses an Add delay; an
+opposite-direction request is also allowed immediately. Retained requests are
+always retransmitted unchanged while unresolved.
+
+The unpatched-driver shrink workaround is still present. If it reaches its
+minimum target and memory then stops moving for the convergence timeout, the
+controller settles at the actual allocation and reports the original request's
+result. This releases the request slot for renewed pressure. It does not force
+Windows to return unevictable memory. Normal progress is not interrupted by
+this idle deadline.
+
 ## Optional telemetry and the control channel
 
 Both optional telemetry paths may be omitted. No diagnostic publisher or output
@@ -133,6 +207,19 @@ optional diagnostic output. `watch` and `metrics` read the control data when
 explicitly run and require no telemetry settings.
 
 ## Startup memory
+
+A Windows Restart can retain QEMU's live virtio-mem requested size and does not
+apply the saved domain definition. To reset the requested allocation to the
+saved zero value, use a full guest shutdown followed by a start. The supplied
+`restart-vm-attest.sh` performs that cold restart for reviewed geometry changes;
+it stops the controller first and refreshes attestation before installation.
+Do not clear retained request state to reduce RAM: an unresolved request must
+still receive its correlated result. A service-session change alone is not
+proof of a VM reboot and must not trigger forced memory removal.
+
+The live block size can therefore differ from the saved block size until a cold
+restart. Inspect both live and inactive XML when comparing test runs.
+
 
 The persistent libvirt definition starts virtio-mem with zero requested bytes.
 No startup allocation is stored in these application settings. Windows requests

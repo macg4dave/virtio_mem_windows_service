@@ -685,16 +685,22 @@ fn draw_requests(frame: &mut Frame, area: Rect, live: &Live) {
         })
         .collect();
     if lines.is_empty() {
-        lines.push(Line::styled("no completed requests yet", DIM));
+        lines.push(Line::styled("no terminal request results yet", DIM));
     }
     lines.extend([
         row(
-            "grant→done",
-            stat_text(&summary.grant_to_completion_seconds, "s"),
+            "grow→done",
+            summary
+                .grant_latency_by_operation
+                .get("Add")
+                .map_or_else(|| "-".to_owned(), |stat| stat_text(stat, "s")),
         ),
         row(
-            "issue→done",
-            stat_text(&summary.issue_to_completion_seconds, "s"),
+            "shrink→done",
+            summary
+                .grant_latency_by_operation
+                .get("Remove")
+                .map_or_else(|| "-".to_owned(), |stat| stat_text(stat, "s")),
         ),
         row(
             "refusals",
@@ -966,7 +972,7 @@ mod tests {
             "load  55%",
             "UNKNOWN",
             "▶ started 12 GB allocation",
-            "no completed requests yet",
+            "no terminal request results yet",
             "Memory GiB, last 5 min",
         ] {
             assert!(text.contains(expected), "missing {expected}:\n{text}");

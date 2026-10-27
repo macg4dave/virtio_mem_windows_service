@@ -6,6 +6,10 @@
 
 use std::fs;
 
+/// Admission leaves slack above the hard reserve for host activity between
+/// observations. The final effect-boundary check still enforces the reserve.
+pub(crate) const GROW_ADMISSION_MARGIN_BYTES: u64 = 256 * 1024 * 1024;
+
 pub trait HostMemorySource {
     fn available_bytes(&self) -> Result<u64, String>;
 }

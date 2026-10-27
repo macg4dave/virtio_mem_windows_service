@@ -1,5 +1,6 @@
 pub mod config;
 pub mod demand;
+mod diagnostics;
 pub mod error;
 pub mod event_log;
 mod native;

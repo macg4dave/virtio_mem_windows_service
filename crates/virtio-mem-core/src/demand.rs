@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::memory_request::{valid_identity, MemoryRequest};
+use crate::guest_policy::GuestPolicyDiagnostics;
+use crate::memory_request::{valid_identity, MemoryRequest, MemoryResult};
 
-/// Version 4 carries Windows' native memory signal as one optional field.
-pub const RAW_TELEMETRY_VERSION: u16 = 4;
+/// Version 5 adds diagnostic explanations; readers still accept version 4.
+pub const RAW_TELEMETRY_VERSION: u16 = 5;
 
 /// Native, canonical-byte memory observations collected from the Windows guest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +60,20 @@ pub enum MemoryResourceNotificationState {
     High,
 }
 
+/// Observations only, excluded from control/request validation and authority.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuestDiagnostics {
+    pub build_id: String,
+    /// On-disk viomem.sys version, not a claim about a loaded driver image.
+    pub driver_file_version: Result<String, String>,
+    pub boot_uptime_millis: Option<u64>,
+    pub policy: GuestPolicyDiagnostics,
+    /// Retained until the next consumed result so a slower recorder sees it.
+    pub last_consumed_result: Option<MemoryResult>,
+    pub result_consumed_unix_millis: Option<u64>,
+}
+
 /// One guest publication: memory counters, Windows' native signal and the
 /// guest's one unresolved request. Allocation stays host-owned.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -80,6 +95,8 @@ pub struct RawTelemetryEnvelope {
     /// result resolves it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request: Option<MemoryRequest>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<GuestDiagnostics>,
 }
 
 impl RawTelemetryEnvelope {
@@ -103,6 +120,7 @@ impl RawTelemetryEnvelope {
             memory,
             native_pressure: None,
             request: None,
+            diagnostics: None,
         }
     }
 
@@ -114,7 +132,7 @@ impl RawTelemetryEnvelope {
         max_age_millis: u64,
         future_tolerance_millis: u64,
     ) -> Result<(), DemandError> {
-        if self.version != RAW_TELEMETRY_VERSION {
+        if !matches!(self.version, 4 | RAW_TELEMETRY_VERSION) {
             return Err(DemandError::UnsupportedTelemetryVersion(self.version));
         }
         for (field, value) in [
@@ -255,6 +273,36 @@ mod tests {
             sequence,
             snapshot(),
         )
+    }
+
+    #[test]
+    fn version_four_without_diagnostics_remains_readable() {
+        let mut old = envelope("old-service", 995_000, 10, 0);
+        old.version = 4;
+        let bytes = serde_json::to_vec(&old).unwrap();
+        let parsed: RawTelemetryEnvelope = serde_json::from_slice(&bytes).unwrap();
+        assert!(parsed.diagnostics.is_none());
+        assert_eq!(
+            parsed.validate_for("guest", "VirtioMemService", 1_000_000, 60_000, 5000),
+            Ok(())
+        );
+        let mut new = old;
+        new.version = RAW_TELEMETRY_VERSION;
+        new.diagnostics = Some(GuestDiagnostics {
+            build_id: "test".to_owned(),
+            driver_file_version: Err("not available".to_owned()),
+            boot_uptime_millis: Some(1234),
+            policy: GuestPolicyDiagnostics::default(),
+            last_consumed_result: None,
+            result_consumed_unix_millis: None,
+        });
+        let parsed: RawTelemetryEnvelope =
+            serde_json::from_slice(&serde_json::to_vec(&new).unwrap()).unwrap();
+        assert_eq!(parsed, new);
+        assert_eq!(
+            parsed.validate_for("guest", "VirtioMemService", 1_000_000, 60_000, 5000),
+            Ok(())
+        );
     }
 
     #[test]
