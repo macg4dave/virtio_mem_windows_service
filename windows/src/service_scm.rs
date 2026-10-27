@@ -27,7 +27,7 @@ use crate::config::ServiceConfig;
 use crate::event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
 };
-use crate::runtime::native_raw_telemetry_worker;
+use crate::runtime::native_worker;
 use crate::service_host::{ServiceHost, ServiceState, StopSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,15 +255,17 @@ fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
     std::fs::create_dir_all(root)
         .map_err(|error| format!("create service data directory: {error}"))?;
     // The directory allows creation/traversal but neither DELETE nor
-    // FILE_DELETE_CHILD. New telemetry files inherit modify rights; the
-    // protected configuration DACL grants LocalService only read access.
+    // FILE_DELETE_CHILD. New publication files (telemetry, backups, request
+    // state and the host status QGA writes as LocalSystem) inherit modify
+    // rights; the protected configuration DACL grants LocalService only read.
     apply_acl(
         root,
         "O:BAD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;;0x1201bf;;;LS)(A;OIIO;0x1301bf;;;LS)",
     )?;
     apply_acl(config_path, "O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;LS)")?;
     // SetFileSecurity does not update existing children. Set their protected
-    // DACLs explicitly, including diagnostic and unpublished handoff files.
+    // DACLs explicitly: every file named by the publication path or derived
+    // from it as `<path>.<suffix>`, including unpublished handoff files.
     let prefix = report
         .file_name()
         .ok_or("telemetry path has no filename")?
@@ -272,10 +274,7 @@ fn provision_program_data_acl(config: &ServiceConfig) -> Result<(), String> {
     for entry in std::fs::read_dir(root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let name = entry.file_name().to_string_lossy().to_lowercase();
-        if name == prefix
-            || (1..=3).any(|index| name == format!("{prefix}.{index}"))
-            || name.starts_with(&format!("{prefix}.tmp-"))
-        {
+        if name == prefix || name.starts_with(&format!("{prefix}.")) {
             crate::config::validate_file_identity(
                 &config.config_path,
                 entry
@@ -470,7 +469,7 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
         );
         return;
     }
-    let worker = match native_raw_telemetry_worker(&config) {
+    let worker = match native_worker(&config) {
         Ok(worker) => worker,
         Err(error) => {
             emit_event(
@@ -727,15 +726,8 @@ mod tests {
     #[test]
     fn registration_uses_normal_startup_error_control() {
         let registration = WindowsServiceRegistration::from_config(&ServiceConfig {
-            vm_name: "test-vm".to_owned(),
-            service_name: "TestService".to_owned(),
-            display_name: "Test service".to_owned(),
-            description: "Test configuration".to_owned(),
-            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
-            service_account: r"NT AUTHORITY\LocalService".to_owned(),
             config_path: r"C:\test\config.json".to_owned(),
-            poll_interval: std::time::Duration::from_millis(20),
-            shutdown_timeout: std::time::Duration::from_millis(30),
+            ..crate::config::test_config()
         })
         .expect("registration should be valid");
 

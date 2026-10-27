@@ -3,30 +3,32 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{ControlHealth, ReconcileDirection, VirtioMemState};
+use crate::memory_request::{MemoryRequest, MemoryResult};
+use crate::VirtioMemState;
 
-pub const CONTROLLER_STATUS_VERSION: u16 = 4;
+pub const CONTROLLER_STATUS_VERSION: u16 = 5;
 pub const MAX_CONTROLLER_STATUS_BYTES: usize = 64 * 1024;
 const MAX_IDENTITY_BYTES: usize = 256;
 const MAX_REASON_BYTES: usize = 1024;
 
+/// What a recorded host command does to the device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ReclaimReadiness {
-    Cold,
-    Warming,
-    Ready,
-    BlockedInFlight,
-    BlockedLatched,
-    BlockedRecovery,
+pub enum CommandDirection {
+    Grow,
+    Shrink,
+    /// Accept what a stalled shrink left plugged by requesting `current`.
+    SettleShrink,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CapacityState {
-    Unknown,
-    Available,
-    AtEffectiveMaximum,
+pub enum ControlHealth {
+    Converged,
+    Growing,
+    Shrinking,
+    RecoveryRequired,
+    Latched,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,22 +51,23 @@ pub enum RecoveryState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AcceptedTelemetryIdentity {
-    pub session_id: String,
-    pub sequence: u64,
-    pub monotonic_millis: u64,
-    pub observed_unix_millis: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ControllerCommandStatus {
     pub operation_id: String,
-    pub direction: ReconcileDirection,
+    pub direction: CommandDirection,
     pub prior_requested_bytes: u64,
     pub prior_current_bytes: u64,
     pub target_bytes: u64,
-    pub telemetry_identity: String,
+}
+
+/// The guest publication as one read-only status read found it. Pool
+/// ceilings and other process-local daemon context are not reported.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GuestInputStatus {
+    /// Why the publication is unusable: unreachable, invalid or stale.
+    pub error: Option<String>,
+    pub observed_unix_millis: Option<u64>,
+    pub request: Option<MemoryRequest>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,15 +79,14 @@ pub struct ControllerStatusSnapshot {
     pub device_alias: String,
     pub device_size_bytes: u64,
     pub block_size_bytes: u64,
-    pub desired_bytes: u64,
-    pub safe_floor_bytes: u64,
-    pub effective_maximum_bytes: u64,
+    pub maximum_target_bytes: u64,
     pub requested_bytes: u64,
     pub current_bytes: u64,
-    pub accepted_telemetry: Option<AcceptedTelemetryIdentity>,
-    pub history_ready: bool,
-    pub reclaim_readiness: ReclaimReadiness,
-    pub capacity_state: CapacityState,
+    pub observe_only: bool,
+    pub guest_input: GuestInputStatus,
+    /// The durably admitted request and its result, if any.
+    pub admitted_request: Option<MemoryRequest>,
+    pub result: Option<MemoryResult>,
     pub command_ownership: CommandOwnership,
     pub command: Option<ControllerCommandStatus>,
     pub control_health: ControlHealth,
@@ -93,7 +95,6 @@ pub struct ControllerStatusSnapshot {
     pub recovery_state: RecoveryState,
     pub recovery_reason: Option<String>,
     pub last_latch_clear_reason: Option<String>,
-    pub policy_fingerprint_sha256: String,
     pub compatibility_fingerprint_sha256: String,
 }
 
@@ -116,53 +117,47 @@ impl ControllerStatusSnapshot {
         }
         validate_identity(&self.vm_name)?;
         validate_identity(&self.device_alias)?;
-        validate_sha256(&self.policy_fingerprint_sha256)?;
         validate_sha256(&self.compatibility_fingerprint_sha256)?;
-        VirtioMemState {
+        let device = VirtioMemState {
             size_bytes: self.device_size_bytes,
             block_size_bytes: self.block_size_bytes,
             requested_bytes: self.requested_bytes,
             current_bytes: self.current_bytes,
-        }
-        .validate()
-        .map_err(|_| ControllerStatusError::Invalid("live device state is invalid"))?;
-        if self.safe_floor_bytes > self.desired_bytes
-            || self.desired_bytes > self.effective_maximum_bytes
-            || self.effective_maximum_bytes >= self.device_size_bytes
-            || !self.desired_bytes.is_multiple_of(self.block_size_bytes)
-            || !self.safe_floor_bytes.is_multiple_of(self.block_size_bytes)
-            || !self
-                .effective_maximum_bytes
-                .is_multiple_of(self.block_size_bytes)
-        {
+        };
+        device
+            .validate()
+            .map_err(|_| ControllerStatusError::Invalid("live device state is invalid"))?;
+        if self.maximum_target_bytes != device.maximum_target_bytes() {
             return Err(ControllerStatusError::Invalid(
-                "target values violate bounds or alignment",
+                "maximum target contradicts the device geometry",
             ));
         }
-        if let Some(identity) = &self.accepted_telemetry {
-            validate_identity(&identity.session_id)?;
-            if identity.observed_unix_millis == 0 {
+        validate_optional_reason(self.guest_input.error.as_deref())?;
+        if self.guest_input.error.is_some() == self.guest_input.observed_unix_millis.is_some()
+            || (self.guest_input.request.is_some()
+                && self.guest_input.observed_unix_millis.is_none())
+        {
+            return Err(ControllerStatusError::Invalid(
+                "guest input must be either observed or explained",
+            ));
+        }
+        match (&self.admitted_request, &self.result) {
+            (None, Some(_)) => {
                 return Err(ControllerStatusError::Invalid(
-                    "accepted telemetry has no wall-clock time",
-                ));
+                    "result has no admitted request",
+                ))
             }
-        }
-        if self.history_ready != matches!(self.reclaim_readiness, ReclaimReadiness::Ready)
-            && matches!(
-                self.reclaim_readiness,
-                ReclaimReadiness::Cold | ReclaimReadiness::Warming | ReclaimReadiness::Ready
-            )
-        {
-            return Err(ControllerStatusError::Invalid(
-                "history and reclaim readiness disagree",
-            ));
-        }
-        if matches!(self.reclaim_readiness, ReclaimReadiness::Cold)
-            && self.accepted_telemetry.is_some()
-        {
-            return Err(ControllerStatusError::Invalid(
-                "cold reclaim status contains accepted telemetry",
-            ));
+            (Some(request), Some(result)) if result.validate_for(request).is_err() => {
+                return Err(ControllerStatusError::Invalid(
+                    "result does not match the admitted request",
+                ))
+            }
+            (Some(request), _) if request.validate().is_err() => {
+                return Err(ControllerStatusError::Invalid(
+                    "admitted request is invalid",
+                ))
+            }
+            _ => {}
         }
         let command_required = matches!(
             self.command_ownership,
@@ -192,7 +187,6 @@ impl ControllerStatusSnapshot {
         }
         if let Some(command) = &self.command {
             validate_identity(&command.operation_id)?;
-            validate_identity(&command.telemetry_identity)?;
             if !command.target_bytes.is_multiple_of(self.block_size_bytes) {
                 return Err(ControllerStatusError::Invalid("command target is invalid"));
             }
@@ -277,20 +271,17 @@ mod tests {
             device_alias: "memory0".to_owned(),
             device_size_bytes: 16 * GIB,
             block_size_bytes: 2 * MIB,
-            desired_bytes: 8 * GIB,
-            safe_floor_bytes: 7 * GIB,
-            effective_maximum_bytes: 15 * GIB,
-            requested_bytes: 8 * GIB,
-            current_bytes: 8 * GIB,
-            accepted_telemetry: Some(AcceptedTelemetryIdentity {
-                session_id: "session-a".to_owned(),
-                sequence: 4,
-                monotonic_millis: 40,
-                observed_unix_millis: 1_000,
-            }),
-            history_ready: true,
-            reclaim_readiness: ReclaimReadiness::Ready,
-            capacity_state: CapacityState::Available,
+            maximum_target_bytes: 15 * GIB,
+            requested_bytes: 0,
+            current_bytes: 0,
+            observe_only: true,
+            guest_input: GuestInputStatus {
+                error: Some("guest telemetry is stale".to_owned()),
+                observed_unix_millis: None,
+                request: None,
+            },
+            admitted_request: None,
+            result: None,
             command_ownership: CommandOwnership::None,
             command: None,
             control_health: ControlHealth::Converged,
@@ -299,7 +290,6 @@ mod tests {
             recovery_state: RecoveryState::NotRequired,
             recovery_reason: None,
             last_latch_clear_reason: None,
-            policy_fingerprint_sha256: "a".repeat(64),
             compatibility_fingerprint_sha256: "b".repeat(64),
         }
     }
@@ -342,6 +332,14 @@ mod tests {
             invalid.validate(),
             Err(ControllerStatusError::Invalid(
                 "latch state and reason disagree"
+            ))
+        );
+        let mut invalid = status();
+        invalid.guest_input.observed_unix_millis = Some(1);
+        assert_eq!(
+            invalid.validate(),
+            Err(ControllerStatusError::Invalid(
+                "guest input must be either observed or explained"
             ))
         );
     }

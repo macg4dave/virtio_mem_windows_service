@@ -22,7 +22,7 @@ pub enum HostConfigError {
     UnknownVm(String),
     #[error("several VMs must share a pool: set pool_bytes")]
     PoolRequired,
-    #[error("pool_bytes must be positive and cover every VM's min_memory_bytes")]
+    #[error("pool_bytes must be positive")]
     PoolTooSmall,
     #[error("invalid policy state path: {0}")]
     InvalidStatePath(String),
@@ -42,14 +42,10 @@ pub enum HostConfigError {
     InvalidPriority,
     #[error("alias contains unsupported characters")]
     InvalidAlias,
-    #[error("grow and shrink steps must be greater than zero")]
-    InvalidResizeStep,
     #[error("host-controller durations must be positive and fit supported deadlines/milliseconds")]
     InvalidDuration,
-    #[error("safe-floor reserves must not exceed normal reserves")]
-    InvalidReserveOrder,
-    #[error("target policy configuration is invalid: {0}")]
-    InvalidTargetPolicy(&'static str),
+    #[error("host_min_headroom_bytes must be positive")]
+    InvalidHeadroom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -66,17 +62,6 @@ pub struct HostConfig {
     pub alias: String,
     /// Pool priority; larger is served first when VMs contend.
     pub priority: u32,
-    /// Device bytes never planned below; the device size is the only maximum.
-    pub min_memory_bytes: u64,
-    pub grow_step_bytes: u64,
-    pub shrink_step_bytes: u64,
-    pub physical_reserve_bytes: u64,
-    pub commit_reserve_bytes: u64,
-    pub safe_floor_physical_reserve_bytes: u64,
-    pub safe_floor_commit_reserve_bytes: u64,
-    pub reclaim_history: Duration,
-    pub reclaim_max_gap: Duration,
-    pub downward_hysteresis_bytes: u64,
     pub policy_state_path: String,
     pub poll_interval: Duration,
     pub command_timeout: Duration,
@@ -89,7 +74,8 @@ pub struct HostConfig {
     pub raw_telemetry_future_tolerance: Duration,
     pub host_min_headroom_bytes: u64,
     pub compatibility_attestation_path: String,
-    /// Evaluate and log decisions but never request a resize.
+    /// Evaluate guest requests and log grants, but refuse every request
+    /// before any device command.
     pub observe_only: bool,
 }
 
@@ -123,18 +109,6 @@ struct VmTable {
     name: String,
     alias: String,
     priority: u32,
-    #[serde(default)]
-    min_memory_bytes: u64,
-    grow_step_bytes: u64,
-    shrink_step_bytes: u64,
-    physical_reserve_bytes: u64,
-    commit_reserve_bytes: u64,
-    safe_floor_physical_reserve_bytes: u64,
-    safe_floor_commit_reserve_bytes: u64,
-    reclaim_history_seconds: u64,
-    /// Derived from the polling interval when absent.
-    reclaim_max_gap_seconds: Option<u64>,
-    downward_hysteresis_bytes: u64,
     policy_state_path: String,
     compatibility_attestation_path: String,
     telemetry_transport: RawTelemetryTransport,
@@ -193,15 +167,8 @@ impl HostSettings {
         }
         match file.pool_bytes {
             None if vms.len() > 1 => return Err(HostConfigError::PoolRequired),
-            None => {}
-            Some(pool_bytes) => {
-                let minimums = vms
-                    .iter()
-                    .try_fold(0_u64, |total, vm| total.checked_add(vm.min_memory_bytes));
-                if pool_bytes == 0 || minimums.is_none_or(|minimums| minimums > pool_bytes) {
-                    return Err(HostConfigError::PoolTooSmall);
-                }
-            }
+            Some(0) => return Err(HostConfigError::PoolTooSmall),
+            _ => {}
         }
         Ok(Self {
             pool_bytes: file.pool_bytes,
@@ -226,26 +193,10 @@ impl HostConfig {
     }
 
     fn resolve(file: &ConfigFile, vm: &VmTable) -> Result<Self, HostConfigError> {
-        let reclaim_max_gap_seconds = match vm.reclaim_max_gap_seconds {
-            Some(seconds) => seconds,
-            None => file.poll_interval_seconds.checked_mul(2).ok_or(
-                HostConfigError::InvalidTargetPolicy("derived reclaim maximum gap overflowed"),
-            )?,
-        };
         let config = Self {
             vm_name: vm.name.clone(),
             alias: vm.alias.clone(),
             priority: vm.priority,
-            min_memory_bytes: vm.min_memory_bytes,
-            grow_step_bytes: vm.grow_step_bytes,
-            shrink_step_bytes: vm.shrink_step_bytes,
-            physical_reserve_bytes: vm.physical_reserve_bytes,
-            commit_reserve_bytes: vm.commit_reserve_bytes,
-            safe_floor_physical_reserve_bytes: vm.safe_floor_physical_reserve_bytes,
-            safe_floor_commit_reserve_bytes: vm.safe_floor_commit_reserve_bytes,
-            reclaim_history: Duration::from_secs(vm.reclaim_history_seconds),
-            reclaim_max_gap: Duration::from_secs(reclaim_max_gap_seconds),
-            downward_hysteresis_bytes: vm.downward_hysteresis_bytes,
             policy_state_path: vm.policy_state_path.clone(),
             poll_interval: Duration::from_secs(file.poll_interval_seconds),
             command_timeout: Duration::from_secs(file.command_timeout_seconds),
@@ -281,36 +232,14 @@ impl HostConfig {
         {
             return Err(HostConfigError::InvalidAlias);
         }
-        if self.grow_step_bytes == 0 || self.shrink_step_bytes == 0 {
-            return Err(HostConfigError::InvalidResizeStep);
-        }
-        if self.physical_reserve_bytes == 0
-            || self.commit_reserve_bytes == 0
-            || self.safe_floor_physical_reserve_bytes == 0
-            || self.safe_floor_commit_reserve_bytes == 0
-            || self.downward_hysteresis_bytes == 0
-        {
-            return Err(HostConfigError::InvalidTargetPolicy(
-                "reserves and hysteresis must be positive",
-            ));
-        }
         if self.host_min_headroom_bytes == 0 {
-            return Err(HostConfigError::InvalidTargetPolicy(
-                "host minimum headroom must be positive",
-            ));
-        }
-        if self.safe_floor_physical_reserve_bytes > self.physical_reserve_bytes
-            || self.safe_floor_commit_reserve_bytes > self.commit_reserve_bytes
-        {
-            return Err(HostConfigError::InvalidReserveOrder);
+            return Err(HostConfigError::InvalidHeadroom);
         }
         if self.poll_interval.is_zero()
             || self.command_timeout.is_zero()
             || self.convergence_timeout.is_zero()
             || self.raw_telemetry_max_age.is_zero()
             || self.raw_telemetry_future_tolerance.is_zero()
-            || self.reclaim_history.is_zero()
-            || self.reclaim_max_gap.is_zero()
         {
             return Err(HostConfigError::InvalidDuration);
         }
@@ -320,19 +249,12 @@ impl HostConfig {
             self.convergence_timeout,
             self.raw_telemetry_max_age,
             self.raw_telemetry_future_tolerance,
-            self.reclaim_history,
-            self.reclaim_max_gap,
         ] {
             if std::time::Instant::now().checked_add(duration).is_none()
                 || u64::try_from(duration.as_millis()).is_err()
             {
                 return Err(HostConfigError::InvalidDuration);
             }
-        }
-        if self.reclaim_max_gap > self.reclaim_history {
-            return Err(HostConfigError::InvalidTargetPolicy(
-                "reclaim maximum gap exceeds history window",
-            ));
         }
         for (key, value) in [
             ("virsh_binary", &self.virsh_binary),
@@ -370,15 +292,6 @@ host_min_headroom_bytes = 4294967296
 name = "win11"
 alias = "ua-virtiomem0"
 priority = 100
-min_memory_bytes = 1073741824
-grow_step_bytes = 1073741824
-shrink_step_bytes = 67108864
-physical_reserve_bytes = 2147483648
-commit_reserve_bytes = 2147483648
-safe_floor_physical_reserve_bytes = 1073741824
-safe_floor_commit_reserve_bytes = 1073741824
-reclaim_history_seconds = 600
-downward_hysteresis_bytes = 268435456
 policy_state_path = "/var/lib/virtio-mem-host/state/win11-policy.json"
 compatibility_attestation_path = "/etc/virtio-mem-host/win11.attestation.json"
 telemetry_transport = "qga-file"
@@ -414,7 +327,6 @@ telemetry_future_tolerance_seconds = 5
         let config = parse_one(ONE_VM).expect("valid config");
         assert_eq!(config.vm_name, "win11");
         assert_eq!(config.priority, 100);
-        assert_eq!(config.min_memory_bytes, GIB);
         assert_eq!(config.poll_interval, Duration::from_secs(10));
         assert_eq!(config.host_min_headroom_bytes, 4 * GIB);
         assert_eq!(
@@ -426,7 +338,6 @@ telemetry_future_tolerance_seconds = 5
             r"C:\ProgramData\VirtioMem\telemetry.jsonl"
         );
         assert_eq!(config.virsh_binary, "virsh");
-        assert_eq!(config.reclaim_max_gap, Duration::from_secs(20));
         assert!(!config.observe_only);
     }
 
@@ -443,10 +354,14 @@ telemetry_future_tolerance_seconds = 5
                 .expect_err("unknown top-level key");
             assert!(matches!(error, HostConfigError::Parse(_)), "{error}");
         }
-        let error =
-            HostSettings::parse(&ONE_VM.replace("priority = 100", "priority = 100\nweight = 3"))
-                .expect_err("unknown vm key");
-        assert!(matches!(error, HostConfigError::Parse(_)), "{error}");
+        // Guest demand policy moved to Windows; its old host keys must fail.
+        for retired in ["weight = 3", "grow_step_bytes = 1073741824"] {
+            let error = HostSettings::parse(
+                &ONE_VM.replace("priority = 100", &format!("priority = 100\n{retired}")),
+            )
+            .expect_err("unknown vm key");
+            assert!(matches!(error, HostConfigError::Parse(_)), "{error}");
+        }
     }
 
     #[test]
@@ -479,9 +394,8 @@ telemetry_future_tolerance_seconds = 5
             HostSettings::parse(&two_vms),
             Err(HostConfigError::PoolRequired)
         );
-        // Both minimums are 1 GiB, so a 1 GiB pool cannot cover them.
         assert_eq!(
-            HostSettings::parse(&format!("pool_bytes = {GIB}\n{two_vms}")),
+            HostSettings::parse(&format!("pool_bytes = 0\n{two_vms}")),
             Err(HostConfigError::PoolTooSmall)
         );
         let text = format!("pool_bytes = {}\n{two_vms}", 16 * GIB);
@@ -565,9 +479,9 @@ telemetry_future_tolerance_seconds = 5
                 HostConfigError::InvalidAlias,
             ),
             (
-                "safe_floor_commit_reserve_bytes = 1073741824",
-                "safe_floor_commit_reserve_bytes = 4294967296",
-                HostConfigError::InvalidReserveOrder,
+                "host_min_headroom_bytes = 4294967296",
+                "host_min_headroom_bytes = 0",
+                HostConfigError::InvalidHeadroom,
             ),
             (
                 "telemetry_max_age_seconds = 60",
@@ -608,7 +522,6 @@ telemetry_future_tolerance_seconds = 5
                 Some((key, _)) if key.ends_with("_bytes") || key == "priority" => {
                     format!("{key} = {GIB}")
                 }
-                Some(("reclaim_history_seconds", _)) => "reclaim_history_seconds = 600".to_owned(),
                 Some((key, _)) if key.ends_with("_seconds") => format!("{key} = 60"),
                 _ => line.to_owned(),
             })
@@ -616,6 +529,6 @@ telemetry_future_tolerance_seconds = 5
             .join("\n");
         let config = parse_one(&filled).expect("filled example");
         assert_eq!(config.vm_name, "REQUIRED_VM_NAME");
-        assert!(!config.observe_only);
+        assert!(config.observe_only, "a new deployment starts non-actuating");
     }
 }

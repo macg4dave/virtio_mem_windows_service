@@ -1,7 +1,9 @@
 use std::io::Read;
 use std::time::Duration;
 
-use virtio_mem_core::{WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION};
+use virtio_mem_core::{
+    GuestMemoryPolicy, WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
+};
 
 use crate::error::ConfigurationError;
 
@@ -18,6 +20,7 @@ pub struct ServiceConfig {
     pub config_path: String,
     pub poll_interval: Duration,
     pub shutdown_timeout: Duration,
+    pub policy: GuestMemoryPolicy,
 }
 
 impl ServiceConfig {
@@ -106,6 +109,7 @@ impl ServiceConfig {
             config_path: path.to_string_lossy().into_owned(),
             poll_interval: Duration::from_millis(persisted.poll_interval_millis),
             shutdown_timeout: Duration::from_millis(persisted.shutdown_timeout_millis),
+            policy: persisted.policy,
         };
         config.validate()?;
         Ok(config)
@@ -130,6 +134,7 @@ impl TryFrom<&ServiceConfig> for WindowsServiceConfigFile {
             service_account: config.service_account.clone(),
             poll_interval_millis,
             shutdown_timeout_millis,
+            policy: config.policy,
         })
     }
 }
@@ -157,17 +162,55 @@ pub(crate) fn validate_file_identity(config: &str, report: &str) -> Result<(), C
         )))
     };
     if let Some(config_id) = identify(config)? {
-        for path in std::iter::once(report.to_owned())
-            .chain((1..=3).map(|index| format!("{report}.{index}")))
+        for path in [
+            report.to_owned(),
+            virtio_mem_core::host_status_path(report),
+            virtio_mem_core::request_state_path(report),
+        ]
+        .into_iter()
+        .chain((1..=3).map(|index| format!("{report}.{index}")))
         {
             if identify(&path)? == Some(config_id) {
                 return Err(ConfigurationError::InvalidFile(
-                    "configuration and telemetry/backup share a file identity".to_owned(),
+                    "configuration shares a file identity with a publication file".to_owned(),
                 ));
             }
         }
     }
     Ok(())
+}
+
+/// A valid configuration shared by this crate's tests.
+#[cfg(test)]
+pub(crate) fn test_config() -> ServiceConfig {
+    const MIB: u64 = 1024 * 1024;
+    ServiceConfig {
+        vm_name: "test-vm".to_owned(),
+        service_name: "TestService".to_owned(),
+        display_name: "Test service".to_owned(),
+        description: "Test configuration".to_owned(),
+        demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
+        service_account: r"NT AUTHORITY\LocalService".to_owned(),
+        config_path: DEFAULT_CONFIG_PATH.to_owned(),
+        poll_interval: Duration::from_millis(20),
+        shutdown_timeout: Duration::from_millis(30),
+        policy: GuestMemoryPolicy {
+            target: virtio_mem_core::TargetPolicyConfig {
+                configured_minimum_bytes: 0,
+                physical_reserve_bytes: 2048 * MIB,
+                commit_reserve_bytes: 2048 * MIB,
+                safe_floor_physical_reserve_bytes: 1024 * MIB,
+                safe_floor_commit_reserve_bytes: 1024 * MIB,
+                history_window_millis: 600_000,
+                maximum_gap_millis: 60_000,
+                downward_hysteresis_bytes: 256 * MIB,
+            },
+            grow_step_bytes: 1024 * MIB,
+            shrink_step_bytes: 64 * MIB,
+            host_status_max_age_millis: 60_000,
+            request_lifetime_millis: 30_000,
+        },
+    }
 }
 
 #[cfg(test)]
@@ -179,20 +222,6 @@ mod tests {
             "virtio-mem-service-{name}-{}.json",
             std::process::id()
         ))
-    }
-
-    fn test_config() -> ServiceConfig {
-        ServiceConfig {
-            vm_name: "test-vm".to_owned(),
-            service_name: "TestService".to_owned(),
-            display_name: "Test service".to_owned(),
-            description: "Test configuration".to_owned(),
-            demand_report_path: r"C:\test\telemetry.jsonl".to_owned(),
-            service_account: r"NT AUTHORITY\LocalService".to_owned(),
-            config_path: DEFAULT_CONFIG_PATH.to_owned(),
-            poll_interval: Duration::from_millis(20),
-            shutdown_timeout: Duration::from_millis(30),
-        }
     }
 
     #[test]
@@ -250,6 +279,8 @@ mod tests {
         assert!(config.validate().is_err());
         config.config_path = format!("{}.1", config.demand_report_path);
         assert!(config.validate().is_err());
+        config.config_path = virtio_mem_core::request_state_path(&config.demand_report_path);
+        assert!(config.validate().is_err());
         config = test_config();
         config.description.push('\0');
         assert!(config.validate().is_err());
@@ -293,6 +324,7 @@ mod tests {
             service_account: r"NT AUTHORITY\LocalService".to_owned(),
             poll_interval_millis: 30_000,
             shutdown_timeout_millis: 30_000,
+            policy: test_config().policy,
         };
         std::fs::write(
             &path,

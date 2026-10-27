@@ -1,137 +1,137 @@
 # Development
 
-This describes the current implementation. The intended guest-driven
-request/result boundary and review findings are in [the roadmap](roadmap.md).
-Currently Linux still estimates demand from raw telemetry; moving those
-choices into Windows is outstanding work. Core request/result types and the
-replay journal are implemented in `memory_request.rs`, but production transport integration is not.
+This describes the current implementation. Direction, phase status and
+qualification evidence are in [the roadmap](roadmap.md); open work is in
+[the backlog](backlog.md).
 
 ## Architecture
 
 | Location | Responsibility and entry points |
 | --- | --- |
-| [Core](../crates/virtio-mem-core/src/lib.rs) | Shared telemetry/configuration types, device/XML validation, target estimation, reconciliation and pure pool allocation. |
-| [Host](../host/src/main.rs) | Linux adapters and controller wiring. `runtime.rs` owns command lifecycle; `target_policy.rs` joins telemetry to policy and persists checkpoints; `resize_sink.rs` validates and executes effects. |
-| [Windows](../windows/src/main.rs) | Native telemetry sampling, atomic publication, SCM lifecycle and the workload utility. Console and SCM startup share the worker constructor in `runtime.rs`. |
+| [Core](../crates/virtio-mem-core/src/lib.rs) | Shared wire contracts, device/XML validation, the guest memory policy and pure pool allocation. |
+| [Host](../host/src/main.rs) | Linux adapters and the controller. `runtime.rs` owns request execution and command lifecycle; `checkpoint.rs` owns durable control state; `guest_channel.rs` moves guest publications and host status; `resize_sink.rs` validates and executes device effects. |
+| [Windows](../windows/src/main.rs) | Native sampling, the guest request policy (`requests.rs`), atomic publication, SCM lifecycle and the workload utility. Console and SCM startup share the worker constructor in `runtime.rs`. |
 | [xtask](../tools/xtask/src/main.rs) | Local gates, remote Windows builds, deployment, diagnostics and qualification. These commands can have operational effects. |
 
-The normal path is Windows sampling → atomic JSON telemetry → QGA file read →
-host validation/estimation → pool ceiling → reconciliation → host reserve check
-and virsh resize → observation of live XML. Local file telemetry is also
-supported; there is no separate balloon-statistics demand policy.
+Windows decides when to add or remove memory; Linux executes. Each poll:
 
-## Control contract
+1. Windows samples memory, reads the host status file, runs the
+   [guest policy](../crates/virtio-mem-core/src/guest_policy.rs) and atomically
+   publishes its telemetry with at most one unresolved request.
+2. The host reads that publication (QGA, or a local file for testing), admits
+   the request, grants what is free and resizes the device.
+3. The host writes device status, with the correlated result once known, to
+   `<telemetry_path>.host-status`. Windows resolves its request from it.
 
-This describes the implemented policy, not proposed cleanup. Its source owners
-are [target estimation](../crates/virtio-mem-core/src/target_controller.rs),
-[reconciliation](../crates/virtio-mem-core/src/reconciler.rs),
-[runtime](../host/src/runtime.rs) and [checkpointing](../host/src/target_policy.rs).
+## Request contract
 
-- All targets are device bytes. Whole-guest physical RAM includes fixed RAM;
-  the fixed base is derived per sample as `physical_total - current`.
-- Alias-selected live XML supplies `requested` (intent), `current` (observed
-  allocation), device size and block size. A successful command is not convergence.
-- Telemetry must match VM/service identity, freshness and accepted
-  session/sequence rules. Unchanged telemetry does not start a new resize.
-  Acceptance and estimator consumption are saved in the same checkpoint.
-- Instantaneous demand is the larger of the physical candidate
-  `used + physical_reserve - fixed_base` and commit candidate
-  `current + commit_reserve - commit_headroom`, floored at `min_memory_bytes`,
-  aligned upwards and capped. The safe floor uses smaller reserves and cannot
-  exceed demand. Arithmetic validation and intentional floors live in core.
-- The effective maximum is device size minus 1 GiB, aligned down. There is no
-  configured maximum. Minimum, current, reserves and hysteresis must align to
-  the block size.
-- Demand rises immediately. It falls to the history window's peak only after
-  gap-free `reclaim_history_seconds` and sufficient downward hysteresis; the
-  floor becomes the peak floor. A gap exceeding `reclaim_max_gap_seconds`
-  restarts history. Commands use the configured grow/shrink steps.
-- Each command's intent is saved before execution. Normal resizing waits for
-  convergence; an owned pending shrink can be raised towards current when
-  demand returns. Failed telemetry during owned shrink freezes it at current
-  and latches. These are controlled replacements, not arbitrary stacked resizes.
-- Growth timeout latches and stops that VM. A short shrink can settle by
-  requesting current allocation, then pauses new shrink for one reclaim
-  history window while allowing growth. Settlement failure latches.
-- On restart, an owned converged command clears; a recorded but unapplied or
-  conflicting command latches. Unowned divergence is observed, never replayed.
-  Latch clearing is an explicit CLI operation. The original command
-  start time survives restart; missing legacy timing, backward clock movement and
-  expired bounds fail closed. The short-shrink pause remains process-local.
-- Evaluation errors hold the VM. Unreadable live state retains its last pool
-  charge and latches if a command is owned. Member failures can be isolated;
-  the daemon stops when every member has stopped. Configuration, persistence
-  or other propagated runtime errors can still terminate the daemon.
-- Growth must leave the configured host reserve, including pending/uncertain
-  growth from earlier rounds and restart as well as new grants in this round.
-  The pool charges `max(requested, current, durable intent target)`;
-  unreadable members retain their last charge, or the whole pool budget before
-  their first successful observation. Free bytes go to larger priorities first,
-  with configuration order breaking ties. Pool accounting is recomputed, not
-  persisted, and never forces another guest to release RAM.
+Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
+[guest policy](../crates/virtio-mem-core/src/guest_policy.rs),
+[runtime](../host/src/runtime.rs) and [checkpoint](../host/src/checkpoint.rs).
+
+- All quantities are device bytes. Whole-guest RAM includes fixed RAM; Windows
+  derives the fixed base per sample as `physical_total - current`.
+- A request names its VM, service, session and sequence, an `add` or `remove`
+  byte count, and an issue/expiry interval of at most 60 seconds. Reading a
+  publication or status is never an acknowledgement.
+- **Windows** keeps one unresolved request in `<telemetry_path>.request-state`,
+  written durably before the request is first published and retransmitted
+  unchanged (including across service restarts and new sessions) until a
+  terminal result for that exact request arrives. It plans a new delta only from
+  status no further than `host_status_max_age_millis` from its clock. Demand
+  rises immediately; reclaim waits for gap-free history and hysteresis and
+  never passes the safe floor. After a partial or refused removal, removals
+  pause for one history window. Estimator history is process-local, so a
+  restarted service waits a full window before reclaiming.
+- **Linux** admits a request only if it is fresh, from the configured guest,
+  advances the issue/sequence watermark and no earlier request is unresolved.
+  A retransmission of an admitted request is recognised before expiry checks
+  and never regranted. Expiry and identity are rechecked at the effect
+  boundary, after blocking preparation.
+- Grants: removals take `min(bytes, current)`. Additions take the least of the
+  request, the device ceiling (size minus 1 GiB, block aligned), the member's
+  pool ceiling (free bytes, larger `priority` first, configuration order on
+  ties) and host `MemAvailable` minus pending growth and `host_min_headroom_bytes`.
+  A zero addition is `pool_empty`. Nothing unfulfilled is queued.
+- Admission and command intent are saved together before the command. On
+  convergence the result reports the actual movement (`completed` or
+  `partial`). A refusal before any command (latched, observe-only, expired,
+  replayed, misaligned, or the resize sink's final checks) is published as
+  `rejected` and does not latch; only an earlier admission journals it.
+- A shrink that stops before its target is settled once at its current
+  allocation and reported `partial`. Growth or settlement past
+  `convergence_timeout_seconds`, an unknown command outcome, a recorded command
+  that never applied, or conflicting live state latch the VM and report
+  `uncertain`, which Windows never treats as terminal. The original start time
+  survives restart; a backwards clock fails closed.
+- Unowned divergence is observed, never replayed. Unreadable live state keeps
+  the last pool charge, or the whole pool before a first read, and latches if a
+  command is owned. Members fail independently; the daemon stops when all have.
+- `clear-latch` requires converged live state, stamps the current attestation
+  and gives any unresolved request a terminal result from observed movement.
 
 ## Configuration and deployment
 
 [The host TOML example](../host/systemd/virtio-mem-host.toml.example) owns the
 key inventory; replace every `REQUIRED_*` marker using reviewed deployment
-values. Unknown keys are rejected. Global timing/reserve settings apply to all
-`[[vm]]` tables; `pool_bytes` is required for multiple VMs. Per-VM policy paths
-must be distinct. `observe_only` defaults to false: explicitly set it to true
-for trials that must not resize. There is no separate shrink-disable switch.
+values. Unknown keys are rejected, including the retired demand-policy keys
+(`min_memory_bytes`, steps, reserves, reclaim history and hysteresis), which
+now live in the Windows configuration. Global timing/reserve settings apply to
+all `[[vm]]` tables; `pool_bytes` is required for multiple VMs. The example
+starts with `observe_only = true`: requests are evaluated, logged with their
+would-be grant and refused before any command.
 
-The [systemd unit](../host/systemd/virtio-mem-host@.service) runs
-`virtio-mem-host --config /etc/virtio-mem-host/%i.toml` as `virtio-mem-host`,
-using `qemu:///system` and `Restart=no`. Non-interactive libvirt management
-access is provisioned once; the daemon neither elevates nor stores passwords.
-The [polkit rule](../host/systemd/50-virtio-mem-host.rules) grants connection-wide
-management to that account, not a per-VM ACL. Existing group access may already
-provide it. Checkpoint paths must be absolute without `..`; symlink/hard-link checkpoint
-files are rejected. The daemon and operator mutations lock the libvirt domain
-UUID, and checkpoint writers also hold a sidecar file lock until dropped. Do not
-unlink lock files. Stop the controller before `resize`, `abandon-shrink` or
-`clear-latch`, including commands from another config.
+One deployment instance is one controller: unit
+`virtio-mem-host@INSTANCE.service` runs `/etc/virtio-mem-host/INSTANCE.toml`,
+which may list several VMs. Each VM names its own checkpoint (distinct paths are
+enforced) and an attestation file directly in `/etc/virtio-mem-host/`.
+`xtask host-deploy INSTANCE --config FILE --attestation VM=FILE ...` requires one
+attestation per configured VM and installs each at its configured path.
+`status`, `clear-latch` and `xtask controller-status` take `--vm NAME`, required
+when the config lists several VMs; `xtask qualification` checks that the running
+controller's config contains its VM.
 
-Windows atomic replacement and Linux durable checkpoints have
-different platform contracts and remain separate implementations.
+The [systemd unit](../host/systemd/virtio-mem-host@.service) runs as
+`virtio-mem-host` against `qemu:///system` with `Restart=no`. Non-interactive
+libvirt management access is provisioned once; the daemon neither elevates nor
+stores passwords. The [polkit rule](../host/systemd/50-virtio-mem-host.rules)
+grants connection-wide management to that account. Checkpoint paths must be
+absolute without `..`; symlink/hard-link checkpoint files are rejected. The
+daemon and operator mutations lock the libvirt domain UUID, and checkpoint
+writers hold a sidecar file lock. Do not unlink lock files. Stop the controller
+before `resize`, `abandon-shrink` or `clear-latch`.
 
-Windows loads `C:\ProgramData\VirtioMemService\config.json`; its schema is
-[defined in core](../crates/virtio-mem-core/src/windows_service_config.rs).
-Telemetry location and service identity must match the host configuration.
-Windows configuration is bounded to 64 KiB and shared wire/path validation is
-also used by deployment. Paths use absolute drive syntax; ambiguous Win32 forms,
-collisions with telemetry/backups/temporary names and existing file aliases are
-rejected. Poll and shutdown timing must round-trip exactly in milliseconds.
-Installation keeps configuration administrator-owned/read-only to LocalService;
-publication files alone inherit modify rights. Existing files receive explicit
-ACLs. The executable path passed to SCM is quoted.
+Checkpoints are version 2 (journal, intent, latch). An estimator-era version 1
+file without a latch or command is superseded on the next save; one recording
+either is refused: stop the controller, review live state, then remove it.
+Controller status is version 5 and includes the admitted request, its result,
+`observe_only` and a read-only view of the guest input. Use matching host,
+xtask and Windows builds.
 
-`help` documents recovery when configuration is missing or damaged: use an
-administrator terminal with `sc.exe stop SERVICE_NAME` and, when removing the
-service, `sc.exe delete SERVICE_NAME`, using its installed identity. Program
-commands reject trailing arguments. A worker panic is reported as failure; a
-worker exceeding the shutdown bound terminates the process for SCM recovery.
-Only the host thread publishes lifecycle status. Publication retries sharing and
-lock errors within the configured bound, wakes on stop, and treats diagnostic
-backup errors independently of current publication.
+Windows loads `C:\ProgramData\VirtioMemService\config.json` (schema 5,
+[defined in core](../crates/virtio-mem-core/src/windows_service_config.rs)),
+which now carries the guest `policy`: target reserves, history, hysteresis,
+minimum, steps, status age and request lifetime. Steps must be multiples of the
+device block size. VM/service identity and the telemetry path must match the
+host. The publication path also names its backups, handoff files, the host
+status and the request state as `<path>.<suffix>`; the configuration may be
+none of them. Configuration is bounded to 64 KiB; paths use absolute drive
+syntax and ambiguous Win32 forms are rejected. Installation keeps the
+configuration administrator-owned and read-only to LocalService and applies
+explicit modify-without-delete ACLs to every existing publication file.
 
-Migration from the former environment-variable deployment requires copying
-retained values from `<instance>.conf` to `<instance>.toml`. Removed demand,
-pressure, acknowledgement and shadow-margin keys have no TOML equivalent.
-`xtask host-deploy` backs up the old `.conf`; preserve non-resizing deployments
-with `observe_only = true`. Review ownership/ACLs and attestation before applying.
+`help` documents recovery when configuration is missing or damaged: in an
+administrator terminal, `sc.exe stop SERVICE_NAME` and, when removing the
+service, `sc.exe delete SERVICE_NAME`. A worker panic is reported as failure;
+a worker exceeding the shutdown bound terminates the process for SCM recovery.
+A policy or request-state failure stops the worker. Publication retries
+sharing/lock errors within the shutdown bound. A missing, mid-write or
+momentarily shared host status leaves Windows without fresh geometry; other
+status read errors, such as denied access, stop the worker.
 
-Telemetry acceptance now lives in `accepted_telemetry` in the policy checkpoint;
-the daemon does not use the former acknowledgement file. Upgraded checkpoints
-without acceptance start with an empty accepted-session history but still
-validate identity and freshness. The retired `pressure_shadow` field loads and
-is dropped on save. Controller status is version 4; use matching host/xtask
-builds. The preflight tool's `--ack-path` is separate test evidence, not daemon
-state, and remains a supported option.
-
-Host `status` and `clear-latch` require `--vm NAME` with a multi-VM config.
-`xtask host-deploy` and `qualification` still require single-VM files.
-`xtask controller-status` selects the named VM but assumes an instance-named
-config path. Shared deployment support is tracked in the backlog.
+Migration from the environment-variable deployment requires copying retained
+values from `<instance>.conf` to `<instance>.toml`; `xtask host-deploy` backs up
+the old `.conf`. Preserve non-resizing deployments with `observe_only = true`.
 
 ## Local validation
 
@@ -143,9 +143,9 @@ cargo xtask gate local
 ```
 
 It checks formatting, builds release binaries, tests the three non-Windows
-packages, runs Clippy on all targets with warnings denied, and checks whitespace.
-`make local-gate` and the VS Code tasks delegate to xtask. There is no configured
-pedantic/restriction lint group or numeric file/function limit.
+packages, runs Clippy on all targets with warnings denied, and checks
+whitespace. The guest policy lives in core so these tests cover it.
+`make local-gate` and the VS Code tasks delegate to xtask.
 
 If xtask cannot run, the equivalent direct commands are:
 
@@ -157,18 +157,19 @@ cargo clippy --workspace --exclude virtio-mem-service --all-targets --all-featur
 git diff --check
 ```
 
-For Windows, select an installed target/toolchain and produce a binary, for
-example `cargo build -p virtio-mem-service --target x86_64-pc-windows-gnu --locked`
-with MinGW available, or use the selected MSVC target. Type-checking on Linux
-does not validate native SCM, Win32 sampling, ACLs or atomic replacement.
+For Windows, type-check with
+`cargo clippy -p virtio-mem-service --target x86_64-pc-windows-gnu --all-targets -- -D warnings`
+and build with MinGW available, or use the selected MSVC target. The Windows
+crate does not build for Linux, and type-checking does not validate native SCM,
+Win32 sampling, ACLs, file sharing with QGA or atomic replacement.
 
-The existing remote workflow is `cargo xtask windows sync`, `build`, `test`
-(or `all`), then manifest-based `windows deploy` when authorised. Required
-environment values are `VIRTIO_MEM_WINDOWS_SSH`, `VIRTIO_MEM_WINDOWS_DIR`,
+The remote workflow is `cargo xtask windows sync`, `build`, `test` (or `all`),
+then manifest-based `windows deploy` when authorised. Deployment manifests are
+schema 2 and include the guest `policy`. Required environment values are
+`VIRTIO_MEM_WINDOWS_SSH`, `VIRTIO_MEM_WINDOWS_DIR`,
 `VIRTIO_MEM_WINDOWS_ARTIFACTS`, `VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS` and
 `VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS`. Use `cargo xtask help` for
-optional pinned SSH settings and complete command options. `gate all` includes
-remote Windows work; it is not a local-only gate.
+optional settings and command options. `gate all` includes remote Windows work.
 
 ## Qualification runner
 
@@ -178,21 +179,23 @@ For an authorised trial, create a reviewed config from the example and run:
 cargo xtask host-run --config FILE --max-run-seconds N --min-host-available-bytes BYTES
 ```
 
-Replace placeholders with explicit bounds. Add `--sudo` only when the reviewed
-access setup requires it. This builds the release daemon, runs it in the
-foreground without installing a unit, logs under `.artifacts/host-run/`, and
-requests termination on the deadline, low host memory or Ctrl-C. Inspect the
-reported shutdown result and final device state; stopping the runner does not
-restore allocation or prove that a pending resize has finished.
+This builds the release daemon, runs it in the foreground without installing a
+unit, logs under `.artifacts/host-run/`, and requests termination on the
+deadline, low host memory or Ctrl-C. Add `--sudo` only when the reviewed access
+setup requires it. Decisions are logged as `event=controller_decision` with
+`action=grant` (and `grant_bytes`) or `action=refuse`. Stopping the runner does
+not restore allocation or finish a pending resize; inspect the final state.
+
+`xtask preflight` (controller held inactive) restarts the Windows service and
+checks that publication rolls to a valid successor session and that any
+unresolved request keeps its identity across the restart.
 
 Keep qualification evidence under `.artifacts/` and summarise only evidence
 that affects phase acceptance in the roadmap. The standalone `live-resize`
 command restores the original allocation only after forward convergence and
-without cancellation. Failure, timeout, cancellation or an uncertain command
-reports final live state and issues no automatic restoration. Inspect fresh
-`requested`/`current`, stop any controller, then use the reviewed `abandon-shrink`
-path for a stable pending shrink or explicit operator recovery for other states.
-A restoration failure also requires inspection; do not blindly repeat a delta.
-Subprocess output is capped at 4 MiB per stream (64 MiB for elevated inventory),
-with a shared deadline covering
-inherited pipes and cleanup of the owned process group.
+without cancellation; otherwise it reports final live state and issues no
+restoration. Inspect fresh `requested`/`current`, stop any controller, then use
+`abandon-shrink` for a stable pending shrink or explicit operator recovery.
+Subprocess output is capped at 4 MiB per stream (64 MiB for elevated
+inventory), with a shared deadline covering inherited pipes and cleanup of the
+owned process group.

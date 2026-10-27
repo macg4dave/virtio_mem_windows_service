@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use virtio_mem_host::attestation::{AttestedCompatibilitySource, CompatibilityAttestation};
 use virtio_mem_host::compatibility_source::CompatibilitySource;
-use virtio_mem_host::config::HostConfig;
+use virtio_mem_host::config::{HostConfig, HostSettings};
 use virtio_mem_host::virsh::Virsh;
 
 use crate::process;
@@ -15,7 +15,8 @@ use crate::process;
 pub struct Command {
     instance: String,
     config: PathBuf,
-    attestation: PathBuf,
+    /// One reviewed source attestation per configured VM.
+    attestations: BTreeMap<String, PathBuf>,
     output: PathBuf,
     timeout: Duration,
     apply: bool,
@@ -33,7 +34,7 @@ struct Evidence {
     candidate_binary_sha256: String,
     installed_binary_sha256: Option<String>,
     config_sha256: String,
-    attestation_sha256: String,
+    attestations: Vec<AttestationEvidence>,
     unit_sha256: String,
     libvirt_policy_sha256: String,
     active_state: String,
@@ -42,13 +43,30 @@ struct Evidence {
     backup_path: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct AttestationEvidence {
+    vm_name: String,
+    installed_path: String,
+    sha256: String,
+}
+
+/// The deployment layout: unit `virtio-mem-host@INSTANCE.service` runs the
+/// config `/etc/virtio-mem-host/INSTANCE.toml`, which may hold several VMs.
+/// Returns INSTANCE for a controller unit name.
+pub fn controller_instance(unit: &str) -> Result<&str, String> {
+    unit.strip_prefix("virtio-mem-host@")
+        .and_then(|rest| rest.strip_suffix(".service"))
+        .filter(|instance| validate_identity(instance).is_ok())
+        .ok_or_else(|| format!("{unit} is not a virtio-mem-host@INSTANCE.service unit"))
+}
+
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let instance = args
         .first()
         .ok_or_else(|| "host-deploy requires INSTANCE and explicit options".to_owned())?;
     validate_identity(instance)?;
     let mut config = None;
-    let mut attestation = None;
+    let mut attestations = BTreeMap::new();
     let mut output = None;
     let mut timeout = None;
     let mut apply = false;
@@ -67,8 +85,17 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                     .ok_or_else(|| format!("{option} requires a value"))?;
                 match option {
                     "--config" if config.is_none() => config = Some(PathBuf::from(value)),
-                    "--attestation" if attestation.is_none() => {
-                        attestation = Some(PathBuf::from(value))
+                    "--attestation" => {
+                        let (vm, path) = value
+                            .split_once('=')
+                            .filter(|(vm, path)| !vm.is_empty() && !path.is_empty())
+                            .ok_or("--attestation requires VM=FILE")?;
+                        if attestations
+                            .insert(vm.to_owned(), PathBuf::from(path))
+                            .is_some()
+                        {
+                            return Err(format!("duplicate --attestation for VM {vm}"));
+                        }
                     }
                     "--output" if output.is_none() => output = Some(PathBuf::from(value)),
                     "--command-timeout-seconds" if timeout.is_none() => {
@@ -96,7 +123,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     Ok(Command {
         instance: instance.clone(),
         config: config.ok_or_else(|| "host-deploy requires --config".to_owned())?,
-        attestation: attestation.ok_or_else(|| "host-deploy requires --attestation".to_owned())?,
+        attestations,
         output: output.ok_or_else(|| "host-deploy requires --output".to_owned())?,
         timeout: timeout
             .ok_or_else(|| "host-deploy requires --command-timeout-seconds".to_owned())?,
@@ -134,17 +161,10 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
 
 fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     let config_source = resolve(repo, &command.config);
-    let attestation_source = resolve(repo, &command.attestation);
     let candidate = repo.join("target/release/virtio-mem-host");
     let unit_source = repo.join("host/systemd/virtio-mem-host@.service");
     let policy_source = repo.join("host/systemd/50-virtio-mem-host.rules");
-    for path in [
-        &config_source,
-        &attestation_source,
-        &candidate,
-        &unit_source,
-        &policy_source,
-    ] {
+    for path in [&config_source, &candidate, &unit_source, &policy_source] {
         if !path.is_file() {
             return Err(format!(
                 "required host deployment input is missing: {}",
@@ -152,25 +172,31 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             ));
         }
     }
-    let config = HostConfig::load_vm(&config_source, None)
+    let settings = HostSettings::load(&config_source)
         .map_err(|error| format!("validate host configuration: {error}"))?;
-    if config.vm_name != command.instance {
-        return Err(format!(
-            "host-deploy INSTANCE {} does not match the configured VM {}",
-            command.instance, config.vm_name
-        ));
+    let attestations = pair_attestations(&command.attestations, repo, &settings.vms)?;
+    for (attestation, config) in attestations.iter().zip(&settings.vms) {
+        let text = std::fs::read_to_string(&attestation.source)
+            .map_err(|error| format!("read compatibility attestation: {error}"))?;
+        CompatibilityAttestation::parse(&text)?;
+        validate_live_attestation(config, &attestation.source, command.timeout)?;
     }
-    let attestation_text = std::fs::read_to_string(&attestation_source)
-        .map_err(|error| format!("read compatibility attestation: {error}"))?;
-    CompatibilityAttestation::parse(&attestation_text)?;
-    validate_live_attestation(&config, &attestation_source, command.timeout)?;
     let unit = format!("virtio-mem-host@{}.service", command.instance);
     let before = properties(&unit, repo, command.timeout)?;
     require_inactive(&before, &unit)?;
 
     let candidate_hash = hash(&candidate, repo, command.timeout)?;
     let config_hash = hash(&config_source, repo, command.timeout)?;
-    let attestation_hash = hash(&attestation_source, repo, command.timeout)?;
+    let attestation_evidence = attestations
+        .iter()
+        .map(|attestation| {
+            Ok(AttestationEvidence {
+                vm_name: attestation.vm_name.clone(),
+                installed_path: attestation.target.display().to_string(),
+                sha256: hash(&attestation.source, repo, command.timeout)?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     let unit_hash = hash(&unit_source, repo, command.timeout)?;
     let policy_hash = hash(&policy_source, repo, command.timeout)?;
     let mut backup_path = None;
@@ -182,7 +208,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             command,
             repo,
             &config_source,
-            &attestation_source,
+            &attestations,
             &candidate,
             &unit_source,
             &before,
@@ -197,7 +223,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
         ));
     }
     Ok(Evidence {
-        schema_version: 2,
+        schema_version: 3,
         captured_unix_millis: now_millis()?,
         applied: command.apply,
         instance: command.instance.clone(),
@@ -214,7 +240,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             })
             .transpose()?,
         config_sha256: config_hash,
-        attestation_sha256: attestation_hash,
+        attestations: attestation_evidence,
         unit_sha256: unit_hash,
         libvirt_policy_sha256: policy_hash,
         active_state: one(&after, "ActiveState")?,
@@ -224,11 +250,58 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     })
 }
 
+struct DeployedAttestation {
+    vm_name: String,
+    source: PathBuf,
+    target: PathBuf,
+}
+
+/// Pairs every configured VM with exactly one reviewed source attestation and
+/// the path its config names, before anything is read or validated live.
+fn pair_attestations(
+    attestations: &BTreeMap<String, PathBuf>,
+    repo: &Path,
+    vms: &[HostConfig],
+) -> Result<Vec<DeployedAttestation>, String> {
+    if let Some(extra) = attestations
+        .keys()
+        .find(|vm| !vms.iter().any(|config| &config.vm_name == *vm))
+    {
+        return Err(format!(
+            "--attestation names VM {extra}, which is not configured"
+        ));
+    }
+    vms.iter()
+        .map(|config| {
+            let source = attestations
+                .get(&config.vm_name)
+                .map(|path| resolve(repo, path))
+                .ok_or_else(|| {
+                    format!("host-deploy requires --attestation {}=FILE", config.vm_name)
+                })?;
+            let target = PathBuf::from(&config.compatibility_attestation_path);
+            if target.parent() != Some(Path::new("/etc/virtio-mem-host"))
+                || target.file_name().is_none()
+            {
+                return Err(format!(
+                    "VM {} compatibility_attestation_path must name a file directly in /etc/virtio-mem-host",
+                    config.vm_name
+                ));
+            }
+            Ok(DeployedAttestation {
+                vm_name: config.vm_name.clone(),
+                source,
+                target,
+            })
+        })
+        .collect()
+}
+
 fn install(
     command: &Command,
     repo: &Path,
     config: &Path,
-    attestation: &Path,
+    attestations: &[DeployedAttestation],
     candidate: &Path,
     unit: &Path,
     before: &BTreeMap<String, Vec<String>>,
@@ -269,25 +342,29 @@ fn install(
         repo,
         command.timeout,
     )?;
-    let target_config = PathBuf::from(format!("/etc/virtio-mem-host/{}.toml", command.instance));
-    let target_attestation = PathBuf::from(format!(
-        "/etc/virtio-mem-host/{}.attestation.json",
-        command.instance
-    ));
+    let target_config = format!("/etc/virtio-mem-host/{}.toml", command.instance);
     let targets = [
         PathBuf::from("/usr/local/libexec/virtio-mem-host"),
         PathBuf::from("/etc/systemd/system/virtio-mem-host@.service"),
-        target_config.clone(),
-        target_attestation.clone(),
+        PathBuf::from(&target_config),
         PathBuf::from("/etc/polkit-1/rules.d/50-virtio-mem-host.rules"),
-    ];
-    for target in &targets {
+    ]
+    .into_iter()
+    .chain(
+        attestations
+            .iter()
+            .map(|attestation| attestation.target.clone()),
+    );
+    for target in targets {
+        let Some(name) = target.file_name() else {
+            return Err(format!(
+                "backup target has no file name: {}",
+                target.display()
+            ));
+        };
         if target.exists() {
-            std::fs::copy(
-                target,
-                backup.join(target.file_name().expect("target filename")),
-            )
-            .map_err(|error| format!("backup {}: {error}", target.display()))?;
+            std::fs::copy(&target, backup.join(name))
+                .map_err(|error| format!("backup {}: {error}", target.display()))?;
         }
     }
     let dropin = PathBuf::from(format!(
@@ -339,24 +416,27 @@ fn install(
     )?;
     install_file(
         config,
-        target_config.to_str().expect("UTF-8 config target"),
+        &target_config,
         "root",
         "virtio-mem-host",
         "0640",
         repo,
         command.timeout,
     )?;
-    install_file(
-        attestation,
-        target_attestation
-            .to_str()
-            .expect("UTF-8 attestation target"),
-        "root",
-        "virtio-mem-host",
-        "0640",
-        repo,
-        command.timeout,
-    )?;
+    for attestation in attestations {
+        install_file(
+            &attestation.source,
+            attestation
+                .target
+                .to_str()
+                .ok_or("attestation target is not UTF-8")?,
+            "root",
+            "virtio-mem-host",
+            "0640",
+            repo,
+            command.timeout,
+        )?;
+    }
     process::bounded_text(
         "systemctl",
         &[process::os("daemon-reload")],
@@ -530,20 +610,27 @@ fn run_elevated(command: &Command, repo: &Path) -> Result<String, String> {
 }
 
 fn elevated_arguments(command: &Command) -> Vec<OsString> {
-    vec![
+    let mut arguments = vec![
         process::os("host-deploy"),
         process::os(&command.instance),
         process::os("--config"),
         command.config.as_os_str().to_owned(),
-        process::os("--attestation"),
-        command.attestation.as_os_str().to_owned(),
+    ];
+    for (vm, path) in &command.attestations {
+        let mut value = OsString::from(format!("{vm}="));
+        value.push(path.as_os_str());
+        arguments.push(process::os("--attestation"));
+        arguments.push(value);
+    }
+    arguments.extend([
         process::os("--output"),
         command.output.as_os_str().to_owned(),
         process::os("--command-timeout-seconds"),
         process::os(command.timeout.as_secs().to_string()),
         process::os("--apply"),
         process::os("--elevated-child"),
-    ]
+    ]);
+    arguments
 }
 
 fn persist(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -605,7 +692,9 @@ mod tests {
             "--config",
             "host.toml",
             "--attestation",
-            "attestation.json",
+            "guest=attestation.json",
+            "--attestation",
+            "other=other.json",
             "--output",
             "evidence.json",
             "--command-timeout-seconds",
@@ -614,13 +703,79 @@ mod tests {
             "--elevate",
         ]
         .map(str::to_owned);
-        assert!(matches!(
-            parse(&args),
-            Ok(Command {
-                apply: true,
-                elevate: true,
-                ..
-            })
-        ));
+        let command = parse(&args).expect("valid command");
+        assert!(command.apply && command.elevate);
+        assert_eq!(command.attestations.len(), 2);
+        assert_eq!(
+            parse(&args).map(|command| elevated_arguments(&command).len()),
+            Ok(14)
+        );
+        let mut duplicate = args.to_vec();
+        duplicate[6] = "guest=again.json".to_owned();
+        assert!(parse(&duplicate).is_err());
+    }
+
+    #[test]
+    fn every_configured_vm_needs_exactly_one_attestation_in_the_config_directory() {
+        let vm = |name: &str| {
+            format!(
+                r#"
+[[vm]]
+name = "{name}"
+alias = "memory0"
+priority = 1
+policy_state_path = "/var/lib/virtio-mem-host/state/{name}.json"
+compatibility_attestation_path = "/etc/virtio-mem-host/{name}.attestation.json"
+telemetry_transport = "qga-file"
+telemetry_path = 'C:\ProgramData\VirtioMemService\telemetry.json'
+telemetry_service_name = "VirtioMemService"
+telemetry_max_age_seconds = 60
+telemetry_future_tolerance_seconds = 5
+"#
+            )
+        };
+        let settings = HostSettings::parse(&format!(
+            "pool_bytes = 8589934592\npoll_interval_seconds = 10\ncommand_timeout_seconds = 30\nconvergence_timeout_seconds = 120\nhost_min_headroom_bytes = 4294967296\n{}{}",
+            vm("a"),
+            vm("b")
+        ))
+        .expect("shared config");
+        let repo = Path::new("/repo");
+        let both = BTreeMap::from([
+            ("a".to_owned(), PathBuf::from("a.json")),
+            ("b".to_owned(), PathBuf::from("/abs/b.json")),
+        ]);
+        let paired = pair_attestations(&both, repo, &settings.vms).expect("paired");
+        assert_eq!(paired[0].source, Path::new("/repo/a.json"));
+        assert_eq!(
+            paired[1].target,
+            Path::new("/etc/virtio-mem-host/b.attestation.json")
+        );
+
+        let mut missing = both.clone();
+        missing.remove("b");
+        assert!(pair_attestations(&missing, repo, &settings.vms).is_err());
+        let mut extra = both.clone();
+        extra.insert("c".to_owned(), PathBuf::from("c.json"));
+        assert!(pair_attestations(&extra, repo, &settings.vms).is_err());
+        let mut elsewhere = settings.vms.clone();
+        elsewhere[0].compatibility_attestation_path = "/tmp/a.json".to_owned();
+        assert!(pair_attestations(&both, repo, &elsewhere).is_err());
+    }
+
+    #[test]
+    fn controller_units_name_a_deployment_instance() {
+        assert_eq!(
+            controller_instance("virtio-mem-host@pool.service"),
+            Ok("pool")
+        );
+        for unit in [
+            "virtio-mem-host@.service",
+            "virtio-mem-host@a/b.service",
+            "other@pool.service",
+            "virtio-mem-host@pool",
+        ] {
+            assert!(controller_instance(unit).is_err(), "{unit}");
+        }
     }
 }

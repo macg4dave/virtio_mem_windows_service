@@ -1,8 +1,8 @@
 use std::process;
 
 use virtio_mem_service::{
-    install_service, native_raw_telemetry_worker, remove_service, run_as_service, start_service,
-    stop_service, RuntimeWiringError, ServiceConfig, ServiceHost,
+    install_service, native_worker, remove_service, run_as_service, start_service, stop_service,
+    RuntimeWiringError, ServiceConfig, ServiceHost,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +57,7 @@ fn run_service(config: ServiceConfig) -> Result<(), RuntimeWiringError> {
     config
         .validate()
         .map_err(|error| RuntimeWiringError::Configuration(error.to_string()))?;
-    let worker = native_raw_telemetry_worker(&config)?;
+    let worker = native_worker(&config)?;
 
     let mut host = ServiceHost::with_shutdown_timeout(worker, config.shutdown_timeout);
     host.run()
@@ -154,6 +154,22 @@ mod tests {
             config_path: r"C:\test\config.json".to_owned(),
             poll_interval: std::time::Duration::from_millis(20),
             shutdown_timeout: std::time::Duration::from_millis(30),
+            policy: virtio_mem_core::GuestMemoryPolicy {
+                target: virtio_mem_core::TargetPolicyConfig {
+                    configured_minimum_bytes: 0,
+                    physical_reserve_bytes: 1 << 30,
+                    commit_reserve_bytes: 1 << 30,
+                    safe_floor_physical_reserve_bytes: 1 << 30,
+                    safe_floor_commit_reserve_bytes: 1 << 30,
+                    history_window_millis: 600_000,
+                    maximum_gap_millis: 60_000,
+                    downward_hysteresis_bytes: 1 << 28,
+                },
+                grow_step_bytes: 1 << 30,
+                shrink_step_bytes: 1 << 26,
+                host_status_max_age_millis: 60_000,
+                request_lifetime_millis: 30_000,
+            },
         }
     }
 

@@ -1,19 +1,18 @@
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{atomic::AtomicBool, Arc};
 
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
-use virtio_mem_host::attestation::AttestedCompatibilitySource;
+use virtio_mem_host::attestation::{read_attestation, AttestedCompatibilitySource};
 use virtio_mem_host::cli::CliCommand;
 use virtio_mem_host::config::{HostConfig, HostSettings, RawTelemetryTransport};
+use virtio_mem_host::guest_channel::{GuestChannel, Transport};
 use virtio_mem_host::host_memory::ProcMeminfoSource;
-use virtio_mem_host::qga::VirshQgaFileReader;
-use virtio_mem_host::raw_telemetry::{
-    FileRawTelemetrySource, QgaFileRawTelemetrySource, RawTelemetrySource,
-};
+use virtio_mem_host::ownership::DeviceOwner;
+use virtio_mem_host::qga::VirshGuestFiles;
 use virtio_mem_host::resize_sink::VirshResizeSink;
 use virtio_mem_host::runtime::{HostRuntime, VmController};
-use virtio_mem_host::target_policy::TargetDemandSource;
 use virtio_mem_host::virsh::Virsh;
 use virtio_mem_host::xml_source::VirshXmlSource;
 
@@ -56,24 +55,31 @@ fn main() -> ExitCode {
         eprintln!("virtio-mem-host signal setup error: {error}");
         return ExitCode::FAILURE;
     }
+    // Device owners are held until the runtime ends.
+    let mut owners = Vec::with_capacity(settings.vms.len());
     let mut vms = Vec::with_capacity(settings.vms.len());
     for config in settings.vms {
         match vm_controller(&virsh, config) {
-            Ok(vm) => vms.push(vm),
+            Ok((owner, vm)) => {
+                owners.push(owner);
+                vms.push(vm);
+            }
             Err(error) => {
-                eprintln!("virtio-mem-host target policy error: {error}");
+                eprintln!("virtio-mem-host controller setup error: {error}");
                 return ExitCode::FAILURE;
             }
         }
     }
-    let runtime = match HostRuntime::pool(vms, ProcMeminfoSource::new(), settings.pool_bytes) {
+    let mut runtime = match HostRuntime::new(vms, ProcMeminfoSource::new(), settings.pool_bytes) {
         Ok(runtime) => runtime,
         Err(error) => {
             eprintln!("virtio-mem-host configuration error: {error}");
             return ExitCode::FAILURE;
         }
     };
-    match runtime.run(&stop) {
+    let result = runtime.run(&stop);
+    drop(owners);
+    match result {
         Ok(()) => {
             eprintln!("virtio-mem-host stopped");
             ExitCode::SUCCESS
@@ -86,33 +92,30 @@ fn main() -> ExitCode {
 }
 
 type Controller = VmController<
-    TargetDemandSource<Box<dyn RawTelemetrySource>>,
+    GuestChannel<VirshGuestFiles<Virsh>>,
     VirshXmlSource<Virsh>,
     VirshResizeSink<Virsh, AttestedCompatibilitySource<Virsh>>,
 >;
 
-fn vm_controller(virsh: &Virsh, config: HostConfig) -> Result<Controller, String> {
-    let raw: Box<dyn RawTelemetrySource> = match config.raw_telemetry_transport {
-        RawTelemetryTransport::File => Box::new(FileRawTelemetrySource::new(
-            &config.raw_telemetry_path,
-            &config.vm_name,
-            &config.raw_telemetry_service_name,
-            config.raw_telemetry_max_age,
-            config.raw_telemetry_future_tolerance,
-        )),
-        RawTelemetryTransport::QgaFile => Box::new(QgaFileRawTelemetrySource::new(
-            VirshQgaFileReader::new(virsh.clone(), config.vm_name.clone()),
-            &config.raw_telemetry_path,
-            &config.vm_name,
-            &config.raw_telemetry_service_name,
-            config.raw_telemetry_max_age,
-            config.raw_telemetry_future_tolerance,
-        )),
+fn vm_controller(virsh: &Virsh, config: HostConfig) -> Result<(DeviceOwner, Controller), String> {
+    let transport = match config.raw_telemetry_transport {
+        RawTelemetryTransport::File => Transport::LocalFile,
+        RawTelemetryTransport::QgaFile => {
+            Transport::Qga(VirshGuestFiles::new(virsh.clone(), config.vm_name.clone()))
+        }
     };
-    let owner = virtio_mem_host::ownership::DeviceOwner::for_domain(virsh, &config.vm_name)?;
-    let demand = TargetDemandSource::new(raw, &config, owner)?;
-    Ok(VmController::new(
-        demand,
+    let owner = DeviceOwner::for_domain(virsh, &config.vm_name)?;
+    let fingerprint =
+        read_attestation(Path::new(&config.compatibility_attestation_path))?.fingerprint_sha256;
+    let controller = VmController::new(
+        GuestChannel::new(
+            transport,
+            &config.raw_telemetry_path,
+            &config.vm_name,
+            &config.raw_telemetry_service_name,
+            config.raw_telemetry_max_age,
+            config.raw_telemetry_future_tolerance,
+        ),
         VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),
         VirshResizeSink::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
             .with_compatibility_source(AttestedCompatibilitySource::new(
@@ -122,5 +125,7 @@ fn vm_controller(virsh: &Virsh, config: HostConfig) -> Result<Controller, String
                 config.compatibility_attestation_path.clone(),
             )),
         config,
-    ))
+        fingerprint,
+    )?;
+    Ok((owner, controller))
 }

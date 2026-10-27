@@ -44,6 +44,12 @@ impl VirtioMemState {
         self.validate_state_value(self.current_bytes, "current")
     }
 
+    /// The largest target `validate_target` accepts: one GiB of headroom
+    /// below the device size, aligned down to the block size.
+    pub fn maximum_target_bytes(self) -> u64 {
+        maximum_target_bytes(self.size_bytes, self.block_size_bytes)
+    }
+
     pub fn validate_target(self, target_bytes: u64) -> Result<(), VirtioMemError> {
         self.validate()?;
         self.validate_state_value(target_bytes, "target")?;
@@ -78,6 +84,11 @@ impl VirtioMemState {
         }
         Ok(())
     }
+}
+
+pub(crate) fn maximum_target_bytes(size_bytes: u64, block_size_bytes: u64) -> u64 {
+    let ceiling = size_bytes.saturating_sub(MIN_HEADROOM_BYTES);
+    ceiling - ceiling % block_size_bytes.max(1)
 }
 
 #[cfg(test)]

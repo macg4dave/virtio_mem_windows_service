@@ -1,9 +1,12 @@
 use std::time::Duration;
 
+use virtio_mem_core::TargetSample;
+
 use crate::demand::{
     MemoryResourceNotificationTelemetry, MemoryTelemetry, RawTelemetryEnvelope,
-    RawTelemetryPublisher, TelemetryClock, UnavailableMemoryResourceNotifications,
+    RawTelemetryPublisher, TelemetryClock,
 };
+use crate::requests::GuestRequests;
 use crate::service_host::{ServiceWorker, StopSignal};
 #[cfg(windows)]
 use crate::{
@@ -16,93 +19,46 @@ use crate::{
     error::RuntimeWiringError,
 };
 
-/// Production worker: publishes only raw, VM-scoped Windows telemetry.
-/// It has no current-allocation input and no resize interface.
+/// Production worker: samples native memory telemetry, lets the guest
+/// policy decide the one add/remove request, and publishes both atomically.
+/// It never resizes anything itself; the host executes requests.
 #[derive(Debug)]
-pub struct RawTelemetryWorker<T, P, C, N = UnavailableMemoryResourceNotifications> {
+pub struct GuestMemoryWorker<T, P, C, N> {
     telemetry: T,
     memory_resource_notifications: N,
     publisher: P,
     clock: C,
-    vm_name: String,
-    service_name: String,
-    session_id: String,
+    requests: GuestRequests,
     next_sequence: u64,
     previous_monotonic_millis: Option<u64>,
     interval: Duration,
 }
 
-impl<T, P, C> RawTelemetryWorker<T, P, C, UnavailableMemoryResourceNotifications>
-where
-    T: MemoryTelemetry,
-    P: RawTelemetryPublisher,
-    C: TelemetryClock,
-{
-    pub fn new(
-        telemetry: T,
-        publisher: P,
-        clock: C,
-        vm_name: impl Into<String>,
-        service_name: impl Into<String>,
-        session_id: impl Into<String>,
-        interval: Duration,
-    ) -> Result<Self, String> {
-        Self::with_memory_resource_notifications(
-            telemetry,
-            UnavailableMemoryResourceNotifications,
-            publisher,
-            clock,
-            vm_name,
-            service_name,
-            session_id,
-            interval,
-        )
-    }
-}
-
-impl<T, P, C, N> RawTelemetryWorker<T, P, C, N>
+impl<T, P, C, N> GuestMemoryWorker<T, P, C, N>
 where
     T: MemoryTelemetry,
     P: RawTelemetryPublisher,
     C: TelemetryClock,
     N: MemoryResourceNotificationTelemetry,
 {
-    #[allow(clippy::too_many_arguments)]
-    pub fn with_memory_resource_notifications(
+    /// Identity comes from `requests`, which validates it.
+    pub fn new(
         telemetry: T,
         memory_resource_notifications: N,
         publisher: P,
         clock: C,
-        vm_name: impl Into<String>,
-        service_name: impl Into<String>,
-        session_id: impl Into<String>,
+        requests: GuestRequests,
         interval: Duration,
     ) -> Result<Self, String> {
-        let vm_name = vm_name.into();
-        let service_name = service_name.into();
-        let session_id = session_id.into();
-        for (field, value) in [
-            ("VM", vm_name.as_str()),
-            ("service", service_name.as_str()),
-            ("session", session_id.as_str()),
-        ] {
-            if value.trim().is_empty() || value.len() > 128 || !value.is_ascii() {
-                return Err(format!(
-                    "raw telemetry {field} identity must be non-empty ASCII of at most 128 bytes"
-                ));
-            }
-        }
         if interval.is_zero() {
-            return Err("raw telemetry polling interval must be greater than zero".to_owned());
+            return Err("polling interval must be greater than zero".to_owned());
         }
         Ok(Self {
             telemetry,
             memory_resource_notifications,
             publisher,
             clock,
-            vm_name,
-            service_name,
-            session_id,
+            requests,
             next_sequence: 0,
             previous_monotonic_millis: None,
             interval,
@@ -126,16 +82,16 @@ where
         {
             return Err("raw telemetry monotonic clock did not advance".to_owned());
         }
-        let envelope = RawTelemetryEnvelope::new(
-            self.vm_name.clone(),
-            self.service_name.clone(),
-            self.session_id.clone(),
+        let requester = self.requests.requester();
+        let mut envelope = RawTelemetryEnvelope::new(
+            requester.vm_name(),
+            requester.service_name(),
+            requester.session_id(),
             observed_unix_millis,
             monotonic_millis,
             self.next_sequence,
             memory,
         );
-        let mut envelope = envelope;
         let windows_native = envelope.windows_native.as_mut().ok_or_else(|| {
             "current raw telemetry is missing its Windows-native extension".to_owned()
         })?;
@@ -146,6 +102,19 @@ where
         envelope
             .contract_mode()
             .map_err(|error| format!("native telemetry contract failed: {error}"))?;
+        envelope.request = self
+            .requests
+            .poll(
+                TargetSample {
+                    session_id: envelope.session_id.clone(),
+                    observed_unix_millis,
+                    monotonic_millis,
+                    sequence: envelope.sequence,
+                    memory,
+                },
+                stop,
+            )
+            .map_err(|error| format!("guest memory request failed: {error}"))?;
         self.publisher
             .publish_cancellable(&envelope, stop)
             .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
@@ -162,7 +131,7 @@ where
     }
 }
 
-impl<T, P, C, N> ServiceWorker for RawTelemetryWorker<T, P, C, N>
+impl<T, P, C, N> ServiceWorker for GuestMemoryWorker<T, P, C, N>
 where
     T: MemoryTelemetry + Send + 'static,
     P: RawTelemetryPublisher + Send + 'static,
@@ -189,7 +158,7 @@ where
 
 /// The worker the service runs; console and SCM start-up both build it here.
 #[cfg(windows)]
-pub type NativeRawTelemetryWorker = RawTelemetryWorker<
+pub type NativeWorker = GuestMemoryWorker<
     NativeMemoryTelemetry,
     AtomicRawTelemetryPublisher,
     SystemTelemetryClock,
@@ -197,20 +166,25 @@ pub type NativeRawTelemetryWorker = RawTelemetryWorker<
 >;
 
 #[cfg(windows)]
-pub fn native_raw_telemetry_worker(
-    config: &ServiceConfig,
-) -> Result<NativeRawTelemetryWorker, RuntimeWiringError> {
+pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiringError> {
     let session_id =
         process_session_id(&config.service_name).map_err(RuntimeWiringError::WorkerConstruction)?;
-    RawTelemetryWorker::with_memory_resource_notifications(
+    let requests = GuestRequests::open(
+        config.policy,
+        &config.vm_name,
+        &config.service_name,
+        &session_id,
+        &config.demand_report_path,
+        config.shutdown_timeout,
+    )
+    .map_err(RuntimeWiringError::WorkerConstruction)?;
+    GuestMemoryWorker::new(
         NativeMemoryTelemetry,
         native_memory_resource_notifications(),
         AtomicRawTelemetryPublisher::new(&config.demand_report_path)
             .with_retry_timeout(config.shutdown_timeout),
         SystemTelemetryClock::default(),
-        &config.vm_name,
-        &config.service_name,
-        session_id,
+        requests,
         config.poll_interval,
     )
     .map_err(RuntimeWiringError::WorkerConstruction)
@@ -222,11 +196,16 @@ mod tests {
     use crate::demand::{
         DemandError, MemoryResourceNotificationState, MemoryTelemetrySnapshot,
         OptionalTelemetrySignal, RawTelemetryContractMode, TelemetryCapability,
+        UnavailableMemoryResourceNotifications,
     };
+    use std::cell::Cell;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use virtio_mem_core::{HostMemoryStatus, MemoryOperation, MEMORY_REQUEST_VERSION};
 
-    const GIB: u64 = 1024 * 1024 * 1024;
+    const MIB: u64 = 1024 * 1024;
+    const GIB: u64 = 1024 * MIB;
 
     #[derive(Clone)]
     struct TelemetryFixture;
@@ -288,16 +267,18 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct FixedClock;
+    /// Advances one second per sample.
+    #[derive(Debug, Default)]
+    struct StepClock(Cell<u64>);
 
-    impl TelemetryClock for FixedClock {
+    impl TelemetryClock for StepClock {
         fn now_unix_millis(&self) -> Result<u64, String> {
-            Ok(1_000_000)
+            Ok(1_000_000 + self.0.get() * 1000)
         }
 
         fn monotonic_millis(&self) -> Result<u64, String> {
-            Ok(10)
+            self.0.set(self.0.get() + 1);
+            Ok(self.0.get() * 1000)
         }
     }
 
@@ -311,18 +292,56 @@ mod tests {
         }
     }
 
-    #[test]
-    fn cancelled_initialization_does_not_sample_or_publish() {
-        let mut worker = RawTelemetryWorker::new(
-            TelemetryFixture,
-            PublisherFixture::default(),
-            FixedClock,
+    fn publication(name: &str) -> String {
+        let path: PathBuf = std::env::temp_dir().join(format!(
+            "virtio-mem-worker-{name}-{}.json",
+            std::process::id()
+        ));
+        let path = path.display().to_string();
+        for file in [
+            virtio_mem_core::host_status_path(&path),
+            virtio_mem_core::request_state_path(&path),
+        ] {
+            // A previous run may have left fixtures behind.
+            let _ = std::fs::remove_file(file);
+        }
+        path
+    }
+
+    fn requests(publication: &str, session: &str) -> GuestRequests {
+        GuestRequests::open(
+            crate::config::test_config().policy,
             "guest",
-            "service",
-            "session",
+            "TelemetryService",
+            session,
+            publication,
             Duration::from_secs(1),
         )
-        .unwrap();
+        .expect("request state")
+    }
+
+    fn worker<N: MemoryResourceNotificationTelemetry>(
+        notifications: N,
+        requests: GuestRequests,
+    ) -> GuestMemoryWorker<TelemetryFixture, PublisherFixture, StepClock, N> {
+        GuestMemoryWorker::new(
+            TelemetryFixture,
+            notifications,
+            PublisherFixture::default(),
+            StepClock::default(),
+            requests,
+            Duration::from_secs(1),
+        )
+        .expect("worker should be valid")
+    }
+
+    #[test]
+    fn cancelled_initialization_does_not_sample_or_publish() {
+        let path = publication("cancelled");
+        let mut worker = worker(
+            UnavailableMemoryResourceNotifications,
+            requests(&path, "session"),
+        );
         let stop = StopSignal::new();
         stop.cancel();
         worker.initialize(&stop).unwrap();
@@ -330,47 +349,89 @@ mod tests {
     }
 
     #[test]
-    fn raw_worker_publishes_without_allocation_input() {
-        let mut worker = RawTelemetryWorker::new(
-            TelemetryFixture,
-            PublisherFixture::default(),
-            FixedClock,
-            "guest",
-            "TelemetryService",
-            "session-a",
-            Duration::from_secs(1),
-        )
-        .expect("worker should be valid");
-
-        let envelope = worker.poll_once().expect("raw publication should pass");
+    fn without_host_status_the_worker_publishes_telemetry_and_no_request() {
+        let path = publication("no-status");
+        let mut worker = worker(
+            UnavailableMemoryResourceNotifications,
+            requests(&path, "session-a"),
+        );
+        let envelope = worker.poll_once().expect("publication should pass");
         assert_eq!(envelope.vm_name, "guest");
         assert_eq!(envelope.sequence, 0);
+        assert_eq!(envelope.request, None);
         assert_eq!(
             envelope.contract_mode(),
             Ok(RawTelemetryContractMode::WindowsNativeFallback),
             "a worker without a native notification collector publishes explicit fallback"
         );
         assert_eq!(worker.publisher().0, vec![envelope]);
-        assert!(worker.poll_once().is_err(), "monotonic time must advance");
     }
 
     #[test]
-    fn raw_worker_publishes_native_notification_state_without_policy_output() {
-        let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
-            TelemetryFixture,
+    fn a_request_is_durable_before_publication_and_survives_restart() {
+        let path = publication("request");
+        // The fixture leaves 1 GiB less commit headroom than the reserve.
+        let status = HostMemoryStatus {
+            version: MEMORY_REQUEST_VERSION,
+            vm_name: "guest".to_owned(),
+            service_name: "TelemetryService".to_owned(),
+            device_alias: "memory0".to_owned(),
+            observed_unix_millis: 1_000_000,
+            device_size_bytes: 32 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 4 * GIB,
+            current_bytes: 4 * GIB,
+            result: None,
+        };
+        let mut bytes = serde_json::to_vec(&status).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(virtio_mem_core::host_status_path(&path), bytes).unwrap();
+
+        let mut worker = worker(
+            UnavailableMemoryResourceNotifications,
+            requests(&path, "session-a"),
+        );
+        let request = worker
+            .poll_once()
+            .unwrap()
+            .request
+            .expect("pressure issues a request");
+        assert_eq!(request.operation, MemoryOperation::Add);
+        assert_eq!(request.bytes, GIB);
+        let retained: virtio_mem_core::GuestRequestState = serde_json::from_slice(
+            &std::fs::read(virtio_mem_core::request_state_path(&path)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(retained.pending.as_ref(), Some(&request));
+
+        let mut restarted = worker_after_restart(&path);
+        assert_eq!(restarted.poll_once().unwrap().request, Some(request));
+    }
+
+    fn worker_after_restart(
+        path: &str,
+    ) -> GuestMemoryWorker<
+        TelemetryFixture,
+        PublisherFixture,
+        StepClock,
+        UnavailableMemoryResourceNotifications,
+    > {
+        worker(
+            UnavailableMemoryResourceNotifications,
+            requests(path, "session-b"),
+        )
+    }
+
+    #[test]
+    fn publishes_native_notification_state_uninterpreted() {
+        let path = publication("notifications");
+        let mut worker = worker(
             FixedNotifications {
                 state: MemoryResourceNotificationState::Low,
             },
-            PublisherFixture::default(),
-            FixedClock,
-            "guest",
-            "TelemetryService",
-            "session-a",
-            Duration::from_secs(1),
-        )
-        .expect("worker should be valid");
-
-        let envelope = worker.poll_once().expect("raw publication should pass");
+            requests(&path, "session-a"),
+        );
+        let envelope = worker.poll_once().expect("publication should pass");
         assert_eq!(
             envelope.contract_mode(),
             Ok(RawTelemetryContractMode::WindowsNativeSignals)
@@ -383,27 +444,16 @@ mod tests {
                 .value,
             Some(MemoryResourceNotificationState::Low)
         );
-        let encoded = serde_json::to_string(&envelope).expect("encode envelope");
-        assert!(!encoded.contains("desired"));
-        assert!(!encoded.contains("requested"));
-        assert!(!encoded.contains("current_bytes"));
     }
 
     #[cfg(windows)]
     #[test]
-    fn raw_worker_publishes_a_real_native_notification_observation() {
-        let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
-            TelemetryFixture,
+    fn publishes_a_real_native_notification_observation() {
+        let path = publication("native-notifications");
+        let mut worker = worker(
             crate::demand::native_memory_resource_notifications(),
-            PublisherFixture::default(),
-            FixedClock,
-            "guest",
-            "TelemetryService",
-            "session-a",
-            Duration::from_secs(1),
-        )
-        .expect("worker should be valid");
-
+            requests(&path, "session-a"),
+        );
         let envelope = worker
             .poll_once()
             .expect("native observation should publish");
@@ -416,18 +466,12 @@ mod tests {
 
     #[test]
     fn cancellation_drops_notification_ownership_without_an_extra_poll() {
+        let path = publication("drop");
         let dropped = Arc::new(AtomicBool::new(false));
-        let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
-            TelemetryFixture,
+        let mut worker = worker(
             DropTrackedNotifications(dropped.clone()),
-            PublisherFixture::default(),
-            FixedClock,
-            "guest",
-            "TelemetryService",
-            "session-a",
-            Duration::from_secs(1),
-        )
-        .expect("worker should be valid");
+            requests(&path, "session-a"),
+        );
         let stop = StopSignal::new();
         stop.cancel();
 
@@ -438,15 +482,24 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_interval() {
-        assert!(RawTelemetryWorker::new(
+    fn rejects_zero_interval_and_invalid_identity() {
+        let path = publication("invalid");
+        assert!(GuestMemoryWorker::new(
             TelemetryFixture,
+            UnavailableMemoryResourceNotifications,
             PublisherFixture::default(),
-            FixedClock,
-            "guest",
+            StepClock::default(),
+            requests(&path, "session-a"),
+            Duration::ZERO,
+        )
+        .is_err());
+        assert!(GuestRequests::open(
+            crate::config::test_config().policy,
+            "",
             "TelemetryService",
             "session-a",
-            Duration::ZERO,
+            &path,
+            Duration::from_secs(1),
         )
         .is_err());
     }

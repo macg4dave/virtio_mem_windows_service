@@ -3,13 +3,13 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use serde_json::Value;
-use virtio_mem_core::{parse_virtio_mem_xml_for_alias, VirtioMemState};
+use virtio_mem_core::{
+    parse_virtio_mem_xml_for_alias, MemoryRequest, RawTelemetryEnvelope, VirtioMemState,
+};
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
 use virtio_mem_host::compatibility_source::CompatibilitySource;
-use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
-use virtio_mem_host::raw_telemetry::{
-    AcceptedTelemetry, QgaFileRawTelemetrySource, RawTelemetrySource, SampleAcceptance,
-};
+use virtio_mem_host::guest_channel::{GuestChannel, GuestLink, Transport};
+use virtio_mem_host::qga::VirshGuestFiles;
 use virtio_mem_host::virsh::Virsh;
 
 use crate::{process, windows};
@@ -23,7 +23,6 @@ pub struct Command {
     service: String,
     attestation: PathBuf,
     host_deployment_evidence: PathBuf,
-    ack_path: PathBuf,
     windows_evidence: PathBuf,
     output: PathBuf,
     host_headroom_bytes: u64,
@@ -52,10 +51,10 @@ struct Evidence {
     current_after_bytes: u64,
     initial_session_id: String,
     initial_sequence: u64,
-    initial_restart_read_unchanged: bool,
+    initial_request: Option<MemoryRequest>,
     new_session_id: String,
     new_session_sequence: u64,
-    new_session_restart_read_unchanged: bool,
+    new_session_request: Option<MemoryRequest>,
     windows_service_restart_applied: bool,
     attestation_current: bool,
     rollback_path: String,
@@ -89,7 +88,6 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
                 | "--service"
                 | "--attestation"
                 | "--host-deployment-evidence"
-                | "--ack-path"
                 | "--windows-evidence"
                 | "--output"
                 | "--host-headroom-bytes"
@@ -119,10 +117,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             .ok_or_else(|| format!("{name} requires a positive integer"))
     };
     let unit = required("--unit")?;
-    let expected_unit = format!("virtio-mem-host@{}.service", args[0]);
-    if unit != expected_unit {
-        return Err(format!("--unit must be {expected_unit}"));
-    }
+    crate::host_deploy::controller_instance(&unit)?;
     let telemetry_path = required("--telemetry-path")?;
     if !telemetry_path
         .as_bytes()
@@ -141,7 +136,6 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         service: required("--service")?,
         attestation: PathBuf::from(required("--attestation")?),
         host_deployment_evidence: PathBuf::from(required("--host-deployment-evidence")?),
-        ack_path: PathBuf::from(required("--ack-path")?),
         windows_evidence: PathBuf::from(required("--windows-evidence")?),
         output: PathBuf::from(required("--output")?),
         host_headroom_bytes: positive("--host-headroom-bytes")?,
@@ -185,44 +179,10 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
     .validate_for_resize()
     .map_err(|error| format!("preflight attestation failed: {error}"))?;
     let rollback_path = applied_rollback_path(&resolve(repo, &command.host_deployment_evidence))?;
-    let ack_path = resolve(repo, &command.ack_path);
-    if ack_path.exists() {
-        return Err(format!(
-            "preflight ack path already exists: {}",
-            ack_path.display()
-        ));
-    }
-    if let Some(parent) = ack_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("create preflight artifact directory: {error}"))?;
-    }
-
-    // The controller stores acceptance inside its policy checkpoint; here it is
-    // kept at the ack path so a "restarted reader" proves it survives a reload.
-    let mut accepted = AcceptedTelemetry::default();
-    let initial = read_telemetry(&source(command))?;
-    require_acceptance(
-        &accepted,
-        &initial,
-        SampleAcceptance::New,
-        "initial telemetry",
-    )?;
-    accepted.accept(initial.clone());
-    save_acceptance(&ack_path, &accepted)?;
-    let initial_restart = read_telemetry(&replay_source(command, &initial)?)?;
-    require_acceptance(
-        &load_acceptance(&ack_path)?,
-        &initial_restart,
-        SampleAcceptance::Unchanged,
-        "initial host-reader restart",
-    )?;
-    if initial.session_id != initial_restart.session_id
-        || initial.sequence != initial_restart.sequence
-    {
-        return Err(
-            "durable acknowledgement did not preserve the initial record identity".to_owned(),
-        );
-    }
+    // With the controller held inactive nothing can resolve a guest request,
+    // so a request pending before the service restart must survive it with
+    // its identity unchanged.
+    let initial = read_telemetry(command)?;
 
     windows::run(
         windows::Command::ServiceCycle {
@@ -234,19 +194,17 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
     )?;
 
     let deadline = Instant::now() + command.preflight_timeout;
+    let mut previous = initial.clone();
     let new_session = loop {
-        let envelope = read_telemetry(&source(command))?;
-        if accepted
-            .classify(&envelope)
-            .map_err(|error| error.to_string())?
-            == SampleAcceptance::New
-        {
-            let rolled = envelope.session_id != initial.session_id;
-            accepted.accept(envelope.clone());
-            save_acceptance(&ack_path, &accepted)?;
-            if rolled {
+        let envelope = read_telemetry(command)?;
+        if envelope != previous {
+            envelope
+                .validate_successor(&previous)
+                .map_err(|error| format!("Windows publication ordering failed: {error}"))?;
+            if envelope.session_id != initial.session_id {
                 break envelope;
             }
+            previous = envelope;
         }
         if Instant::now() >= deadline {
             return Err(
@@ -256,19 +214,11 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         }
         std::thread::sleep(command.sample_interval);
     };
-    let final_restart = read_telemetry(&replay_source(command, &new_session)?)?;
-    require_acceptance(
-        &load_acceptance(&ack_path)?,
-        &final_restart,
-        SampleAcceptance::Unchanged,
-        "new-session host-reader restart",
-    )?;
-    if final_restart.session_id != new_session.session_id
-        || final_restart.sequence != new_session.sequence
-    {
-        return Err(
-            "durable acknowledgement did not preserve the new-session record identity".to_owned(),
-        );
+    if initial.request.is_some() && new_session.request != initial.request {
+        return Err(format!(
+            "the unresolved guest request did not survive the service restart: before={:?}, after={:?}",
+            initial.request, new_session.request
+        ));
     }
     let after = live_state(command, repo)?;
     require_converged(after)?;
@@ -282,7 +232,7 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
     persist(
         &resolve(repo, &command.output),
         &Evidence {
-            schema_version: 1,
+            schema_version: 2,
             vm_name: command.vm.clone(),
             device_alias: command.alias.clone(),
             controller_unit: command.unit.clone(),
@@ -296,10 +246,10 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
             current_after_bytes: after.current_bytes,
             initial_session_id: initial.session_id,
             initial_sequence: initial.sequence,
-            initial_restart_read_unchanged: true,
+            initial_request: initial.request,
             new_session_id: new_session.session_id,
             new_session_sequence: new_session.sequence,
-            new_session_restart_read_unchanged: true,
+            new_session_request: new_session.request,
             windows_service_restart_applied: true,
             attestation_current: true,
             rollback_path,
@@ -313,86 +263,19 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Clone)]
-struct CapturedTelemetry(Vec<u8>);
-
-impl GuestFileReader for CapturedTelemetry {
-    fn read_file(&self, _path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
-        if self.0.len() > maximum_bytes {
-            return Err(format!(
-                "captured telemetry exceeds {maximum_bytes} byte limit"
-            ));
-        }
-        Ok(self.0.clone())
-    }
-}
-
-fn replay_source(
-    command: &Command,
-    envelope: &virtio_mem_core::RawTelemetryEnvelope,
-) -> Result<QgaFileRawTelemetrySource<CapturedTelemetry>, String> {
-    let mut bytes = serde_json::to_vec(envelope)
-        .map_err(|error| format!("encode captured telemetry replay: {error}"))?;
-    bytes.push(b'\n');
-    Ok(QgaFileRawTelemetrySource::new(
-        CapturedTelemetry(bytes),
-        &command.telemetry_path,
-        &command.vm,
-        &command.service,
-        command.telemetry_max_age,
-        command.future_tolerance,
-    ))
-}
-
-fn source(command: &Command) -> QgaFileRawTelemetrySource<VirshQgaFileReader<Virsh>> {
-    QgaFileRawTelemetrySource::new(
-        VirshQgaFileReader::new(
+fn read_telemetry(command: &Command) -> Result<RawTelemetryEnvelope, String> {
+    GuestChannel::new(
+        Transport::Qga(VirshGuestFiles::new(
             Virsh::with_connection("virsh", command.command_timeout, &command.connection),
             &command.vm,
-        ),
+        )),
         &command.telemetry_path,
         &command.vm,
         &command.service,
         command.telemetry_max_age,
         command.future_tolerance,
     )
-}
-
-fn read_telemetry(
-    source: &impl RawTelemetrySource,
-) -> Result<virtio_mem_core::RawTelemetryEnvelope, String> {
-    source.read().map_err(|error| error.to_string())
-}
-
-fn require_acceptance(
-    accepted: &AcceptedTelemetry,
-    envelope: &virtio_mem_core::RawTelemetryEnvelope,
-    expected: SampleAcceptance,
-    description: &str,
-) -> Result<(), String> {
-    let actual = accepted
-        .classify(envelope)
-        .map_err(|error| format!("{description}: {error}"))?;
-    if actual == expected {
-        Ok(())
-    } else {
-        Err(format!(
-            "{description} was {actual:?}, expected {expected:?}"
-        ))
-    }
-}
-
-fn save_acceptance(path: &Path, accepted: &AcceptedTelemetry) -> Result<(), String> {
-    let bytes = serde_json::to_vec(accepted)
-        .map_err(|error| format!("encode preflight acknowledgement: {error}"))?;
-    std::fs::write(path, bytes).map_err(|error| format!("write preflight acknowledgement: {error}"))
-}
-
-fn load_acceptance(path: &Path) -> Result<AcceptedTelemetry, String> {
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("read preflight acknowledgement: {error}"))?;
-    serde_json::from_slice(&bytes)
-        .map_err(|error| format!("parse preflight acknowledgement: {error}"))
+    .read()
 }
 
 fn live_state(command: &Command, repo: &Path) -> Result<VirtioMemState, String> {

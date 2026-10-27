@@ -9,12 +9,18 @@ pub trait GuestFileReader {
     fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String>;
 }
 
-pub struct VirshQgaFileReader<C> {
+/// Replaces a guest file's contents. QGA cannot rename, so readers must
+/// reject the truncated or partial contents they may observe mid-write.
+pub trait GuestFileWriter {
+    fn write_file(&self, path: &str, contents: &[u8]) -> Result<(), String>;
+}
+
+pub struct VirshGuestFiles<C> {
     command: C,
     vm_name: String,
 }
 
-impl<C> VirshQgaFileReader<C> {
+impl<C> VirshGuestFiles<C> {
     pub fn new(command: C, vm_name: impl Into<String>) -> Self {
         Self {
             command,
@@ -36,6 +42,17 @@ struct ReadResponse {
 }
 
 #[derive(Deserialize)]
+struct WriteResponse {
+    #[serde(rename = "return")]
+    result: WriteResult,
+}
+
+#[derive(Deserialize)]
+struct WriteResult {
+    count: usize,
+}
+
+#[derive(Deserialize)]
 struct ReadResult {
     count: usize,
     #[serde(rename = "buf-b64", default)]
@@ -43,7 +60,7 @@ struct ReadResult {
     eof: bool,
 }
 
-impl<C: VirshCommand> VirshQgaFileReader<C> {
+impl<C: VirshCommand> VirshGuestFiles<C> {
     fn execute(&self, request: Value) -> Result<String, String> {
         self.command
             .run(&[
@@ -66,29 +83,75 @@ impl<C: VirshCommand> VirshQgaFileReader<C> {
         }
         Ok(())
     }
-}
 
-impl<C: VirshCommand> GuestFileReader for VirshQgaFileReader<C> {
-    fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
+    fn open(&self, path: &str, mode: &str) -> Result<u64, String> {
         if path.trim().is_empty() {
-            return Err("QGA telemetry path must not be empty".to_owned());
+            return Err("QGA guest file path must not be empty".to_owned());
         }
         let response = self.execute(json!({
             "execute": "guest-file-open",
-            "arguments": {"path": path, "mode": "r"}
+            "arguments": {"path": path, "mode": mode}
         }))?;
-        let response: OpenResponse = serde_json::from_str(&response)
-            .map_err(|error| format!("parse guest-file-open response: {error}"))?;
-        let result = (|| {
+        serde_json::from_str::<OpenResponse>(&response)
+            .map(|response| response.handle)
+            .map_err(|error| format!("parse guest-file-open response: {error}"))
+    }
+
+    /// Runs `operation` on an open handle and always closes it, keeping the
+    /// operation's error as the primary failure.
+    fn with_handle<T>(
+        &self,
+        handle: u64,
+        operation: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, String> {
+        let result = operation();
+        let close = self.close(handle);
+        match (result, close) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(_), Err(close_error)) => Err(close_error),
+            (Err(error), Err(close_error)) => Err(format!(
+                "{error}; additionally failed to close QGA handle: {close_error}"
+            )),
+        }
+    }
+}
+
+impl<C: VirshCommand> GuestFileWriter for VirshGuestFiles<C> {
+    fn write_file(&self, path: &str, contents: &[u8]) -> Result<(), String> {
+        let handle = self.open(path, "w")?;
+        self.with_handle(handle, || {
+            let response = self.execute(json!({
+                "execute": "guest-file-write",
+                "arguments": {"handle": handle, "buf-b64": encode_base64(contents)}
+            }))?;
+            let response: WriteResponse = serde_json::from_str(&response)
+                .map_err(|error| format!("parse guest-file-write response: {error}"))?;
+            if response.result.count != contents.len() {
+                return Err(format!(
+                    "guest-file-write wrote {} of {} bytes",
+                    response.result.count,
+                    contents.len()
+                ));
+            }
+            Ok(())
+        })
+    }
+}
+
+impl<C: VirshCommand> GuestFileReader for VirshGuestFiles<C> {
+    fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
+        let handle = self.open(path, "r")?;
+        self.with_handle(handle, || {
             let mut contents = Vec::new();
             for _ in 0..MAX_GUEST_FILE_READS {
                 let requested = maximum_bytes
                     .checked_sub(contents.len())
                     .and_then(|remaining| remaining.checked_add(1))
-                    .ok_or_else(|| "QGA telemetry read bound overflowed".to_owned())?;
+                    .ok_or_else(|| "QGA read bound overflowed".to_owned())?;
                 let read = self.execute(json!({
                     "execute": "guest-file-read",
-                    "arguments": {"handle": response.handle, "count": requested}
+                    "arguments": {"handle": handle, "count": requested}
                 }))?;
                 let read: ReadResponse = serde_json::from_str(&read)
                     .map_err(|error| format!("parse guest-file-read response: {error}"))?;
@@ -105,28 +168,40 @@ impl<C: VirshCommand> GuestFileReader for VirshQgaFileReader<C> {
                 }
                 contents.extend_from_slice(&bytes);
                 if contents.len() > maximum_bytes {
-                    return Err(format!(
-                        "QGA telemetry file exceeds {maximum_bytes} byte limit"
-                    ));
+                    return Err(format!("QGA guest file exceeds {maximum_bytes} byte limit"));
                 }
                 if read.result.eof {
                     return Ok(contents);
                 }
             }
             Err(format!(
-                "QGA telemetry file did not reach EOF within {MAX_GUEST_FILE_READS} reads"
+                "QGA guest file did not reach EOF within {MAX_GUEST_FILE_READS} reads"
             ))
-        })();
-        let close = self.close(response.handle);
-        match (result, close) {
-            (Ok(bytes), Ok(())) => Ok(bytes),
-            (Err(error), Ok(())) => Err(error),
-            (Ok(_), Err(close_error)) => Err(close_error),
-            (Err(error), Err(close_error)) => Err(format!(
-                "{error}; additionally failed to close QGA handle: {close_error}"
-            )),
+        })
+    }
+}
+
+/// Standard padded base64, as QGA and PowerShell payloads require.
+pub fn encode_base64(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let bytes = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let value = u32::from_be_bytes([0, bytes[0], bytes[1], bytes[2]]);
+        for index in 0..4 {
+            if index <= chunk.len() {
+                let sextet = (value >> (18 - 6 * index)) & 0x3f;
+                output.push(char::from(ALPHABET[sextet as usize]));
+            } else {
+                output.push('=');
+            }
         }
     }
+    output
 }
 
 fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
@@ -225,7 +300,7 @@ mod tests {
             r#"{"return":{}}"#,
         ]);
         assert_eq!(
-            VirshQgaFileReader::new(fake, "guest").read_file(r"C:\telemetry.json", 3),
+            VirshGuestFiles::new(fake, "guest").read_file(r"C:\telemetry.json", 3),
             Ok(b"abc".to_vec())
         );
     }
@@ -239,7 +314,7 @@ mod tests {
             r#"{"return":{}}"#,
         ]);
         assert_eq!(
-            VirshQgaFileReader::new(fake, "guest").read_file(r"C:\telemetry.json", 3),
+            VirshGuestFiles::new(fake, "guest").read_file(r"C:\telemetry.json", 3),
             Ok(b"abc".to_vec())
         );
     }
@@ -251,9 +326,47 @@ mod tests {
             r#"{"return":{"count":1,"buf-b64":"!===","eof":true}}"#,
         ] {
             let fake = FileFake::new(&[r#"{"return":9}"#, read_response, r#"{"return":{}}"#]);
-            let reader = VirshQgaFileReader::new(fake, "guest");
+            let reader = VirshGuestFiles::new(fake, "guest");
             assert!(reader.read_file(r"C:\telemetry.json", 3).is_err());
             assert_eq!(reader.command.requests.lock().expect("requests").len(), 3);
+        }
+    }
+
+    #[test]
+    fn writes_the_complete_contents_and_closes() {
+        let fake = FileFake::new(&[
+            r#"{"return":7}"#,
+            r#"{"return":{"count":3,"eof":false}}"#,
+            r#"{"return":{}}"#,
+        ]);
+        let files = VirshGuestFiles::new(fake, "guest");
+        files.write_file(r"C:\status.json", b"abc").unwrap();
+        let requests = files.command.requests.lock().expect("requests");
+        assert_eq!(requests[0]["arguments"]["mode"], "w");
+        assert_eq!(requests[1]["arguments"]["buf-b64"], "YWJj");
+        assert_eq!(requests[2]["execute"], "guest-file-close");
+
+        let short = FileFake::new(&[
+            r#"{"return":7}"#,
+            r#"{"return":{"count":2,"eof":false}}"#,
+            r#"{"return":{}}"#,
+        ]);
+        assert!(VirshGuestFiles::new(short, "guest")
+            .write_file(r"C:\status.json", b"abc")
+            .is_err());
+    }
+
+    #[test]
+    fn base64_round_trips_every_padding_length() {
+        for input in [
+            &b""[..],
+            b"a",
+            b"ab",
+            b"abc",
+            b"abcd",
+            &[0xff, 0x00, 0x7f, 0x80],
+        ] {
+            assert_eq!(decode_base64(&encode_base64(input)), Ok(input.to_vec()));
         }
     }
 

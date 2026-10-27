@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use virtio_mem_core::{WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION};
+use virtio_mem_core::{
+    GuestMemoryPolicy, WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
+};
+use virtio_mem_host::qga::encode_base64;
 
 use crate::process;
 
@@ -55,6 +58,7 @@ struct DeploymentManifest {
     service_account: String,
     poll_interval_millis: u64,
     shutdown_timeout_millis: u64,
+    policy: GuestMemoryPolicy,
     install_path: String,
 }
 
@@ -77,6 +81,7 @@ struct DeploymentManifestEvidence {
     service_account: String,
     poll_interval_millis: u64,
     shutdown_timeout_millis: u64,
+    policy: GuestMemoryPolicy,
     install_path: String,
 }
 
@@ -765,7 +770,7 @@ fn deploy(
 
     let windows = if apply {
         let service_config = service_config(&manifest);
-        let config_base64 = base64_encode(
+        let config_base64 = encode_base64(
             serde_json::to_string_pretty(&service_config)
                 .map_err(|error| format!("encode Windows service configuration: {error}"))?
                 .as_bytes(),
@@ -789,6 +794,7 @@ fn deploy(
             service_account: manifest.service_account,
             poll_interval_millis: manifest.poll_interval_millis,
             shutdown_timeout_millis: manifest.shutdown_timeout_millis,
+            policy: manifest.policy,
             install_path: manifest.install_path,
         },
         windows,
@@ -916,11 +922,12 @@ fn service_config(manifest: &DeploymentManifest) -> WindowsServiceConfigFile {
         service_account: manifest.service_account.clone(),
         poll_interval_millis: manifest.poll_interval_millis,
         shutdown_timeout_millis: manifest.shutdown_timeout_millis,
+        policy: manifest.policy,
     }
 }
 
 fn validate_deployment_manifest(manifest: &DeploymentManifest) -> Result<(), String> {
-    if manifest.schema_version != 1 {
+    if manifest.schema_version != 2 {
         return Err(format!(
             "unsupported Windows deployment manifest schema version: {}",
             manifest.schema_version
@@ -1054,29 +1061,6 @@ fn unix_millis() -> Result<u128, String> {
 
 fn ps_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
-}
-
-fn base64_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
-        let a = chunk[0];
-        let b = chunk.get(1).copied().unwrap_or(0);
-        let c = chunk.get(2).copied().unwrap_or(0);
-        output.push(TABLE[(a >> 2) as usize] as char);
-        output.push(TABLE[(((a & 0x03) << 4) | (b >> 4)) as usize] as char);
-        output.push(if chunk.len() > 1 {
-            TABLE[(((b & 0x0f) << 2) | (c >> 6)) as usize] as char
-        } else {
-            '='
-        });
-        output.push(if chunk.len() > 2 {
-            TABLE[(c & 0x3f) as usize] as char
-        } else {
-            '='
-        });
-    }
-    output
 }
 
 fn resolve_local(repo: &Path, path: &Path) -> PathBuf {
@@ -1290,7 +1274,7 @@ mod tests {
     #[test]
     fn deployment_manifest_requires_explicit_safe_paths_and_timings() {
         let mut manifest = DeploymentManifest {
-            schema_version: 1,
+            schema_version: 2,
             vm_name: "guest".to_owned(),
             service_name: "VirtioMemService".to_owned(),
             display_name: "Virtio memory telemetry".to_owned(),
@@ -1299,6 +1283,22 @@ mod tests {
             service_account: r"NT AUTHORITY\LocalService".to_owned(),
             poll_interval_millis: 5_000,
             shutdown_timeout_millis: 30_000,
+            policy: GuestMemoryPolicy {
+                target: virtio_mem_core::TargetPolicyConfig {
+                    configured_minimum_bytes: 0,
+                    physical_reserve_bytes: 2 << 30,
+                    commit_reserve_bytes: 2 << 30,
+                    safe_floor_physical_reserve_bytes: 1 << 30,
+                    safe_floor_commit_reserve_bytes: 1 << 30,
+                    history_window_millis: 600_000,
+                    maximum_gap_millis: 15_000,
+                    downward_hysteresis_bytes: 256 << 20,
+                },
+                grow_step_bytes: 1 << 30,
+                shrink_step_bytes: 64 << 20,
+                host_status_max_age_millis: 30_000,
+                request_lifetime_millis: 30_000,
+            },
             install_path: r"C:\Program Files\VirtioMemService\virtio-mem-service.exe".to_owned(),
         };
         assert!(validate_deployment_manifest(&manifest).is_ok());
@@ -1306,14 +1306,17 @@ mod tests {
         assert!(validate_deployment_manifest(&manifest).is_err());
         manifest.telemetry_path = r"C:\ProgramData\..\unsafe.json".to_owned();
         assert!(validate_deployment_manifest(&manifest).is_err());
+        manifest.telemetry_path = r"C:\ProgramData\VirtioMemService\telemetry.json".to_owned();
+        manifest.policy.request_lifetime_millis = 0;
+        assert!(validate_deployment_manifest(&manifest).is_err());
     }
 
     #[test]
     fn powershell_payload_encoding_is_standard_base64() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(encode_base64(b""), "");
+        assert_eq!(encode_base64(b"f"), "Zg==");
+        assert_eq!(encode_base64(b"fo"), "Zm8=");
+        assert_eq!(encode_base64(b"foo"), "Zm9v");
         assert_eq!(ps_literal("a'b"), "'a''b'");
         assert_eq!(
             parse_last_json_line("service installed\n{\"ok\":true}\n").expect("last JSON line")

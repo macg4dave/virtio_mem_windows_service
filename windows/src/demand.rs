@@ -94,15 +94,6 @@ impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
                 "raw telemetry record exceeds {MAX_RAW_TELEMETRY_RECORD_BYTES} byte limit"
             ));
         }
-        if let Some(parent) = self
-            .path
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-        {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("create raw telemetry directory: {error}"))?;
-        }
-
         let retained = (|| -> Result<(), String> {
             if self.retention_files > 0 {
                 let oldest = self.backup_path(self.retention_files);
@@ -138,34 +129,52 @@ impl RawTelemetryPublisher for AtomicRawTelemetryPublisher {
             return Ok(());
         }
 
-        let temporary = PathBuf::from(format!(
-            "{}.tmp-{}",
-            self.path.display(),
-            std::process::id()
-        ));
-        let result = (|| {
-            let mut file = OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .write(true)
-                .open(&temporary)
-                .map_err(|error| format!("open raw telemetry handoff: {error}"))?;
-            file.write_all(&encoded)
-                .map_err(|error| format!("write raw telemetry handoff: {error}"))?;
-            file.sync_all()
-                .map_err(|error| format!("flush raw telemetry handoff: {error}"))?;
-            drop(file);
-            atomic_replace(&temporary, &self.path, stop, self.retry_timeout)
-                .map_err(|error| format!("publish raw telemetry handoff: {error}"))
-        })();
-        if result.is_err() || stop.is_cancelled() {
-            let _ = std::fs::remove_file(&temporary);
-        }
-        if stop.is_cancelled() {
-            Ok(())
-        } else {
-            result
-        }
+        replace_file(&self.path, &encoded, stop, self.retry_timeout)
+            .map_err(|error| format!("publish raw telemetry handoff: {error}"))
+    }
+}
+
+/// Replace `path` with `bytes` through a flushed temporary file and an atomic
+/// write-through rename, so readers and restarts see the old or new contents
+/// whole. Cancellation abandons the replacement and reports success; the
+/// caller's own cancellable publication then publishes nothing either.
+pub(crate) fn replace_file(
+    path: &Path,
+    bytes: &[u8],
+    stop: &StopSignal,
+    retry_timeout: Duration,
+) -> Result<(), String> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| format!("open handoff: {error}"))?;
+        file.write_all(bytes)
+            .map_err(|error| format!("write handoff: {error}"))?;
+        file.sync_all()
+            .map_err(|error| format!("flush handoff: {error}"))?;
+        drop(file);
+        atomic_replace(&temporary, path, stop, retry_timeout)
+            .map_err(|error| format!("replace {}: {error}", path.display()))
+    })();
+    if result.is_err() || stop.is_cancelled() {
+        // Best effort: the replacement error, if any, is what is reported.
+        let _ = std::fs::remove_file(&temporary);
+    }
+    if stop.is_cancelled() {
+        Ok(())
+    } else {
+        result
     }
 }
 

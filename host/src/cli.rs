@@ -3,19 +3,22 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use virtio_mem_core::{
-    parse_virtio_mem_xml_for_alias, AbandonAction, AbandonToCurrent, ShrinkObservation,
+    parse_virtio_mem_xml_for_alias, AbandonAction, AbandonToCurrent, GuestInputStatus,
+    ShrinkObservation,
 };
 
 use crate::attestation::{
     read_review, AttestedCompatibilitySource, CompatibilityAttestation,
     VirshCompatibilityEvidenceSource,
 };
+use crate::checkpoint::{clear_actuation_latch, read_controller_status};
 use crate::compatibility_source::CompatibilitySource;
-use crate::config::HostConfig;
+use crate::config::{HostConfig, RawTelemetryTransport};
+use crate::guest_channel::{GuestChannel, GuestLink, SystemUnixClock, Transport, UnixClock};
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
+use crate::qga::VirshGuestFiles;
 use crate::resize_sink::VirshResizeSink;
 use crate::runtime::MemoryStateSource;
-use crate::target_policy::{clear_actuation_latch, read_controller_status};
 use crate::virsh::{Virsh, VirshCommand};
 use crate::xml_source::VirshXmlSource;
 
@@ -434,7 +437,18 @@ fn run_with<H: HostMemorySource, W: Write>(
             .map_err(|error| error.to_string())?;
             let live = VirshXmlSource::new(virsh, config.vm_name.clone(), config.alias.clone())
                 .memory_state()?;
-            let message = clear_actuation_latch(&config, live, &reason, apply)?;
+            let fingerprint = crate::attestation::read_attestation(Path::new(
+                &config.compatibility_attestation_path,
+            ))?
+            .fingerprint_sha256;
+            let message = clear_actuation_latch(
+                &config,
+                live,
+                fingerprint,
+                &reason,
+                SystemUnixClock.now_unix_millis()?,
+                apply,
+            )?;
             writeln!(
                 output,
                 "mode={} {message}",
@@ -577,9 +591,45 @@ fn run_configured_status<W: Write>(
         config.command_timeout,
         connection,
     );
-    let live =
-        VirshXmlSource::new(virsh, config.vm_name.clone(), config.alias.clone()).memory_state()?;
-    let status = read_controller_status(&config, live)?;
+    let live = VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
+        .memory_state()?;
+    let transport = match config.raw_telemetry_transport {
+        RawTelemetryTransport::File => Transport::LocalFile,
+        RawTelemetryTransport::QgaFile => {
+            Transport::Qga(VirshGuestFiles::new(virsh, config.vm_name.clone()))
+        }
+    };
+    let guest_input = match GuestChannel::new(
+        transport,
+        &config.raw_telemetry_path,
+        &config.vm_name,
+        &config.raw_telemetry_service_name,
+        config.raw_telemetry_max_age,
+        config.raw_telemetry_future_tolerance,
+    )
+    .read()
+    {
+        Ok(envelope) => GuestInputStatus {
+            error: None,
+            observed_unix_millis: Some(envelope.observed_unix_millis),
+            request: envelope.request,
+        },
+        Err(error) => GuestInputStatus {
+            error: Some(error),
+            observed_unix_millis: None,
+            request: None,
+        },
+    };
+    let fingerprint =
+        crate::attestation::read_attestation(Path::new(&config.compatibility_attestation_path))?
+            .fingerprint_sha256;
+    let status = read_controller_status(
+        &config,
+        live,
+        guest_input,
+        fingerprint,
+        SystemUnixClock.now_unix_millis()?,
+    )?;
     serde_json::to_writer_pretty(&mut *output, &status)
         .map_err(|error| format!("encode controller status: {error}"))?;
     writeln!(output).map_err(|error| error.to_string())

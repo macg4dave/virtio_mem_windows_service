@@ -1,7 +1,5 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use virtio_mem_core::{
-    bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility, VirtioMemState,
-};
+use virtio_mem_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemState};
 
 use crate::compatibility_source::{CompatibilitySource, FixedCompatibilitySource};
 use crate::runtime::{ResizeSink, ResizeSinkError};
@@ -45,7 +43,11 @@ impl<C> VirshResizeSink<C, FixedCompatibilitySource> {
         }
     }
 
-    pub fn with_external_compatibility(mut self, compatibility: VirtioMemCompatibility) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_external_compatibility(
+        mut self,
+        compatibility: virtio_mem_core::VirtioMemCompatibility,
+    ) -> Self {
         self.compatibility_source = FixedCompatibilitySource::new(compatibility);
         self
     }
@@ -64,14 +66,6 @@ impl<C, E> VirshResizeSink<C, E> {
 }
 
 impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, E> {
-    fn request_resize(&self, requested_bytes: u64) -> Result<(), ResizeSinkError> {
-        let prepared = self
-            .prepare_resize(requested_bytes)
-            .map_err(ResizeSinkError::Rejected)?;
-        self.apply_prepared(prepared)
-            .map_err(ResizeSinkError::CommandUnknown)
-    }
-
     fn request_resize_guarded(
         &self,
         expected: VirtioMemState,
@@ -88,48 +82,23 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
             })
             .map_err(ResizeSinkError::Rejected)?;
         authorize().map_err(ResizeSinkError::Rejected)?;
-        if stop.load(Ordering::Acquire) {
-            return Err(ResizeSinkError::Rejected("shutdown requested".to_owned()));
-        }
-        self.apply_prepared(prepared)
-            .map_err(ResizeSinkError::CommandUnknown)
+        self.apply_unless_stopped(prepared, stop)
     }
 
-    fn supersede_shrink_guarded(
+    fn settle_shrink_guarded(
         &self,
         expected: VirtioMemState,
-        target: u64,
         stop: &AtomicBool,
     ) -> Result<(), ResizeSinkError> {
         let prepared = self
-            .prepare(target, |state| {
-                if *state != expected
-                    || state.requested_bytes >= target
-                    || target > state.current_bytes
-                {
-                    return Err("live pending shrink changed since the resize decision".to_owned());
+            .prepare(expected.current_bytes, |state| {
+                if *state != expected || state.requested_bytes >= state.current_bytes {
+                    return Err("live pending shrink changed since the settle decision".to_owned());
                 }
                 Ok(())
             })
             .map_err(ResizeSinkError::Rejected)?;
-        if stop.load(Ordering::Acquire) {
-            return Err(ResizeSinkError::Rejected("shutdown requested".to_owned()));
-        }
-        self.apply_prepared(prepared)
-            .map_err(ResizeSinkError::CommandUnknown)
-    }
-
-    fn supersede_shrink(
-        &self,
-        prior_requested_bytes: u64,
-        prior_current_bytes: u64,
-        target_bytes: u64,
-    ) -> Result<(), ResizeSinkError> {
-        let prepared = self
-            .prepare_shrink_supersession(prior_requested_bytes, prior_current_bytes, target_bytes)
-            .map_err(ResizeSinkError::Rejected)?;
-        self.apply_prepared(prepared)
-            .map_err(ResizeSinkError::CommandUnknown)
+        self.apply_unless_stopped(prepared, stop)
     }
 }
 
@@ -152,26 +121,16 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         Ok(())
     }
 
-    fn prepare_shrink_supersession(
+    fn apply_unless_stopped(
         &self,
-        prior_requested_bytes: u64,
-        prior_current_bytes: u64,
-        target_bytes: u64,
-    ) -> Result<PreparedResize, String> {
-        self.prepare(target_bytes, |state| {
-            if state.requested_bytes != prior_requested_bytes
-                || state.current_bytes != prior_current_bytes
-                || prior_requested_bytes >= prior_current_bytes
-                || target_bytes <= prior_requested_bytes
-                || target_bytes > prior_current_bytes
-            {
-                return Err(
-                    "pending-shrink supersession requires unchanged requested < target <= current"
-                        .to_owned(),
-                );
-            }
-            Ok(())
-        })
+        prepared: PreparedResize,
+        stop: &AtomicBool,
+    ) -> Result<(), ResizeSinkError> {
+        if stop.load(Ordering::Acquire) {
+            return Err(ResizeSinkError::Rejected("shutdown requested".to_owned()));
+        }
+        self.apply_prepared(prepared)
+            .map_err(ResizeSinkError::CommandUnknown)
     }
 
     /// Prepares the one-shot abandon-to-current recovery after two
@@ -248,6 +207,7 @@ mod tests {
 
     use super::*;
     use crate::virsh::{VirshCommand, VirshError};
+    use virtio_mem_core::VirtioMemCompatibility;
 
     struct DriftedAttestation;
 
@@ -278,6 +238,12 @@ mod tests {
         }
     }
 
+    fn converged() -> VirtioMemState {
+        parse_virtio_mem_xml_for_alias(CONVERGED_XML, "memory0")
+            .unwrap()
+            .memory
+    }
+
     struct FailedUpdateFake {
         calls: Rc<RefCell<Vec<Vec<String>>>>,
     }
@@ -303,8 +269,13 @@ mod tests {
         let sink = VirshResizeSink::new(fake, "guest", "memory0")
             .with_external_compatibility(VirtioMemCompatibility::confirmed());
 
-        sink.request_resize(6 * 1024 * 1024)
-            .expect("aligned converged request succeeds");
+        sink.request_resize_guarded(
+            converged(),
+            6 * 1024 * 1024,
+            &AtomicBool::new(false),
+            &|| Ok(()),
+        )
+        .expect("aligned converged request succeeds");
 
         assert_eq!(
             calls.take(),
@@ -392,7 +363,7 @@ mod tests {
         let sink = VirshResizeSink::new(fake, "guest", "memory0")
             .with_external_compatibility(VirtioMemCompatibility::confirmed());
 
-        assert!(sink.request_resize(6 * 1024 * 1024).is_err());
+        assert!(sink.prepare_resize(6 * 1024 * 1024).is_err());
         assert_eq!(calls.take().len(), 1);
     }
 
@@ -409,7 +380,12 @@ mod tests {
         .with_external_compatibility(VirtioMemCompatibility::confirmed());
 
         let error = sink
-            .request_resize(6 * 1024 * 1024)
+            .request_resize_guarded(
+                converged(),
+                6 * 1024 * 1024,
+                &AtomicBool::new(false),
+                &|| Ok(()),
+            )
             .expect_err("timed-out update has an unknown outcome");
 
         assert!(matches!(error, ResizeSinkError::CommandUnknown(_)));
@@ -417,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_shrink_may_only_be_superseded_upward_to_current() {
+    fn a_stalled_shrink_settles_only_at_its_unchanged_current_allocation() {
         let calls = Rc::new(RefCell::new(Vec::new()));
         let sink = VirshResizeSink::new(
             Fake {
@@ -428,29 +404,25 @@ mod tests {
             "memory0",
         )
         .with_external_compatibility(VirtioMemCompatibility::confirmed());
-
-        sink.supersede_shrink(
-            4 * 1024 * 1024 * 1024,
-            6 * 1024 * 1024 * 1024,
-            5 * 1024 * 1024 * 1024,
-        )
-        .expect("an unchanged pending shrink may be raised");
-        assert_eq!(calls.borrow().len(), 2);
+        let pending = parse_virtio_mem_xml_for_alias(SHRINK_PENDING_XML, "memory0")
+            .unwrap()
+            .memory;
+        let stop = AtomicBool::new(false);
 
         assert!(sink
-            .supersede_shrink(
-                4 * 1024 * 1024 * 1024,
-                6 * 1024 * 1024 * 1024,
-                3 * 1024 * 1024 * 1024,
+            .settle_shrink_guarded(
+                VirtioMemState {
+                    current_bytes: 5 << 30,
+                    ..pending
+                },
+                &stop
             )
             .is_err());
-        assert!(sink
-            .supersede_shrink(
-                4 * 1024 * 1024 * 1024,
-                6 * 1024 * 1024 * 1024,
-                7 * 1024 * 1024 * 1024,
-            )
-            .is_err());
+        sink.settle_shrink_guarded(pending, &stop)
+            .expect("an unchanged pending shrink settles at current");
+        let calls = calls.borrow();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[2][5], "6291456");
     }
 
     #[test]
@@ -501,7 +473,8 @@ mod tests {
         let sink = VirshResizeSink::new(fake, "guest", "memory0");
 
         let error = sink
-            .request_resize(6 * 1024 * 1024)
+            .prepare_resize(6 * 1024 * 1024)
+            .map_err(ResizeSinkError::Rejected)
             .expect_err("unknown compatibility must fail closed");
         assert!(
             matches!(error, ResizeSinkError::Rejected(message) if message.contains("dynamic-memslots"))
@@ -523,7 +496,8 @@ mod tests {
         .with_compatibility_source(DriftedAttestation);
 
         let error = sink
-            .request_resize(6 * 1024 * 1024)
+            .prepare_resize(6 * 1024 * 1024)
+            .map_err(ResizeSinkError::Rejected)
             .expect_err("drift must fail before actuation");
         assert!(
             matches!(error, ResizeSinkError::Rejected(message) if message.contains("drifted: domain_xml"))

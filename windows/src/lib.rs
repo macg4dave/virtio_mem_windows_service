@@ -3,6 +3,7 @@ pub mod demand;
 pub mod error;
 pub mod event_log;
 mod native;
+pub mod requests;
 pub mod runtime;
 pub mod service_host;
 pub mod service_scm;
@@ -24,9 +25,10 @@ pub use error::{ConfigurationError, RuntimeWiringError, ServiceHostError};
 pub use event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
 };
-pub use runtime::RawTelemetryWorker;
+pub use requests::GuestRequests;
+pub use runtime::GuestMemoryWorker;
 #[cfg(windows)]
-pub use runtime::{native_raw_telemetry_worker, NativeRawTelemetryWorker};
+pub use runtime::{native_worker, NativeWorker};
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};
 pub use service_scm::{

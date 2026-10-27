@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::memory_request::MemoryRequest;
+
 pub const LEGACY_RAW_TELEMETRY_VERSION: u16 = 2;
 pub const RAW_TELEMETRY_VERSION: u16 = 3;
 pub const WINDOWS_NATIVE_TELEMETRY_VERSION: u16 = 1;
@@ -333,6 +335,10 @@ pub struct RawTelemetryEnvelope {
     pub memory: MemoryTelemetrySnapshot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows_native: Option<WindowsNativeTelemetry>,
+    /// The guest's one unresolved memory request, retransmitted with every
+    /// publication until a correlated terminal result resolves it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<MemoryRequest>,
 }
 
 impl RawTelemetryEnvelope {
@@ -357,6 +363,7 @@ impl RawTelemetryEnvelope {
             allocation_provenance: AllocationProvenance::HostLiveLibvirtCurrentRequired,
             memory,
             windows_native: Some(WindowsNativeTelemetry::unavailable(monotonic_millis)),
+            request: None,
         }
     }
 
@@ -423,6 +430,18 @@ impl RawTelemetryEnvelope {
                 now: now_unix_millis,
             });
         }
+        if let Some(request) = &self.request {
+            request
+                .validate()
+                .map_err(DemandError::InvalidMemoryRequest)?;
+            if request.identity.vm_name != self.vm_name
+                || request.identity.service_name != self.service_name
+            {
+                return Err(DemandError::InvalidMemoryRequest(
+                    "request identity differs from its publication".to_owned(),
+                ));
+            }
+        }
         self.memory.validate()
     }
 
@@ -462,6 +481,8 @@ impl RawTelemetryEnvelope {
 
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 pub enum DemandError {
+    #[error("embedded memory request is invalid: {0}")]
+    InvalidMemoryRequest(String),
     #[error("memory counter must be greater than zero: {0}")]
     ZeroCounter(&'static str),
     #[error("inconsistent memory counters: {0}")]

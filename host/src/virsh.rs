@@ -360,8 +360,10 @@ mod tests {
                     .expect("fixture output");
             }
             "descendant" => {
-                #[allow(clippy::zombie_processes)]
-                // The fixture deliberately exits first to orphan a pipe holder.
+                #[expect(
+                    clippy::zombie_processes,
+                    reason = "the fixture exits first to orphan a pipe-holding descendant"
+                )]
                 let _descendant = Command::new("sh")
                     .args(["-c", "sleep 10"])
                     .spawn()

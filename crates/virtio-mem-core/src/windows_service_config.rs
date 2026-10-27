@@ -1,9 +1,11 @@
-//! The Windows telemetry service's configuration file format. It lives here so
+//! The Windows memory service's configuration file format. It lives here so
 //! the service and the deployment tooling share one serialization.
 
 use serde::{Deserialize, Serialize};
 
-pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 4;
+use crate::GuestMemoryPolicy;
+
+pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +19,7 @@ pub struct WindowsServiceConfigFile {
     pub service_account: String,
     pub poll_interval_millis: u64,
     pub shutdown_timeout_millis: u64,
+    pub policy: GuestMemoryPolicy,
 }
 
 impl WindowsServiceConfigFile {
@@ -55,18 +58,19 @@ impl WindowsServiceConfigFile {
                 return Err("configuration timing is zero or too large".to_owned());
             }
         }
-        Ok(())
+        self.policy.validate()
     }
 
+    /// The publication path also names its backups, handoff files, host
+    /// status and durable request state as `<path>.<suffix>`; the
+    /// configuration must be none of them.
     pub fn validate_paths(&self, config_path: &str) -> Result<(), String> {
         let config = normalize_windows_path(config_path)?;
         let report = normalize_windows_path(&self.demand_report_path)?;
-        if config == report
-            || (1..=3).any(|index| config == format!("{report}.{index}"))
-            || config.starts_with(&format!("{report}.tmp-"))
-        {
+        if config == report || config.starts_with(&format!("{report}.")) {
             return Err(
-                "configuration path collides with telemetry publication or retention".to_owned(),
+                "configuration path collides with the telemetry publication or its derived files"
+                    .to_owned(),
             );
         }
         Ok(())
@@ -158,6 +162,47 @@ mod tests {
             "C:\\data\\bad\0.json",
         ] {
             assert!(normalize_windows_path(path).is_err(), "{path}");
+        }
+    }
+
+    #[test]
+    fn configuration_cannot_alias_any_derived_publication_file() {
+        let config = WindowsServiceConfigFile {
+            schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
+            vm_name: "guest".to_owned(),
+            service_name: "VirtioMemService".to_owned(),
+            display_name: "Virtio memory".to_owned(),
+            description: "Virtio memory".to_owned(),
+            demand_report_path: r"C:\Data\telemetry.json".to_owned(),
+            service_account: r"NT AUTHORITY\LocalService".to_owned(),
+            poll_interval_millis: 1000,
+            shutdown_timeout_millis: 1000,
+            policy: crate::GuestMemoryPolicy {
+                target: crate::TargetPolicyConfig {
+                    configured_minimum_bytes: 0,
+                    physical_reserve_bytes: 1,
+                    commit_reserve_bytes: 1,
+                    safe_floor_physical_reserve_bytes: 1,
+                    safe_floor_commit_reserve_bytes: 1,
+                    history_window_millis: 1,
+                    maximum_gap_millis: 1,
+                    downward_hysteresis_bytes: 1,
+                },
+                grow_step_bytes: 1,
+                shrink_step_bytes: 1,
+                host_status_max_age_millis: 1,
+                request_lifetime_millis: 1,
+            },
+        };
+        config.validate().unwrap();
+        config.validate_paths(r"C:\Data\config.json").unwrap();
+        for path in [
+            crate::host_status_path(r"c:/data/TELEMETRY.json"),
+            crate::request_state_path(r"C:\Data\telemetry.json"),
+            r"C:\Data\telemetry.json.tmp-12".to_owned(),
+            r"C:\Data\telemetry.json".to_owned(),
+        ] {
+            assert!(config.validate_paths(&path).is_err(), "{path}");
         }
     }
 }

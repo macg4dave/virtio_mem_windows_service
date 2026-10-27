@@ -8,9 +8,21 @@ use serde::{Deserialize, Serialize};
 use crate::VirtioMemState;
 
 pub const MEMORY_REQUEST_VERSION: u16 = 1;
-pub const MAX_MEMORY_REQUEST_BYTES: usize = 64 * 1024;
 /// Admission freshness. Execution/result resolution may outlive this interval.
 pub const MAX_REQUEST_LIFETIME_MILLIS: u64 = 60_000;
+/// Bounds a host status read; a status with its result is a few kilobytes.
+pub const MAX_HOST_STATUS_BYTES: usize = 64 * 1024;
+
+/// The host's status file sits beside the guest's telemetry publication, so
+/// both sides derive it from the one configured publication path.
+pub fn host_status_path(publication_path: &str) -> String {
+    format!("{publication_path}.host-status")
+}
+
+/// The guest's durable unresolved-request state, beside its publication.
+pub fn request_state_path(publication_path: &str) -> String {
+    format!("{publication_path}.request-state")
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -37,16 +49,6 @@ pub struct MemoryRequest {
     pub bytes: u64,
     pub issued_unix_millis: u64,
     pub expires_unix_millis: u64,
-}
-
-pub fn parse_memory_request(bytes: &[u8]) -> Result<MemoryRequest, String> {
-    if bytes.len() > MAX_MEMORY_REQUEST_BYTES {
-        return Err("memory request exceeds 64 KiB".to_owned());
-    }
-    let request: MemoryRequest =
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    request.validate()?;
-    Ok(request)
 }
 
 impl MemoryRequest {
@@ -127,6 +129,17 @@ pub struct MemoryResult {
 }
 
 impl MemoryResult {
+    /// A refusal before any device command: no effect, and not journalled.
+    pub fn rejected(request: MemoryRequest, observed_unix_millis: u64, reason: String) -> Self {
+        Self {
+            request,
+            outcome: MemoryOutcome::Rejected,
+            actual_bytes: 0,
+            observed_unix_millis,
+            reason: Some(reason),
+        }
+    }
+
     pub fn validate_for(&self, request: &MemoryRequest) -> Result<(), String> {
         self.request.validate()?;
         if &self.request != request {
@@ -160,10 +173,11 @@ impl MemoryResult {
     }
 }
 
-/// Result-file contract for the existing QGA file transport. A snapshot without a result bootstraps Windows' device geometry;
-/// only a matching response can resolve its durable pending request. Snapshots
-/// must be fresh before computing another delta. An old terminal result may
-/// resolve a retained identity, but never supplies fresh geometry for policy.
+/// Status the host writes beside the guest publication every poll. A status
+/// without a result bootstraps Windows' device geometry; only a matching
+/// response can resolve its durable pending request. Status must be fresh
+/// before computing another delta. An old terminal result may resolve a
+/// retained identity, but never supplies fresh geometry for policy.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostMemoryStatus {
@@ -189,36 +203,23 @@ impl HostMemoryStatus {
         }
     }
 
-    pub fn validate_at(
-        &self,
-        vm: &str,
-        service: &str,
-        alias: &str,
-        now: u64,
-        max_age_millis: u64,
-    ) -> Result<(), String> {
+    /// Identity and internal consistency, independent of age.
+    pub fn validate_for(&self, vm: &str, service: &str) -> Result<(), String> {
         if self.version != MEMORY_REQUEST_VERSION
             || self.vm_name != vm
             || self.service_name != service
-            || self.device_alias != alias
         {
             return Err("foreign or unsupported host memory status".to_owned());
         }
-        if self.observed_unix_millis == 0
-            || max_age_millis == 0
-            || self.observed_unix_millis > now
-            || now - self.observed_unix_millis > max_age_millis
-        {
-            return Err("host memory status is stale or from the future".to_owned());
+        if self.observed_unix_millis == 0 {
+            return Err("host memory status has no observation time".to_owned());
         }
         self.device()
             .validate()
             .map_err(|error| error.to_string())?;
         if let Some(result) = &self.result {
             result.validate_for(&result.request)?;
-            if !result.request.bytes.is_multiple_of(self.block_size_bytes)
-                || !result.actual_bytes.is_multiple_of(self.block_size_bytes)
-            {
+            if !result.actual_bytes.is_multiple_of(self.block_size_bytes) {
                 return Err("memory result is not block aligned".to_owned());
             }
             if result.request.identity.vm_name != vm
@@ -229,6 +230,11 @@ impl HostMemoryStatus {
             }
         }
         Ok(())
+    }
+
+    /// Host and guest clocks may differ, so age is bounded in both directions.
+    pub fn fresh_at(&self, now: u64, max_age_millis: u64) -> bool {
+        self.observed_unix_millis.abs_diff(now) <= max_age_millis
     }
 }
 

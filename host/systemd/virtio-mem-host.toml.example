@@ -9,14 +9,18 @@ command_timeout_seconds = "REQUIRED_COMMAND_TIMEOUT_SECONDS"
 convergence_timeout_seconds = "REQUIRED_CONVERGENCE_TIMEOUT_SECONDS"
 # Growth is refused while host MemAvailable would fall below this.
 host_min_headroom_bytes = "REQUIRED_HOST_HEADROOM_BYTES"
-# Set to true to evaluate and log every decision without ever resizing.
-observe_only = false
+# Windows decides when to add or remove memory; this controller admits each
+# request, grants free pool bytes by priority and resizes the device. With
+# observe_only every request is evaluated and logged, then refused before any
+# device command. Start here; set false only for an authorised trial.
+observe_only = true
 # virsh_binary = "virsh"   # only when the standard executable is not used
 
 # Device bytes shared by every VM below; required with more than one [[vm]].
 # The pool only tracks free bytes and who gets them first: a VM holds
 # max(requested, current), and growth comes from what is free, higher priority
-# first. The pool never takes memory back; each VM releases memory itself.
+# first, possibly as a partial grant. The pool never takes memory back; each
+# guest decides when to release memory.
 # pool_bytes = 17179869184
 
 # One table per VM. Larger priority is served first when free bytes run out.
@@ -25,26 +29,14 @@ name = "REQUIRED_VM_NAME"
 alias = "REQUIRED_DEVICE_ALIAS"
 priority = "REQUIRED_PRIORITY"
 
-# Sizes are virtio-mem device bytes. The device size is the only maximum and
-# the guest's fixed RAM is read from its telemetry. min_memory_bytes is
-# optional (default 0): device memory never planned below.
-# min_memory_bytes = 0
-grow_step_bytes = "REQUIRED_GROWTH_QUANTUM_BYTES"
-shrink_step_bytes = "REQUIRED_RECLAIM_QUANTUM_BYTES"
-physical_reserve_bytes = "REQUIRED_PHYSICAL_RESERVE_BYTES"
-commit_reserve_bytes = "REQUIRED_COMMIT_RESERVE_BYTES"
-safe_floor_physical_reserve_bytes = "REQUIRED_FLOOR_PHYSICAL_RESERVE_BYTES"
-safe_floor_commit_reserve_bytes = "REQUIRED_FLOOR_COMMIT_RESERVE_BYTES"
-reclaim_history_seconds = "REQUIRED_RECLAIM_HISTORY_SECONDS"
-# reclaim_max_gap_seconds defaults to twice the polling interval.
-downward_hysteresis_bytes = "REQUIRED_DOWNWARD_HYSTERESIS_BYTES"
-
 # Persistent state paths must be absolute, instance-scoped, and provisioned
 # with the documented least-privilege ownership and ACLs.
 policy_state_path = "/var/lib/virtio-mem-host/state/REQUIRED_INSTANCE-policy.json"
 compatibility_attestation_path = "REQUIRED_ABSOLUTE_ATTESTATION_PATH"
 
-# Windows telemetry. Single quotes keep Windows backslashes literal.
+# The Windows publication carrying telemetry and the guest's request. The
+# host writes device status and request results to "<telemetry_path>.host-status".
+# Single quotes keep Windows backslashes literal.
 telemetry_transport = "qga-file"
 telemetry_path = 'REQUIRED_ABSOLUTE_WINDOWS_TELEMETRY_PATH'
 telemetry_service_name = "REQUIRED_WINDOWS_SERVICE_NAME"

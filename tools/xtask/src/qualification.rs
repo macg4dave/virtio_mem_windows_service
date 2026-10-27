@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use virtio_mem_core::{parse_virtio_mem_xml_for_alias, RawTelemetryEnvelope};
 use virtio_mem_host::config::HostConfig;
-use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
+use virtio_mem_host::qga::{GuestFileReader, VirshGuestFiles};
 use virtio_mem_host::virsh::Virsh;
 use wait_timeout::ChildExt;
 
@@ -389,12 +389,8 @@ fn parse_start(args: &[String], repo: &Path) -> Result<StartOptions, String> {
     scope(&connect_uri, "--connect")?;
     identifier(&controller_unit, "--controller-unit")?;
     identifier(&guest_service, "--guest-service")?;
-    let expected_controller_unit = format!("virtio-mem-host@{vm_name}.service");
-    if controller_unit != expected_controller_unit {
-        return Err(format!(
-            "--controller-unit must be {expected_controller_unit} for the selected VM"
-        ));
-    }
+    // The unit may run a shared config; the running config must contain the VM.
+    crate::host_deploy::controller_instance(&controller_unit)?;
     crate::calibration::validate_windows_path(&telemetry_path)?;
     if max_allocation_bytes == 0
         || peak_bytes == 0
@@ -1714,7 +1710,7 @@ fn capture_privileged_sample(config: &Config, repo: &Path) -> Result<PrivilegedS
             r#"{"execute":"guest-ping"}"#,
         ],
     )?;
-    let reader = VirshQgaFileReader::new(
+    let reader = VirshGuestFiles::new(
         Virsh::with_connection(
             "virsh",
             Duration::from_secs(config.command_timeout_seconds),
@@ -1724,7 +1720,7 @@ fn capture_privileged_sample(config: &Config, repo: &Path) -> Result<PrivilegedS
     );
     let bytes = reader.read_file(
         &config.telemetry_path,
-        virtio_mem_host::raw_telemetry::MAX_RAW_TELEMETRY_FILE_BYTES as usize,
+        virtio_mem_host::guest_channel::MAX_RAW_TELEMETRY_FILE_BYTES as usize,
     )?;
     let contents = String::from_utf8(bytes)
         .map_err(|error| format!("QGA raw telemetry is not valid UTF-8: {error}"))?;
@@ -1958,8 +1954,11 @@ fn require_controller_active_and_shrink(config: &Config, repo: &Path) -> Result<
     }
     let command_line = std::fs::read(format!("/proc/{pid}/cmdline"))
         .map_err(|error| format!("read controller command line: {error}"))?;
-    let running = HostConfig::load_vm(&controller_config_path(&command_line)?, None)
-        .map_err(|error| format!("running controller configuration: {error}"))?;
+    let running = HostConfig::load_vm(
+        &controller_config_path(&command_line)?,
+        Some(&config.vm_name),
+    )
+    .map_err(|error| format!("running controller configuration: {error}"))?;
     if config.expect_no_resize && !running.observe_only {
         return Err(
             "--expect-no-resize requires the running controller with observe_only = true"

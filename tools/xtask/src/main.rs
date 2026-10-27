@@ -24,7 +24,7 @@ Usage:
   cargo xtask calibration VM_NAME ALIAS [OPTIONS]
   cargo xtask controller-status INSTANCE [OPTIONS]
   cargo xtask attestation VM_NAME ALIAS REVIEW --output PATH [OPTIONS]
-  cargo xtask host-deploy INSTANCE --config PATH --attestation PATH [OPTIONS]
+  cargo xtask host-deploy INSTANCE --config PATH --attestation VM=PATH... [OPTIONS]
   cargo xtask host-run --config PATH --max-run-seconds N [OPTIONS]
   cargo xtask preflight VM_NAME ALIAS [OPTIONS]
   cargo xtask windows <check|sync|build|test|lint|fetch|all>
@@ -58,9 +58,10 @@ Attestation options:
   --command-timeout-seconds N   Required external-command bound.
   --connect URI                 Libvirt URI; default qemu:///system.
 
-Host deployment options:
-  --config PATH                 Required reviewed instance environment file.
-  --attestation PATH            Required current compatibility attestation.
+Host deployment options (INSTANCE names the unit and /etc/virtio-mem-host/INSTANCE.toml):
+  --config PATH                 Required reviewed TOML config; may hold several VMs.
+  --attestation VM=PATH         Required once per configured VM; installed at its
+                                compatibility_attestation_path in /etc/virtio-mem-host.
   --output PATH                 Required structured JSON evidence path.
   --command-timeout-seconds N   Required external-command bound.
   --apply                       Install; otherwise validate only.
@@ -74,6 +75,7 @@ Host run options (the daemon in the foreground instead of systemd):
   --sudo                        Run the daemon through sudo (root-only attestation).
 
 Controller status options:
+  --vm NAME                     Select the VM; required when the instance has several.
   --host-cli PATH               Required absolute candidate host executable.
   --output PATH                 Required structured JSON evidence path.
   --command-timeout-seconds N   Required external-command bound.
@@ -81,12 +83,11 @@ Controller status options:
   --elevate                     Invoke this prebuilt xtask once through sudo.
 
 No-actuation preflight options:
-  --unit UNIT                   Required disabled/inactive controller unit.
+  --unit UNIT                   Required disabled/inactive virtio-mem-host@INSTANCE unit.
   --telemetry-path PATH         Required protected Windows telemetry path.
   --service SERVICE             Required Windows telemetry service identity.
   --attestation PATH            Required reviewed attestation.
   --host-deployment-evidence PATH  Required applied host deployment evidence.
-  --ack-path PATH               Required new host replay-state evidence path.
   --windows-evidence PATH       Required Windows restart evidence path.
   --output PATH                 Required structured result path.
   --host-headroom-bytes N       Required minimum MemAvailable.
@@ -125,7 +126,7 @@ Qualification options:
   --expect-no-reclaim         Require growth without any lower requested target; replaces --expect-reclaim-bytes.
   --require-renewed-during-pending-shrink Require an observed pending shrink before renewed pressure.
   --remote-workload PATH     Required Windows workload executable path.
-  --controller-unit UNIT     Required host systemd unit to archive.
+  --controller-unit UNIT     Required virtio-mem-host@INSTANCE unit whose config holds VM.
   --guest-service NAME       Required Windows service identity.
   --apply-service-restart    Restart the named service after the controller is active.
   --guest-service-cycle-timeout-seconds N Required bound for that explicit restart.

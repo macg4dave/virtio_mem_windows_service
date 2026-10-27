@@ -3,7 +3,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use virtio_mem_core::{parse_virtio_mem_xml_for_alias, RawTelemetryEnvelope};
-use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
+use virtio_mem_host::qga::{GuestFileReader, VirshGuestFiles};
 use virtio_mem_host::virsh::Virsh;
 
 use crate::process;
@@ -130,7 +130,7 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         ));
     }
     let virsh = Virsh::with_connection("virsh", command.command_timeout, &command.connection);
-    let reader = VirshQgaFileReader::new(virsh, command.vm.clone());
+    let reader = VirshGuestFiles::new(virsh, command.vm.clone());
     let first = read_sample(command, &reader, geometry.memory.current_bytes)?;
     std::thread::sleep(command.sample_interval);
     let second = read_sample(command, &reader, geometry.memory.current_bytes)?;

@@ -15,6 +15,8 @@ const DEFAULT_CONNECTION: &str = "qemu:///system";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
     instance: String,
+    /// Required when the instance's config holds more than one VM.
+    vm: Option<String>,
     host_cli: PathBuf,
     output: PathBuf,
     timeout: Duration,
@@ -41,6 +43,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         .ok_or_else(|| "controller-status requires INSTANCE and explicit options".to_owned())?;
     validate_identity(instance)?;
     let mut host_cli = None;
+    let mut vm = None;
     let mut output = None;
     let mut timeout = None;
     let mut connection = DEFAULT_CONNECTION.to_owned();
@@ -52,7 +55,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
         match arguments[index].as_str() {
             "--elevate" if !elevate => elevate = true,
             "--elevated-child" if !elevated_child => elevated_child = true,
-            "--host-cli" | "--output" | "--command-timeout-seconds" | "--connect" => {
+            "--host-cli" | "--vm" | "--output" | "--command-timeout-seconds" | "--connect" => {
                 let option = arguments[index].as_str();
                 index += 1;
                 let value = arguments
@@ -61,6 +64,10 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
                     .ok_or_else(|| format!("{option} requires a value"))?;
                 match option {
                     "--host-cli" if host_cli.is_none() => host_cli = Some(PathBuf::from(value)),
+                    "--vm" if vm.is_none() => {
+                        validate_identity(value)?;
+                        vm = Some(value.clone());
+                    }
                     "--output" if output.is_none() => output = Some(PathBuf::from(value)),
                     "--command-timeout-seconds" if timeout.is_none() => {
                         timeout = Some(Duration::from_secs(
@@ -98,6 +105,7 @@ pub fn parse(arguments: &[String]) -> Result<Command, String> {
     }
     Ok(Command {
         instance: instance.clone(),
+        vm,
         host_cli,
         output: output.ok_or_else(|| "controller-status requires --output".to_owned())?,
         timeout: timeout
@@ -174,11 +182,8 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     )?;
     let properties = parse_properties(&properties)?;
     let config_path = PathBuf::from(format!("/etc/virtio-mem-host/{}.toml", command.instance));
-    let configured = HostConfig::load_vm(&config_path, Some(&command.instance))
+    let configured = HostConfig::load_vm(&config_path, command.vm.as_deref())
         .map_err(|error| format!("protected host instance configuration: {error}"))?;
-    if configured.vm_name != command.instance {
-        return Err("controller-status instance does not match configured VM identity".to_owned());
-    }
     let environment = [
         ("LIBVIRT_DEFAULT_URI", command.connection.as_str()),
         ("HOME", "/run/virtio-mem-host"),
@@ -191,7 +196,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             process::os("--config"),
             config_path.as_os_str().to_owned(),
             process::os("--vm"),
-            process::os(&command.instance),
+            process::os(&configured.vm_name),
             process::os("--connect"),
             process::os(&command.connection),
         ],
@@ -208,7 +213,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     }
     let status = virtio_mem_core::parse_controller_status(&output.stdout)
         .map_err(|error| format!("candidate controller status is invalid: {error}"))?;
-    if status.vm_name != command.instance {
+    if status.vm_name != configured.vm_name {
         return Err("controller status returned the wrong VM identity".to_owned());
     }
     Ok(Evidence {
@@ -238,9 +243,14 @@ fn run_elevated(command: &Command, repo: &Path) -> Result<String, String> {
 }
 
 fn elevated_arguments(command: &Command) -> Vec<OsString> {
-    vec![
+    let mut arguments = vec![
         process::os("controller-status"),
         process::os(&command.instance),
+    ];
+    if let Some(vm) = &command.vm {
+        arguments.extend([process::os("--vm"), process::os(vm)]);
+    }
+    arguments.extend([
         process::os("--host-cli"),
         command.host_cli.as_os_str().to_owned(),
         process::os("--output"),
@@ -250,7 +260,8 @@ fn elevated_arguments(command: &Command) -> Vec<OsString> {
         process::os("--connect"),
         process::os(&command.connection),
         process::os("--elevated-child"),
-    ]
+    ]);
+    arguments
 }
 
 fn parse_properties(text: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -321,7 +332,7 @@ fn validate_identity(value: &str) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err("controller-status INSTANCE contains unsafe characters".to_owned())
+        Err("controller-status INSTANCE or VM contains unsafe characters".to_owned())
     }
 }
 
@@ -350,6 +361,8 @@ mod tests {
     #[test]
     fn parses_a_fixed_read_only_elevation_scope() {
         let command = parse(&args(&[
+            "pool",
+            "--vm",
             "guest",
             "--host-cli",
             "/workspace/target/release/virtio-mem-host",
@@ -362,7 +375,9 @@ mod tests {
             "--elevate",
         ]))
         .expect("valid command");
-        assert_eq!(command.instance, "guest");
+        assert_eq!(command.instance, "pool");
+        assert_eq!(command.vm.as_deref(), Some("guest"));
+        assert!(elevated_arguments(&command).contains(&process::os("guest")));
         assert_eq!(command.timeout, Duration::from_secs(10));
         assert!(command.elevate);
         assert!(!command.elevated_child);

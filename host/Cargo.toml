@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["macg4dave"]
 license = "MIT"
-description = "RHEL systemd controller for one virtio-mem device"
+description = "RHEL systemd controller executing guest virtio-mem requests from a shared pool"
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }

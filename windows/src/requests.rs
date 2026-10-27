@@ -1,0 +1,109 @@
+//! The guest's side of the request channel: reads the host status QGA
+//! writes beside the publication, applies the core guest policy, and keeps the
+//! one unresolved request durable before it is ever published.
+
+use std::io::Read;
+use std::path::PathBuf;
+use std::time::Duration;
+
+use virtio_mem_core::{
+    host_status_path, request_state_path, GuestMemoryPolicy, GuestRequestState, GuestRequester,
+    HostMemoryStatus, MemoryRequest, TargetSample, MAX_HOST_STATUS_BYTES,
+};
+
+use crate::demand::replace_file;
+use crate::service_host::StopSignal;
+
+/// Bounds a request-state read; the state holds at most one request.
+const MAX_REQUEST_STATE_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug)]
+pub struct GuestRequests {
+    requester: GuestRequester,
+    status_path: PathBuf,
+    state_path: PathBuf,
+    retry_timeout: Duration,
+}
+
+impl GuestRequests {
+    /// Restore retained state beside `publication_path`. Missing state is
+    /// fresh; unreadable or invalid state fails closed rather than forgetting
+    /// a request the host may already have admitted.
+    pub fn open(
+        policy: GuestMemoryPolicy,
+        vm_name: &str,
+        service_name: &str,
+        session_id: &str,
+        publication_path: &str,
+        retry_timeout: Duration,
+    ) -> Result<Self, String> {
+        let state_path = PathBuf::from(request_state_path(publication_path));
+        let state = match std::fs::File::open(&state_path) {
+            Ok(file) => {
+                let mut bytes = Vec::new();
+                file.take(MAX_REQUEST_STATE_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|error| format!("read request state: {error}"))?;
+                if bytes.len() as u64 > MAX_REQUEST_STATE_BYTES {
+                    return Err("request state exceeds its byte limit".to_owned());
+                }
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("request state is invalid: {error}"))?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                GuestRequestState::default()
+            }
+            Err(error) => return Err(format!("open request state: {error}")),
+        };
+        Ok(Self {
+            requester: GuestRequester::new(policy, vm_name, service_name, session_id, state)?,
+            status_path: PathBuf::from(host_status_path(publication_path)),
+            state_path,
+            retry_timeout,
+        })
+    }
+
+    pub fn requester(&self) -> &GuestRequester {
+        &self.requester
+    }
+
+    /// The request to publish with this sample. Changed state is durable
+    /// before this returns, so a published request is always retained.
+    pub fn poll(
+        &mut self,
+        sample: TargetSample,
+        stop: &StopSignal,
+    ) -> Result<Option<MemoryRequest>, String> {
+        let status = self.read_status()?;
+        let decision = self.requester.poll(sample, status.as_ref())?;
+        if decision.persist {
+            let bytes = serde_json::to_vec(self.requester.state())
+                .map_err(|error| format!("encode request state: {error}"))?;
+            replace_file(&self.state_path, &bytes, stop, self.retry_timeout)
+                .map_err(|error| format!("persist request state: {error}"))?;
+        }
+        Ok(decision.request)
+    }
+
+    /// The latest complete host status, or `None` while there is none to use:
+    /// not yet written, mid-write by QGA (truncated or partial), or held open.
+    fn read_status(&self) -> Result<Option<HostMemoryStatus>, String> {
+        let file = match std::fs::File::open(&self.status_path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            // ERROR_SHARING_VIOLATION and ERROR_LOCK_VIOLATION while QGA writes.
+            Err(error) if matches!(error.raw_os_error(), Some(32 | 33)) => return Ok(None),
+            Err(error) => return Err(format!("open host status: {error}")),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_HOST_STATUS_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| format!("read host status: {error}"))?;
+        if bytes.len() > MAX_HOST_STATUS_BYTES || !bytes.ends_with(b"\n") {
+            return Ok(None);
+        }
+        // QGA cannot replace the file atomically, so undecodable contents are
+        // an expected mid-write view, retried on the next poll.
+        Ok(serde_json::from_slice(&bytes).ok())
+    }
+}

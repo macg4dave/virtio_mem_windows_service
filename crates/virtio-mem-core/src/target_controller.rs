@@ -7,8 +7,7 @@ use thiserror::Error;
 
 use crate::{MemoryTelemetrySnapshot, MIN_HEADROOM_BYTES};
 
-pub const TARGET_ESTIMATOR_STATE_VERSION: u16 = 1;
-pub const MAX_TARGET_HISTORY_ENTRIES: usize = 4096;
+const MAX_TARGET_HISTORY_ENTRIES: usize = 4096;
 #[cfg(test)]
 const MIB: u64 = 1024 * 1024;
 #[cfg(test)]
@@ -45,7 +44,7 @@ pub struct TargetSample {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InstantaneousTarget {
+struct InstantaneousTarget {
     pub desired_now_bytes: u64,
     pub floor_now_bytes: u64,
     pub effective_maximum_bytes: u64,
@@ -63,50 +62,30 @@ pub struct TargetEstimate {
     pub capacity_limited: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CandidateHistoryEntry {
-    pub observed_unix_millis: u64,
-    pub desired_now_bytes: u64,
-    pub floor_now_bytes: u64,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CandidateHistoryEntry {
+    observed_unix_millis: u64,
+    desired_now_bytes: u64,
+    floor_now_bytes: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TargetEstimatorState {
-    pub version: u16,
-    pub desired_bytes: u64,
-    pub safe_floor_bytes: u64,
-    pub session_id: String,
-    pub last_observed_unix_millis: u64,
-    pub last_monotonic_millis: u64,
-    pub last_sequence: u64,
-    pub history: VecDeque<CandidateHistoryEntry>,
+/// Process-local estimator state. A restarted guest starts cold, so reclaim
+/// waits for a full history window again.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TargetEstimatorState {
+    desired_bytes: u64,
+    safe_floor_bytes: u64,
+    session_id: String,
+    last_observed_unix_millis: u64,
+    last_monotonic_millis: u64,
+    last_sequence: u64,
+    history: VecDeque<CandidateHistoryEntry>,
 }
 
 impl TargetEstimatorState {
-    pub fn cold() -> Self {
-        Self {
-            version: TARGET_ESTIMATOR_STATE_VERSION,
-            desired_bytes: 0,
-            safe_floor_bytes: 0,
-            session_id: String::new(),
-            last_observed_unix_millis: 0,
-            last_monotonic_millis: 0,
-            last_sequence: 0,
-            history: VecDeque::new(),
-        }
-    }
-
-    pub fn invalidate_history(&mut self) {
+    fn invalidate_history(&mut self) {
         self.history.clear();
         self.safe_floor_bytes = self.desired_bytes;
-    }
-}
-
-impl Default for TargetEstimatorState {
-    fn default() -> Self {
-        Self::cold()
     }
 }
 
@@ -122,8 +101,6 @@ pub enum TargetEstimatorError {
     InvalidOrdering(&'static str),
     #[error("memory telemetry is invalid: {0}")]
     InvalidTelemetry(String),
-    #[error("target estimator state version is unsupported: {0}")]
-    UnsupportedStateVersion(u16),
 }
 
 impl TargetPolicyConfig {
@@ -162,75 +139,8 @@ impl TargetEstimator {
         config.validate()?;
         Ok(Self {
             config,
-            state: TargetEstimatorState::cold(),
+            state: TargetEstimatorState::default(),
         })
-    }
-
-    pub fn restore(
-        config: TargetPolicyConfig,
-        state: TargetEstimatorState,
-    ) -> Result<Self, TargetEstimatorError> {
-        config.validate()?;
-        if state.version != TARGET_ESTIMATOR_STATE_VERSION {
-            return Err(TargetEstimatorError::UnsupportedStateVersion(state.version));
-        }
-        if state.history.len() > MAX_TARGET_HISTORY_ENTRIES {
-            return Err(TargetEstimatorError::InvalidOrdering(
-                "checkpoint history exceeds its entry limit",
-            ));
-        }
-        if state.session_id.is_empty()
-            && (state.safe_floor_bytes != 0
-                || state.desired_bytes != 0
-                || !state.history.is_empty())
-        {
-            return Err(TargetEstimatorError::InvalidOrdering(
-                "cold checkpoint contains initialized state",
-            ));
-        }
-        if !state.session_id.is_empty()
-            && (state.desired_bytes < config.configured_minimum_bytes
-                || state.safe_floor_bytes < config.configured_minimum_bytes
-                || state.safe_floor_bytes > state.desired_bytes)
-        {
-            return Err(TargetEstimatorError::InvalidOrdering(
-                "checkpoint targets violate configured bounds",
-            ));
-        }
-        if state.history.iter().any(|entry| {
-            entry.floor_now_bytes < config.configured_minimum_bytes
-                || entry.floor_now_bytes > entry.desired_now_bytes
-        }) || state
-            .history
-            .iter()
-            .zip(state.history.iter().skip(1))
-            .any(|(first, second)| first.observed_unix_millis >= second.observed_unix_millis)
-        {
-            return Err(TargetEstimatorError::InvalidOrdering(
-                "checkpoint candidate history is invalid",
-            ));
-        }
-        Ok(Self { config, state })
-    }
-
-    pub fn state(&self) -> &TargetEstimatorState {
-        &self.state
-    }
-
-    /// Reports whether the persisted candidate history spans the configured
-    /// window without an excessive sample gap.
-    pub fn history_ready(&self) -> bool {
-        history_is_ready(
-            &self.state.history,
-            self.config.history_window_millis,
-            self.config.maximum_gap_millis,
-        )
-    }
-
-    /// Clears reclaim readiness when the producer input fails before a target
-    /// sample can be constructed.
-    pub fn invalidate_history(&mut self) {
-        self.state.invalidate_history();
     }
 
     pub fn estimate(
@@ -335,7 +245,7 @@ impl TargetEstimator {
             return Ok(());
         }
         if sample.observed_unix_millis < self.state.last_observed_unix_millis {
-            self.state = TargetEstimatorState::cold();
+            self.state = TargetEstimatorState::default();
             return Ok(());
         }
         if sample.session_id != self.state.session_id {
@@ -360,7 +270,7 @@ impl TargetEstimator {
     }
 }
 
-pub fn calculate_instantaneous(
+fn calculate_instantaneous(
     config: &TargetPolicyConfig,
     memory: &MemoryTelemetrySnapshot,
     geometry: TargetGeometry,
@@ -416,7 +326,7 @@ pub fn calculate_instantaneous(
 
 /// Returns the aligned usable target ceiling after validating policy and live
 /// device geometry, without consuming telemetry or changing estimator state.
-pub fn calculate_effective_maximum(
+fn calculate_effective_maximum(
     config: &TargetPolicyConfig,
     geometry: TargetGeometry,
 ) -> Result<u64, TargetEstimatorError> {
@@ -439,8 +349,8 @@ pub fn calculate_effective_maximum(
             "current allocation is not block aligned",
         ));
     }
-    let effective_maximum_bytes = align_down(
-        geometry.device_size_bytes - MIN_HEADROOM_BYTES,
+    let effective_maximum_bytes = crate::virtio_mem::maximum_target_bytes(
+        geometry.device_size_bytes,
         geometry.block_size_bytes,
     );
     if config.configured_minimum_bytes > effective_maximum_bytes
@@ -493,10 +403,6 @@ fn candidate(
         .ok_or(TargetEstimatorError::ArithmeticOverflow)?
         .saturating_sub(commit_headroom);
     Ok(physical_candidate.max(commit_candidate))
-}
-
-fn align_down(value: u64, alignment: u64) -> u64 {
-    value - (value % alignment)
 }
 
 fn align_up(value: u64, alignment: u64) -> Result<u64, TargetEstimatorError> {
@@ -594,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn initialized_zero_survives_restore_and_does_not_reinitialize_to_current() {
+    fn initialized_zero_does_not_reinitialize_to_current() {
         let policy = TargetPolicyConfig {
             configured_minimum_bytes: 0,
             ..config()
@@ -609,12 +515,9 @@ mod tests {
                 .desired_bytes,
             0
         );
-        let state: TargetEstimatorState =
-            serde_json::from_slice(&serde_json::to_vec(estimator.state()).unwrap()).unwrap();
-        let mut restored = TargetEstimator::restore(policy, state).unwrap();
         let mut idle = memory(GIB, 0, 32 * GIB);
         idle.physical_available_bytes = idle.physical_total_bytes;
-        let next = restored
+        let next = estimator
             .estimate(sample(60_001, 1, idle), geometry(GIB))
             .unwrap();
         assert_eq!(next.desired_bytes, 0);
@@ -760,34 +663,35 @@ mod tests {
             .estimate(restarted, geometry(8 * GIB))
             .expect("restart");
         assert!(!result.history_ready);
-        assert_eq!(estimator.state().history.len(), 1);
+        assert_eq!(estimator.state.history.len(), 1);
     }
 
     #[test]
     fn invalid_sample_clears_reclaim_readiness() {
-        let mut state = TargetEstimatorState::cold();
-        state.desired_bytes = 8 * GIB;
-        state.safe_floor_bytes = 4 * GIB;
-        state.session_id = "session-a".to_owned();
-        state.last_sequence = 2;
-        state.last_monotonic_millis = 2;
-        state.last_observed_unix_millis = 2;
-        state.history.push_back(CandidateHistoryEntry {
-            observed_unix_millis: 1,
-            desired_now_bytes: 4 * GIB,
-            floor_now_bytes: 3 * GIB,
-        });
-        let mut estimator = TargetEstimator::restore(config(), state).expect("restore");
+        let mut estimator = TargetEstimator::new(config()).expect("estimator");
+        estimator.state = TargetEstimatorState {
+            desired_bytes: 8 * GIB,
+            safe_floor_bytes: 4 * GIB,
+            session_id: "session-a".to_owned(),
+            last_observed_unix_millis: 2,
+            last_monotonic_millis: 2,
+            last_sequence: 2,
+            history: VecDeque::from([CandidateHistoryEntry {
+                observed_unix_millis: 1,
+                desired_now_bytes: 4 * GIB,
+                floor_now_bytes: 3 * GIB,
+            }]),
+        };
         assert!(estimator
             .estimate(
                 sample(2, 2, memory(8 * GIB, 2 * GIB, 8 * GIB)),
                 geometry(8 * GIB)
             )
             .is_err());
-        assert!(estimator.state().history.is_empty());
+        assert!(estimator.state.history.is_empty());
         assert_eq!(
-            estimator.state().safe_floor_bytes,
-            estimator.state().desired_bytes
+            estimator.state.safe_floor_bytes,
+            estimator.state.desired_bytes
         );
     }
 

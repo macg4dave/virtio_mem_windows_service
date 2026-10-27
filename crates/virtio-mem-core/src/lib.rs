@@ -4,9 +4,9 @@ pub mod compatibility;
 pub mod controller_status;
 pub mod demand;
 pub mod error;
+pub mod guest_policy;
 pub mod memory_request;
 pub mod pool;
-pub mod reconciler;
 pub mod shrink_recovery;
 pub mod target_controller;
 pub mod units;
@@ -18,8 +18,8 @@ pub use compatibility::{
     CompatibilityEvidence, VirtioMemCompatibility, VirtioMemCompatibilityError,
 };
 pub use controller_status::{
-    parse_controller_status, AcceptedTelemetryIdentity, CapacityState, CommandOwnership,
-    ControllerCommandStatus, ControllerStatusError, ControllerStatusSnapshot, ReclaimReadiness,
+    parse_controller_status, CommandDirection, CommandOwnership, ControlHealth,
+    ControllerCommandStatus, ControllerStatusError, ControllerStatusSnapshot, GuestInputStatus,
     RecoveryState, CONTROLLER_STATUS_VERSION, MAX_CONTROLLER_STATUS_BYTES,
 };
 pub use demand::{
@@ -30,17 +30,19 @@ pub use demand::{
     LEGACY_RAW_TELEMETRY_VERSION, RAW_TELEMETRY_VERSION, WINDOWS_NATIVE_TELEMETRY_VERSION,
 };
 pub use error::VirtioMemError;
-pub use pool::{allocate_pool, PoolAllocation, PoolError, PoolMember};
-pub use reconciler::{
-    reconcile, ControlHealth, ReconcileAction, ReconcileDecision, ReconcileDirection,
-    ReconcileError, ReconcileInput,
+pub use guest_policy::{
+    plan_request, GuestDecision, GuestMemoryPolicy, GuestRequestState, GuestRequester,
 };
+pub use memory_request::{
+    host_status_path, request_state_path, HostMemoryStatus, MemoryOperation, MemoryOutcome,
+    MemoryRequest, MemoryRequestJournal, MemoryResult, RequestAdmission, RequestIdentity,
+    MAX_HOST_STATUS_BYTES, MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
+};
+pub use pool::{allocate_pool, PoolAllocation, PoolError, PoolMember};
 pub use shrink_recovery::{AbandonAction, AbandonToCurrent, ShrinkObservation};
 pub use target_controller::{
-    calculate_effective_maximum, calculate_instantaneous, CandidateHistoryEntry,
-    InstantaneousTarget, TargetEstimate, TargetEstimator, TargetEstimatorError,
-    TargetEstimatorState, TargetGeometry, TargetPolicyConfig, TargetSample,
-    MAX_TARGET_HISTORY_ENTRIES, TARGET_ESTIMATOR_STATE_VERSION,
+    TargetEstimate, TargetEstimator, TargetEstimatorError, TargetGeometry, TargetPolicyConfig,
+    TargetSample,
 };
 pub use units::{bytes_to_kibibytes, kibibytes_to_bytes, BYTES_PER_KIB};
 pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES, MIN_HEADROOM_BYTES};
