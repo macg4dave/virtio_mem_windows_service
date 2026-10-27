@@ -42,8 +42,10 @@ fn main() -> ExitCode {
         }
     };
     // virsh binary and timeouts are global settings, shared by every VM.
+    // Per-poll commands share one libvirt connection: one polkit check
+    // instead of several a second.
     let first = &settings.vms[0];
-    let virsh = Virsh::new(first.virsh_binary.clone(), first.command_timeout);
+    let virsh = Virsh::persistent(first.virsh_binary.clone(), first.command_timeout);
     if let Err(error) = virsh.require_management_access() {
         eprintln!("virtio-mem-host authorization error: {error}");
         return ExitCode::FAILURE;

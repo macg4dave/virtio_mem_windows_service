@@ -611,14 +611,26 @@ where
             }
             return Ok(Step::Wait);
         };
-        // The Windows driver makes one attempt per device notification: a
-        // removal stops when Windows cannot evacuate its chosen range, and a
-        // plug QEMU rejects (outside the usable region) is never retried, so
-        // a stalled resize rarely moves again. Settle it once it stops moving
-        // rather than holding the guest's only request slot for the timeout.
-        let stalled = matches!(direction, CommandDirection::Grow | CommandDirection::Shrink)
+        // A grow or shrink holds its target until the guest reaches it: no
+        // stall settle and no convergence timeout. Meanwhile the guest's only
+        // request slot stays occupied. The exception is a grow that has
+        // plugged nothing before the one-time widening: QEMU rejects plugs
+        // past its usable region and the driver never retries, so it settles
+        // and the widening that follows lets the guest's next request plug.
+        let unplugged_growth = direction == CommandDirection::Grow
+            && !self.widened
+            && self
+                .control
+                .intent
+                .as_ref()
+                .is_some_and(|intent| intent.prior_current_bytes == state.current_bytes)
             && self.command_stalled(state);
-        if !stalled && !self.pending_elapsed() {
+        let settle = match direction {
+            CommandDirection::Grow => unplugged_growth,
+            CommandDirection::Shrink => false,
+            CommandDirection::SettleGrow | CommandDirection::SettleShrink => self.pending_elapsed(),
+        };
+        if !settle {
             self.log(&format!(
                 "event=control_health direction={direction:?} requested_bytes={} current_bytes={}",
                 state.requested_bytes, state.current_bytes
@@ -626,11 +638,7 @@ where
             return Ok(Step::Wait);
         }
         match direction {
-            // The guest stopped moving before the target: accept what it
-            // reached, once, unless actuation is latched.
-            CommandDirection::Grow | CommandDirection::Shrink
-                if !self.control.latched() && !self.config.observe_only =>
-            {
+            CommandDirection::Grow if !self.control.latched() && !self.config.observe_only => {
                 self.settle_short(direction, state, stop)
             }
             CommandDirection::Grow | CommandDirection::SettleGrow => {
@@ -994,13 +1002,12 @@ where
         }
     }
 
-    /// Whether the owned resize has not moved for three polls, bounded by the
+    /// Whether the owned resize has not moved for one poll, bounded by the
     /// convergence timeout.
     fn command_stalled(&mut self, state: VirtioMemState) -> bool {
         let bound = self
             .config
             .poll_interval
-            .saturating_mul(3)
             .min(self.config.convergence_timeout);
         match self.pending_progress {
             Some((current, since)) if current == state.current_bytes => since.elapsed() >= bound,
@@ -1641,47 +1648,52 @@ mod tests {
     }
 
     #[test]
-    fn a_stalled_removal_is_settled_once_and_reported_partial() {
-        let mut fixture = Fixture::new("settle", 100, 8 * GIB);
+    fn a_stalled_removal_holds_its_target_until_the_guest_reaches_it() {
+        let mut fixture = Fixture::new("hold-shrink", 100, 8 * GIB);
+        fixture.config.poll_interval = Duration::from_millis(2);
         fixture.config.convergence_timeout = Duration::from_millis(1);
         fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
         fixture
             .guest
             .send(Some(request(1, MemoryOperation::Remove, GIB)));
         let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
+        // Well past the stall bound and the convergence timeout: held.
+        for _ in 0..4 {
+            round(&mut runtime);
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
+        assert!(fixture.guest.last_result().is_none());
+
+        // Once the guest releases the rest, the request completes in full.
+        fixture.device.0.borrow_mut().stall_at = None;
         round(&mut runtime);
-        thread::sleep(Duration::from_millis(5));
         round(&mut runtime);
-        round(&mut runtime);
-        assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
-        let partial = fixture.guest.last_result().expect("result");
-        assert_eq!(partial.outcome, MemoryOutcome::Partial);
-        assert_eq!(partial.actual_bytes, 512 * MIB);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
+        let result = fixture.guest.last_result().expect("result");
+        assert_eq!(result.outcome, MemoryOutcome::Completed);
+        assert_eq!(result.actual_bytes, GIB);
         drop(runtime);
         assert!(!fixture.journal().latched());
     }
 
     #[test]
-    fn a_removal_that_stops_moving_settles_before_the_convergence_timeout() {
-        let mut fixture = Fixture::new("stall", 100, 8 * GIB);
+    fn a_partly_plugged_growth_holds_its_target() {
+        let mut fixture = Fixture::new("hold-grow", 100, 4 * GIB);
         fixture.config.poll_interval = Duration::from_millis(2);
-        fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
+        fixture.config.convergence_timeout = Duration::from_millis(1);
+        fixture.device.0.borrow_mut().grow_stall_at = Some(4 * GIB + 512 * MIB);
         fixture
             .guest
-            .send(Some(request(1, MemoryOperation::Remove, GIB)));
+            .send(Some(request(1, MemoryOperation::Add, GIB)));
         let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        round(&mut runtime);
-        // The first pending poll records the stalled allocation; three poll
-        // intervals later it settles, far inside the 300 s timeout.
-        round(&mut runtime);
-        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
-        thread::sleep(Duration::from_millis(10));
-        round(&mut runtime);
-        round(&mut runtime);
-        assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
-        let partial = fixture.guest.last_result().expect("result");
-        assert_eq!(partial.outcome, MemoryOutcome::Partial);
-        assert_eq!(partial.actual_bytes, 512 * MIB);
+        for _ in 0..4 {
+            round(&mut runtime);
+            thread::sleep(Duration::from_millis(5));
+        }
+        // No settle and no widening: only the original target was set.
+        assert_eq!(*fixture.targets.borrow(), [5 * GIB]);
+        assert!(fixture.guest.last_result().is_none());
         drop(runtime);
         assert!(!fixture.journal().latched());
     }

@@ -40,8 +40,8 @@ pub const HELP: &str = "Watch options (read-only live dashboard):
   --instance NAME               Controller unit virtio-mem-host@NAME.service;
                                 default the VM name.
   --connect URI                 Libvirt URI; default qemu:///system.
-  --interval-seconds N          Refresh period; default 2.
-  --guest-interval-seconds N    Guest-agent telemetry read period; default 10.
+  --interval-seconds N          Refresh period; default 1.
+  --guest-interval-seconds N    Guest-agent telemetry read period; default 1.
   --events N                    Journal events shown; default 6.
   --no-guest                    Skip guest-agent reads.
   --once                        Print one plain snapshot.
@@ -73,8 +73,8 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         unit: String::new(),
         telemetry_path: String::new(),
         connect: "qemu:///system".to_owned(),
-        interval: Duration::from_secs(2),
-        guest_interval: Duration::from_secs(10),
+        interval: Duration::from_secs(1),
+        guest_interval: Duration::from_secs(1),
         host_floor_bytes: 0,
         events: 6,
         guest: true,
@@ -1064,7 +1064,7 @@ mod tests {
             defaults.unit,
             format!("virtio-mem-host@{}.service", expected.vm_name)
         );
-        assert_eq!(defaults.interval, Duration::from_secs(2));
+        assert_eq!(defaults.interval, Duration::from_secs(1));
         let command = parse(
             &[
                 "--config",

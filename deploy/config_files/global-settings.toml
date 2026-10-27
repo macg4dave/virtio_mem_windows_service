@@ -28,8 +28,8 @@ observe_only = false
 # Periodic fallback seconds between host polls and guest samples (1–10).
 # Native pressure, virtio-serial hints and libvirt size events can wake earlier.
 # Freshness and maximum sample gaps are derived from this interval.
-# Reclaim needs 10 seconds of continuous qualifying history.
-poll_interval_seconds = 5
+# Reclaim needs 1 second of continuous qualifying history.
+poll_interval_seconds = 1
 # Maximum duration of each external host command (for example, virsh).
 command_timeout_seconds = 10
 # Maximum wait for requested device RAM to converge to the observed amount.

@@ -927,8 +927,8 @@ mod tests {
         assert!(ui.handle(press(KeyCode::Enter), &shared));
         {
             let live = lock(&shared);
-            assert_eq!(live.controls.interval, Duration::from_secs(10));
-            assert_eq!(live.controls.guest_interval, Duration::from_secs(10));
+            assert_eq!(live.controls.interval, Duration::from_secs(2));
+            assert_eq!(live.controls.guest_interval, Duration::from_secs(2));
             assert!(live.controls.paused);
             let markers: Vec<_> = live
                 .controls
@@ -940,8 +940,8 @@ mod tests {
                 markers,
                 [
                     "started 12 GB allocation",
-                    "sample period 10s",
-                    "guest read period 10s",
+                    "sample period 2s",
+                    "guest read period 2s",
                     "logging paused",
                     "hog"
                 ]

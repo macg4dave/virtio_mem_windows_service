@@ -117,6 +117,14 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   converged allocation since that result (growth, a reset) ends the streak
   and the pause. Estimator history and the backoff are process-local, so a
   restarted service waits a full window before reclaiming.
+- **Temporary viomem workaround** (`VIOMEM WORKAROUND` markers in
+  `guest_policy.rs`; remove once a patched driver is deployed). A removal
+  that returns under 10% of its request counts as a zero result. Movement
+  from our own in-flight removal does not end the streak. While the streak
+  lasts, the next removal asks for the widest block-aligned window below
+  4 GiB. On 27 October, after regrowth, 3 GiB removals from an idle
+  `win11_gpu` returned 0–352 MiB, and the slivers reset the backoff, so the
+  guest retried every ~11 s.
 - **Linux** admits a request only if it is fresh, from the configured guest,
   advances the issue/sequence watermark and no earlier request is unresolved.
   A retransmission of an admitted request is recognised before expiry checks
@@ -132,7 +140,7 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   deadline; after resolving a request it promptly samples again.
 - Growth requests cover the entire aligned shortage up to the VM/device
   maximum. The 1 GiB policy increment is only the minimum response to native
-  Low pressure; it no longer caps a request. Reclaim requires 10 seconds of
+  Low pressure; it no longer caps a request. Reclaim requires 1 second of
   continuous qualifying High observations, and retains safe floors and backoff.
 - Grants: removals take `min(bytes, current)`. Additions take the least of the
   request, the device ceiling (full size, block aligned), the member's
@@ -150,13 +158,14 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   `partial`). A refusal before any command (latched, observe-only, expired,
   replayed, misaligned, or the resize sink's final checks) is published as
   `rejected` and does not latch; only an earlier admission journals it.
-- A shrink or growth that stops before its target is settled once at its
-  current allocation and reported `partial`: as soon as it has not moved for
-  three polls, or at `convergence_timeout_seconds` if it keeps moving. The
-  Windows viomem driver makes one attempt per device notification: a removal
-  stops when Windows cannot evacuate its window, and a plug QEMU rejects as
-  outside the usable region is never retried. Holding the guest's single
-  request slot longer would only delay its next request.
+- A shrink or growth holds its requested size until the guest reaches it,
+  with no stall settle and no convergence timeout; the guest's single request
+  slot stays occupied until then. The Windows viomem driver makes one attempt
+  per device notification, so a held removal moves again only if Windows
+  frees the memory in its window. One exception: a growth that has plugged
+  nothing before the one-time widening settles at its current allocation as
+  `partial` once it has not moved for one poll, because QEMU rejects plugs
+  outside the usable region and the driver never retries them.
 - Windows reclaim size matters. Each viomem attempt asks Windows to hot-remove
   whatever whole blocks it can inside one window starting at the lowest
   plugged block, `plugged - requested` bytes long, and never more. Small removal steps
@@ -248,7 +257,13 @@ The [systemd unit](../host/systemd/virtio-mem-host@.service) runs as
 `virtio-mem-host` against `qemu:///system` with `Restart=no`. Non-interactive
 libvirt management access is provisioned once; the daemon neither elevates nor
 stores passwords. The [polkit rule](../host/systemd/50-virtio-mem-host.rules)
-grants connection-wide management to that account. Checkpoint paths must be
+grants connection-wide management to that account. The daemon serves its per-poll
+`dumpxml` and guest-agent commands over one long-lived libvirt connection
+(`host/src/libvirt.rs`, loaded with `dlopen`): libvirt asks polkit to
+authorize every new connection, and a `virsh` process per command at a 1 s
+poll exhausted polkitd's file descriptors on 27 October, after which polkit
+refused every check and the controller could not start. Resizes,
+suspend/resume, version and QMP evidence still run `virsh`. Checkpoint paths must be
 absolute without `..`; symlink/hard-link checkpoint files are rejected. The
 daemon and operator mutations lock the libvirt domain UUID, and checkpoint
 writers hold a sidecar file lock. Do not unlink lock files. Stop the controller
@@ -450,7 +465,7 @@ and the last `request_completed` result). It never reads `.host-status`: a
 guest-agent read holds that file open across several commands, and the
 controller's write then failed with "being used by another process" (seen
 on 27 October while an earlier version read it). Guest reads default to
-every 10 seconds; `--no-guest` skips them. Ctrl+C leaves the last view as
+every second; `--no-guest` skips them. Ctrl+C leaves the last view as
 plain text plus the full, unclipped recent events on the normal screen for
 copying; `--once` prints the same. `cargo xtask help` lists options for
 another VM, alias, unit, telemetry path or host floor.

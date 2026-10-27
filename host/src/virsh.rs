@@ -29,6 +29,9 @@ pub struct Virsh {
     binary: String,
     timeout: Duration,
     connection: String,
+    /// Shared by clones: serves per-poll commands over one libvirt connection.
+    #[cfg(unix)]
+    session: Option<std::sync::Arc<crate::libvirt::LibvirtSession>>,
 }
 
 impl Virsh {
@@ -40,7 +43,22 @@ impl Virsh {
             // documented local host connection, rather than driver autodetection.
             connection: std::env::var("LIBVIRT_DEFAULT_URI")
                 .unwrap_or_else(|_| "qemu:///system".to_owned()),
+            #[cfg(unix)]
+            session: None,
         }
+    }
+
+    /// Like `new`, but `dumpxml` and `qemu-agent-command` share one
+    /// long-lived libvirt connection instead of a `virsh` process (and
+    /// polkit check) each. The daemon uses this; operator commands do not.
+    #[cfg(unix)]
+    pub fn persistent(binary: impl Into<String>, timeout: Duration) -> Self {
+        let mut virsh = Self::new(binary, timeout);
+        virsh.session = Some(std::sync::Arc::new(crate::libvirt::LibvirtSession::new(
+            virsh.connection.clone(),
+            timeout,
+        )));
+        virsh
     }
 
     pub fn with_connection(
@@ -52,6 +70,8 @@ impl Virsh {
             binary: binary.into(),
             timeout,
             connection: connection.into(),
+            #[cfg(unix)]
+            session: None,
         }
     }
 
@@ -126,6 +146,14 @@ impl Virsh {
 
 impl VirshCommand for Virsh {
     fn run(&self, arguments: &[String]) -> Result<String, VirshError> {
+        #[cfg(unix)]
+        if let Some(result) = self
+            .session
+            .as_ref()
+            .and_then(|session| session.run(arguments))
+        {
+            return result;
+        }
         self.run_with_access_check(arguments, || self.require_management_access())
     }
 }

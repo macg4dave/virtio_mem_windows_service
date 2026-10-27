@@ -85,7 +85,7 @@ impl GlobalSettings {
                 commit_reserve_bytes: 2 * GIB,
                 safe_floor_physical_reserve_bytes: GIB,
                 safe_floor_commit_reserve_bytes: GIB,
-                history_window_millis: 10_000,
+                history_window_millis: 1_000,
                 maximum_gap_millis: self.poll_interval_seconds * 3000,
                 downward_hysteresis_bytes: GIB / 4,
             },

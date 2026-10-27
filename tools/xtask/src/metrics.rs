@@ -49,8 +49,8 @@ pub const HELP: &str = "Metrics options (read-only stress-test recorder):
   --connect URI                 Libvirt URI; default qemu:///system.
   --output DIR                  Run directory; default
                                 .artifacts/metrics/VM-YYYYMMDDTHHMMSSZ.
-  --interval-seconds N          Sample period; default 5.
-  --guest-interval-seconds N    Guest-agent telemetry read period; default 5.
+  --interval-seconds N          Sample period; default 1.
+  --guest-interval-seconds N    Guest-agent telemetry read period; default 1.
   --duration-seconds N          Stop after N seconds; default until quit.
   --plain                       One line per sample instead of the live UI
                                 (also used when stdout is not a terminal).
@@ -87,8 +87,8 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         telemetry_path: String::new(),
         connect: "qemu:///system".to_owned(),
         output: None,
-        interval: Duration::from_secs(5),
-        guest_interval: Duration::from_secs(5),
+        interval: Duration::from_secs(1),
+        guest_interval: Duration::from_secs(1),
         duration: None,
         plain: false,
         host_floor_bytes: 0,
@@ -1256,7 +1256,7 @@ mod tests {
             virtio_mem_core::settings::CONTROL_PATH
         );
         assert_eq!(defaults.telemetry_max_age, expected.raw_telemetry_max_age);
-        assert_eq!(defaults.interval, Duration::from_secs(5));
+        assert_eq!(defaults.interval, Duration::from_secs(1));
         assert_eq!(defaults.duration, None);
         let command = parse(
             &[

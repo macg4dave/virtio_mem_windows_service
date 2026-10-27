@@ -7,6 +7,8 @@ pub mod compatibility_source;
 pub mod config;
 pub mod guest_channel;
 pub mod host_memory;
+#[cfg(unix)]
+pub mod libvirt;
 pub mod ownership;
 pub mod qga;
 pub mod resize_sink;
