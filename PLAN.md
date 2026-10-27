@@ -28,7 +28,7 @@ The idea is simple and the mechanism is standard (libvirt
 
 Phases 1–3 make the per-guest loop trustworthy on one VM, because the pool
 depends on each guest growing and giving back reliably. Phase 4 is the pool
-itself, built on the existing arbitration code. Giving RAM back is the biggest
+itself; its source is written and awaits live testing. Giving RAM back is the biggest
 platform risk: Windows virtio-mem unplug has already stalled once (Phase 0).
 
 ## Honest current state (2026-10-26)
@@ -36,11 +36,11 @@ platform risk: Windows virtio-mem unplug has already stalled once (Phase 0).
 | Item | Reality |
 | --- | --- |
 | Code size | 29,641 Rust source lines, including tests, comments, and blanks; not a production-code count |
-| Non-Windows tests | 2026-10-27: core 65, host 90, xtask 44 pass with `--locked` |
+| Non-Windows tests | 2026-10-27: core 51, host 94, xtask 44 pass with `--locked` |
 | `windows` crate | `cargo clippy -p virtio-mem-service --all-targets --target x86_64-pc-windows-gnu` passes on Linux (type-check only; no MinGW linker installed, so no binary). Native service behaviour requires Windows execution |
 | Automatic resizing | Earlier "never enabled" claim was wrong. Archived workload run `qualification-1789231813766-72447` records 1,098,907,648 bytes of peak growth but zero accepted reclaim; the later passing run explicitly required no resizing. The installed host unit is currently disabled/inactive |
-| Multi-VM pool (`global_pool.rs`, `pool_ledger.rs`, ~2.4k lines) | Pure arbitration with strict priority, plus a ledger; unit-tested but not yet wired into the host. This is the product's core goal (Phase 4) |
-| Host config | One TOML file (`--config FILE`): global timing/host settings plus a `[[vm]]` table per VM with its `priority`. Unknown keys are refused. The controller serves exactly one VM until the pool is wired (Phase 4) |
+| Multi-VM pool | Wired: `core::pool::allocate_pool` (pure) plus the host runtime's two-phase round. Unit-tested only; no live multi-VM run yet. The old `global_pool`/`pool_ledger` (~2.4k lines) were deleted |
+| Host config | One TOML file (`--config FILE`): global timing/host settings, optional `pool_bytes` (required with more than one VM), and a `[[vm]]` table per VM with its `priority`. Unknown keys are refused. `status`/`clear-latch` take `--vm NAME` when the file lists several VMs |
 
 Growth has occurred in an earlier automatic workload run. That does not prove
 reliable shrink or unattended operation. Those outcomes still require direct
@@ -171,22 +171,52 @@ Keep:
   the environment-variable path is gone. Shrink defaults off.
 - Unit tests for the target math and the XML parsing.
 
-The earlier shorthand `target = clamp(commit_used + headroom, min, max)` is not
-yet an implementation specification. Guest-wide commit bytes and device bytes
-have different meanings. A 10 GiB total-RAM requirement with 8 GiB fixed base RAM
-implies a 2 GiB device contribution, before device bounds and alignment. Define
-the chosen telemetry's meaning, physical safety floor, fixed-base mapping,
-alignment, effective maximum, overflow behavior, and missing/stale-input behavior
-before replacing the existing math. Dommemstat does not provide the same inputs
-as Windows commit telemetry. Start from the existing checked calculations in
-`core::target_controller`; selecting a different formula is an intentional
-policy change, not an equivalent refactor.
+### Control loop contract
+
+All sizes are virtio-mem device bytes, not total guest RAM. This describes the
+code as it stands; changing any line is a policy change, not a refactor.
+
+- **Telemetry:** the Windows service's raw record (physical total/available,
+  commit total/limit), read over QGA. A record must be fresh (`max_age`,
+  `future_tolerance`), belong to the configured VM and service, and advance the
+  accepted session/sequence; an unchanged record is "not fresh" and never
+  causes a resize. Acceptance is stored in the policy checkpoint.
+- **Fixed base:** `physical_total - current` must match
+  `fixed_visible_base_bytes` within max(256 MiB, 2 blocks); otherwise the
+  sample is refused and the estimate history is cleared.
+- **Desired now:** max of a physical candidate
+  (`used + physical_reserve - fixed_base`) and a commit candidate
+  (`current + commit_reserve - commit headroom`), at least `min_memory_bytes`,
+  aligned up to the block, capped at the effective maximum.
+- **Safe floor now:** the same with the smaller safe-floor reserves, never
+  above desired.
+- **Effective maximum:** `min(max_memory_bytes, device size - 1 GiB)`, aligned
+  down. Minimum, current, reserves and hysteresis must be block aligned.
+- **Growth:** desired rises immediately; the device grows by at most
+  `grow_step_bytes` per command, only if host MemAvailable stays above
+  `host_min_headroom_bytes` after the step (shared across VMs in one round).
+- **Give-back:** only after `reclaim_history_seconds` of gap-free history
+  (gaps longer than `reclaim_max_gap_seconds` restart it), desired drops to
+  the window's peak when that is at least `downward_hysteresis_bytes` lower;
+  the floor becomes the window's peak floor. Shrink is off unless
+  `automatic_windows_shrink = true`, and moves `shrink_step_bytes` per command.
+- **One command in flight:** every command is recorded durably first. Growth
+  or shrink must converge within `convergence_timeout_seconds`; otherwise the
+  VM latches and the daemon stops. A pending shrink may be raised toward
+  `current` when demand returns, or frozen at `current` (and latched) when
+  telemetry fails.
+- **Restart:** a recorded command is classified against live state:
+  converged clears it; not applied or contradicted latches. Live divergence
+  with no recorded command is never replayed; the VM only observes. A latch is
+  cleared only by `clear-latch`.
+- **Missing input:** an evaluation error holds the VM; unreadable live state
+  holds it and stops all pool growth that round, except during an owned
+  command, where it latches.
 
 Proposed removals, subject to the Phase 0 result and retained contracts:
 
 - Compatibility attestation, if a simpler check proves sufficient. Keep
-  `global_pool` and `pool_ledger` for Phase 4, and `AbandonToCurrent` for the
-  manual `abandon-shrink` recovery.
+  `AbandonToCurrent` for the manual `abandon-shrink` recovery.
 - Keep `tools/xtask`: the user retains it for AI-driven testing and
   qualification. Consolidate duplication inside it; do not delete commands.
   Direct Cargo commands, listed below, are the local gate.
@@ -267,36 +297,45 @@ own authorization.
 
 ### Phase 4 — Shared pool across VMs
 
-- One host daemon controls several VMs from a single configured pool size.
-- Reuse `core::global_pool` arbitration: every guest's demand is evaluated
-  together; growth that fits is granted; under contention, the higher-priority
-  VM is served first and may reclaim from lower-priority VMs that can spare RAM.
-- **Decided: weight means strict priority**, which the existing code already
-  implements (`HostPoolMemberPolicy::priority`; larger wins, 0 is invalid).
-  Each VM gets a priority number in the host config file, for example:
+- **Source done:** one daemon controls every `[[vm]]` in the config, sharing
+  `pool_bytes` of device memory. Each poll is one round: every VM observes and
+  estimates, `core::pool::allocate_pool` sets a ceiling per VM, then each VM
+  acts through its normal reconcile path, highest priority first.
+- **Decided: weight means strict priority** (larger wins, 0 is invalid):
 
   ```toml
   pool_bytes = 17179869184   # 16 GiB shared by all members
 
   [[vm]]
   name = "win11"
-  alias = "ua-virtiomem0"
   priority = 100
+  # ...the other per-VM keys from host/systemd/virtio-mem-host.toml.example
 
   [[vm]]
   name = "win10_test"
-  alias = "ua-virtiomem0"
   priority = 80
   ```
 
-  The `[[vm]]` tables and `priority` exist now (with the other per-VM keys in
-  the example file); `pool_bytes` is added when the pool is wired, and the
-  one-VM limit in `HostConfig::load_single` is lifted then. The first pool is
-  Windows-only; Linux members wait until the Windows pool works (see "Later").
-- Persist pool state through the host (`pool_ledger` today keeps filesystem
-  persistence in core; move it to host per the ownership table).
-- Each VM keeps its own one-command-in-flight and convergence rules. A guest
-  that stalls while giving RAM back must not let the pool hand that RAM out.
+- How the pool behaves:
+  - a VM's charge is `max(requested, current)` from live XML, so RAM a guest
+    is still giving back is never handed out (no pool state is persisted);
+  - growth comes only from free pool bytes, higher priority first;
+  - a higher-priority VM still short lowers the ceiling of lower-priority VMs
+    that have automatic shrink, fresh telemetry and full history, never below
+    their safe floor; they shrink in normal steps and the freed bytes are
+    granted in a later round;
+  - equal priorities never take from each other;
+  - a pending shrink may still be raised toward `current` if its own guest's
+    demand returns: guest safety beats a higher-priority request.
+- Open decisions for the user:
+  - one VM latching on a convergence timeout still stops the whole daemon
+    (the per-VM fail-stop rule); a pool may want that VM held instead;
+  - a shut-off or unreadable VM freezes all growth (its charge is unknown);
+    treating a shut-off domain (`domstate`) as zero charge would lift that.
+- `xtask host-deploy`, `controller-status` and `qualification` still handle
+  one VM per config file.
+- The first pool is Windows-only; Linux members wait until the Windows pool
+  works (see "Later").
 
 **Exit:** two or more test VMs share a pool under alternating load; the
 higher-weight VM is served first; RAM returns to the pool when load ends.
@@ -318,7 +357,7 @@ instructions. It is not evidence that the platform works.
 
 | Crate | Actual responsibility | Main dependencies |
 | --- | --- | --- |
-| `virtio-mem-core` | Telemetry contracts, XML parsing, target estimation, reconciliation, pool accounting | Serde, quick-xml, thiserror, SHA-256 |
+| `virtio-mem-core` | Telemetry and Windows-config contracts, XML parsing, target estimation, reconciliation, pool allocation | Serde, quick-xml, thiserror |
 | `virtio-mem-host` | Configuration, telemetry acquisition, policy persistence, host-memory checks, virsh execution, diagnostics | Core, signal-hook, wait-timeout |
 | `virtio-mem-service` | Windows sampling, atomic telemetry publication, SCM lifecycle, workload utility | Core, winapi, Serde |
 | `virtio-mem-xtask` | Local gates, remote builds, deployment, qualification, live-resize orchestration | Core, host, subprocess utilities |
@@ -326,9 +365,10 @@ instructions. It is not evidence that the platform works.
 - **Windows service:** command dispatch -> configuration -> `RawTelemetryWorker`
   -> native memory APIs -> telemetry envelope -> `AtomicRawTelemetryPublisher`.
   SCM and console startup share one worker constructor.
-- **Host:** configuration -> file or QGA file reader -> envelope validation ->
+- **Host:** configuration -> per VM: file or QGA file reader -> envelope validation ->
   `TargetDemandSource` (acceptance via `AcceptedTelemetry`, stored in the
-  same checkpoint write as the estimator) -> `HostRuntime`, which owns
+  same checkpoint write as the estimator) -> `HostRuntime`, which runs every
+  VM in rounds (observe, `allocate_pool`, act) and owns
   the operation lifecycle (durable intent and latch via the checkpoint,
   `command_ownership` resolution, `reconcile` for every action) -> host-memory
   gate -> resize sink -> live XML observation.
@@ -352,61 +392,6 @@ Source references describe the reviewed snapshot and may move during refactoring
 "No production caller" means none found in this repository. Public exports alone
 do not establish whether external consumers exist. All executable changes below
 belong to future work after the current phase's exit criteria.
-
-### 5. IMPROVE — Specify target semantics before replacing math
-
-- **Evidence/callers:** `crates/virtio-mem-core/src/target_controller.rs:375`,
-  `calculate_instantaneous`, accounts for physical usage, commit headroom,
-  fixed visible base RAM, alignment, and effective device maximum. The host
-  raw evaluator uses it through `TargetEstimator`; it is now the only target
-  policy.
-- **Remaining work:** write down its contract (Phase 1 above) before changing
-  the maths.
-- **Benefit:** simplify without confusing total RAM and device allocation.
-- **Verification/risk:** preserve physical floors, capacity limits, alignment,
-  and overflow handling. A different policy is an intentional behavior change.
-
-### 8. KEEP / IMPROVE — Pool arbitration and ledger (Phase 4)
-
-- **Evidence/callers:** `crates/virtio-mem-core/src/global_pool.rs`,
-  `arbitrate_host_pool`, and `pool_ledger.rs`, `FilePoolLedgerStore`, have
-  unit tests and public exports but no host integration yet.
-- **Direction:** keep as the basis for Phase 4. Move the ledger's filesystem
-  persistence into the host crate when wiring it in; keep arbitration pure.
-- **Risk:** strict priority may not match the intended weights; settle that
-  before integration rather than layering a second policy on top.
-
-### 10. COMBINE — Resize preparation
-
-- **Evidence/callers:** four preparation methods in `host/src/resize_sink.rs`
-  repeat XML acquisition,
-  compatibility validation, conversion, and command construction. Runtime and
-  manual CLI operations use the sink.
-- **Canonical direction:** share preparation mechanics only among operations
-  that survive Phase 1.
-- **Benefit:** fewer command-construction implementations.
-- **Preservation risk:** ordinary resize, renotification, supersession, and
-  recovery have different preconditions. Do not merge those checks or remove
-  the immediate live-state race check as apparent duplicate work.
-
-### 12. DELETE / IMPROVE — Tooling duplicates product contracts
-
-- **Evidence/callers:** `tools/xtask/src/windows.rs:765`, `windows::deploy`,
-  independently constructs Windows config JSON with hardcoded schema version
-  4. Qualification, deployment, preflight, and controller-status commands add
-  further state, validation, process, and evidence layers, dispatched by xtask.
-- **Canonical direction:** xtask stays. Make deployment use the service's
-  authoritative serialization contract rather than build a shared framework.
-- **Benefit:** fewer independently evolving schemas and operational workflows.
-- **Preservation risk:** keep the commands; consolidate their internals.
-
-### 13. COMBINE — Tooling process execution
-
-- **Evidence/callers:** host `bounded_output` in `host/src/virsh.rs` now drains
-  concurrently. Xtask's `bounded_output` in `tools/xtask/src/process.rs`
-  duplicates much of `bounded_output_with_env`.
-- **Canonical direction:** consolidate surviving tooling locally. Do not create
-  a workspace process framework for tooling scheduled for deletion.
 
 ### 14. KEEP / SEPARATE — Different transport and platform contracts
 
@@ -434,6 +419,7 @@ belong to future work after the current phase's exit criteria.
 | Wire telemetry schema and intrinsic validation | Core telemetry types |
 | Device geometry and XML interpretation | Core device/XML code |
 | Target calculation and pure action selection | Core policy |
+| Pool allocation across VMs (pure) | Core `pool` |
 | Accepted samples, pending operation, timeout, latch | Host controller state |
 | External commands and host-resource checks | Host adapters |
 | Windows sampling, publication, service lifecycle | Windows crate |
@@ -455,7 +441,6 @@ milestone system.
 | Order | Task | Acceptance and verification |
 | --- | --- | --- |
 | 0 | Complete the existing platform investigation | Record repeated grow/shrink outcomes, timing, stalls, and dommemstat usefulness here. Separately authorized live work; no implementation expansion. |
-| 1 | Define the minimum loop's contract | Specify telemetry source, whole-guest/device mapping, physical floor, aligned maximum, default-off shrink, timeout, restart ownership, and recovery before replacing policy. |
 | 9 | Finish Windows verification | Build a Windows binary and run the `windows` crate tests on Windows (they type-check on Linux but cannot run there; this includes the stop-signal interleaving test). Then verify native service behaviour. |
 
 For authorized implementation changes, the Linux regression gate while xtask
@@ -481,11 +466,10 @@ commands as completed checks or authorization for live tests.
 
 The estimator's own ordering check (`prepare_sample`) remains as an invariant
 inside core; it no longer competes with a separately persisted record. Preserve required failure and recovery behavior before removing
-larger layers. Do not assume the SHA-256 dependencies are unused while the
-ledger, attestation, and fingerprints remain.
+larger layers. The host still uses SHA-256 for attestation and fingerprints.
 
 The intended result has three clear responsibilities: shared contracts and
-pure policy (including pool arbitration), a host control loop serving every
+pure policy (including pool allocation), a host control loop serving every
 pooled VM, and a Windows telemetry service only if needed.
 Exact code reduction depends on the platform result and deliberately retained
 behaviors. No code-reduction percentage or completed refactor is claimed.

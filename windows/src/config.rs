@@ -1,11 +1,10 @@
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
+use virtio_mem_core::{WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION};
 
 use crate::error::ConfigurationError;
 
 pub const DEFAULT_CONFIG_PATH: &str = r"C:\ProgramData\VirtioMemService\config.json";
-const CONFIG_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
@@ -61,9 +60,9 @@ impl ServiceConfig {
             }
             Err(error) => return Err(ConfigurationError::FileIo(error.to_string())),
         };
-        let persisted: PersistedServiceConfig = serde_json::from_str(&contents)
+        let persisted: WindowsServiceConfigFile = serde_json::from_str(&contents)
             .map_err(|error| ConfigurationError::InvalidFile(error.to_string()))?;
-        if persisted.schema_version != CONFIG_SCHEMA_VERSION {
+        if persisted.schema_version != WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION {
             return Err(ConfigurationError::UnsupportedSchemaVersion(
                 persisted.schema_version,
             ));
@@ -100,7 +99,7 @@ impl ServiceConfig {
             std::fs::create_dir_all(parent)
                 .map_err(|error| ConfigurationError::FileIo(error.to_string()))?;
         }
-        let persisted = PersistedServiceConfig::try_from(self)?;
+        let persisted = WindowsServiceConfigFile::try_from(self)?;
         let contents = serde_json::to_string_pretty(&persisted)
             .map_err(|error| ConfigurationError::InvalidFile(error.to_string()))?;
         std::fs::write(path, format!("{contents}\n"))
@@ -108,21 +107,7 @@ impl ServiceConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct PersistedServiceConfig {
-    schema_version: u32,
-    vm_name: String,
-    service_name: String,
-    display_name: String,
-    description: String,
-    demand_report_path: String,
-    service_account: String,
-    poll_interval_millis: u64,
-    shutdown_timeout_millis: u64,
-}
-
-impl TryFrom<&ServiceConfig> for PersistedServiceConfig {
+impl TryFrom<&ServiceConfig> for WindowsServiceConfigFile {
     type Error = ConfigurationError;
 
     fn try_from(config: &ServiceConfig) -> Result<Self, Self::Error> {
@@ -131,7 +116,7 @@ impl TryFrom<&ServiceConfig> for PersistedServiceConfig {
         let shutdown_timeout_millis = u64::try_from(config.shutdown_timeout.as_millis())
             .map_err(|_| ConfigurationError::DurationOverflow)?;
         Ok(Self {
-            schema_version: CONFIG_SCHEMA_VERSION,
+            schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
             vm_name: config.vm_name.clone(),
             service_name: config.service_name.clone(),
             display_name: config.display_name.clone(),
@@ -238,7 +223,7 @@ mod tests {
     #[test]
     fn rejects_unsupported_schema_version() {
         let path = test_path("config-schema");
-        let fixture = PersistedServiceConfig {
+        let fixture = WindowsServiceConfigFile {
             schema_version: 99,
             vm_name: "test-vm".to_owned(),
             service_name: "TestService".to_owned(),

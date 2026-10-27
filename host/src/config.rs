@@ -19,8 +19,14 @@ pub enum HostConfigError {
     Parse(String),
     #[error("host config must list at least one [[vm]]")]
     NoVm,
-    #[error("host config lists {0} VMs; the shared pool is not wired yet, so configure exactly one [[vm]]")]
-    PoolNotWired(usize),
+    #[error("host config lists {0} VMs; select one with --vm NAME")]
+    VmNotSelected(usize),
+    #[error("vm {0} is not in the host config")]
+    UnknownVm(String),
+    #[error("several VMs must share a pool: set pool_bytes")]
+    PoolRequired,
+    #[error("pool_bytes must be positive and cover every VM's min_memory_bytes")]
+    PoolTooSmall,
     #[error("vm {0} is configured more than once")]
     DuplicateVm(String),
     #[error("policy_state_path {0} is shared by more than one VM")]
@@ -61,7 +67,7 @@ pub enum RawTelemetryTransport {
 pub struct HostConfig {
     pub vm_name: String,
     pub alias: String,
-    /// Pool priority; larger is served first. Used once the pool is wired.
+    /// Pool priority; larger is served first when VMs contend.
     pub priority: u32,
     pub min_memory_bytes: u64,
     pub max_memory_bytes: u64,
@@ -92,9 +98,18 @@ pub struct HostConfig {
     pub observe_only: bool,
 }
 
+/// The whole config file: every VM plus the shared pool budget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostSettings {
+    /// Device bytes shared by every VM. Required with more than one VM.
+    pub pool_bytes: Option<u64>,
+    pub vms: Vec<HostConfig>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    pool_bytes: Option<u64>,
     poll_interval_seconds: u64,
     command_timeout_seconds: u64,
     convergence_timeout_seconds: u64,
@@ -145,10 +160,10 @@ fn default_automatic_windows_shrink() -> bool {
     DEFAULT_AUTOMATIC_WINDOWS_SHRINK
 }
 
-impl HostConfig {
+impl HostSettings {
     /// Load every configured VM. Each is validated, and VM names and policy
     /// state paths must be unique so two controllers never share state.
-    pub fn load(path: &Path) -> Result<Vec<Self>, HostConfigError> {
+    pub fn load(path: &Path) -> Result<Self, HostConfigError> {
         let read_error = |message: String| HostConfigError::Read {
             path: path.display().to_string(),
             message,
@@ -163,16 +178,7 @@ impl HostConfig {
         Self::parse(&text)
     }
 
-    /// Load the one VM the controller serves until the shared pool is wired.
-    pub fn load_single(path: &Path) -> Result<Self, HostConfigError> {
-        let mut vms = Self::load(path)?;
-        match vms.len() {
-            1 => Ok(vms.remove(0)),
-            count => Err(HostConfigError::PoolNotWired(count)),
-        }
-    }
-
-    pub fn parse(text: &str) -> Result<Vec<Self>, HostConfigError> {
+    pub fn parse(text: &str) -> Result<Self, HostConfigError> {
         let file: ConfigFile =
             toml::from_str(text).map_err(|error| HostConfigError::Parse(error.to_string()))?;
         if file.vms.is_empty() {
@@ -180,9 +186,9 @@ impl HostConfig {
         }
         let mut names = BTreeSet::new();
         let mut state_paths = BTreeSet::new();
-        let mut configs = Vec::with_capacity(file.vms.len());
+        let mut vms = Vec::with_capacity(file.vms.len());
         for vm in &file.vms {
-            let config = Self::resolve(&file, vm).map_err(|source| HostConfigError::Vm {
+            let config = HostConfig::resolve(&file, vm).map_err(|source| HostConfigError::Vm {
                 vm: vm.name.clone(),
                 source: Box::new(source),
             })?;
@@ -192,9 +198,40 @@ impl HostConfig {
             if !state_paths.insert(config.policy_state_path.clone()) {
                 return Err(HostConfigError::SharedPolicyState(config.policy_state_path));
             }
-            configs.push(config);
+            vms.push(config);
         }
-        Ok(configs)
+        match file.pool_bytes {
+            None if vms.len() > 1 => return Err(HostConfigError::PoolRequired),
+            None => {}
+            Some(pool_bytes) => {
+                let minimums = vms
+                    .iter()
+                    .try_fold(0_u64, |total, vm| total.checked_add(vm.min_memory_bytes));
+                if pool_bytes == 0 || minimums.is_none_or(|minimums| minimums > pool_bytes) {
+                    return Err(HostConfigError::PoolTooSmall);
+                }
+            }
+        }
+        Ok(Self {
+            pool_bytes: file.pool_bytes,
+            vms,
+        })
+    }
+}
+
+impl HostConfig {
+    /// Load one VM's settings: the named one, or the only one when `vm` is
+    /// `None`.
+    pub fn load_vm(path: &Path, vm: Option<&str>) -> Result<Self, HostConfigError> {
+        let mut vms = HostSettings::load(path)?.vms;
+        match vm {
+            Some(name) => vms
+                .into_iter()
+                .find(|config| config.vm_name == name)
+                .ok_or_else(|| HostConfigError::UnknownVm(name.to_owned())),
+            None if vms.len() == 1 => Ok(vms.remove(0)),
+            None => Err(HostConfigError::VmNotSelected(vms.len())),
+        }
     }
 
     fn resolve(file: &ConfigFile, vm: &VmTable) -> Result<Self, HostConfigError> {
@@ -362,7 +399,7 @@ telemetry_future_tolerance_seconds = 5
     }
 
     fn parse_one(text: &str) -> Result<HostConfig, HostConfigError> {
-        HostConfig::parse(text).map(|mut vms| vms.remove(0))
+        HostSettings::parse(text).map(|mut settings| settings.vms.remove(0))
     }
 
     fn vm_error(source: HostConfigError) -> HostConfigError {
@@ -403,12 +440,12 @@ telemetry_future_tolerance_seconds = 5
             "demand_source = \"guest-stats\"\n",
             "shrink_renotification = true\n",
         ] {
-            let error = HostConfig::parse(&format!("{retired}{ONE_VM}"))
+            let error = HostSettings::parse(&format!("{retired}{ONE_VM}"))
                 .expect_err("unknown top-level key");
             assert!(matches!(error, HostConfigError::Parse(_)), "{error}");
         }
         let error =
-            HostConfig::parse(&ONE_VM.replace("priority = 100", "priority = 100\nweight = 3"))
+            HostSettings::parse(&ONE_VM.replace("priority = 100", "priority = 100\nweight = 3"))
                 .expect_err("unknown vm key");
         assert!(matches!(error, HostConfigError::Parse(_)), "{error}");
     }
@@ -418,7 +455,7 @@ telemetry_future_tolerance_seconds = 5
         let file = parse_one(&ONE_VM.replace("\"qga-file\"", "\"file\"")).expect("file");
         assert_eq!(file.raw_telemetry_transport, RawTelemetryTransport::File);
         assert!(matches!(
-            HostConfig::parse(&ONE_VM.replace("\"qga-file\"", "\"ssh\"")),
+            HostSettings::parse(&ONE_VM.replace("\"qga-file\"", "\"ssh\"")),
             Err(HostConfigError::Parse(_))
         ));
     }
@@ -438,8 +475,8 @@ telemetry_future_tolerance_seconds = 5
     }
 
     #[test]
-    fn several_vms_carry_their_priorities_but_the_controller_serves_one() {
-        let text = format!(
+    fn several_vms_share_a_pool_and_keep_their_priorities() {
+        let two_vms = format!(
             "{ONE_VM}\n[[vm]]{}",
             second_vm(
                 "win10_test",
@@ -447,9 +484,22 @@ telemetry_future_tolerance_seconds = 5
                 "/var/lib/virtio-mem-host/state/win10-policy.json"
             )
         );
-        let vms = HostConfig::parse(&text).expect("two-member pool");
         assert_eq!(
-            vms.iter()
+            HostSettings::parse(&two_vms),
+            Err(HostConfigError::PoolRequired)
+        );
+        // Both minimums are 1 GiB, so a 1 GiB pool cannot cover them.
+        assert_eq!(
+            HostSettings::parse(&format!("pool_bytes = {GIB}\n{two_vms}")),
+            Err(HostConfigError::PoolTooSmall)
+        );
+        let text = format!("pool_bytes = {}\n{two_vms}", 16 * GIB);
+        let settings = HostSettings::parse(&text).expect("two-member pool");
+        assert_eq!(settings.pool_bytes, Some(16 * GIB));
+        assert_eq!(
+            settings
+                .vms
+                .iter()
                 .map(|vm| (vm.vm_name.as_str(), vm.priority))
                 .collect::<Vec<_>>(),
             [("win11", 100), ("win10_test", 80)]
@@ -461,12 +511,20 @@ telemetry_future_tolerance_seconds = 5
         let path = directory.join("pool.toml");
         std::fs::write(&path, &text).expect("write fixture");
         assert_eq!(
-            HostConfig::load_single(&path),
-            Err(HostConfigError::PoolNotWired(2))
+            HostConfig::load_vm(&path, None),
+            Err(HostConfigError::VmNotSelected(2))
+        );
+        assert_eq!(
+            HostConfig::load_vm(&path, Some("win10_test")).map(|vm| vm.priority),
+            Ok(80)
+        );
+        assert_eq!(
+            HostConfig::load_vm(&path, Some("other")),
+            Err(HostConfigError::UnknownVm("other".to_owned()))
         );
         std::fs::write(&path, ONE_VM).expect("write fixture");
         assert_eq!(
-            HostConfig::load_single(&path).map(|vm| vm.vm_name),
+            HostConfig::load_vm(&path, None).map(|vm| vm.vm_name),
             Ok("win11".to_owned())
         );
         std::fs::remove_dir_all(&directory).expect("remove fixture");
@@ -479,7 +537,7 @@ telemetry_future_tolerance_seconds = 5
             second_vm("win11", 80, "/var/lib/virtio-mem-host/state/other.json")
         );
         assert_eq!(
-            HostConfig::parse(&duplicate_name),
+            HostSettings::parse(&duplicate_name),
             Err(HostConfigError::DuplicateVm("win11".to_owned()))
         );
         let shared_state = format!(
@@ -491,13 +549,13 @@ telemetry_future_tolerance_seconds = 5
             )
         );
         assert_eq!(
-            HostConfig::parse(&shared_state),
+            HostSettings::parse(&shared_state),
             Err(HostConfigError::SharedPolicyState(
                 "/var/lib/virtio-mem-host/state/win11-policy.json".to_owned()
             ))
         );
         assert_eq!(
-            HostConfig::parse("poll_interval_seconds = 1\ncommand_timeout_seconds = 1\nconvergence_timeout_seconds = 1\nhost_min_headroom_bytes = 1\n"),
+            HostSettings::parse("poll_interval_seconds = 1\ncommand_timeout_seconds = 1\nconvergence_timeout_seconds = 1\nhost_min_headroom_bytes = 1\n"),
             Err(HostConfigError::NoVm)
         );
     }
@@ -542,7 +600,7 @@ telemetry_future_tolerance_seconds = 5
             ),
         ] {
             assert_eq!(
-                HostConfig::parse(&ONE_VM.replace(from, to)),
+                HostSettings::parse(&ONE_VM.replace(from, to)),
                 Err(vm_error(expected)),
                 "{to}"
             );
@@ -553,7 +611,7 @@ telemetry_future_tolerance_seconds = 5
     fn shipped_example_is_refused_until_its_markers_are_replaced() {
         let example = include_str!("../systemd/virtio-mem-host.toml.example");
         assert!(matches!(
-            HostConfig::parse(example),
+            HostSettings::parse(example),
             Err(HostConfigError::Parse(_))
         ));
         // Replacing only the numeric markers proves the example's keys are the

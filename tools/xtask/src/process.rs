@@ -78,51 +78,12 @@ pub fn bounded_output(
     cwd: &Path,
     timeout: Duration,
 ) -> Result<Output, String> {
-    let mut child = Command::new(program)
-        .args(args)
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("failed to start {program}: {error}"))?;
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| format!("failed to capture {program} stdout"))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| format!("failed to capture {program} stderr"))?;
-    let stdout_reader = std::thread::spawn(move || read_all(stdout));
-    let stderr_reader = std::thread::spawn(move || read_all(stderr));
-    let status = if let Some(status) = child
-        .wait_timeout(timeout)
-        .map_err(|error| format!("failed while waiting for {program}: {error}"))?
-    {
-        status
-    } else {
-        child
-            .kill()
-            .map_err(|error| format!("failed to terminate timed-out {program}: {error}"))?;
-        let _ = child.wait();
-        let _ = stdout_reader.join();
-        let _ = stderr_reader.join();
-        return Err(format!("{program} timed out after {timeout:?}"));
-    };
-    let stdout = stdout_reader
-        .join()
-        .map_err(|_| format!("{program} stdout reader panicked"))??;
-    let stderr = stderr_reader
-        .join()
-        .map_err(|_| format!("{program} stderr reader panicked"))??;
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
+    let mut command = Command::new(program);
+    command.args(args).current_dir(cwd);
+    bounded(command, program, timeout)
 }
 
+/// Runs `program` with only the supplied environment and a fixed system PATH.
 pub fn bounded_output_with_env<I, K, V>(
     program: &Path,
     args: &[OsString],
@@ -135,7 +96,8 @@ where
     K: AsRef<OsStr>,
     V: AsRef<OsStr>,
 {
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(args)
         .current_dir(cwd)
         .env_clear()
@@ -143,42 +105,49 @@ where
             "PATH",
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         )
-        .envs(environment)
+        .envs(environment);
+    bounded(command, &program.display().to_string(), timeout)
+}
+
+/// Drains stdout and stderr concurrently so a chatty child cannot block, and
+/// kills and reaps it at the deadline.
+fn bounded(mut command: Command, name: &str, timeout: Duration) -> Result<Output, String> {
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|error| format!("failed to start {}: {error}", program.display()))?;
+        .map_err(|error| format!("failed to start {name}: {error}"))?;
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| format!("failed to capture {} stdout", program.display()))?;
+        .ok_or_else(|| format!("failed to capture {name} stdout"))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| format!("failed to capture {} stderr", program.display()))?;
+        .ok_or_else(|| format!("failed to capture {name} stderr"))?;
     let stdout_reader = std::thread::spawn(move || read_all(stdout));
     let stderr_reader = std::thread::spawn(move || read_all(stderr));
     let status = if let Some(status) = child
         .wait_timeout(timeout)
-        .map_err(|error| format!("failed while waiting for {}: {error}", program.display()))?
+        .map_err(|error| format!("failed while waiting for {name}: {error}"))?
     {
         status
     } else {
         child
             .kill()
-            .map_err(|error| format!("failed to terminate {}: {error}", program.display()))?;
+            .map_err(|error| format!("failed to terminate timed-out {name}: {error}"))?;
         let _ = child.wait();
         let _ = stdout_reader.join();
         let _ = stderr_reader.join();
-        return Err(format!("{} timed out after {timeout:?}", program.display()));
+        return Err(format!("{name} timed out after {timeout:?}"));
     };
     let stdout = stdout_reader
         .join()
-        .map_err(|_| format!("{} stdout reader panicked", program.display()))??;
+        .map_err(|_| format!("{name} stdout reader panicked"))??;
     let stderr = stderr_reader
         .join()
-        .map_err(|_| format!("{} stderr reader panicked", program.display()))??;
+        .map_err(|_| format!("{name} stderr reader panicked"))??;
     Ok(Output {
         status,
         stdout,

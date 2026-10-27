@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use virtio_mem_core::{WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION};
 
 use crate::process;
 
@@ -763,17 +764,17 @@ fn deploy(
     .to_owned();
 
     let windows = if apply {
-        let service_config = serde_json::json!({
-            "schema_version": 4,
-            "vm_name": manifest.vm_name,
-            "service_name": manifest.service_name,
-            "display_name": manifest.display_name,
-            "description": manifest.description,
-            "demand_report_path": manifest.telemetry_path,
-            "service_account": manifest.service_account,
-            "poll_interval_millis": manifest.poll_interval_millis,
-            "shutdown_timeout_millis": manifest.shutdown_timeout_millis,
-        });
+        let service_config = WindowsServiceConfigFile {
+            schema_version: WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION,
+            vm_name: manifest.vm_name.clone(),
+            service_name: manifest.service_name.clone(),
+            display_name: manifest.display_name.clone(),
+            description: manifest.description.clone(),
+            demand_report_path: manifest.telemetry_path.clone(),
+            service_account: manifest.service_account.clone(),
+            poll_interval_millis: manifest.poll_interval_millis,
+            shutdown_timeout_millis: manifest.shutdown_timeout_millis,
+        };
         let config_base64 = base64_encode(
             serde_json::to_string_pretty(&service_config)
                 .map_err(|error| format!("encode Windows service configuration: {error}"))?

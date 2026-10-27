@@ -5,14 +5,14 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
 use virtio_mem_host::cli::CliCommand;
-use virtio_mem_host::config::{HostConfig, RawTelemetryTransport};
+use virtio_mem_host::config::{HostConfig, HostSettings, RawTelemetryTransport};
 use virtio_mem_host::host_memory::ProcMeminfoSource;
 use virtio_mem_host::qga::VirshQgaFileReader;
 use virtio_mem_host::raw_telemetry::{
     FileRawTelemetrySource, QgaFileRawTelemetrySource, RawTelemetrySource,
 };
 use virtio_mem_host::resize_sink::VirshResizeSink;
-use virtio_mem_host::runtime::{DemandSource, HostRuntime};
+use virtio_mem_host::runtime::{HostRuntime, VmController};
 use virtio_mem_host::target_policy::TargetDemandSource;
 use virtio_mem_host::virsh::Virsh;
 use virtio_mem_host::xml_source::VirshXmlSource;
@@ -35,14 +35,16 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let config = match HostConfig::load_single(&config_path) {
-        Ok(config) => config,
+    let settings = match HostSettings::load(&config_path) {
+        Ok(settings) => settings,
         Err(error) => {
             eprintln!("virtio-mem-host configuration error: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
+    // virsh binary and timeouts are global settings, shared by every VM.
+    let first = &settings.vms[0];
+    let virsh = Virsh::new(first.virsh_binary.clone(), first.command_timeout);
     if let Err(error) = virsh.require_management_access() {
         eprintln!("virtio-mem-host authorization error: {error}");
         return ExitCode::FAILURE;
@@ -54,55 +56,24 @@ fn main() -> ExitCode {
         eprintln!("virtio-mem-host signal setup error: {error}");
         return ExitCode::FAILURE;
     }
-    let raw: Box<dyn RawTelemetrySource> = match config.raw_telemetry_transport {
-        RawTelemetryTransport::File => Box::new(FileRawTelemetrySource::new(
-            &config.raw_telemetry_path,
-            &config.vm_name,
-            &config.raw_telemetry_service_name,
-            config.raw_telemetry_max_age,
-            config.raw_telemetry_future_tolerance,
-        )),
-        RawTelemetryTransport::QgaFile => {
-            let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
-            Box::new(QgaFileRawTelemetrySource::new(
-                VirshQgaFileReader::new(virsh, config.vm_name.clone()),
-                &config.raw_telemetry_path,
-                &config.vm_name,
-                &config.raw_telemetry_service_name,
-                config.raw_telemetry_max_age,
-                config.raw_telemetry_future_tolerance,
-            ))
-        }
-    };
-    match TargetDemandSource::new(raw, &config) {
-        Ok(source) => run_controller(source, config, &stop),
-        Err(error) => {
-            eprintln!("virtio-mem-host target policy error: {error}");
-            ExitCode::FAILURE
+    let mut vms = Vec::with_capacity(settings.vms.len());
+    for config in settings.vms {
+        match vm_controller(&virsh, config) {
+            Ok(vm) => vms.push(vm),
+            Err(error) => {
+                eprintln!("virtio-mem-host target policy error: {error}");
+                return ExitCode::FAILURE;
+            }
         }
     }
-}
-
-fn run_controller<D: DemandSource>(
-    demand_source: D,
-    config: HostConfig,
-    stop: &AtomicBool,
-) -> ExitCode {
-    let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
-    let runtime = HostRuntime::new(
-        demand_source,
-        VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),
-        VirshResizeSink::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
-            .with_compatibility_source(AttestedCompatibilitySource::new(
-                virsh,
-                config.vm_name.clone(),
-                config.alias.clone(),
-                config.compatibility_attestation_path.clone(),
-            )),
-        ProcMeminfoSource::new(),
-        config,
-    );
-    match runtime.run(stop) {
+    let runtime = match HostRuntime::pool(vms, ProcMeminfoSource::new(), settings.pool_bytes) {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("virtio-mem-host configuration error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.run(&stop) {
         Ok(()) => {
             eprintln!("virtio-mem-host stopped");
             ExitCode::SUCCESS
@@ -112,4 +83,43 @@ fn run_controller<D: DemandSource>(
             ExitCode::FAILURE
         }
     }
+}
+
+type Controller = VmController<
+    TargetDemandSource<Box<dyn RawTelemetrySource>>,
+    VirshXmlSource<Virsh>,
+    VirshResizeSink<Virsh, AttestedCompatibilitySource<Virsh>>,
+>;
+
+fn vm_controller(virsh: &Virsh, config: HostConfig) -> Result<Controller, String> {
+    let raw: Box<dyn RawTelemetrySource> = match config.raw_telemetry_transport {
+        RawTelemetryTransport::File => Box::new(FileRawTelemetrySource::new(
+            &config.raw_telemetry_path,
+            &config.vm_name,
+            &config.raw_telemetry_service_name,
+            config.raw_telemetry_max_age,
+            config.raw_telemetry_future_tolerance,
+        )),
+        RawTelemetryTransport::QgaFile => Box::new(QgaFileRawTelemetrySource::new(
+            VirshQgaFileReader::new(virsh.clone(), config.vm_name.clone()),
+            &config.raw_telemetry_path,
+            &config.vm_name,
+            &config.raw_telemetry_service_name,
+            config.raw_telemetry_max_age,
+            config.raw_telemetry_future_tolerance,
+        )),
+    };
+    let demand = TargetDemandSource::new(raw, &config)?;
+    Ok(VmController::new(
+        demand,
+        VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone()),
+        VirshResizeSink::new(virsh.clone(), config.vm_name.clone(), config.alias.clone())
+            .with_compatibility_source(AttestedCompatibilitySource::new(
+                virsh.clone(),
+                config.vm_name.clone(),
+                config.alias.clone(),
+                config.compatibility_attestation_path.clone(),
+            )),
+        config,
+    ))
 }

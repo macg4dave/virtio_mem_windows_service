@@ -155,7 +155,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             ));
         }
     }
-    let config = HostConfig::load_single(&config_source)
+    let config = HostConfig::load_vm(&config_source, None)
         .map_err(|error| format!("validate host configuration: {error}"))?;
     if config.vm_name != command.instance {
         return Err(format!(

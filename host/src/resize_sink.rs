@@ -1,4 +1,6 @@
-use virtio_mem_core::{bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility};
+use virtio_mem_core::{
+    bytes_to_kibibytes, parse_virtio_mem_xml_for_alias, VirtioMemCompatibility, VirtioMemState,
+};
 
 use crate::compatibility_source::{CompatibilitySource, FixedCompatibilitySource};
 use crate::runtime::{ResizeSink, ResizeSinkError};
@@ -85,39 +87,13 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
 
 impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
     pub(crate) fn prepare_resize(&self, requested_bytes: u64) -> Result<PreparedResize, String> {
-        let snapshot = self
-            .command
-            .run(&["dumpxml".to_owned(), self.vm_name.clone()])
-            .map_err(|error| error.to_string())?;
-        let snapshot = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
-            .map_err(|error| error.to_string())?;
-        snapshot
-            .compatibility
-            .merge(self.compatibility_source.compatibility()?)
-            .map_err(|error| error.to_string())?
-            .validate_for_resize()
-            .map_err(|error| error.to_string())?;
-        let state = snapshot.memory;
-        state
-            .validate_target(requested_bytes)
-            .map_err(|error| error.to_string())?;
-        if state.requested_bytes != state.current_bytes {
-            return Err("refusing resize while the previous request has not converged".to_owned());
-        }
-        let requested_kib = bytes_to_kibibytes(requested_bytes)
-            .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
-        Ok(PreparedResize {
-            arguments: vec![
-                "update-memory-device".to_owned(),
-                self.vm_name.clone(),
-                "--alias".to_owned(),
-                self.alias.clone(),
-                "--requested-size".to_owned(),
-                requested_kib.to_string(),
-                "--live".to_owned(),
-            ],
-            current_bytes: state.current_bytes,
-            target_bytes: requested_bytes,
+        self.prepare(requested_bytes, |state| {
+            if state.requested_bytes != state.current_bytes {
+                return Err(
+                    "refusing resize while the previous request has not converged".to_owned(),
+                );
+            }
+            Ok(())
         })
     }
 
@@ -133,6 +109,53 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         prior_requested_bytes: u64,
         prior_current_bytes: u64,
         target_bytes: u64,
+    ) -> Result<PreparedResize, String> {
+        self.prepare(target_bytes, |state| {
+            if state.requested_bytes != prior_requested_bytes
+                || state.current_bytes != prior_current_bytes
+                || prior_requested_bytes >= prior_current_bytes
+                || target_bytes <= prior_requested_bytes
+                || target_bytes > prior_current_bytes
+            {
+                return Err(
+                    "pending-shrink supersession requires unchanged requested < target <= current"
+                        .to_owned(),
+                );
+            }
+            Ok(())
+        })
+    }
+
+    /// Prepares the one-shot abandon-to-current recovery after two
+    /// independent observations have qualified `stable_current_bytes`.
+    /// This immediate read is the final race check before an operator applies
+    /// the command.
+    pub(crate) fn prepare_abandon_to_current(
+        &self,
+        immutable_target_bytes: u64,
+        stable_current_bytes: u64,
+    ) -> Result<PreparedResize, String> {
+        self.prepare(stable_current_bytes, |state| {
+            if state.requested_bytes != immutable_target_bytes
+                || state.current_bytes != stable_current_bytes
+                || state.current_bytes <= immutable_target_bytes
+            {
+                return Err(
+                    "live state changed before abandon-to-current recovery could be applied"
+                        .to_owned(),
+                );
+            }
+            Ok(())
+        })
+    }
+
+    /// Reads live XML immediately before a command, validates compatibility and
+    /// the target, then applies the operation's own live-state precondition.
+    /// The fresh read is the race check; callers must not reuse an older one.
+    fn prepare(
+        &self,
+        target_bytes: u64,
+        precondition: impl FnOnce(&VirtioMemState) -> Result<(), String>,
     ) -> Result<PreparedResize, String> {
         let snapshot = self
             .command
@@ -150,19 +173,9 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
         state
             .validate_target(target_bytes)
             .map_err(|error| error.to_string())?;
-        if state.requested_bytes != prior_requested_bytes
-            || state.current_bytes != prior_current_bytes
-            || prior_requested_bytes >= prior_current_bytes
-            || target_bytes <= prior_requested_bytes
-            || target_bytes > prior_current_bytes
-        {
-            return Err(
-                "pending-shrink supersession requires unchanged requested < target <= current"
-                    .to_owned(),
-            );
-        }
+        precondition(&state)?;
         let requested_kib = bytes_to_kibibytes(target_bytes)
-            .ok_or_else(|| "supersession target must be an integer number of KiB".to_owned())?;
+            .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
         Ok(PreparedResize {
             arguments: vec![
                 "update-memory-device".to_owned(),
@@ -175,56 +188,6 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
             ],
             current_bytes: state.current_bytes,
             target_bytes,
-        })
-    }
-
-    /// Prepares the one-shot abandon-to-current recovery after two
-    /// independent observations have qualified `stable_current_bytes`.
-    /// This immediate read is the final race check before an operator applies
-    /// the command.
-    pub(crate) fn prepare_abandon_to_current(
-        &self,
-        immutable_target_bytes: u64,
-        stable_current_bytes: u64,
-    ) -> Result<PreparedResize, String> {
-        let snapshot = self
-            .command
-            .run(&["dumpxml".to_owned(), self.vm_name.clone()])
-            .map_err(|error| error.to_string())?;
-        let snapshot = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
-            .map_err(|error| error.to_string())?;
-        snapshot
-            .compatibility
-            .merge(self.compatibility_source.compatibility()?)
-            .map_err(|error| error.to_string())?
-            .validate_for_resize()
-            .map_err(|error| error.to_string())?;
-        let state = snapshot.memory;
-        state
-            .validate_target(stable_current_bytes)
-            .map_err(|error| error.to_string())?;
-        if state.requested_bytes != immutable_target_bytes
-            || state.current_bytes != stable_current_bytes
-            || state.current_bytes <= immutable_target_bytes
-        {
-            return Err(
-                "live state changed before abandon-to-current recovery could be applied".to_owned(),
-            );
-        }
-        let requested_kib = bytes_to_kibibytes(stable_current_bytes)
-            .ok_or_else(|| "recovery target must be an integer number of KiB".to_owned())?;
-        Ok(PreparedResize {
-            arguments: vec![
-                "update-memory-device".to_owned(),
-                self.vm_name.clone(),
-                "--alias".to_owned(),
-                self.alias.clone(),
-                "--requested-size".to_owned(),
-                requested_kib.to_string(),
-                "--live".to_owned(),
-            ],
-            current_bytes: state.current_bytes,
-            target_bytes: stable_current_bytes,
         })
     }
 }

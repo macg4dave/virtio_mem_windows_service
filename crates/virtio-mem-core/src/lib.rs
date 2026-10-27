@@ -4,14 +4,14 @@ pub mod compatibility;
 pub mod controller_status;
 pub mod demand;
 pub mod error;
-pub mod global_pool;
-pub mod pool_ledger;
+pub mod pool;
 pub mod reconciler;
 pub mod shrink_recovery;
 pub mod target_controller;
 pub mod units;
 pub mod virtio_mem;
 pub mod virtio_mem_xml;
+pub mod windows_service_config;
 
 pub use compatibility::{
     CompatibilityEvidence, VirtioMemCompatibility, VirtioMemCompatibilityError,
@@ -29,22 +29,7 @@ pub use demand::{
     LEGACY_RAW_TELEMETRY_VERSION, RAW_TELEMETRY_VERSION, WINDOWS_NATIVE_TELEMETRY_VERSION,
 };
 pub use error::VirtioMemError;
-pub use global_pool::{
-    arbitrate_host_pool, device_target_from_total_ram, total_ram_from_device,
-    validate_host_pool_policy, DemandProviderIdentity, DemandReportAvailability,
-    DemandReportContinuity, GuestDemandReport, GuestPressureState, GuestShrinkEligibility,
-    HostPoolError, HostPoolMemberPolicy, HostPoolPlan, HostPoolPolicy, PoolGrant,
-    PoolGrantDisposition, PoolMemberIdentity, PoolMemberLifecycle, PoolMemberSnapshot,
-    PoolSnapshotBlocker, PoolSnapshotBlockerReason, ReclaimForTransfer,
-    GUEST_DEMAND_REPORT_VERSION, HOST_POOL_ARBITRATION_VERSION, HOST_POOL_PLAN_VERSION,
-    HOST_POOL_POLICY_VERSION, MAX_DEMAND_REASON_CODES, MAX_POOL_MEMBERS,
-};
-pub use pool_ledger::{
-    host_pool_policy_fingerprint, CommandRecovery, FilePoolLedgerStore, PoolCommandDirection,
-    PoolCommandOwner, PoolCommandPhase, PoolLedger, PoolLedgerAccounting, PoolLedgerCommand,
-    PoolLedgerError, PoolLedgerMember, PoolLedgerObservation, HOST_POOL_LEDGER_VERSION,
-    MAX_HOST_POOL_LEDGER_BYTES,
-};
+pub use pool::{allocate_pool, PoolAllocation, PoolError, PoolMember};
 pub use reconciler::{
     reconcile, ControlHealth, ReconcileAction, ReconcileDecision, ReconcileDirection,
     ReconcileError, ReconcileInput,
@@ -61,3 +46,4 @@ pub use virtio_mem::{VirtioMemState, MIN_BLOCK_SIZE_BYTES, MIN_HEADROOM_BYTES};
 pub use virtio_mem_xml::{
     parse_virtio_mem_xml, parse_virtio_mem_xml_for_alias, VirtioMemXmlError, VirtioMemXmlState,
 };
+pub use windows_service_config::{WindowsServiceConfigFile, WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION};

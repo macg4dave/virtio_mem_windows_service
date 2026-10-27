@@ -1958,7 +1958,7 @@ fn require_controller_active_and_shrink(config: &Config, repo: &Path) -> Result<
     }
     let command_line = std::fs::read(format!("/proc/{pid}/cmdline"))
         .map_err(|error| format!("read controller command line: {error}"))?;
-    let running = HostConfig::load_single(&controller_config_path(&command_line)?)
+    let running = HostConfig::load_vm(&controller_config_path(&command_line)?, None)
         .map_err(|error| format!("running controller configuration: {error}"))?;
     if !running.automatic_windows_shrink {
         return Err("automatic Windows shrink is not enabled for qualification".to_owned());

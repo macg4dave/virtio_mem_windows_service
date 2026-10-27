@@ -24,11 +24,10 @@ const DEFAULT_CONNECTION: &str = "qemu:///system";
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
     /// Run the controller daemon.
-    Run {
-        config: PathBuf,
-    },
+    Run { config: PathBuf },
     Status {
         config: PathBuf,
+        vm: Option<String>,
         connection: String,
     },
     Attest {
@@ -74,6 +73,7 @@ pub enum CliCommand {
     ClearLatch {
         reason: String,
         config: PathBuf,
+        vm: Option<String>,
         connection: String,
         apply: bool,
     },
@@ -109,11 +109,21 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
             String::new()
         };
         let mut config = None;
+        let mut vm = None;
         let mut connection = DEFAULT_CONNECTION.to_owned();
         let mut apply = false;
         while index < args.len() {
             match args[index].as_str() {
                 "--apply" if mode == "clear-latch" && !apply => apply = true,
+                "--vm" if vm.is_none() => {
+                    index += 1;
+                    vm = Some(
+                        args.get(index)
+                            .filter(|value| !value.trim().is_empty())
+                            .ok_or_else(|| "--vm requires a VM name".to_owned())?
+                            .clone(),
+                    );
+                }
                 "--config" if config.is_none() => {
                     index += 1;
                     config = Some(PathBuf::from(
@@ -136,11 +146,16 @@ pub fn parse_args(args: &[String]) -> Result<CliCommand, String> {
         }
         let config = required_option(config, "--config")?;
         return Ok(if mode == "status" {
-            CliCommand::Status { config, connection }
+            CliCommand::Status {
+                config,
+                vm,
+                connection,
+            }
         } else {
             CliCommand::ClearLatch {
                 reason,
                 config,
+                vm,
                 connection,
                 apply,
             }
@@ -359,7 +374,7 @@ fn required_option<T>(value: Option<T>, name: &str) -> Result<T, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host --config FILE\n       virtio-mem-host status --config FILE [--connect URI]\n       virtio-mem-host clear-latch REASON --config FILE [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
+    "Usage: virtio-mem-host --config FILE\n       virtio-mem-host status --config FILE [--vm NAME] [--connect URI]\n       virtio-mem-host clear-latch REASON --config FILE [--vm NAME] [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -374,16 +389,20 @@ fn run_with<H: HostMemorySource, W: Write>(
 ) -> Result<(), String> {
     match command {
         CliCommand::Run { .. } => Err("the controller runs from main, not the CLI".to_owned()),
-        CliCommand::Status { config, connection } => {
-            run_configured_status(&config, &connection, output)
-        }
+        CliCommand::Status {
+            config,
+            vm,
+            connection,
+        } => run_configured_status(&config, vm.as_deref(), &connection, output),
         CliCommand::ClearLatch {
             reason,
             config,
+            vm,
             connection,
             apply,
         } => {
-            let config = HostConfig::load_single(&config).map_err(|error| error.to_string())?;
+            let config =
+                HostConfig::load_vm(&config, vm.as_deref()).map_err(|error| error.to_string())?;
             let virsh = Virsh::with_connection(
                 config.virsh_binary.clone(),
                 config.command_timeout,
@@ -531,10 +550,11 @@ fn run_with<H: HostMemorySource, W: Write>(
 
 fn run_configured_status<W: Write>(
     config: &Path,
+    vm: Option<&str>,
     connection: &str,
     output: &mut W,
 ) -> Result<(), String> {
-    let config = HostConfig::load_single(config).map_err(|error| error.to_string())?;
+    let config = HostConfig::load_vm(config, vm).map_err(|error| error.to_string())?;
     let virsh = Virsh::with_connection(
         config.virsh_binary.clone(),
         config.command_timeout,
@@ -847,6 +867,7 @@ mod tests {
             .expect("status"),
             CliCommand::Status {
                 config: PathBuf::from("/etc/virtio-mem-host/guest.toml"),
+                vm: None,
                 connection: "test:///default".to_owned(),
             }
         );
@@ -858,11 +879,14 @@ mod tests {
                 "test:///default",
                 "--config",
                 "guest.toml",
+                "--vm",
+                "guest",
             ]))
             .expect("clear-latch"),
             CliCommand::ClearLatch {
                 reason: "reviewed recovery".to_owned(),
                 config: PathBuf::from("guest.toml"),
+                vm: Some("guest".to_owned()),
                 connection: "test:///default".to_owned(),
                 apply: false,
             }
@@ -963,6 +987,10 @@ mod tests {
         assert!(parse_args(&args(&["--config"])).is_err());
         assert!(parse_args(&args(&["status"])).is_err());
         assert!(parse_args(&args(&["status", "--config", "a", "--apply"])).is_err());
+        assert!(parse_args(&args(&[
+            "status", "--config", "a", "--vm", "x", "--vm", "y"
+        ]))
+        .is_err());
         assert!(parse_args(&args(&["clear-latch", "reason", "--apply"])).is_err());
         assert!(parse_args(&args(&["validate", "guest", "bad/alias"])).is_err());
         assert!(parse_args(&args(&[

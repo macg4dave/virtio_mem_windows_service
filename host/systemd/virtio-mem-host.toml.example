@@ -13,8 +13,15 @@ host_min_headroom_bytes = "REQUIRED_HOST_HEADROOM_BYTES"
 observe_only = false
 # virsh_binary = "virsh"   # only when the standard executable is not used
 
-# One table per VM. Until the shared pool is wired (PLAN.md Phase 4) the
-# controller serves exactly one VM. Larger priority is served first.
+# Device bytes shared by every VM below; required with more than one [[vm]].
+# A VM's charge is max(requested, current) from live XML, so memory still
+# being released is not handed out. Growth comes from free pool bytes, higher
+# priority first; a higher-priority VM that is still short makes lower-priority
+# VMs with automatic_windows_shrink give memory back, never below their floor.
+# pool_bytes = 17179869184
+
+# One table per VM. Larger priority is served first; equal priorities never
+# take memory from each other.
 [[vm]]
 name = "REQUIRED_VM_NAME"
 alias = "REQUIRED_DEVICE_ALIAS"

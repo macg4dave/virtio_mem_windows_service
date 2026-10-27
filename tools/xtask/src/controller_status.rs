@@ -176,7 +176,7 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
     )?;
     let properties = parse_properties(&properties)?;
     let config_path = PathBuf::from(format!("/etc/virtio-mem-host/{}.toml", command.instance));
-    let configured = HostConfig::load_single(&config_path)
+    let configured = HostConfig::load_vm(&config_path, Some(&command.instance))
         .map_err(|error| format!("protected host instance configuration: {error}"))?;
     if configured.vm_name != command.instance {
         return Err("controller-status instance does not match configured VM identity".to_owned());
@@ -192,6 +192,8 @@ fn collect(command: &Command, repo: &Path) -> Result<Evidence, String> {
             process::os("status"),
             process::os("--config"),
             config_path.as_os_str().to_owned(),
+            process::os("--vm"),
+            process::os(&command.instance),
             process::os("--connect"),
             process::os(&command.connection),
         ],
