@@ -1,0 +1,1418 @@
+//! `cargo xtask metrics`: a read-only recorder for stress tests of one
+//! virtio-mem guest. Each sample appends a row to `samples.csv` (host RAM,
+//! QEMU RSS, the device, Windows' own view read over the guest agent); new
+//! controller journal entries go to `events.jsonl`; `summary.json` keeps
+//! running minima, maxima, request latencies and event counts, and is
+//! rewritten every minute and at exit, so a killed run still leaves one.
+//!
+//! On a terminal it runs a live UI (`ui`) where the sample and guest-read
+//! periods can be changed, logging paused and markers added while it records;
+//! `--plain` or a non-terminal prints one line per sample instead.
+//!
+//! Like `watch`, it never resizes, clears latches or restarts anything, and
+//! never reads `.host-status`.
+
+mod ui;
+
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::ffi::OsString;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, IsTerminal, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use serde_json::{json, Map, Value};
+use virtio_mem_core::{MemoryResourceNotificationState, RawTelemetryEnvelope, VirtioMemState};
+use virtio_mem_host::config::HostConfig;
+use virtio_mem_host::qga::{GuestFileReader, VirshGuestFiles};
+use virtio_mem_host::virsh::Virsh;
+
+use crate::process;
+use crate::watch::{self, HostMemory, COMMAND_TIMEOUT, MAX_TELEMETRY_BYTES};
+
+const MIB: u64 = 1 << 20;
+const SUMMARY_PERIOD: Duration = Duration::from_secs(60);
+/// Samples kept for the UI chart.
+const HISTORY: usize = 5000;
+/// Journal events kept for the UI list.
+const RECENT_EVENTS: usize = 200;
+
+pub const HELP: &str = "Metrics options (read-only stress-test recorder):
+  --config PATH                 Required host TOML; the VM, device alias,
+                                telemetry path and host floor come from it.
+  --vm NAME                     The [[vm]] to record; required with several.
+  --instance NAME               Controller unit virtio-mem-host@NAME.service;
+                                default the VM name.
+  --connect URI                 Libvirt URI; default qemu:///system.
+  --output DIR                  Run directory; default
+                                .artifacts/metrics/VM-YYYYMMDDTHHMMSSZ.
+  --interval-seconds N          Sample period; default 5.
+  --guest-interval-seconds N    Guest-agent telemetry read period; default 5.
+  --duration-seconds N          Stop after N seconds; default until quit.
+  --plain                       One line per sample instead of the live UI
+                                (also used when stdout is not a terminal).
+Writes samples.csv, events.jsonl and summary.json into the run directory.
+In the UI: -/+ sample period, [/] guest-read period, space pause logging,
+n sample now, m add a marker, s save summary, w chart window, q quit.
+";
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Command {
+    vm: String,
+    alias: String,
+    unit: String,
+    telemetry_path: String,
+    connect: String,
+    output: Option<PathBuf>,
+    interval: Duration,
+    guest_interval: Duration,
+    duration: Option<Duration>,
+    plain: bool,
+    host_floor_bytes: u64,
+    telemetry_max_age: Duration,
+}
+
+pub fn parse(args: &[String]) -> Result<Command, String> {
+    let mut config_path = None;
+    let mut vm = None;
+    let mut instance = None;
+    let mut command = Command {
+        vm: String::new(),
+        alias: String::new(),
+        unit: String::new(),
+        telemetry_path: String::new(),
+        connect: "qemu:///system".to_owned(),
+        output: None,
+        interval: Duration::from_secs(5),
+        guest_interval: Duration::from_secs(5),
+        duration: None,
+        plain: false,
+        host_floor_bytes: 0,
+        telemetry_max_age: Duration::ZERO,
+    };
+    let mut index = 0;
+    while index < args.len() {
+        let option = args[index].as_str();
+        if option == "--plain" {
+            command.plain = true;
+            index += 1;
+            continue;
+        }
+        index += 1;
+        let value = args
+            .get(index)
+            .ok_or_else(|| format!("{option} requires a value"))?;
+        let seconds = |minimum: f64| {
+            value
+                .parse::<f64>()
+                .ok()
+                .filter(|seconds| seconds.is_finite() && *seconds >= minimum)
+                .map(Duration::from_secs_f64)
+                .ok_or_else(|| format!("{option} requires a number of seconds >= {minimum}"))
+        };
+        match option {
+            "--config" => config_path = Some(PathBuf::from(value)),
+            "--vm" => vm = Some(value.clone()),
+            "--instance" => instance = Some(value.clone()),
+            "--connect" => command.connect = value.clone(),
+            "--output" => command.output = Some(PathBuf::from(value)),
+            "--interval-seconds" => command.interval = seconds(0.5)?,
+            "--guest-interval-seconds" => command.guest_interval = seconds(0.5)?,
+            "--duration-seconds" => command.duration = Some(seconds(1.0)?),
+            _ => return Err(format!("unknown metrics option: {option}\n\n{HELP}")),
+        }
+        index += 1;
+    }
+    let config_path = config_path.ok_or_else(|| format!("metrics requires --config\n\n{HELP}"))?;
+    let config = HostConfig::load_vm(&config_path, vm.as_deref())
+        .map_err(|error| format!("{}: {error}", config_path.display()))?;
+    command.unit = format!(
+        "virtio-mem-host@{}.service",
+        instance.as_deref().unwrap_or(&config.vm_name)
+    );
+    command.vm = config.vm_name;
+    command.alias = config.alias;
+    command.telemetry_path = config.raw_telemetry_path;
+    command.host_floor_bytes = config.host_min_headroom_bytes;
+    command.telemetry_max_age = config.raw_telemetry_max_age;
+    Ok(command)
+}
+
+/// Settings the UI changes while the sampler runs.
+#[derive(Debug, Clone)]
+struct Controls {
+    interval: Duration,
+    guest_interval: Duration,
+    /// Samples are still taken and shown, but nothing is written.
+    paused: bool,
+    sample_now: bool,
+    /// Markers waiting to be written to `events.jsonl`.
+    markers: Vec<JournalEvent>,
+}
+
+/// One chart point per sample.
+#[derive(Debug, Clone, Copy)]
+struct Point {
+    elapsed_seconds: f64,
+    host_available_mib: u64,
+    device: Option<(u64, u64)>,
+    guest_available_mib: Option<u64>,
+}
+
+/// Everything the UI shows, shared with the sampler.
+struct Live {
+    controls: Controls,
+    directory: PathBuf,
+    started_millis: u64,
+    host_floor_bytes: u64,
+    latest: Option<Sample>,
+    /// The newest successful guest read and when it was taken.
+    guest: Option<(u64, RawTelemetryEnvelope)>,
+    guest_error: Option<String>,
+    history: VecDeque<Point>,
+    events: VecDeque<JournalEvent>,
+    rows_written: u64,
+    summary: Summary,
+    finished: bool,
+}
+
+impl Live {
+    fn new(command: &Command, directory: PathBuf, started_millis: u64) -> Self {
+        Self {
+            controls: Controls {
+                interval: command.interval,
+                guest_interval: command.guest_interval,
+                paused: false,
+                sample_now: false,
+                markers: Vec::new(),
+            },
+            directory,
+            started_millis,
+            host_floor_bytes: command.host_floor_bytes,
+            latest: None,
+            guest: None,
+            guest_error: None,
+            history: VecDeque::new(),
+            events: VecDeque::new(),
+            rows_written: 0,
+            summary: Summary::new(command, started_millis),
+            finished: false,
+        }
+    }
+
+    fn show_event(&mut self, event: JournalEvent) {
+        self.events.push_front(event);
+        self.events.truncate(RECENT_EVENTS);
+    }
+
+    /// Queues a marker for `events.jsonl` and shows it at once.
+    fn mark(&mut self, text: String) {
+        let marker = JournalEvent::marker(unix_millis() * 1000, text);
+        self.show_event(marker.clone());
+        self.controls.markers.push(marker);
+    }
+
+    fn summary_path(&self) -> PathBuf {
+        self.directory.join("summary.json")
+    }
+
+    fn write_summary(&self) -> Result<(), String> {
+        self.summary.write(&self.summary_path(), unix_millis())
+    }
+}
+
+fn lock(live: &Mutex<Live>) -> MutexGuard<'_, Live> {
+    live.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// The run directory's open output files.
+struct Recorder {
+    samples: BufWriter<File>,
+    events: BufWriter<File>,
+}
+
+impl Recorder {
+    fn create(directory: &Path) -> Result<Self, String> {
+        std::fs::create_dir_all(directory)
+            .map_err(|error| format!("create {}: {error}", directory.display()))?;
+        let mut samples = create(&directory.join("samples.csv"))?;
+        writeln!(samples, "{CSV_HEADER}")
+            .and_then(|()| samples.flush())
+            .map_err(write_error)?;
+        Ok(Self {
+            samples,
+            events: create(&directory.join("events.jsonl"))?,
+        })
+    }
+
+    fn event(&mut self, event: &JournalEvent) -> Result<(), String> {
+        writeln!(self.events, "{}", event.to_json()).map_err(write_error)
+    }
+}
+
+pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
+    let stop = Arc::new(AtomicBool::new(false));
+    for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+        signal_hook::flag::register(signal, Arc::clone(&stop))
+            .map_err(|error| format!("install signal handler: {error}"))?;
+    }
+    let started_millis = unix_millis();
+    let directory = command.output.clone().unwrap_or_else(|| {
+        repo.join(".artifacts/metrics").join(format!(
+            "{}-{}",
+            command.vm,
+            compact_utc(started_millis)
+        ))
+    });
+    let recorder = Recorder::create(&directory)?;
+    let live = Mutex::new(Live::new(command, directory.clone(), started_millis));
+    let result = if !command.plain && std::io::stdout().is_terminal() {
+        std::thread::scope(|scope| {
+            let sampler = scope.spawn(|| record(command, repo, recorder, &live, &stop, |_, _| {}));
+            let shown = ui::run(command, &live, &stop);
+            stop.store(true, Ordering::Release);
+            let recorded = sampler
+                .join()
+                .unwrap_or_else(|_| Err("metrics sampler panicked".to_owned()));
+            shown.and(recorded)
+        })
+    } else {
+        println!(
+            "recording {} to {} (Ctrl+C to stop)",
+            command.vm,
+            directory.display()
+        );
+        record(command, repo, recorder, &live, &stop, |sample, events| {
+            println!("{}", sample.progress(events));
+        })
+    };
+    let live = lock(&live);
+    live.write_summary()?;
+    println!("{}", live.summary.headline());
+    println!("recorded in {}", directory.display());
+    result
+}
+
+/// Samples until `stop` or `--duration-seconds`, writing each sample and new
+/// journal entry unless paused.
+fn record(
+    command: &Command,
+    repo: &Path,
+    mut recorder: Recorder,
+    live: &Mutex<Live>,
+    stop: &AtomicBool,
+    mut progress: impl FnMut(&Sample, usize),
+) -> Result<(), String> {
+    let virsh = Virsh::with_connection("virsh", COMMAND_TIMEOUT, &command.connect);
+    let guest_files = VirshGuestFiles::new(virsh.clone(), &command.vm);
+    let started_millis = lock(live).started_millis;
+    let mut journal = JournalFollower::start(&command.unit, started_millis, repo);
+    let mut qemu = QemuProcess::default();
+    let mut guest_read: Option<Instant> = None;
+    let mut summary_written = Instant::now();
+    let clock = Instant::now();
+    let result = (|| {
+        while !stop.load(Ordering::Acquire)
+            && command
+                .duration
+                .is_none_or(|duration| clock.elapsed() < duration)
+        {
+            let started = Instant::now();
+            write_markers(&mut recorder, live)?;
+            let controls = {
+                let mut live = lock(live);
+                live.controls.sample_now = false;
+                live.controls.clone()
+            };
+            let now = unix_millis();
+            let guest = if guest_read.is_none_or(|read| started - read >= controls.guest_interval) {
+                guest_read = Some(started);
+                Some(read_guest(&guest_files, &command.telemetry_path))
+            } else {
+                None
+            };
+            let sample = Sample {
+                unix_millis: now,
+                elapsed: clock.elapsed(),
+                host: watch::read_meminfo()?,
+                qemu_rss_bytes: qemu.rss_bytes(&command.vm),
+                controller_active: unit_active(&command.unit, repo),
+                device: watch::device_state(&virsh, &command.vm, &command.alias),
+                guest,
+            };
+            let new_events = journal.read(repo);
+            if !controls.paused {
+                writeln!(
+                    recorder.samples,
+                    "{}",
+                    sample.csv_row(command.host_floor_bytes)
+                )
+                .and_then(|()| recorder.samples.flush())
+                .map_err(write_error)?;
+                for event in &new_events {
+                    recorder.event(event)?;
+                }
+            }
+            recorder.events.flush().map_err(write_error)?;
+            {
+                let mut live = lock(live);
+                if !controls.paused {
+                    live.summary.add_sample(&sample);
+                    for event in &new_events {
+                        live.summary.add_event(event);
+                    }
+                    live.rows_written += 1;
+                }
+                for event in &new_events {
+                    live.show_event(event.clone());
+                }
+                if let Some(read) = &sample.guest {
+                    match &read.telemetry {
+                        Ok(telemetry) => {
+                            live.guest = Some((now, telemetry.clone()));
+                            live.guest_error = None;
+                        }
+                        Err(error) => live.guest_error = Some(error.clone()),
+                    }
+                }
+                let guest_available_mib = live
+                    .guest
+                    .as_ref()
+                    .map(|(_, telemetry)| mib(telemetry.memory.physical_available_bytes));
+                live.history.push_back(Point {
+                    elapsed_seconds: sample.elapsed.as_secs_f64(),
+                    host_available_mib: mib(sample.host.available),
+                    device: sample
+                        .device
+                        .map(|device| (mib(device.requested_bytes), mib(device.current_bytes))),
+                    guest_available_mib,
+                });
+                if live.history.len() > HISTORY {
+                    live.history.pop_front();
+                }
+                live.latest = Some(sample.clone());
+            }
+            progress(&sample, new_events.len());
+
+            if summary_written.elapsed() >= SUMMARY_PERIOD {
+                lock(live).write_summary()?;
+                summary_written = Instant::now();
+            }
+            loop {
+                write_markers(&mut recorder, live)?;
+                let controls = lock(live).controls.clone();
+                if stop.load(Ordering::Acquire)
+                    || controls.sample_now
+                    || started.elapsed() >= controls.interval
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        Ok(())
+    })();
+    let flushed = write_markers(&mut recorder, live);
+    lock(live).finished = true;
+    result.and(flushed)
+}
+
+/// Writes the UI's queued markers, including while paused.
+fn write_markers(recorder: &mut Recorder, live: &Mutex<Live>) -> Result<(), String> {
+    let markers = std::mem::take(&mut lock(live).controls.markers);
+    if markers.is_empty() {
+        return Ok(());
+    }
+    for marker in &markers {
+        recorder.event(marker)?;
+    }
+    recorder.events.flush().map_err(write_error)?;
+    let mut live = lock(live);
+    for marker in &markers {
+        live.summary.add_event(marker);
+    }
+    Ok(())
+}
+
+fn create(path: &Path) -> Result<BufWriter<File>, String> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map(BufWriter::new)
+        .map_err(|error| format!("create {}: {error}", path.display()))
+}
+
+fn write_error(error: std::io::Error) -> String {
+    format!("write metrics: {error}")
+}
+
+fn unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+}
+
+fn unit_active(unit: &str, repo: &Path) -> bool {
+    let arguments = ["is-active", unit].map(process::os);
+    process::bounded_text("systemctl", &arguments, repo, COMMAND_TIMEOUT)
+        .is_ok_and(|state| state.trim() == "active")
+}
+
+// ---- Guest ------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct GuestRead {
+    /// How long the guest-agent read took, including failures.
+    elapsed: Duration,
+    telemetry: Result<RawTelemetryEnvelope, String>,
+}
+
+fn read_guest(files: &impl GuestFileReader, telemetry_path: &str) -> GuestRead {
+    let started = Instant::now();
+    let telemetry = files
+        .read_file(telemetry_path, MAX_TELEMETRY_BYTES)
+        .map_err(|error| error.to_string())
+        .and_then(|bytes| serde_json::from_slice(&bytes).map_err(|error| error.to_string()));
+    GuestRead {
+        elapsed: started.elapsed(),
+        telemetry,
+    }
+}
+
+// ---- QEMU process ---------------------------------------------------------
+
+/// The VM's QEMU process, found by its `-name guest=VM,...` argument and
+/// looked up again when it exits.
+#[derive(Default)]
+struct QemuProcess {
+    pid: Option<u32>,
+}
+
+impl QemuProcess {
+    fn rss_bytes(&mut self, vm: &str) -> Option<u64> {
+        if let Some(rss) = self.pid.and_then(read_rss) {
+            return Some(rss);
+        }
+        self.pid = find_qemu(vm);
+        self.pid.and_then(read_rss)
+    }
+}
+
+fn find_qemu(vm: &str) -> Option<u32> {
+    let wanted = format!("guest={vm}");
+    std::fs::read_dir("/proc")
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u32>().ok()?;
+            let cmdline = std::fs::read(entry.path().join("cmdline")).ok()?;
+            let mut arguments = cmdline.split(|byte| *byte == 0);
+            let program = arguments.next()?;
+            if !String::from_utf8_lossy(program).contains("qemu") {
+                return None;
+            }
+            arguments
+                .any(|argument| {
+                    argument == wanted.as_bytes()
+                        || argument.starts_with(format!("{wanted},").as_bytes())
+                })
+                .then_some(pid)
+        })
+}
+
+fn read_rss(pid: u32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    parse_rss(&status)
+}
+
+fn parse_rss(status: &str) -> Option<u64> {
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("VmRSS:"))
+        .and_then(|rest| rest.split_whitespace().next()?.parse::<u64>().ok())
+        .map(|kib| kib * 1024)
+}
+
+// ---- Samples ----------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct Sample {
+    unix_millis: u64,
+    elapsed: Duration,
+    host: HostMemory,
+    qemu_rss_bytes: Option<u64>,
+    controller_active: bool,
+    device: Option<VirtioMemState>,
+    /// Present only on samples that read the guest.
+    guest: Option<GuestRead>,
+}
+
+const CSV_HEADER: &str = "time_utc,elapsed_s,\
+host_total_mib,host_available_mib,host_headroom_over_floor_mib,host_swap_used_mib,\
+qemu_rss_mib,controller_active,\
+device_size_mib,device_requested_mib,device_current_mib,device_divergence_mib,\
+guest_read_ok,guest_read_ms,guest_publication_age_ms,guest_sequence,\
+guest_total_mib,guest_available_mib,guest_load_pct,\
+guest_commit_mib,guest_commit_limit_mib,guest_commit_headroom_mib,guest_cache_mib,\
+guest_standby_mib,guest_free_zero_mib,guest_modified_mib,\
+guest_signal,guest_hard_faults_per_s,guest_pages_input_per_s,\
+guest_request,guest_request_mib,guest_request_sequence";
+
+fn mib(bytes: u64) -> u64 {
+    bytes / MIB
+}
+
+fn signed_mib(left: u64, right: u64) -> i64 {
+    (left as i128 - right as i128).div_euclid(MIB as i128) as i64
+}
+
+fn signal_name(telemetry: &RawTelemetryEnvelope) -> &'static str {
+    match telemetry
+        .windows_native
+        .as_ref()
+        .and_then(|native| native.memory_resource_notifications.value)
+    {
+        Some(MemoryResourceNotificationState::High) => "high",
+        Some(MemoryResourceNotificationState::Neutral) => "neutral",
+        Some(MemoryResourceNotificationState::Low) => "low",
+        None => "unknown",
+    }
+}
+
+fn hard_faults_per_second(telemetry: &RawTelemetryEnvelope) -> Option<f64> {
+    let paging = telemetry.windows_native.as_ref()?.paging_activity.value?;
+    Some(paging.hard_faults_milli_events_per_second as f64 / 1000.0)
+}
+
+fn pages_input_per_second(telemetry: &RawTelemetryEnvelope) -> Option<f64> {
+    let paging = telemetry.windows_native.as_ref()?.paging_activity.value?;
+    Some(paging.pages_input_milli_events_per_second as f64 / 1000.0)
+}
+
+impl Sample {
+    fn telemetry(&self) -> Option<&RawTelemetryEnvelope> {
+        self.guest.as_ref()?.telemetry.as_ref().ok()
+    }
+
+    fn csv_row(&self, host_floor_bytes: u64) -> String {
+        let optional = |value: Option<String>| value.unwrap_or_default();
+        let host = &self.host;
+        let mut columns = vec![
+            iso_utc(self.unix_millis),
+            format!("{:.1}", self.elapsed.as_secs_f64()),
+            mib(host.total).to_string(),
+            mib(host.available).to_string(),
+            signed_mib(host.available, host_floor_bytes).to_string(),
+            mib(host.swap_total.saturating_sub(host.swap_free)).to_string(),
+            optional(self.qemu_rss_bytes.map(|rss| mib(rss).to_string())),
+            u8::from(self.controller_active).to_string(),
+        ];
+        match self.device {
+            Some(device) => columns.extend([
+                mib(device.size_bytes).to_string(),
+                mib(device.requested_bytes).to_string(),
+                mib(device.current_bytes).to_string(),
+                signed_mib(device.current_bytes, device.requested_bytes).to_string(),
+            ]),
+            None => columns.extend(std::iter::repeat_n(String::new(), 4)),
+        }
+        match &self.guest {
+            Some(read) => columns.extend([
+                u8::from(read.telemetry.is_ok()).to_string(),
+                read.elapsed.as_millis().to_string(),
+            ]),
+            None => columns.extend(std::iter::repeat_n(String::new(), 2)),
+        }
+        match self.telemetry() {
+            Some(telemetry) => {
+                let memory = &telemetry.memory;
+                let reusable = telemetry
+                    .windows_native
+                    .as_ref()
+                    .and_then(|native| native.reusable_memory.value);
+                let request = telemetry.request.as_ref();
+                columns.extend([
+                    (self.unix_millis as i64 - telemetry.observed_unix_millis as i64).to_string(),
+                    telemetry.sequence.to_string(),
+                    mib(memory.physical_total_bytes).to_string(),
+                    mib(memory.physical_available_bytes).to_string(),
+                    memory.memory_load_percent.to_string(),
+                    mib(memory.commit_total_bytes).to_string(),
+                    mib(memory.commit_limit_bytes).to_string(),
+                    signed_mib(memory.commit_limit_bytes, memory.commit_total_bytes).to_string(),
+                    mib(memory.system_cache_bytes).to_string(),
+                    optional(reusable.map(|value| mib(value.standby_reserve_bytes).to_string())),
+                    optional(reusable.map(|value| mib(value.free_zero_bytes).to_string())),
+                    optional(reusable.map(|value| mib(value.modified_bytes).to_string())),
+                    signal_name(telemetry).to_owned(),
+                    optional(hard_faults_per_second(telemetry).map(|rate| format!("{rate:.1}"))),
+                    optional(pages_input_per_second(telemetry).map(|rate| format!("{rate:.1}"))),
+                    optional(request.map(|request| format!("{:?}", request.operation))),
+                    optional(request.map(|request| mib(request.bytes).to_string())),
+                    optional(request.map(|request| request.identity.sequence.to_string())),
+                ]);
+            }
+            None => columns.extend(std::iter::repeat_n(String::new(), 18)),
+        }
+        columns.join(",")
+    }
+
+    /// One console line per sample.
+    fn progress(&self, new_events: usize) -> String {
+        let gib = |bytes: u64| format!("{:.1}G", bytes as f64 / (1u64 << 30) as f64);
+        let mut line = format!(
+            "{} host avail {}",
+            &iso_utc(self.unix_millis)[11..19],
+            gib(self.host.available)
+        );
+        if let Some(rss) = self.qemu_rss_bytes {
+            line.push_str(&format!(" qemu rss {}", gib(rss)));
+        }
+        match self.device {
+            Some(device) => line.push_str(&format!(
+                " | device {}/{}M",
+                mib(device.current_bytes),
+                mib(device.requested_bytes)
+            )),
+            None => line.push_str(" | device unreadable"),
+        }
+        match (&self.guest, self.telemetry()) {
+            (_, Some(telemetry)) => {
+                line.push_str(&format!(
+                    " | guest avail {} load {}% {}",
+                    gib(telemetry.memory.physical_available_bytes),
+                    telemetry.memory.memory_load_percent,
+                    signal_name(telemetry)
+                ));
+                if let Some(request) = &telemetry.request {
+                    line.push_str(&format!(
+                        " req {:?} {}M #{}",
+                        request.operation,
+                        mib(request.bytes),
+                        request.identity.sequence
+                    ));
+                }
+            }
+            (Some(_), None) => line.push_str(" | guest read failed"),
+            (None, None) => {}
+        }
+        if !self.controller_active {
+            line.push_str(" | CONTROLLER INACTIVE");
+        }
+        if new_events > 0 {
+            line.push_str(&format!(" | +{new_events} events"));
+        }
+        line
+    }
+}
+
+// ---- Journal ----------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+struct JournalEvent {
+    unix_micros: u64,
+    pid: Option<u32>,
+    /// The `event=` name, or `None` for other unit messages (systemd starts
+    /// and stops, panics).
+    name: Option<String>,
+    fields: BTreeMap<String, String>,
+    message: String,
+}
+
+impl JournalEvent {
+    fn from_json(line: &str) -> Option<(Self, String)> {
+        let entry: Value = serde_json::from_str(line).ok()?;
+        let text = |key: &str| entry.get(key)?.as_str().map(str::to_owned);
+        let message = text("MESSAGE")?;
+        let (name, fields) = parse_event(&message);
+        Some((
+            Self {
+                unix_micros: text("__REALTIME_TIMESTAMP")?.parse().ok()?,
+                pid: text("_PID").and_then(|pid| pid.parse().ok()),
+                name,
+                fields,
+                message,
+            },
+            text("__CURSOR")?,
+        ))
+    }
+
+    /// An operator note written into `events.jsonl` as `event: "marker"`.
+    fn marker(unix_micros: u64, text: String) -> Self {
+        Self {
+            unix_micros,
+            pid: None,
+            name: Some("marker".to_owned()),
+            fields: BTreeMap::new(),
+            message: text,
+        }
+    }
+
+    fn to_json(&self) -> Value {
+        json!({
+            "time_utc": iso_utc(self.unix_micros / 1000),
+            "pid": self.pid,
+            "event": self.name,
+            "fields": self.fields,
+            "message": self.message,
+        })
+    }
+}
+
+/// Splits `... event=NAME key=value key=value with spaces ...` into the name
+/// and fields; a word without `=` belongs to the previous value.
+fn parse_event(message: &str) -> (Option<String>, BTreeMap<String, String>) {
+    let Some((_, rest)) = message.split_once("event=") else {
+        return (None, BTreeMap::new());
+    };
+    let mut words = rest.split(' ');
+    let name = words.next().unwrap_or_default().to_owned();
+    let mut fields = BTreeMap::new();
+    let mut last: Option<String> = None;
+    for word in words {
+        match word.split_once('=').filter(|(key, _)| {
+            !key.is_empty()
+                && key
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric() || character == '_')
+        }) {
+            Some((key, value)) => {
+                fields.insert(key.to_owned(), value.to_owned());
+                last = Some(key.to_owned());
+            }
+            None => {
+                if let Some(value) = last.as_ref().and_then(|key| fields.get_mut(key)) {
+                    value.push(' ');
+                    value.push_str(word);
+                }
+            }
+        }
+    }
+    (Some(name), fields)
+}
+
+/// Reads the unit's journal entries written since the last read.
+struct JournalFollower {
+    unit: String,
+    cursor: Option<String>,
+    since_seconds: u64,
+}
+
+impl JournalFollower {
+    /// Starts after the newest existing entry, so a run records only its own.
+    fn start(unit: &str, started_millis: u64, repo: &Path) -> Self {
+        let mut follower = Self {
+            unit: unit.to_owned(),
+            cursor: None,
+            since_seconds: started_millis / 1000,
+        };
+        let arguments = ["-u", unit, "-n", "1", "-o", "json", "--no-pager"].map(process::os);
+        if let Ok(text) = process::bounded_text("journalctl", &arguments, repo, COMMAND_TIMEOUT) {
+            follower.cursor = text
+                .lines()
+                .rev()
+                .find_map(JournalEvent::from_json)
+                .map(|(_, cursor)| cursor);
+        }
+        follower
+    }
+
+    fn read(&mut self, repo: &Path) -> Vec<JournalEvent> {
+        let mut arguments: Vec<OsString> = ["-u", &self.unit, "-o", "json", "--no-pager"]
+            .iter()
+            .map(process::os)
+            .collect();
+        arguments.push(process::os(match &self.cursor {
+            Some(cursor) => format!("--after-cursor={cursor}"),
+            None => format!("--since=@{}", self.since_seconds),
+        }));
+        let Ok(text) = process::bounded_text("journalctl", &arguments, repo, COMMAND_TIMEOUT)
+        else {
+            return Vec::new();
+        };
+        let mut events = Vec::new();
+        for (event, cursor) in text.lines().filter_map(JournalEvent::from_json) {
+            self.cursor = Some(cursor);
+            events.push(event);
+        }
+        events
+    }
+}
+
+// ---- Summary ----------------------------------------------------------------
+
+/// Count, minimum, maximum and mean of one metric.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Stat {
+    count: u64,
+    min: f64,
+    max: f64,
+    sum: f64,
+}
+
+impl Stat {
+    fn add(&mut self, value: f64) {
+        if self.count == 0 {
+            self.min = value;
+            self.max = value;
+        } else {
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        }
+        self.count += 1;
+        self.sum += value;
+    }
+
+    fn json(&self) -> Value {
+        if self.count == 0 {
+            return Value::Null;
+        }
+        let round = |value: f64| (value * 10.0).round() / 10.0;
+        json!({
+            "count": self.count,
+            "min": round(self.min),
+            "max": round(self.max),
+            "mean": round(self.sum / self.count as f64),
+        })
+    }
+}
+
+#[derive(Default)]
+struct RequestTotals {
+    count: u64,
+    requested_bytes: u64,
+    actual_bytes: u64,
+}
+
+struct Summary {
+    vm: String,
+    unit: String,
+    started_millis: u64,
+    host_floor_bytes: u64,
+    telemetry_max_age_millis: u64,
+    samples: u64,
+    controller_inactive_samples: u64,
+    host_available_mib: Stat,
+    host_headroom_over_floor_mib: Stat,
+    host_swap_used_mib: Stat,
+    qemu_rss_mib: Stat,
+    device_unreadable_samples: u64,
+    device_current_mib: Stat,
+    /// Start of the current requested != current stretch.
+    divergence_since_millis: Option<u64>,
+    divergence_seconds: Stat,
+    guest_read_failures: u64,
+    guest_stale_reads: u64,
+    guest_read_ms: Stat,
+    guest_publication_age_ms: Stat,
+    guest_available_mib: Stat,
+    guest_commit_headroom_mib: Stat,
+    guest_load_pct: Stat,
+    guest_hard_faults_per_s: Stat,
+    guest_signals: BTreeMap<&'static str, u64>,
+    /// Guest `issued_unix_millis` by (session, sequence).
+    guest_issued: HashMap<(String, String), u64>,
+    /// Controller grant time (microseconds) by (session, sequence).
+    granted: HashMap<(String, String), u64>,
+    grant_to_completion_seconds: Stat,
+    issue_to_completion_seconds: Stat,
+    requests: BTreeMap<String, RequestTotals>,
+    refusals: BTreeMap<String, u64>,
+    events: BTreeMap<String, u64>,
+    controller_pids: Vec<u32>,
+    notable: Vec<Value>,
+}
+
+/// Events copied in full into the summary.
+const NOTABLE_EVENTS: [&str; 5] = [
+    "actuation_latched",
+    "ownership_conflict",
+    "live_state_unavailable",
+    "usable_region_widened",
+    "vm_stopped",
+];
+
+impl Summary {
+    fn new(command: &Command, started_millis: u64) -> Self {
+        Self {
+            vm: command.vm.clone(),
+            unit: command.unit.clone(),
+            started_millis,
+            host_floor_bytes: command.host_floor_bytes,
+            telemetry_max_age_millis: command.telemetry_max_age.as_millis() as u64,
+            samples: 0,
+            controller_inactive_samples: 0,
+            host_available_mib: Stat::default(),
+            host_headroom_over_floor_mib: Stat::default(),
+            host_swap_used_mib: Stat::default(),
+            qemu_rss_mib: Stat::default(),
+            device_unreadable_samples: 0,
+            device_current_mib: Stat::default(),
+            divergence_since_millis: None,
+            divergence_seconds: Stat::default(),
+            guest_read_failures: 0,
+            guest_stale_reads: 0,
+            guest_read_ms: Stat::default(),
+            guest_publication_age_ms: Stat::default(),
+            guest_available_mib: Stat::default(),
+            guest_commit_headroom_mib: Stat::default(),
+            guest_load_pct: Stat::default(),
+            guest_hard_faults_per_s: Stat::default(),
+            guest_signals: BTreeMap::new(),
+            guest_issued: HashMap::new(),
+            granted: HashMap::new(),
+            grant_to_completion_seconds: Stat::default(),
+            issue_to_completion_seconds: Stat::default(),
+            requests: BTreeMap::new(),
+            refusals: BTreeMap::new(),
+            events: BTreeMap::new(),
+            controller_pids: Vec::new(),
+            notable: Vec::new(),
+        }
+    }
+
+    fn add_sample(&mut self, sample: &Sample) {
+        self.samples += 1;
+        if !sample.controller_active {
+            self.controller_inactive_samples += 1;
+        }
+        let host = &sample.host;
+        self.host_available_mib.add(mib(host.available) as f64);
+        self.host_headroom_over_floor_mib
+            .add(signed_mib(host.available, self.host_floor_bytes) as f64);
+        self.host_swap_used_mib
+            .add(mib(host.swap_total.saturating_sub(host.swap_free)) as f64);
+        if let Some(rss) = sample.qemu_rss_bytes {
+            self.qemu_rss_mib.add(mib(rss) as f64);
+        }
+        match sample.device {
+            Some(device) => {
+                self.device_current_mib
+                    .add(mib(device.current_bytes) as f64);
+                let diverged = device.requested_bytes != device.current_bytes;
+                match (diverged, self.divergence_since_millis) {
+                    (true, None) => self.divergence_since_millis = Some(sample.unix_millis),
+                    (false, Some(since)) => {
+                        self.divergence_seconds
+                            .add(sample.unix_millis.saturating_sub(since) as f64 / 1000.0);
+                        self.divergence_since_millis = None;
+                    }
+                    _ => {}
+                }
+            }
+            None => self.device_unreadable_samples += 1,
+        }
+        let Some(read) = &sample.guest else {
+            return;
+        };
+        self.guest_read_ms.add(read.elapsed.as_millis() as f64);
+        let Ok(telemetry) = &read.telemetry else {
+            self.guest_read_failures += 1;
+            return;
+        };
+        let age = sample.unix_millis as i64 - telemetry.observed_unix_millis as i64;
+        self.guest_publication_age_ms.add(age as f64);
+        if age > self.telemetry_max_age_millis as i64 {
+            self.guest_stale_reads += 1;
+        }
+        let memory = &telemetry.memory;
+        self.guest_available_mib
+            .add(mib(memory.physical_available_bytes) as f64);
+        self.guest_commit_headroom_mib
+            .add(signed_mib(memory.commit_limit_bytes, memory.commit_total_bytes) as f64);
+        self.guest_load_pct
+            .add(f64::from(memory.memory_load_percent));
+        if let Some(rate) = hard_faults_per_second(telemetry) {
+            self.guest_hard_faults_per_s.add(rate);
+        }
+        *self
+            .guest_signals
+            .entry(signal_name(telemetry))
+            .or_default() += 1;
+        if let Some(request) = &telemetry.request {
+            self.guest_issued
+                .entry((
+                    request.identity.session_id.clone(),
+                    request.identity.sequence.to_string(),
+                ))
+                .or_insert(request.issued_unix_millis);
+        }
+    }
+
+    fn add_event(&mut self, event: &JournalEvent) {
+        if let Some(pid) = event.pid.filter(|pid| *pid != 1) {
+            if !self.controller_pids.contains(&pid) {
+                self.controller_pids.push(pid);
+            }
+        }
+        let name = event.name.clone().unwrap_or_else(|| "(other)".to_owned());
+        *self.events.entry(name.clone()).or_default() += 1;
+        let field = |key: &str| event.fields.get(key).cloned().unwrap_or_default();
+        let key = || (field("session_id"), field("sequence"));
+        match name.as_str() {
+            "controller_decision" if field("action") == "grant" => {
+                self.granted.insert(key(), event.unix_micros);
+            }
+            "controller_decision" => {
+                *self
+                    .refusals
+                    .entry(field("reason").chars().take(80).collect())
+                    .or_default() += 1;
+            }
+            "request_completed" => {
+                let totals = self
+                    .requests
+                    .entry(format!("{} {}", field("operation"), field("outcome")))
+                    .or_default();
+                totals.count += 1;
+                totals.requested_bytes += field("bytes").parse::<u64>().unwrap_or(0);
+                totals.actual_bytes += field("actual_bytes").parse::<u64>().unwrap_or(0);
+                if let Some(granted) = self.granted.remove(&key()) {
+                    self.grant_to_completion_seconds
+                        .add(event.unix_micros.saturating_sub(granted) as f64 / 1e6);
+                }
+                if let Some(issued) = self.guest_issued.remove(&key()) {
+                    self.issue_to_completion_seconds
+                        .add((event.unix_micros / 1000).saturating_sub(issued) as f64 / 1000.0);
+                }
+            }
+            _ => {}
+        }
+        let notable = NOTABLE_EVENTS.contains(&name.as_str())
+            || (event.name.is_none() && event.pid == Some(1));
+        if notable && self.notable.len() < 200 {
+            self.notable.push(event.to_json());
+        }
+    }
+
+    fn json(&self, now_millis: u64) -> Value {
+        let mut open_divergence = Value::Null;
+        if let Some(since) = self.divergence_since_millis {
+            open_divergence = json!(now_millis.saturating_sub(since) as f64 / 1000.0);
+        }
+        let requests: Map<String, Value> = self
+            .requests
+            .iter()
+            .map(|(key, totals)| {
+                (
+                    key.clone(),
+                    json!({
+                        "count": totals.count,
+                        "requested_mib": mib(totals.requested_bytes),
+                        "actual_mib": mib(totals.actual_bytes),
+                    }),
+                )
+            })
+            .collect();
+        json!({
+            "vm": self.vm,
+            "unit": self.unit,
+            "started_utc": iso_utc(self.started_millis),
+            "updated_utc": iso_utc(now_millis),
+            "duration_seconds": now_millis.saturating_sub(self.started_millis) / 1000,
+            "samples": self.samples,
+            "host": {
+                "available_mib": self.host_available_mib.json(),
+                "headroom_over_floor_mib": self.host_headroom_over_floor_mib.json(),
+                "swap_used_mib": self.host_swap_used_mib.json(),
+                "qemu_rss_mib": self.qemu_rss_mib.json(),
+                "controller_inactive_samples": self.controller_inactive_samples,
+                "controller_pids": self.controller_pids,
+            },
+            "device": {
+                "current_mib": self.device_current_mib.json(),
+                "unreadable_samples": self.device_unreadable_samples,
+                "divergence_seconds": self.divergence_seconds.json(),
+                "open_divergence_seconds": open_divergence,
+            },
+            "guest": {
+                "read_ms": self.guest_read_ms.json(),
+                "read_failures": self.guest_read_failures,
+                "stale_reads": self.guest_stale_reads,
+                "publication_age_ms": self.guest_publication_age_ms.json(),
+                "available_mib": self.guest_available_mib.json(),
+                "commit_headroom_mib": self.guest_commit_headroom_mib.json(),
+                "load_pct": self.guest_load_pct.json(),
+                "hard_faults_per_s": self.guest_hard_faults_per_s.json(),
+                "signal_samples": self.guest_signals,
+            },
+            "requests": {
+                "completed": requests,
+                "grant_to_completion_seconds": self.grant_to_completion_seconds.json(),
+                "issue_to_completion_seconds": self.issue_to_completion_seconds.json(),
+                "refusals": self.refusals,
+            },
+            "event_counts": self.events,
+            "notable_events": self.notable,
+        })
+    }
+
+    fn write(&self, path: &Path, now_millis: u64) -> Result<(), String> {
+        let text = serde_json::to_string_pretty(&self.json(now_millis))
+            .map_err(|error| error.to_string())?;
+        let temporary = path.with_extension("json.tmp");
+        std::fs::write(&temporary, format!("{text}\n"))
+            .and_then(|()| std::fs::rename(&temporary, path))
+            .map_err(|error| format!("write {}: {error}", path.display()))
+    }
+
+    fn headline(&self) -> String {
+        let minimum = |stat: &Stat| {
+            if stat.count == 0 {
+                "-".to_owned()
+            } else {
+                format!("{:.0}", stat.min)
+            }
+        };
+        format!(
+            "{} samples; min host avail {} MiB, min guest avail {} MiB; \
+             {} completed requests; {} latches; {} guest read failures",
+            self.samples,
+            minimum(&self.host_available_mib),
+            minimum(&self.guest_available_mib),
+            self.requests
+                .values()
+                .map(|totals| totals.count)
+                .sum::<u64>(),
+            self.events.get("actuation_latched").copied().unwrap_or(0),
+            self.guest_read_failures,
+        )
+    }
+}
+
+// ---- Time -------------------------------------------------------------------
+
+/// UTC civil date of a Unix day (Howard Hinnant's `civil_from_days`).
+fn civil(days: i64) -> (i64, u32, u32) {
+    let days = days + 719_468;
+    let era = days.div_euclid(146_097);
+    let day_of_era = days.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_index = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_index + 2) / 5 + 1) as u32;
+    let month = if month_index < 10 {
+        month_index + 3
+    } else {
+        month_index - 9
+    } as u32;
+    (year_of_era + era * 400 + i64::from(month <= 2), month, day)
+}
+
+fn utc_parts(unix_millis: u64) -> (i64, u32, u32, u64, u64, u64, u64) {
+    let seconds = unix_millis / 1000;
+    let (year, month, day) = civil((seconds / 86_400) as i64);
+    let time = seconds % 86_400;
+    (
+        year,
+        month,
+        day,
+        time / 3600,
+        time % 3600 / 60,
+        time % 60,
+        unix_millis % 1000,
+    )
+}
+
+/// `2026-10-27T15:40:05.123Z`
+fn iso_utc(unix_millis: u64) -> String {
+    let (year, month, day, hour, minute, second, millis) = utc_parts(unix_millis);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+/// `20261027T154005Z`, for directory names.
+fn compact_utc(unix_millis: u64) -> String {
+    let (year, month, day, hour, minute, second, _) = utc_parts(unix_millis);
+    format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tracked_config() -> String {
+        crate::repo_root()
+            .expect("repository root")
+            .join("deploy/win11_gpu/host.toml")
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    #[test]
+    fn reads_the_vm_from_the_host_config_and_options() {
+        let config = tracked_config();
+        let expected = HostConfig::load_vm(Path::new(&config), None).expect("tracked config");
+        let defaults = parse(&["--config".to_owned(), config.clone()]).expect("defaults");
+        assert_eq!(defaults.vm, expected.vm_name);
+        assert_eq!(defaults.host_floor_bytes, expected.host_min_headroom_bytes);
+        assert_eq!(defaults.interval, Duration::from_secs(5));
+        assert_eq!(defaults.duration, None);
+        let command = parse(
+            &[
+                "--config",
+                &config,
+                "--output",
+                "/tmp/run",
+                "--duration-seconds",
+                "3600",
+                "--instance",
+                "other",
+            ]
+            .map(str::to_owned),
+        )
+        .expect("options");
+        assert_eq!(command.output, Some(PathBuf::from("/tmp/run")));
+        assert_eq!(command.duration, Some(Duration::from_secs(3600)));
+        assert_eq!(command.unit, "virtio-mem-host@other.service");
+        for bad in [
+            vec![],
+            vec!["--config", &config, "--interval-seconds", "0.1"],
+            vec!["--config", &config, "--bogus", "1"],
+            vec!["--config", &config, "--once"],
+        ] {
+            assert!(parse(&bad.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        }
+    }
+
+    #[test]
+    fn formats_utc_times() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00.000Z");
+        assert_eq!(iso_utc(1_793_115_605_123), "2026-10-27T15:40:05.123Z");
+        assert_eq!(iso_utc(951_782_400_000), "2000-02-29T00:00:00.000Z");
+        assert_eq!(compact_utc(1_793_115_605_123), "20261027T154005Z");
+    }
+
+    #[test]
+    fn parses_journal_events_with_spaced_values() {
+        let line = serde_json::json!({
+            "__CURSOR": "s=1;i=2",
+            "__REALTIME_TIMESTAMP": "1793115605123456",
+            "_PID": "988126",
+            "MESSAGE": "virtio-mem-host: vm=w alias=a event=resize_settled_short operation_id=9 kept_bytes=1130364928 command_result=Err(Rejected(\"live evidence drifted: qemu_argv (attested a, live b)\"))",
+        })
+        .to_string();
+        let (event, cursor) = JournalEvent::from_json(&line).expect("event");
+        assert_eq!(cursor, "s=1;i=2");
+        assert_eq!(event.pid, Some(988_126));
+        assert_eq!(event.name.as_deref(), Some("resize_settled_short"));
+        assert_eq!(event.fields["kept_bytes"], "1130364928");
+        assert_eq!(
+            event.fields["command_result"],
+            "Err(Rejected(\"live evidence drifted: qemu_argv (attested a, live b)\"))"
+        );
+        assert_eq!(event.to_json()["time_utc"], "2026-10-27T15:40:05.123Z");
+        let (other, _) = JournalEvent::from_json(
+            &serde_json::json!({
+                "__CURSOR": "c",
+                "__REALTIME_TIMESTAMP": "1",
+                "_PID": "1",
+                "MESSAGE": "Started virtio-mem-host@w.service.",
+            })
+            .to_string(),
+        )
+        .expect("systemd line");
+        assert_eq!(other.name, None);
+        assert!(JournalEvent::from_json("not json").is_none());
+    }
+
+    #[test]
+    fn summary_pairs_grants_with_completions_and_times_divergence() {
+        let command = parse(&["--config".to_owned(), tracked_config()]).expect("command");
+        let mut summary = Summary::new(&command, 0);
+        let event = |micros: u64, message: &str| {
+            let (name, fields) = parse_event(message);
+            JournalEvent {
+                unix_micros: micros,
+                pid: Some(7),
+                name,
+                fields,
+                message: message.to_owned(),
+            }
+        };
+        summary.add_event(&event(
+            1_000_000,
+            "event=controller_decision action=grant session_id=s sequence=4 operation=Add bytes=1073741824",
+        ));
+        summary.add_event(&event(
+            6_500_000,
+            "event=request_completed session_id=s sequence=4 operation=Add bytes=1073741824 outcome=Completed actual_bytes=1073741824",
+        ));
+        summary.add_event(&event(
+            7_000_000,
+            "event=controller_decision action=refuse session_id=s sequence=5 reason=host headroom",
+        ));
+        assert_eq!(summary.grant_to_completion_seconds.max, 5.5);
+        assert_eq!(summary.requests["Add Completed"].actual_bytes, 1 << 30);
+        assert_eq!(summary.refusals["host headroom"], 1);
+        assert_eq!(summary.controller_pids, vec![7]);
+
+        let device = |requested: u64, current: u64| VirtioMemState {
+            size_bytes: 20 << 30,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: requested,
+            current_bytes: current,
+        };
+        for (millis, state) in [
+            (0, device(1 << 30, 1 << 30)),
+            (5_000, device(2 << 30, 1 << 30)),
+            (10_000, device(2 << 30, 3 << 29)),
+            (17_000, device(2 << 30, 2 << 30)),
+        ] {
+            summary.add_sample(&Sample {
+                unix_millis: millis,
+                elapsed: Duration::from_millis(millis),
+                host: HostMemory::default(),
+                qemu_rss_bytes: None,
+                controller_active: true,
+                device: Some(state),
+                guest: None,
+            });
+        }
+        assert_eq!(summary.divergence_seconds.count, 1);
+        assert_eq!(summary.divergence_seconds.max, 12.0);
+        let json = summary.json(20_000);
+        assert_eq!(json["device"]["open_divergence_seconds"], Value::Null);
+        assert_eq!(
+            json["requests"]["completed"]["Add Completed"]["actual_mib"],
+            1024
+        );
+    }
+
+    #[test]
+    fn csv_rows_match_the_header() {
+        let columns = CSV_HEADER.split(',').count();
+        let sample = Sample {
+            unix_millis: 1,
+            elapsed: Duration::ZERO,
+            host: HostMemory {
+                total: 32 << 30,
+                available: 3 << 30,
+                swap_total: 0,
+                swap_free: 0,
+            },
+            qemu_rss_bytes: Some(9 << 30),
+            controller_active: false,
+            device: None,
+            guest: Some(GuestRead {
+                elapsed: Duration::from_millis(250),
+                telemetry: Err("agent unavailable".to_owned()),
+            }),
+        };
+        let row = sample.csv_row(4 << 30);
+        assert_eq!(row.split(',').count(), columns);
+        assert!(row.contains(",-1024,"), "{row}");
+        assert!(sample
+            .progress(2)
+            .ends_with("guest read failed | CONTROLLER INACTIVE | +2 events"));
+    }
+
+    #[test]
+    fn reads_rss_from_proc_status() {
+        assert_eq!(parse_rss("Name:\tqemu\nVmRSS:\t  2048 kB\n"), Some(2 << 20));
+        assert_eq!(parse_rss("Name:\tqemu\n"), None);
+    }
+}

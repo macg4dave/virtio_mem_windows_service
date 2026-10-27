@@ -17,13 +17,19 @@ const GIB: u64 = 1024 * MIB;
 #[serde(deny_unknown_fields)]
 pub struct TargetPolicyConfig {
     /// Device bytes never planned below; may be zero.
+    #[serde(with = "crate::units::byte_size")]
     pub configured_minimum_bytes: u64,
+    #[serde(with = "crate::units::byte_size")]
     pub physical_reserve_bytes: u64,
+    #[serde(with = "crate::units::byte_size")]
     pub commit_reserve_bytes: u64,
+    #[serde(with = "crate::units::byte_size")]
     pub safe_floor_physical_reserve_bytes: u64,
+    #[serde(with = "crate::units::byte_size")]
     pub safe_floor_commit_reserve_bytes: u64,
     pub history_window_millis: u64,
     pub maximum_gap_millis: u64,
+    #[serde(with = "crate::units::byte_size")]
     pub downward_hysteresis_bytes: u64,
 }
 

@@ -177,6 +177,7 @@ mod tests {
                 shrink_step_bytes: 1 << 26,
                 host_status_max_age_millis: 60_000,
                 request_lifetime_millis: 30_000,
+                max_removal_pause_windows: 16,
             },
         }
     }

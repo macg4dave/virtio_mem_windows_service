@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::GuestMemoryPolicy;
 
-pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 5;
+pub const WINDOWS_SERVICE_CONFIG_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -192,6 +192,7 @@ mod tests {
                 shrink_step_bytes: 1,
                 host_status_max_age_millis: 1,
                 request_lifetime_millis: 1,
+                max_removal_pause_windows: 16,
             },
         };
         config.validate().unwrap();

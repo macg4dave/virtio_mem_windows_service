@@ -927,8 +927,7 @@ fn deploy(
             manifest_path.display()
         )
     })?;
-    let manifest: DeploymentManifest = serde_json::from_str(&manifest_text)
-        .map_err(|error| format!("parse Windows deployment manifest: {error}"))?;
+    let manifest = parse_deployment_manifest(&manifest_path, &manifest_text)?;
     validate_deployment_manifest(&manifest)?;
     let record = required_record(config)?;
 
@@ -1156,18 +1155,28 @@ const PS_BUILD_FUNCTIONS: &str = r#"function Get-ServiceExe($svc){
   if($end -lt 0){throw 'service path does not name an .exe'}
   return $raw.Substring(0,$end+4)
 }
-function Get-BuildId($exe){
+function Get-BuildIdOnce($exe){
   $out=[IO.Path]::GetTempFileName()
   try{
     $p=Start-Process -FilePath $exe -ArgumentList 'version' -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError ($out+'.err')
     $null=$p.Handle
-    if(-not $p.WaitForExit(10000)){$p.Kill(); return $null}
+    if(-not $p.WaitForExit(20000)){$p.Kill(); return $null}
     if($p.ExitCode -ne 0){return $null}
     $id=[string](Get-Content -LiteralPath $out -Raw)
     $id=$id.Trim()
     if($id -cmatch '^[0-9a-z.\-]{1,64}$'){return $id}
     return $null
   } finally {Remove-Item -LiteralPath $out,($out+'.err') -Force -ErrorAction SilentlyContinue}
+}
+function Get-BuildId($exe){
+  # The first run of a freshly copied binary can be slow (e.g. scanned), so
+  # retry before reporting an unknown build.
+  for($attempt=0; $attempt -lt 3; $attempt++){
+    $id=Get-BuildIdOnce $exe
+    if($null -ne $id){return $id}
+    Start-Sleep -Seconds 2
+  }
+  return $null
 }
 "#;
 
@@ -1287,6 +1296,25 @@ fn service_config(manifest: &DeploymentManifest) -> WindowsServiceConfigFile {
         shutdown_timeout_millis: manifest.shutdown_timeout_millis,
         policy: manifest.policy,
     }
+}
+
+/// A `.toml` manifest is TOML (commented, for hand editing); anything else is
+/// JSON.
+fn parse_deployment_manifest(path: &Path, text: &str) -> Result<DeploymentManifest, String> {
+    let parsed = if path
+        .extension()
+        .is_some_and(|extension| extension == "toml")
+    {
+        toml::from_str(text).map_err(|error| error.to_string())
+    } else {
+        serde_json::from_str(text).map_err(|error| error.to_string())
+    };
+    parsed.map_err(|error| {
+        format!(
+            "parse Windows deployment manifest {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn validate_deployment_manifest(manifest: &DeploymentManifest) -> Result<(), String> {
@@ -1714,6 +1742,7 @@ mod tests {
                 shrink_step_bytes: 64 << 20,
                 host_status_max_age_millis: 30_000,
                 request_lifetime_millis: 30_000,
+                max_removal_pause_windows: 16,
             },
             install_path: r"C:\Program Files\VirtioMemService\virtio-mem-service.exe".to_owned(),
         };
@@ -1725,6 +1754,81 @@ mod tests {
         manifest.telemetry_path = r"C:\ProgramData\VirtioMemService\telemetry.json".to_owned();
         manifest.policy.request_lifetime_millis = 0;
         assert!(validate_deployment_manifest(&manifest).is_err());
+    }
+
+    #[test]
+    fn tracked_manifest_sizes_are_written_to_windows_as_byte_counts() {
+        let path = crate::repo_root()
+            .expect("repository root")
+            .join("deploy/win11_gpu/windows-manifest.toml");
+        let text = std::fs::read_to_string(&path).expect("read tracked manifest");
+        let manifest = parse_deployment_manifest(&path, &text).expect("parse manifest");
+        validate_deployment_manifest(&manifest).expect("valid manifest");
+        // Values are edited by hand; only their wire form is fixed.
+        let wire = serde_json::to_value(service_config(&manifest)).expect("serialise config");
+        let policy = &wire["policy"];
+        assert_eq!(
+            policy["shrink_step_bytes"],
+            manifest.policy.shrink_step_bytes
+        );
+        assert!(policy["shrink_step_bytes"].is_u64());
+        assert!(policy["target"]["configured_minimum_bytes"].is_u64());
+        assert_eq!(wire["demand_report_path"], manifest.telemetry_path);
+    }
+
+    #[test]
+    fn toml_and_json_manifests_read_the_same() {
+        let toml_text = r#"
+schema_version = 2
+vm_name = "guest"
+service_name = "VirtioMemService"
+display_name = "Display"
+description = "Description"
+telemetry_path = 'C:\ProgramData\VirtioMemService\telemetry.json'
+service_account = 'NT AUTHORITY\LocalService'
+install_path = 'C:\Program Files\VirtioMemService\virtio-mem-service.exe'
+poll_interval_millis = 5000
+shutdown_timeout_millis = 30000
+[policy]
+grow_step_bytes = "1GB"
+shrink_step_bytes = "3GB"
+host_status_max_age_millis = 30000
+request_lifetime_millis = 30000
+max_removal_pause_windows = 16
+[policy.target]
+configured_minimum_bytes = "0GB"
+physical_reserve_bytes = "2GB"
+commit_reserve_bytes = "2GB"
+safe_floor_physical_reserve_bytes = "1GB"
+safe_floor_commit_reserve_bytes = "1GB"
+history_window_millis = 300000
+maximum_gap_millis = 15000
+downward_hysteresis_bytes = "256MB"
+"#;
+        let from_toml =
+            parse_deployment_manifest(Path::new("m.toml"), toml_text).expect("TOML manifest");
+        let json_text = serde_json::to_string(&service_config(&from_toml)).unwrap();
+        let mut json: serde_json::Value = serde_json::from_str(&json_text).unwrap();
+        // The wire config renames and adds fields; rebuild manifest JSON.
+        let wire = json.as_object_mut().unwrap();
+        let manifest_json = serde_json::json!({
+            "schema_version": 2,
+            "vm_name": wire["vm_name"],
+            "service_name": wire["service_name"],
+            "display_name": wire["display_name"],
+            "description": wire["description"],
+            "telemetry_path": wire["demand_report_path"],
+            "service_account": wire["service_account"],
+            "install_path": from_toml.install_path,
+            "poll_interval_millis": wire["poll_interval_millis"],
+            "shutdown_timeout_millis": wire["shutdown_timeout_millis"],
+            "policy": wire["policy"],
+        });
+        let from_json = parse_deployment_manifest(Path::new("m.json"), &manifest_json.to_string())
+            .expect("JSON manifest");
+        assert_eq!(from_json.policy, from_toml.policy);
+        assert_eq!(from_json.telemetry_path, from_toml.telemetry_path);
+        assert!(parse_deployment_manifest(Path::new("m.json"), toml_text).is_err());
     }
 
     #[test]

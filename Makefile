@@ -1,4 +1,4 @@
-.PHONY: help local-gate windows-gate win11-build win11-gate win11-status all-gates clean
+.PHONY: help local-gate windows-gate win11-build win11-gate win11-status win11-deploy all-gates clean
 
 help:
 	@echo "Repository validation delegates"
@@ -7,6 +7,7 @@ help:
 	@echo "  make win11-build   - sync, build and fetch the service from win11_gpu"
 	@echo "  make win11-gate    - full native Windows gate on win11_gpu"
 	@echo "  make win11-status  - compare the installed service with the fetched build"
+	@echo "  make win11-deploy  - install the fetched build with $(WIN11_MANIFEST)"
 	@echo "  make all-gates     - cargo xtask gate all"
 	@echo "  make clean         - remove Cargo build output"
 
@@ -16,15 +17,14 @@ local-gate:
 windows-gate:
 	cargo xtask windows all
 
-# The established win11_gpu build workspace; environment/command-line values
-# override these defaults. SSH identity and host trust remain in ~/.ssh/config.
-WIN11_TARGETS := win11-build win11-gate win11-status
-$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_SSH ?= virtio-mem-windows
-$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_DIR ?= C:\Users\Dave\github\virtio_mem_windows_service
-$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_ARTIFACTS ?= .artifacts/windows/win11_gpu
-$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS ?= 10
-$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS ?= 1200
-WIN11_SERVICE ?= VirtioMemService
+# The win11_gpu build workspace and deployment, set in this file.
+include deploy/win11_gpu/windows-build.mk
+WIN11_TARGETS := win11-build win11-gate win11-status win11-deploy
+$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_SSH ?= $(WIN11_SSH)
+$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_DIR ?= $(WIN11_DIR)
+$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_ARTIFACTS ?= $(WIN11_ARTIFACTS)
+$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS ?= $(WIN11_CONNECT_TIMEOUT_SECONDS)
+$(WIN11_TARGETS): export VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS ?= $(WIN11_OPERATION_TIMEOUT_SECONDS)
 
 win11-build:
 	cargo xtask windows check
@@ -37,6 +37,10 @@ win11-gate:
 
 win11-status:
 	cargo xtask windows build-status $(WIN11_SERVICE) --output $(VIRTIO_MEM_WINDOWS_ARTIFACTS)/build-status.json
+
+# Restarts VirtioMemService in the guest with the tracked RAM policy.
+win11-deploy:
+	cargo xtask windows deploy $(WIN11_MANIFEST) --output $(VIRTIO_MEM_WINDOWS_ARTIFACTS)/deploy.json --apply
 
 all-gates:
 	cargo xtask gate all

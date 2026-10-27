@@ -5,68 +5,30 @@ is not repeated here. P0 blocks safe use of the affected path, P1 is required
 for phase acceptance, and P2 is conditional follow-up. Order tasks by their
 dependencies, then priority; IDs remain stable when tasks are removed.
 
-Source implementation has no open tasks: REQ-002, REQ-003, HOST-007, SIM-001
-and POOL-001 are complete. Everything below needs a native build, operational
-authorisation or live evidence.
-
-## Phase 1 — Local readiness
-
-### WIN-001 — Build and verify the Windows service (P1)
-
-Native MSVC build and tests passed on ice101 on 27 October via
-`make win11-gate`: 64 native tests after the pressure-policy update, formatting
-and Clippy with warnings denied.
-Release service and workload executables were fetched and SHA-256 verified;
-see the roadmap for revision, target and local evidence. SSH reachability is
-restored. The GNU cross-linker is still absent locally but no longer blocks
-producing the native binaries. The remote workload executable now exists at
-`C:\Users\Dave\github\virtio_mem_windows_service\target\release\virtio-mem-workload.exe`.
-Remaining acceptance is the live lifecycle/security/sharing work below.
-
-Complete when build/test evidence identifies the revision and target, the
-native test suite passes (including the request-state worker tests, which run
-only on Windows), and native SCM startup/stop, sampling and atomic publication
-pass, including the stop-signal interleaving test. Verify panic/timeout
-recovery, quoted executable paths, effective ACLs on pre-existing publication
-and configuration files, and Event Log insertion data as well as rendered
-messages. Confirm that QGA (as LocalSystem) can replace
-`<telemetry_path>.host-status` while the service reads it, and that the service
-treats a mid-write view as absent rather than failing.
-
-### OPS-001 — Prepare the single-VM deployment migration (P1)
-
-Review the example TOML, the installed configuration, compatibility
-attestation, per-VM state paths and service-account authorisation. Keep
-`observe_only = true`. Inspect the installed estimator-era checkpoint: one
-recording a latch or command is refused and must be reviewed and removed with
-the controller stopped. Prepare a Windows deployment manifest (schema 2) with
-a reviewed guest `policy` whose steps match the device block size. Use matching
-host, xtask and Windows builds.
-
-Complete when reviewed deployment inputs and recovery steps are available,
-`host-deploy` validation succeeds, old `.conf` backup handling is confirmed,
-and account access needs no repeated desktop authentication. Installation and
-service changes require operational authorisation; preparation does not start
-the controller.
+Source implementation and the single-VM deployment are complete (OPS-001
+installed `win11_gpu` with resizing enabled; QUAL-001's observe-only baseline
+was skipped). Everything below needs live evidence on the running deployment.
 
 ## Phase 2 — Single-VM qualification
 
-### QUAL-001 — Establish an observe-only baseline (P1)
+### WIN-001 — Verify the installed Windows service (P1)
 
-Depends on WIN-001 and OPS-001. Re-establish live VM/device state, host reserve
-and command ownership after the interrupted trial. Run `xtask preflight` with
-the controller inactive, then the integrated application with the reviewed
-observe-only config under `host-run`.
+Native build and tests pass via `make win11-gate` (64 tests, including the
+request-state worker tests) and the service runs under SCM on `win11_gpu`.
+Remaining: verify stop and restart, panic/timeout recovery, quoted executable
+paths, effective ACLs on pre-existing publication and configuration files, and
+Event Log insertion data as well as rendered messages. Confirm that QGA (as
+LocalSystem) can replace `<telemetry_path>.host-status` while the service
+reads it, and that the service treats a mid-write view as absent rather than
+failing. A guest-agent read of that file does block the host's replacement
+(seen 27 October), so `cargo xtask watch` does not read it.
 
-Complete when bounded evidence shows the guest issuing plausible requests,
-the host logging `action=grant` with plausible would-be grants and publishing
-`rejected` observe-only results that Windows resolves, fresh status delivery,
-unchanged requested/current allocation and a clean runner stop. Record any
-unresolved device state before proceeding.
+Complete when each check has recorded evidence against an identified build.
 
 ### QUAL-002 — Demonstrate growth and reclaim under workload (P1)
 
-Depends on QUAL-001. Use authorised bounded application runs with Windows
+Growth, auto-widening and large-window reclaim have been seen on the installed
+controller (roadmap). Remaining: authorised bounded application runs with Windows
 reclaim steps that cover the surplus (viomem searches only a window of the
 requested size), conservative guest timing and an explicit host
 reserve. Exercise renewed pressure after reclaim, partial/empty results,
@@ -80,8 +42,9 @@ preserved ownership/latches. A no-resize pass does not satisfy this task.
 
 ### QUAL-003 — Qualify the installed single-VM controller (P1)
 
-Depends on QUAL-002. Move from clean foreground trials to the reviewed systemd
-deployment and observe normal workloads.
+Depends on QUAL-002. The systemd deployment is already running; the week
+starts once QUAL-002 passes and a Windows build with the zero-byte removal
+backoff is installed, with no reinstall or latch clear during it.
 
 Complete when a week of resizing needs no manual intervention and evidence
 shows host reserve protection, guest stability and memory returned when idle.

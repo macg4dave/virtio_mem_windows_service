@@ -21,7 +21,8 @@ observe_only = true
 # max(requested, current), and growth comes from what is free, higher priority
 # first, possibly as a partial grant. The pool never takes memory back; each
 # guest decides when to release memory.
-# pool_bytes = 17179869184
+# Sizes take "16GB", "8.5GB", "1024MB" or a plain byte count (binary units).
+# pool_bytes = "16GB"
 
 # One table per VM. Larger priority is served first when free bytes run out.
 [[vm]]

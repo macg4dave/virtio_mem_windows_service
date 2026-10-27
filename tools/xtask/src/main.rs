@@ -7,10 +7,12 @@ mod host_deploy;
 mod host_run;
 mod live_resize;
 mod local;
+mod metrics;
 mod preflight;
 mod process;
 mod qga;
 mod qualification;
+mod watch;
 mod windows;
 
 use std::path::{Path, PathBuf};
@@ -38,6 +40,8 @@ Usage:
   cargo xtask qga VM_NAME --attempts N --command-timeout-seconds N [--connect URI]
   cargo xtask live-resize VM_NAME ALIAS TARGET_BYTES [OPTIONS]
   cargo xtask qualification <start|run|status|review> [OPTIONS]
+  cargo xtask watch [OPTIONS]
+  cargo xtask metrics [OPTIONS]
 
 Deployment inventory options:
   --unit UNIT                   Required exact inactive systemd instance unit.
@@ -49,6 +53,7 @@ Deployment inventory options:
 
 Calibration options:
   --telemetry-path PATH         Required absolute Windows telemetry file path.
+  --service-name NAME           Required Windows service publishing it.
   --output PATH                 Required structured JSON evidence path.
   --sample-interval-seconds N   Required interval between two samples.
   --max-age-seconds N           Required telemetry freshness bound.
@@ -180,7 +185,7 @@ fn execute(arguments: &[String]) -> Result<(), String> {
     let repo = repo_root()?;
     match arguments.first().map(String::as_str) {
         Some("help" | "--help" | "-h") | None => {
-            print!("{HELP}");
+            print!("{HELP}\n{}\n{}", watch::HELP, metrics::HELP);
             Ok(())
         }
         Some("gate") => gate(&arguments[1..], &repo),
@@ -203,6 +208,8 @@ fn execute(arguments: &[String]) -> Result<(), String> {
         Some("qga") => qga::run(&qga::parse(&arguments[1..])?, &repo),
         Some("live-resize") => live_resize::run(&live_resize::parse(&arguments[1..])?, &repo),
         Some("qualification") => qualification::execute(&arguments[1..], &repo),
+        Some("watch") => watch::run(&watch::parse(&arguments[1..])?, &repo),
+        Some("metrics") => metrics::run(&metrics::parse(&arguments[1..])?, &repo),
         Some(command) => Err(format!("unknown command: {command}\n\n{HELP}")),
     }
 }

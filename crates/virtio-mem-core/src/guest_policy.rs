@@ -18,12 +18,19 @@ use crate::{
 #[serde(deny_unknown_fields)]
 pub struct GuestMemoryPolicy {
     pub target: TargetPolicyConfig,
+    #[serde(with = "crate::units::byte_size")]
     pub grow_step_bytes: u64,
+    #[serde(with = "crate::units::byte_size")]
     pub shrink_step_bytes: u64,
     /// Host status further than this from the guest clock, in either
     /// direction, never supplies geometry for a new request.
     pub host_status_max_age_millis: u64,
     pub request_lifetime_millis: u64,
+    /// After a removal that falls short, removals pause for one history
+    /// window; each removal in a row that returns nothing doubles the pause,
+    /// up to this many windows. viomem cannot evacuate the oldest plugged
+    /// memory, so an idle guest would otherwise ask for it every window.
+    pub max_removal_pause_windows: u32,
 }
 
 impl GuestMemoryPolicy {
@@ -34,6 +41,9 @@ impl GuestMemoryPolicy {
             || self.host_status_max_age_millis == 0
         {
             return Err("guest policy steps and status age must be positive".to_owned());
+        }
+        if self.max_removal_pause_windows == 0 {
+            return Err("max_removal_pause_windows must be at least 1".to_owned());
         }
         if self.request_lifetime_millis == 0
             || self.request_lifetime_millis > MAX_REQUEST_LIFETIME_MILLIS
@@ -118,6 +128,10 @@ pub struct GuestRequester {
     /// Monotonic time before which no removal is requested, after the guest
     /// could not return all that a previous removal asked for.
     remove_paused_until_millis: Option<u64>,
+    /// Removals in a row that returned nothing, and the allocation they left.
+    /// Any other allocation means the layout changed and the streak ends.
+    zero_removals: u32,
+    zero_removal_at_bytes: Option<u64>,
 }
 
 impl GuestRequester {
@@ -160,6 +174,8 @@ impl GuestRequester {
             session_id: session_id.to_owned(),
             next_sequence: 0,
             remove_paused_until_millis: None,
+            zero_removals: 0,
+            zero_removal_at_bytes: None,
         })
     }
 
@@ -206,6 +222,13 @@ impl GuestRequester {
         // every bounded removal step would wait a full window again. A
         // convergence longer than the maximum gap still restarts it.
         let converged = fresh.filter(|status| status.requested_bytes == status.current_bytes);
+        if let (Some(status), Some(at)) = (converged, self.zero_removal_at_bytes) {
+            if status.current_bytes != at {
+                self.zero_removals = 0;
+                self.zero_removal_at_bytes = None;
+                self.remove_paused_until_millis = None;
+            }
+        }
         if fresh.is_none()
             || (converged.is_none()
                 && sample.native_pressure != Some(MemoryResourceNotificationState::High))
@@ -241,8 +264,23 @@ impl GuestRequester {
             if pending.operation == MemoryOperation::Remove
                 && resolved.outcome != MemoryOutcome::Completed
             {
-                self.remove_paused_until_millis =
-                    Some(monotonic.saturating_add(self.policy.target.history_window_millis));
+                if resolved.actual_bytes == 0 {
+                    self.zero_removals = self.zero_removals.saturating_add(1);
+                    self.zero_removal_at_bytes = status.map(|status| status.current_bytes);
+                } else {
+                    self.zero_removals = 0;
+                    self.zero_removal_at_bytes = None;
+                }
+                let windows = 1u64
+                    .checked_shl(self.zero_removals)
+                    .unwrap_or(u64::MAX)
+                    .min(u64::from(self.policy.max_removal_pause_windows));
+                let pause = self
+                    .policy
+                    .target
+                    .history_window_millis
+                    .saturating_mul(windows);
+                self.remove_paused_until_millis = Some(monotonic.saturating_add(pause));
             }
             // Reassess with the next sample rather than chaining a new delta
             // onto this resolution.
@@ -346,6 +384,7 @@ mod tests {
             shrink_step_bytes: 256 * MIB,
             host_status_max_age_millis: 30_000,
             request_lifetime_millis: 20_000,
+            max_removal_pause_windows: 16,
         }
     }
 
@@ -647,6 +686,106 @@ mod tests {
                 .unwrap(),
             GuestRequester::hold()
         );
+    }
+
+    #[test]
+    fn zero_byte_removals_back_off_until_the_allocation_changes() {
+        // 4 GiB fixed + 8 GiB device with 10 GiB available: demand is low.
+        let mut guest = requester(GuestRequestState::default());
+        let window = policy().target.history_window_millis / 1000;
+        let current = 8 * GIB;
+        let mut second = 1;
+        // Seconds between a zero-byte result and the next removal request.
+        let mut gaps = Vec::new();
+        let mut resolved_at = None;
+        while gaps.len() < 6 {
+            assert!(second < 200 * window, "removal never retried");
+            let decision = guest
+                .poll(
+                    sample(second, 10 * GIB, 4 * GIB + current),
+                    Some(&status(second, current, None)),
+                )
+                .unwrap();
+            if let Some(request) = decision.request {
+                if let Some(at) = resolved_at.take() {
+                    gaps.push(second - at);
+                }
+                second += 1;
+                let nothing = MemoryResult {
+                    request,
+                    outcome: MemoryOutcome::Partial,
+                    actual_bytes: 0,
+                    observed_unix_millis: 1_000_000 + second * 1000,
+                    reason: None,
+                };
+                guest
+                    .poll(
+                        sample(second, 10 * GIB, 4 * GIB + current),
+                        Some(&status(second, current, Some(nothing))),
+                    )
+                    .unwrap();
+                resolved_at = Some(second);
+            }
+            second += 5;
+        }
+        // 2, 4, 8, then 16 windows (capped), each within one poll interval.
+        for (gap, windows) in gaps.iter().zip([2, 4, 8, 16, 16, 16]) {
+            assert!(
+                (windows * window..windows * window + 6).contains(gap),
+                "gap {gap}s, expected {windows} windows"
+            );
+        }
+
+        // Growth since the last zero-byte removal ends the streak and pause.
+        let mut guest = requester(GuestRequestState::default());
+        let mut second = 1;
+        let request = loop {
+            if let Some(request) = guest
+                .poll(
+                    sample(second, 10 * GIB, 4 * GIB + current),
+                    Some(&status(second, current, None)),
+                )
+                .unwrap()
+                .request
+            {
+                break request;
+            }
+            second += 5;
+        };
+        second += 1;
+        let nothing = MemoryResult {
+            request,
+            outcome: MemoryOutcome::Partial,
+            actual_bytes: 0,
+            observed_unix_millis: 1_000_000 + second * 1000,
+            reason: None,
+        };
+        guest
+            .poll(
+                sample(second, 10 * GIB, 4 * GIB + current),
+                Some(&status(second, current, Some(nothing))),
+            )
+            .unwrap();
+        let grown = current + GIB;
+        let start = second;
+        let request = loop {
+            second += 5;
+            assert!(
+                second - start < 2 * window,
+                "growth did not clear the pause"
+            );
+            if let Some(request) = guest
+                .poll(
+                    sample(second, 11 * GIB, 4 * GIB + grown),
+                    Some(&status(second, grown, None)),
+                )
+                .unwrap()
+                .request
+            {
+                break request;
+            }
+        };
+        assert_eq!(request.operation, MemoryOperation::Remove);
     }
 
     #[test]

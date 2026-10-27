@@ -90,10 +90,15 @@ pub struct HostSettings {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
+    #[serde(
+        default,
+        deserialize_with = "virtio_mem_core::units::byte_size::option::deserialize"
+    )]
     pool_bytes: Option<u64>,
     poll_interval_seconds: u64,
     command_timeout_seconds: u64,
     convergence_timeout_seconds: u64,
+    #[serde(deserialize_with = "virtio_mem_core::units::byte_size::deserialize")]
     host_min_headroom_bytes: u64,
     #[serde(default = "default_virsh_binary")]
     virsh_binary: String,
@@ -505,6 +510,32 @@ telemetry_future_tolerance_seconds = 5
                 "{to}"
             );
         }
+    }
+
+    #[test]
+    fn sizes_accept_byte_counts_or_binary_size_strings() {
+        let text = ONE_VM.replace(
+            "host_min_headroom_bytes = 4294967296",
+            "host_min_headroom_bytes = \"4.5GB\"\npool_bytes = \"20480MB\"",
+        );
+        let settings = HostSettings::parse(&text).expect("size strings");
+        assert_eq!(settings.pool_bytes, Some(20 * GIB));
+        assert_eq!(settings.vms[0].host_min_headroom_bytes, 4 * GIB + GIB / 2);
+        for bad in ["\"4XB\"", "-1"] {
+            let text = ONE_VM.replace(
+                "host_min_headroom_bytes = 4294967296",
+                &format!("host_min_headroom_bytes = {bad}"),
+            );
+            assert!(matches!(
+                HostSettings::parse(&text),
+                Err(HostConfigError::Parse(_))
+            ));
+        }
+
+        // The tracked deployment is edited by hand: it must parse, whatever
+        // its values.
+        HostSettings::parse(include_str!("../../deploy/win11_gpu/host.toml"))
+            .expect("tracked win11_gpu config");
     }
 
     #[test]

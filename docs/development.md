@@ -73,7 +73,9 @@ Reclaim uses exactly those physical/commit observations, plus native High:
   entry bound cannot shorten the qualification window under rapid polling.
   Wall-clock changes still affect host-status freshness and request issuance,
   but cannot create fictitious reclaim history.
-- An incomplete/refused removal pauses further removals for a full window.
+- An incomplete/refused removal pauses further removals for a full window;
+  consecutive removals that return nothing double it, up to
+  `max_removal_pause_windows` (see below).
   A restart starts with cold history. An unresolved durable request is never
   replaced, including by a Low observation: serial ownership and bounded
   removal steps prevent overlapping commands; host convergence/settlement
@@ -108,7 +110,12 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   status no further than `host_status_max_age_millis` from its clock. Demand
   rises immediately; reclaim waits for gap-free history and hysteresis and
   never passes the safe floor. After a partial or refused removal, removals
-  pause for one history window. Estimator history is process-local, so a
+  pause for one history window. Each consecutive removal that returns 0 bytes
+  doubles the pause, up to `max_removal_pause_windows`: viomem never evacuates the oldest
+  plugged memory, and on `win11_gpu` an idle guest otherwise asked for the
+  last 1.24 GiB every window and got nothing back. Any change in the
+  converged allocation since that result (growth, a reset) ends the streak
+  and the pause. Estimator history and the backoff are process-local, so a
   restarted service waits a full window before reclaiming.
 - **Linux** admits a request only if it is fresh, from the configured guest,
   advances the issue/sequence watermark and no earlier request is unresolved.
@@ -131,8 +138,7 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   Windows viomem driver makes one attempt per device notification: a removal
   stops when Windows cannot evacuate its window, and a plug QEMU rejects as
   outside the usable region is never retried. Holding the guest's single
-  request slot longer would only delay its next request. See
-  [viomem issues](prissue.md).
+  request slot longer would only delay its next request.
 - Windows reclaim size matters. Each viomem attempt asks Windows to hot-remove
   whatever whole blocks it can inside one window starting at the lowest
   plugged block, `plugged - requested` bytes long, and never more. Small removal steps
@@ -165,8 +171,12 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
 
 ## Configuration and deployment
 
+The reviewed `win11_gpu` configuration, with every RAM setting explained, is
+in [deploy/win11_gpu/](../deploy/win11_gpu/README.md).
+
 [The host TOML example](../host/systemd/virtio-mem-host.toml.example) owns the
-key inventory; replace every `REQUIRED_*` marker using reviewed deployment
+key inventory; `pool_bytes` and `host_min_headroom_bytes` accept the same size
+strings as the Windows policy; replace every `REQUIRED_*` marker using reviewed deployment
 values. Unknown keys are rejected, including the retired demand-policy keys
 (`min_memory_bytes`, steps, reserves, reclaim history and hysteresis), which
 now live in the Windows configuration. Global timing/reserve settings apply to
@@ -180,6 +190,13 @@ which may list several VMs. Each VM names its own checkpoint (distinct paths are
 enforced) and an attestation file directly in `/etc/virtio-mem-host/`.
 `xtask host-deploy INSTANCE --config FILE --attestation VM=FILE ...` requires one
 attestation per configured VM and installs each at its configured path.
+The attested domain XML hash ignores the virtio-mem allocation, the domain
+`id` and `type='dynamic'` security labels, which change on every VM start.
+The attested QEMU argv hash ignores `requested-size` and the tap `fd`/`vhostfd`
+numbers, which are libvirtd's own descriptors and differ between two
+generations of an unchanged domain (a mismatch latched `win11_gpu` at 12:21 on
+27 October). Attestations made before 27 October 16:00 must be regenerated
+(`xtask attestation VM ALIAS REVIEW --output FILE`).
 `status`, `clear-latch` and `xtask controller-status` take `--vm NAME`, required
 when the config lists several VMs; `xtask qualification` checks that the running
 controller's config contains its VM.
@@ -201,11 +218,13 @@ Controller status is version 5 and includes the admitted request, its result,
 `observe_only` and a read-only view of the guest input. Use matching host,
 xtask and Windows builds.
 
-Windows loads `C:\ProgramData\VirtioMemService\config.json` (schema 5,
+Windows loads `C:\ProgramData\VirtioMemService\config.json` (schema 6,
 [defined in core](../crates/virtio-mem-core/src/windows_service_config.rs)),
 which now carries the guest `policy`: target reserves, history, hysteresis,
 minimum, steps, status age and request lifetime. Steps must be multiples of the
-device block size. VM/service identity and the telemetry path must match the
+device block size. Policy `*_bytes` values accept a byte count or a binary
+size string (`"8GB"`, `"8.5GB"`, `"1024MB"`; `GB` = `GiB`); they are always
+written back as byte counts. VM/service identity and the telemetry path must match the
 host. The publication path also names its backups, handoff files, the host
 status and the request state as `<path>.<suffix>`; the configuration may be
 none of them. Configuration is bounded to 64 KiB; paths use absolute drive
@@ -302,9 +321,9 @@ Every remote build is traceable from source to the installed service:
   registration, binary and configuration. Telemetry and request-state files
   are retained and listed. Without `--apply` it only reports.
 
-The presets use SSH alias `virtio-mem-windows`, workspace
-`C:\Users\Dave\github\virtio_mem_windows_service`, a 10-second connection
-timeout and a 1,200-second per-operation timeout. Configure the alias in
+The presets read the SSH alias, guest workspace, timeouts, manifest and
+service name from [windows-build.mk](../deploy/win11_gpu/windows-build.mk).
+Configure the alias in
 `~/.ssh/config` with the guest's current address, user and identity, and retain
 its verified host key. All `VIRTIO_MEM_WINDOWS_*` settings can be overridden
 through the environment or Make command line. An unreachable endpoint fails
@@ -312,7 +331,9 @@ the check before source sync; the preset does not start the VM or configure SSH.
 
 The configurable remote workflow is `cargo xtask windows sync`, `build`, `test` (or `all`),
 then manifest-based `windows deploy` when authorised. Deployment manifests are
-schema 2 and include the guest `policy`. Required environment values are
+schema 2 and include the guest `policy`; a `.toml` manifest is read as TOML
+and any other as JSON. [The win11_gpu manifest](../deploy/win11_gpu/windows-manifest.toml)
+explains every setting. Required environment values are
 `VIRTIO_MEM_WINDOWS_SSH`, `VIRTIO_MEM_WINDOWS_DIR`,
 `VIRTIO_MEM_WINDOWS_ARTIFACTS`, `VIRTIO_MEM_WINDOWS_CONNECT_TIMEOUT_SECONDS` and
 `VIRTIO_MEM_WINDOWS_OPERATION_TIMEOUT_SECONDS`. Use `cargo xtask help` for
@@ -361,6 +382,38 @@ were verified on 27 October 2026. A 65-sample injected API fixture verified
 without changing guest RAM. The colour dashboard's ASCII layout was rechecked
 in Windows PowerShell 5.1 on the same day; its interactive colour repaint was
 not visually qualified.
+
+## Live host view on Linux
+
+`cargo xtask watch` ([source](../tools/xtask/src/watch.rs)) shows the whole
+loop from the host in one refreshing dashboard: host RAM against the
+controller floor, the virtio-mem device (requested, plugged, converging),
+Windows' own view read over the guest agent (in use, available, commit
+headroom, memory signal, pending request, last host result), a device
+history chart, and the controller's latest journal events, colour-coded with
+repeats collapsed.
+
+```bash
+cargo xtask watch --config deploy/win11_gpu/host.toml
+cargo xtask watch --config deploy/win11_gpu/host.toml --interval-seconds 1
+cargo xtask watch --config deploy/win11_gpu/host.toml --once   # one snapshot
+```
+
+The VM, device alias, telemetry path and host floor come from the host
+config; `--vm` picks one `[[vm]]` when there are several, and the controller
+unit is `virtio-mem-host@<VM>.service` unless `--instance` names another.
+
+It is read-only and reuses the controller's own readers: `virsh --readonly
+dumpxml` with the alias-scoped XML parser, guest-agent reads of the Windows
+publication decoded as the shared telemetry type, and `journalctl` (events
+and the last `request_completed` result). It never reads `.host-status`: a
+guest-agent read holds that file open across several commands, and the
+controller's write then failed with "being used by another process" (seen
+on 27 October while an earlier version read it). Guest reads default to
+every 10 seconds; `--no-guest` skips them. Ctrl+C leaves the last view as
+plain text plus the full, unclipped recent events on the normal screen for
+copying; `--once` prints the same. `cargo xtask help` lists options for
+another VM, alias, unit, telemetry path or host floor.
 
 ## Qualification runner
 

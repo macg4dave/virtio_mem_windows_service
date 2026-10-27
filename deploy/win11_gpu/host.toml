@@ -1,0 +1,44 @@
+# Host controller for win11_gpu. Installed as /etc/virtio-mem-host/win11_gpu.toml
+# and run by virtio-mem-host@win11_gpu.service; apply with ./install-host.sh.
+# Windows decides when to add or remove RAM; this file decides how much the
+# host may hand out and to whom. RAM settings are explained in README.md.
+
+# ---- RAM settings -----------------------------------------------------------
+# Sizes take "8GB", "8.5GB", "1024MB" or a plain byte count. Units are binary
+# (1GB = 1024MB = 2^30 bytes).
+
+# Most device RAM handed out across every [[vm]] below. A VM holds
+# max(requested, current) of it; growth only comes from what is free. Each
+# VM is also capped by its own device size minus 1 GiB.
+pool_bytes = "15GB"
+
+# Growth is refused (or cut short) when host MemAvailable would drop below
+# this.
+host_min_headroom_bytes = "4GB"
+
+# false: grant requests and resize. true: log would-be grants, change nothing.
+observe_only = false
+
+# ---- Timing (values exercised in the 27 October live runs) ------------------
+
+poll_interval_seconds = 5
+command_timeout_seconds = 10
+convergence_timeout_seconds = 300
+virsh_binary = "/usr/bin/virsh"
+
+# ---- VMs --------------------------------------------------------------------
+# One table per virtio-mem VM. When free pool bytes run out, the larger
+# priority is served first (ties: order in this file). Priority never takes
+# memory back from a VM; each guest decides when to release.
+
+[[vm]]
+name = "win11_gpu"
+alias = "ua-virtiomem0"
+priority = 100
+policy_state_path = "/var/lib/virtio-mem-host/state/win11_gpu-requests.json"
+compatibility_attestation_path = "/etc/virtio-mem-host/win11_gpu.attestation.json"
+telemetry_transport = "qga-file"
+telemetry_path = 'C:\ProgramData\VirtioMemService\telemetry.json'
+telemetry_service_name = "VirtioMemService"
+telemetry_max_age_seconds = 30
+telemetry_future_tolerance_seconds = 5

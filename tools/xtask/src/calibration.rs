@@ -13,6 +13,7 @@ pub struct Command {
     vm: String,
     alias: String,
     telemetry_path: String,
+    service_name: String,
     output: PathBuf,
     sample_interval: Duration,
     max_age: Duration,
@@ -53,6 +54,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     validate_identity(&args[0], "VM_NAME")?;
     validate_identity(&args[1], "ALIAS")?;
     let mut telemetry_path = None;
+    let mut service_name = None;
     let mut output = None;
     let mut sample_interval = None;
     let mut max_age = None;
@@ -69,6 +71,7 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             .ok_or_else(|| format!("{option} requires a value"))?;
         match option {
             "--telemetry-path" if telemetry_path.is_none() => telemetry_path = Some(value.clone()),
+            "--service-name" if service_name.is_none() => service_name = Some(value.clone()),
             "--output" if output.is_none() => output = Some(PathBuf::from(value)),
             "--sample-interval-seconds" if sample_interval.is_none() => {
                 sample_interval = Some(positive_duration(value, option)?)
@@ -97,6 +100,8 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
         vm: args[0].clone(),
         alias: args[1].clone(),
         telemetry_path,
+        service_name: service_name
+            .ok_or_else(|| "calibration requires --service-name".to_owned())?,
         output: output.ok_or_else(|| "calibration requires --output".to_owned())?,
         sample_interval: sample_interval
             .ok_or_else(|| "calibration requires --sample-interval-seconds".to_owned())?,
@@ -183,7 +188,7 @@ fn read_sample(
     envelope
         .validate_for(
             &command.vm,
-            "VirtioMemService",
+            &command.service_name,
             now_millis()?,
             u64::try_from(command.max_age.as_millis())
                 .map_err(|_| "calibration max age overflows milliseconds".to_owned())?,
@@ -283,6 +288,8 @@ mod tests {
             "alias",
             "--telemetry-path",
             r"C:\ProgramData\telemetry.json",
+            "--service-name",
+            "VirtioMemService",
             "--output",
             "evidence.json",
             "--sample-interval-seconds",

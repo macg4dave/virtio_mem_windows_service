@@ -277,8 +277,14 @@ impl<C: VirshCommand> VirshCompatibilityEvidenceSource<C> {
         Ok(LiveCompatibilityEvidence {
             vm_name: self.vm_name.clone(),
             device_alias: self.alias.clone(),
-            domain_xml_sha256: sha256_hex(scrub_allocation_state(&domain_xml).as_bytes()),
-            qemu_argv_sha256: sha256_hex(scrub_qemu_argv(&qemu_argv).trim().as_bytes()),
+            domain_xml_sha256: sha256_hex(
+                scrub_runtime_identity(&scrub_allocation_state(&domain_xml)).as_bytes(),
+            ),
+            qemu_argv_sha256: sha256_hex(
+                scrub_descriptor_numbers(&scrub_qemu_argv(&qemu_argv))
+                    .trim()
+                    .as_bytes(),
+            ),
             libvirt_version_sha256: sha256_hex(libvirt_version.trim().as_bytes()),
             qemu_version,
             dynamic_memslots,
@@ -457,6 +463,59 @@ fn scrub_allocation_state(xml: &str) -> String {
     scrubbed
 }
 
+/// Libvirt assigns a new domain `id` and, for `type='dynamic'` security
+/// labels, a new random label every time the domain starts. Neither is
+/// configuration, so a VM restart must not look like drift. Static labels
+/// stay fingerprint inputs.
+fn scrub_runtime_identity(xml: &str) -> String {
+    let mut scrubbed = xml.to_owned();
+    if let Some(start) = scrubbed.find("<domain") {
+        let tag_end = scrubbed[start..]
+            .find('>')
+            .map_or(scrubbed.len(), |end| start + end);
+        for quote in ['\'', '"'] {
+            let attribute = format!(" id={quote}");
+            if let Some(id) = scrubbed[start..tag_end].find(&attribute) {
+                let value_start = start + id + attribute.len();
+                if let Some(value_end) = scrubbed[value_start..tag_end].find(quote) {
+                    scrubbed.replace_range(start + id..value_start + value_end + 1, "");
+                }
+                break;
+            }
+        }
+    }
+    let mut offset = 0;
+    while let Some(start) = scrubbed[offset..].find("<seclabel") {
+        let start = offset + start;
+        let Some(end) = scrubbed[start..].find("</seclabel>") else {
+            break;
+        };
+        let end = start + end;
+        let open_end = scrubbed[start..end]
+            .find('>')
+            .map_or(end, |open| start + open);
+        let tag = &scrubbed[start..open_end];
+        if tag.contains("type='dynamic'") || tag.contains("type=\"dynamic\"") {
+            let mut block = scrubbed[start..end].to_owned();
+            for element in ["label", "imagelabel"] {
+                let open = format!("<{element}>");
+                let close = format!("</{element}>");
+                if let (Some(content), Some(close_at)) = (block.find(&open), block.find(&close)) {
+                    let content = content + open.len();
+                    if content <= close_at {
+                        block.replace_range(content..close_at, "<runtime-label>");
+                    }
+                }
+            }
+            scrubbed.replace_range(start..end, &block);
+            offset = start + block.len();
+        } else {
+            offset = end;
+        }
+    }
+    scrubbed
+}
+
 /// Removes the `requested-size` member, value and one adjacent separator from
 /// the generated argv. Libvirt omits the member entirely when the request is
 /// zero, so blanking only its value would make a zero request look like
@@ -519,6 +578,44 @@ fn scrub_qemu_argv(arguments: &str) -> String {
         };
         scrubbed.replace_range(remove_start..remove_end, "");
         offset = remove_start;
+    }
+    scrubbed
+}
+
+/// Blanks the file-descriptor numbers libvirt puts in the generated argv
+/// (`"fd":"38"`, `vhostfd=40`, `fds=a:b`). They are libvirtd's own open
+/// descriptors at generation time and differ between two calls on an
+/// unchanged domain.
+fn scrub_descriptor_numbers(arguments: &str) -> String {
+    const KEYS: [&str; 4] = ["fd", "vhostfd", "fds", "vhostfds"];
+    let mut scrubbed = String::with_capacity(arguments.len());
+    let mut rest = arguments;
+    'scan: while !rest.is_empty() {
+        for key in KEYS {
+            for (prefix, quoted) in [
+                (format!("\"{key}\":\""), true),
+                (format!("\"{key}\":"), false),
+                (format!(",{key}="), false),
+                (format!(" {key}="), false),
+            ] {
+                let Some(after) = rest.strip_prefix(prefix.as_str()) else {
+                    continue;
+                };
+                let length = after
+                    .find(|character: char| !(character.is_ascii_digit() || character == ':'))
+                    .unwrap_or(after.len());
+                let closed = !quoted || after[length..].starts_with('"');
+                if length > 0 && closed {
+                    scrubbed.push_str(&prefix);
+                    scrubbed.push('#');
+                    rest = &after[length..];
+                    continue 'scan;
+                }
+            }
+        }
+        let character = rest.chars().next().expect("non-empty");
+        scrubbed.push(character);
+        rest = &rest[character.len_utf8()..];
     }
     scrubbed
 }
@@ -676,6 +773,58 @@ mod tests {
         assert_eq!(
             scrub_allocation_state(before),
             scrub_allocation_state(after)
+        );
+        assert_eq!(
+            scrub_descriptor_numbers(
+                r#"-netdev '{"type":"tap","fd":"34","vhost":true,"vhostfd":"38","id":"n"}'"#
+            ),
+            scrub_descriptor_numbers(
+                r#"-netdev '{"type":"tap","fd":"38","vhost":true,"vhostfd":"40","id":"n"}'"#
+            )
+        );
+        assert_eq!(
+            scrub_descriptor_numbers("-netdev tap,fds=3:4,vhostfds=5:6,id=n -m size=8"),
+            "-netdev tap,fds=#,vhostfds=#,id=n -m size=8"
+        );
+        // Other members, and paths that merely contain the key, are kept.
+        for argv in [
+            r#"{"type":"tap","fd":"38","id":"n1"}"#,
+            "-chardev socket,path=/run/fd=3",
+        ] {
+            assert_ne!(
+                scrub_descriptor_numbers(argv),
+                scrub_descriptor_numbers(&argv.replace('1', "2").replace("/run", "/var"))
+            );
+        }
+    }
+
+    #[test]
+    fn domain_restart_identity_does_not_change_domain_fingerprint() {
+        let started = |id: u32, label: &str| {
+            format!(
+                "<domain type='kvm' id='{id}'><name>vm</name><seclabel type='dynamic' model='selinux' relabel='yes'><label>system_u:system_r:svirt_t:s0:{label}</label><imagelabel>system_u:object_r:svirt_image_t:s0:{label}</imagelabel></seclabel><seclabel type='dynamic' model='dac' relabel='yes'><label>+107:+107</label><imagelabel>+107:+107</imagelabel></seclabel></domain>"
+            )
+        };
+        assert_eq!(
+            scrub_runtime_identity(&started(3, "c1,c2")),
+            scrub_runtime_identity(&started(10, "c148,c988"))
+        );
+        assert!(!scrub_runtime_identity(&started(3, "c1,c2")).contains("id="));
+        // Configuration around them is still covered.
+        assert_ne!(
+            scrub_runtime_identity(&started(3, "c1,c2")),
+            scrub_runtime_identity(&started(3, "c1,c2").replace("<name>vm", "<name>other"))
+        );
+        let fixed = |label: &str| {
+            format!("<domain id='1'><seclabel type='static' model='selinux'><label>{label}</label></seclabel></domain>")
+        };
+        assert_ne!(
+            scrub_runtime_identity(&fixed("s0:c1")),
+            scrub_runtime_identity(&fixed("s0:c2"))
+        );
+        // A device id elsewhere is not the domain id.
+        assert!(
+            scrub_runtime_identity("<domain id='1'><memory id='m'/></domain>").contains("id='m'")
         );
     }
 
