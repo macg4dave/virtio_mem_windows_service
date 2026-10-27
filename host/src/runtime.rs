@@ -638,15 +638,22 @@ where
                     && self.command_stalled(state)
             }
             CommandDirection::Shrink if can_settle => {
-                if self.guest.read().is_ok_and(|envelope| {
+                let guest = self.guest.read().ok();
+                if guest.as_ref().is_some_and(|envelope| {
                     envelope.native_pressure == Some(MemoryResourceNotificationState::Low)
                 }) {
                     self.log("event=held_shrink_released reason=guest_low_memory");
                     true
                 } else {
-                    // VIOMEM WORKAROUND (see `nudge_shrink`).
-                    if self.command_stalled(state) {
-                        return self.nudge_shrink(state, stop);
+                    // VIOMEM WORKAROUND (see `extend_shrink`).
+                    let base_ram = guest.and_then(|envelope| {
+                        envelope
+                            .memory
+                            .physical_total_bytes
+                            .checked_sub(state.current_bytes)
+                    });
+                    if let Some(base_ram) = base_ram.filter(|_| self.command_stalled(state)) {
+                        return self.extend_shrink(state, base_ram, stop);
                     }
                     false
                 }
@@ -671,96 +678,104 @@ where
     }
 
     // =====================================================================
-    // VIOMEM WORKAROUND START: re-notify a stalled removal
+    // VIOMEM WORKAROUND START: widen a stalled removal one block at a time
     //
-    // Unpatched viomem driver bug: a removal frees about one block (8 MiB on
-    // win11_gpu) per device notification and then stops, however far
-    // requested is below plugged. Observed live: every new requested size
-    // released exactly one block, with a 4 GiB gap or a 1 GiB one. Each time
-    // a held shrink stops moving, bounce requested one block up and straight
-    // back to the guest's target: two notifications, and the target never
-    // drops below what the guest asked for.
+    // Unpatched viomem driver bug: each removal only tries a window that
+    // starts at the lowest plugged block and is `plugged - requested` long,
+    // once per device notification. Memory at the bottom of that window that
+    // Windows cannot evacuate stops the removal for good. Observed live on
+    // win11_gpu: each request one block (8 MiB) lower frees exactly the block
+    // it adds to the window, and the gap below `current` stays the same;
+    // re-sending a target already tried (bouncing up and back) frees nothing.
+    // So each time a held shrink stops moving, request one block less, and
+    // settle as soon as `current` reaches the guest's goal: the admitted
+    // request's bytes below the allocation it started from, never below
+    // `min_ram`.
     //
     // TO REMOVE once a patched viomem is deployed: delete this block and
     // the marked branch in `observe_pending`.
     // =====================================================================
 
-    fn nudge_shrink(
+    fn extend_shrink(
         &mut self,
         state: VirtioMemState,
+        base_ram: u64,
         stop: &AtomicBool,
     ) -> Result<Step, HostRuntimeError> {
-        let goal = state.requested_bytes;
-        // A stalled shrink has at least one block left above its target.
-        let bounce = goal + state.block_size_bytes;
+        let block = state.block_size_bytes;
+        let floor = self
+            .config
+            .min_ram
+            .saturating_sub(base_ram)
+            .div_ceil(block)
+            .saturating_mul(block);
+        let Some(prior_current) = self
+            .control
+            .intent
+            .as_ref()
+            .map(|intent| intent.prior_current_bytes)
+        else {
+            return Ok(Step::Wait);
+        };
+        let asked = self
+            .control
+            .journal
+            .request
+            .as_ref()
+            .filter(|request| request.operation == MemoryOperation::Remove)
+            .map_or(0, |request| request.bytes);
+        let goal = prior_current
+            .saturating_sub(asked - asked % block)
+            .max(floor);
+        if state.current_bytes <= goal {
+            self.log(&format!(
+                "event=shrink_extension_done goal_bytes={goal} current_bytes={}",
+                state.current_bytes
+            ));
+            return self.settle_short(CommandDirection::Shrink, state, stop);
+        }
+        let Some(target) = state
+            .requested_bytes
+            .checked_sub(block)
+            .filter(|target| *target >= floor)
+        else {
+            self.log(&format!(
+                "event=control_health direction=Shrink requested_bytes={} current_bytes={} floor_bytes={floor}",
+                state.requested_bytes, state.current_bytes
+            ));
+            return Ok(Step::Wait);
+        };
         if stop.load(Ordering::Acquire) {
             return Ok(Step::Wait);
         }
-        // Each target is durable before its command, like any other.
-        if !self.retarget_intent(bounce)? {
+        let Some(intent) = self.control.intent.as_mut() else {
             return Ok(Step::Wait);
-        }
+        };
+        // The new target is durable before the command, like any other.
+        intent.target_bytes = target;
+        self.save()?;
         self.pending_progress = None;
         let command = self
             .resize_sink
-            .retarget_pending_guarded(state, bounce, stop);
-        match command {
-            Ok(()) => {}
-            // Nothing ran: keep the previous target.
-            Err(ResizeSinkError::Rejected(reason)) => {
-                self.log(&format!(
-                    "event=shrink_nudged stage=bounce target_bytes={goal} current_bytes={} command_result=Rejected({reason:?})",
-                    state.current_bytes
-                ));
-                self.retarget_intent(goal)?;
-                return Ok(Step::Wait);
-            }
-            Err(error @ ResizeSinkError::CommandUnknown(_)) => {
-                self.latch(&format!("nudging a shrink failed: {error}"))?;
-                return Ok(Step::Wait);
-            }
-        }
-        // The bounce may already have released a block, or even landed on the
-        // allocation; return from what the device holds now. If this read or
-        // the return fails, requested stays one block above the guest's
-        // target, which is owned and completes or is nudged as usual.
-        let live = match self.live_state() {
-            Ok(live) if live.requested_bytes == bounce => live,
-            _ => return Ok(Step::Wait),
-        };
-        self.retarget_intent(goal)?;
-        let command = if live.requested_bytes == live.current_bytes {
-            // A shrink needs no host headroom.
-            self.resize_sink
-                .request_resize_guarded(live, goal, stop, &|| Ok(()))
-        } else {
-            self.resize_sink.retarget_pending_guarded(live, goal, stop)
-        };
+            .retarget_pending_guarded(state, target, stop);
         self.log(&format!(
-            "event=shrink_nudged target_bytes={goal} current_bytes={} command_result={command:?}",
-            live.current_bytes
+            "event=shrink_extended target_bytes={target} current_bytes={} goal_bytes={goal} floor_bytes={floor} command_result={command:?}",
+            state.current_bytes
         ));
         match command {
             Ok(()) => {}
+            // Nothing ran: keep the previous target.
             Err(ResizeSinkError::Rejected(_)) => {
-                self.retarget_intent(bounce)?;
+                if let Some(intent) = self.control.intent.as_mut() {
+                    intent.target_bytes = state.requested_bytes;
+                }
+                self.save()?;
             }
             Err(error @ ResizeSinkError::CommandUnknown(_)) => {
-                self.latch(&format!("nudging a shrink failed: {error}"))?;
+                self.latch(&format!("extending a shrink failed: {error}"))?;
             }
         }
         Ok(Step::Wait)
-    }
-
-    /// Point the owned intent at `target` and make it durable. False when
-    /// there is no intent to move.
-    fn retarget_intent(&mut self, target: u64) -> Result<bool, HostRuntimeError> {
-        let Some(intent) = self.control.intent.as_mut() else {
-            return Ok(false);
-        };
-        intent.target_bytes = target;
-        self.save()?;
-        Ok(true)
     }
 
     // VIOMEM WORKAROUND END
@@ -1246,8 +1261,8 @@ mod tests {
         stall_at: Option<u64>,
         /// A growth stops plugging memory at this allocation.
         grow_stall_at: Option<u64>,
-        /// Each retarget of a stalled shrink frees one more block, as viomem
-        /// does once per device notification.
+        /// A retarget of a stalled shrink to a new low frees the one block it
+        /// adds to viomem's window; re-sending a tried target frees nothing.
         release_per_notification: bool,
     }
 
@@ -1335,7 +1350,7 @@ mod tests {
             _stop: &AtomicBool,
         ) -> Result<(), ResizeSinkError> {
             let mut device = self.device.0.borrow_mut();
-            if device.release_per_notification {
+            if device.release_per_notification && target < device.live.requested_bytes {
                 let block = device.live.block_size_bytes;
                 device.stall_at = device.stall_at.map(|stall| stall.saturating_sub(block));
             }
@@ -1363,6 +1378,9 @@ mod tests {
         request: Option<MemoryRequest>,
         statuses: Vec<HostMemoryStatus>,
         native: Option<MemoryResourceNotificationState>,
+        /// Report Windows' total as fixed RAM plus this device's current
+        /// allocation, as a real guest does; otherwise a fixed 8 GiB.
+        device: Option<Device>,
     }
 
     #[derive(Clone, Default)]
@@ -1375,6 +1393,10 @@ mod tests {
 
         fn signal(&self, state: MemoryResourceNotificationState) {
             self.0.borrow_mut().native = Some(state);
+        }
+
+        fn track(&self, device: &Device) {
+            self.0.borrow_mut().device = Some(device.clone());
         }
 
         fn last_result(&self) -> Option<MemoryResult> {
@@ -1409,6 +1431,9 @@ mod tests {
             );
             envelope.request = self.0.borrow().request.clone();
             envelope.native_pressure = self.0.borrow().native;
+            if let Some(device) = &self.0.borrow().device {
+                envelope.memory.physical_total_bytes = device.live().current_bytes;
+            }
             Ok(envelope)
         }
 
@@ -1785,30 +1810,27 @@ mod tests {
         let mut fixture = Fixture::new("hold-shrink", 100, 8 * GIB);
         fixture.config.poll_interval = Duration::from_millis(2);
         fixture.config.convergence_timeout = Duration::from_millis(1);
+        // No fixed RAM: at its min_ram floor the shrink cannot be extended.
+        fixture.guest.track(&fixture.device);
+        fixture.config.min_ram = 7 * GIB;
         fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
         fixture
             .guest
             .send(Some(request(1, MemoryOperation::Remove, GIB)));
         let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        // Well past the stall bound and the convergence timeout: held. Nudges
-        // bounce above the target and back, never below it.
+        // Well past the stall bound and the convergence timeout: held.
         for _ in 0..4 {
             round(&mut runtime);
             thread::sleep(Duration::from_millis(5));
         }
-        assert!(fixture
-            .targets
-            .borrow()
-            .iter()
-            .all(|target| *target >= 7 * GIB));
-        assert_eq!(fixture.device.live().requested_bytes, 7 * GIB);
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
         assert!(fixture.guest.last_result().is_none());
 
         // Once the guest releases the rest, the request completes in full.
         fixture.device.0.borrow_mut().stall_at = None;
         round(&mut runtime);
         round(&mut runtime);
-        assert_eq!(fixture.targets.borrow().last(), Some(&(7 * GIB)));
+        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
         let result = fixture.guest.last_result().expect("result");
         assert_eq!(result.outcome, MemoryOutcome::Completed);
         assert_eq!(result.actual_bytes, GIB);
@@ -1818,8 +1840,8 @@ mod tests {
 
     // VIOMEM WORKAROUND test: delete with the workaround.
     #[test]
-    fn a_stalled_removal_is_renotified_without_moving_below_its_target() {
-        let mut fixture = Fixture::new("nudge-shrink", 100, 8 * GIB);
+    fn a_stalled_removal_widens_one_block_at_a_time_and_stops_at_the_goal() {
+        let mut fixture = Fixture::new("extend-shrink", 100, 8 * GIB);
         fixture.config.poll_interval = Duration::from_millis(2);
         {
             let mut device = fixture.device.0.borrow_mut();
@@ -1834,16 +1856,15 @@ mod tests {
             round(&mut runtime);
             thread::sleep(Duration::from_millis(5));
         }
-        // 7 GiB, then two bounces of one block up and back: four
-        // notifications free the last 6 MiB. The second bounce lands on the
-        // allocation, so its return is a fresh request.
+        // 7 GiB, then three extensions each free one block; at the goal the
+        // shrink settles at what the guest kept, not further down.
         assert_eq!(
             *fixture.targets.borrow(),
             [
                 7 * GIB,
-                7 * GIB + 2 * MIB,
-                7 * GIB,
-                7 * GIB + 2 * MIB,
+                7 * GIB - 2 * MIB,
+                7 * GIB - 4 * MIB,
+                7 * GIB - 6 * MIB,
                 7 * GIB
             ]
         );
