@@ -10,7 +10,13 @@ use virtio_mem_core::{
 };
 use virtio_mem_host::qga::encode_base64;
 
+use crate::build_identity::{
+    BuildIdentity, BuildRecord, InstalledBuild, Verdict, RECORD_FILE, STAMP_FILE,
+};
 use crate::process;
+
+const SERVICE_EXE: &str = "virtio-mem-service.exe";
+const WORKLOAD_EXE: &str = "virtio-mem-workload.exe";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -44,6 +50,15 @@ pub enum Command {
         service: String,
         output: PathBuf,
     },
+    BuildStatus {
+        service: String,
+        output: PathBuf,
+    },
+    Uninstall {
+        service: String,
+        output: PathBuf,
+        apply: bool,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -67,6 +82,7 @@ struct DeploymentEvidence {
     schema_version: u32,
     applied: bool,
     source_revision: String,
+    build_id: String,
     candidate_sha256: String,
     manifest: DeploymentManifestEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -109,7 +125,7 @@ struct Toolchain {
 
 pub fn parse(args: &[String]) -> Result<Command, String> {
     let operation = args.first().ok_or_else(|| {
-        "windows requires check|sync|build|test|lint|fetch|all|verify|deploy".to_owned()
+        "windows requires check|sync|build|test|lint|fetch|all|verify|deploy|service-cycle|diagnose-service|build-status|uninstall".to_owned()
     })?;
     if operation == "deploy" {
         if args.len() != 4 && args.len() != 5 {
@@ -128,40 +144,32 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
             apply,
         });
     }
-    if operation == "service-cycle" {
-        if (args.len() != 4 && args.len() != 5)
-            || args[2] != "--output"
-            || args[1].trim().is_empty()
-            || args[3].trim().is_empty()
-        {
-            return Err(
-                "windows service-cycle requires SERVICE --output PATH [--apply]".to_owned(),
-            );
+    match operation.as_str() {
+        "service-cycle" => {
+            let (service, output, apply) = parse_service_command(args, true)?;
+            return Ok(Command::ServiceCycle {
+                service,
+                output,
+                apply,
+            });
         }
-        validate_ssh_target(&args[1])?;
-        let apply = args.get(4).map(String::as_str) == Some("--apply");
-        if args.len() == 5 && !apply {
-            return Err(format!("unknown windows service-cycle option: {}", args[4]));
+        "diagnose-service" => {
+            let (service, output, _) = parse_service_command(args, false)?;
+            return Ok(Command::DiagnoseService { service, output });
         }
-        return Ok(Command::ServiceCycle {
-            service: args[1].clone(),
-            output: PathBuf::from(&args[3]),
-            apply,
-        });
-    }
-    if operation == "diagnose-service" {
-        if args.len() != 4
-            || args[2] != "--output"
-            || args[1].trim().is_empty()
-            || args[3].trim().is_empty()
-        {
-            return Err("windows diagnose-service requires SERVICE --output PATH".to_owned());
+        "build-status" => {
+            let (service, output, _) = parse_service_command(args, false)?;
+            return Ok(Command::BuildStatus { service, output });
         }
-        validate_ssh_target(&args[1])?;
-        return Ok(Command::DiagnoseService {
-            service: args[1].clone(),
-            output: PathBuf::from(&args[3]),
-        });
+        "uninstall" => {
+            let (service, output, apply) = parse_service_command(args, true)?;
+            return Ok(Command::Uninstall {
+                service,
+                output,
+                apply,
+            });
+        }
+        _ => {}
     }
     if operation == "verify" {
         if args.len() != 4 || args[2] != "--runs" {
@@ -199,6 +207,34 @@ pub fn parse(args: &[String]) -> Result<Command, String> {
     Ok(Command::Run(operation))
 }
 
+/// Parses `OPERATION SERVICE --output PATH`, plus `[--apply]` when allowed.
+fn parse_service_command(
+    args: &[String],
+    allow_apply: bool,
+) -> Result<(String, PathBuf, bool), String> {
+    let operation = &args[0];
+    let usage = if allow_apply {
+        format!("windows {operation} requires SERVICE --output PATH [--apply]")
+    } else {
+        format!("windows {operation} requires SERVICE --output PATH")
+    };
+    let apply = match args.get(4).map(String::as_str) {
+        None => false,
+        Some("--apply") if allow_apply => true,
+        Some(option) => return Err(format!("unknown windows {operation} option: {option}")),
+    };
+    if args.len() > 5
+        || args.len() < 4
+        || args[2] != "--output"
+        || args[1].trim().is_empty()
+        || args[3].trim().is_empty()
+    {
+        return Err(usage);
+    }
+    validate_ssh_target(&args[1])?;
+    Ok((args[1].clone(), PathBuf::from(&args[3]), apply))
+}
+
 pub fn run(command: Command, repo: &Path) -> Result<(), String> {
     match command {
         Command::Run(operation) => run_operation(operation, &Config::from_env(repo)?, repo),
@@ -219,6 +255,14 @@ pub fn run(command: Command, repo: &Path) -> Result<(), String> {
         Command::DiagnoseService { service, output } => {
             diagnose_service(repo, &Config::from_env(repo)?, &service, &output)
         }
+        Command::BuildStatus { service, output } => {
+            build_status(repo, &Config::from_env(repo)?, &service, &output)
+        }
+        Command::Uninstall {
+            service,
+            output,
+            apply,
+        } => uninstall(repo, &Config::from_env(repo)?, &service, &output, apply),
     }
 }
 
@@ -402,12 +446,14 @@ fn sync_source(config: &Config, repo: &Path) -> Result<(), String> {
             repo,
         )?;
         let filtered = existing_paths(repo, &listed)?;
+        let identity = source_identity(repo, &filtered)?;
         process::run_with_input(
             "tar",
             &["--null", "--files-from=-", "-cf", archive_text],
             repo,
             &filtered,
         )?;
+        append_stamp(repo, archive_text, &identity)?;
         let remote_archive = format!("virtio-mem-windows-source-{}.tar", std::process::id());
         print_remote(
             config,
@@ -439,20 +485,112 @@ fn sync_source(config: &Config, repo: &Path) -> Result<(), String> {
                 quoted_remote_dir(config)
             ),
         )?;
+        println!("Synchronised source as build {}", identity.build_id);
         Ok(())
     })();
     let _ = std::fs::remove_file(&archive);
     result
 }
 
+/// Identifies the exact files being synchronised: the commit, whether the
+/// working tree differs from it, and a digest of every synchronised file.
+fn source_identity(repo: &Path, nul_separated: &[u8]) -> Result<BuildIdentity, String> {
+    let commit = process::checked_text(
+        "git",
+        &[process::os("rev-parse"), process::os("HEAD")],
+        repo,
+    )?;
+    let status = process::checked_output(
+        "git",
+        &[
+            process::os("status"),
+            process::os("--porcelain=v1"),
+            process::os("--untracked-files=normal"),
+        ],
+        repo,
+    )?;
+    let paths = std::str::from_utf8(nul_separated)
+        .map_err(|error| format!("git returned a non-UTF-8 path: {error}"))?;
+    let mut args = vec![process::os("--")];
+    args.extend(
+        paths
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(process::os),
+    );
+    let manifest = process::checked_output("sha256sum", &args, repo)?;
+    let manifest_path = std::env::temp_dir().join(format!(
+        "virtio-mem-windows-source-{}.sha256",
+        std::process::id()
+    ));
+    std::fs::write(&manifest_path, manifest)
+        .map_err(|error| format!("write source manifest: {error}"))?;
+    let digest = sha256(repo, &manifest_path);
+    // Best effort: the manifest is a derived temporary and the digest is
+    // already computed (or its error is returned below).
+    let _ = std::fs::remove_file(&manifest_path);
+    BuildIdentity::new(commit.trim(), !status.is_empty(), &digest?)
+}
+
+/// Adds the build stamp to the source archive so it lands in the remote
+/// workspace atomically with the files it describes.
+fn append_stamp(repo: &Path, archive: &str, identity: &BuildIdentity) -> Result<(), String> {
+    let directory =
+        std::env::temp_dir().join(format!("virtio-mem-windows-stamp-{}", std::process::id()));
+    let result = (|| {
+        std::fs::create_dir_all(&directory)
+            .map_err(|error| format!("create build stamp directory: {error}"))?;
+        let stamp = serde_json::to_string(identity)
+            .map_err(|error| format!("encode build stamp: {error}"))?;
+        std::fs::write(directory.join(STAMP_FILE), stamp)
+            .map_err(|error| format!("write build stamp: {error}"))?;
+        let directory_text = directory
+            .to_str()
+            .ok_or_else(|| "temporary stamp path is not valid UTF-8".to_owned())?;
+        process::run(
+            "tar",
+            &["-rf", archive, "-C", directory_text, STAMP_FILE],
+            repo,
+        )
+    })();
+    let _ = std::fs::remove_dir_all(&directory);
+    result
+}
+
+/// Reads the identity of the source last synchronised to the build guest.
+fn remote_identity(config: &Config, repo: &Path) -> Result<BuildIdentity, String> {
+    let stamp = remote_stdout(
+        config,
+        repo,
+        &format!("type \"{}\"", remote_path(config, STAMP_FILE)),
+    )
+    .map_err(|error| format!("{error}; run windows sync before building"))?;
+    BuildIdentity::parse_stamp(&stamp)
+}
+
+fn remote_path(config: &Config, relative: &str) -> String {
+    format!(
+        r"{}\{relative}",
+        config.remote_dir.trim_end_matches(['\\', '/'])
+    )
+}
+
+fn release_path(config: &Config, executable: &str) -> String {
+    remote_path(config, &format!(r"target\release\{executable}"))
+}
+
 fn build(config: &Config, repo: &Path) -> Result<(), String> {
+    let identity = remote_identity(config, repo)?;
     let tools = resolve_toolchain(config, repo)?;
+    println!("Building Windows service {}", identity.build_id);
+    // The build ID is validated by `parse_stamp` and contains only
+    // [0-9a-z.-], so it is safe inside the cmd.exe `set` below.
     print_remote_msvc(
         config,
         repo,
         &format!(
-            "set \"RUSTC={}\" ^&^& set \"RUSTDOC={}\" ^&^& \"{}\" build -p virtio-mem-service --release --locked",
-            tools.rustc, tools.rustdoc, tools.cargo
+            "set \"VIRTIO_MEM_BUILD_ID={}\" ^&^& set \"RUSTC={}\" ^&^& set \"RUSTDOC={}\" ^&^& \"{}\" build -p virtio-mem-service --release --locked",
+            identity.build_id, tools.rustc, tools.rustdoc, tools.cargo
         ),
     )?;
     Ok(())
@@ -484,6 +622,8 @@ fn lint(config: &Config, repo: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Fetches the release executables, checks that the candidate was built from
+/// the synchronised source and records the verified build in `build.json`.
 fn fetch(config: &Config, repo: &Path) -> Result<(), String> {
     require_commands(&["scp", "ssh", "sha256sum"])?;
     std::fs::create_dir_all(&config.artifact_dir).map_err(|error| {
@@ -492,11 +632,36 @@ fn fetch(config: &Config, repo: &Path) -> Result<(), String> {
             config.artifact_dir.display()
         )
     })?;
-    let destination = config.artifact_dir.join("virtio-mem-service.exe");
-    let remote_artifact = format!(
-        "{}/target/release/virtio-mem-service.exe",
-        config.remote_dir.replace('\\', "/")
+    let identity = remote_identity(config, repo)?;
+    let reported = remote_stdout(
+        config,
+        repo,
+        &format!("\"{}\" version", release_path(config, SERVICE_EXE)),
+    )?;
+    if reported.trim() != identity.build_id {
+        return Err(format!(
+            "the release candidate reports build {:?} but the synchronised source is {}; run windows build",
+            reported.trim(),
+            identity.build_id
+        ));
+    }
+    let service_sha256 = fetch_verified(config, repo, SERVICE_EXE)?;
+    let workload_sha256 = fetch_verified(config, repo, WORKLOAD_EXE)?;
+    let build_id = identity.build_id.clone();
+    let record = BuildRecord::new(identity, service_sha256, workload_sha256, unix_millis()?);
+    persist_json(&config.artifact_dir.join(RECORD_FILE), &record)?;
+    println!(
+        "Windows build {build_id} recorded in {}",
+        config.artifact_dir.join(RECORD_FILE).display()
     );
+    Ok(())
+}
+
+/// Copies one release executable and returns its SHA-256 after comparing it
+/// with the hash computed on Windows.
+fn fetch_verified(config: &Config, repo: &Path, executable: &str) -> Result<String, String> {
+    let destination = config.artifact_dir.join(executable);
+    let remote_artifact = release_path(config, executable).replace('\\', "/");
     let mut scp_args = config.ssh_options();
     scp_args.extend([
         process::os("--"),
@@ -516,8 +681,8 @@ fn fetch(config: &Config, repo: &Path) -> Result<(), String> {
         config,
         repo,
         &format!(
-            "certutil -hashfile {}\\target\\release\\virtio-mem-service.exe SHA256",
-            quoted_remote_dir(config)
+            "certutil -hashfile \"{}\" SHA256",
+            release_path(config, executable)
         ),
     )?;
     let remote_hash = parse_sha256(&remote_hash_output)
@@ -525,14 +690,32 @@ fn fetch(config: &Config, repo: &Path) -> Result<(), String> {
     let local_hash = sha256(repo, &destination)?;
     if remote_hash != local_hash {
         return Err(format!(
-            "artifact checksum mismatch (Windows={remote_hash}, RHEL={local_hash})"
+            "{executable} checksum mismatch (Windows={remote_hash}, RHEL={local_hash})"
         ));
     }
     println!(
         "Windows artifact verified: {} ({local_hash})",
         destination.display()
     );
-    Ok(())
+    Ok(local_hash)
+}
+
+fn read_record(config: &Config) -> Result<Option<BuildRecord>, String> {
+    let path = config.artifact_dir.join(RECORD_FILE);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => BuildRecord::parse(&text).map(Some),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("read {}: {error}", path.display())),
+    }
+}
+
+fn required_record(config: &Config) -> Result<BuildRecord, String> {
+    read_record(config)?.ok_or_else(|| {
+        format!(
+            "no fetched build record in {}; run windows build and fetch first",
+            config.artifact_dir.display()
+        )
+    })
 }
 
 fn resolve_toolchain(config: &Config, repo: &Path) -> Result<Toolchain, String> {
@@ -700,7 +883,7 @@ fn verify(
             println!("Starting aggregate gate {run_number} of {runs}.");
             crate::local::run(crate::local::Step::Local, repo)?;
             run_operation(Operation::All, &verified_config, repo)?;
-            let artifact = config.artifact_dir.join("virtio-mem-service.exe");
+            let artifact = config.artifact_dir.join(SERVICE_EXE);
             let hash = sha256(repo, &artifact)?;
             std::fs::write(
                 evidence_dir.join(format!("artifact-run-{run_number}.sha256")),
@@ -747,11 +930,9 @@ fn deploy(
     let manifest: DeploymentManifest = serde_json::from_str(&manifest_text)
         .map_err(|error| format!("parse Windows deployment manifest: {error}"))?;
     validate_deployment_manifest(&manifest)?;
+    let record = required_record(config)?;
 
-    let candidate_path = format!(
-        r"{}\target\release\virtio-mem-service.exe",
-        config.remote_dir.trim_end_matches(['\\', '/'])
-    );
+    let candidate_path = release_path(config, SERVICE_EXE);
     let candidate_hash_output = remote_stdout(
         config,
         repo,
@@ -759,6 +940,12 @@ fn deploy(
     )?;
     let candidate_sha256 = parse_sha256(&candidate_hash_output)
         .ok_or_else(|| "Windows certutil output did not contain a candidate SHA-256".to_owned())?;
+    if candidate_sha256 != record.service_sha256 {
+        return Err(format!(
+            "the build guest's candidate ({candidate_sha256}) is not the fetched build {} ({}); run windows build and fetch",
+            record.identity.build_id, record.service_sha256
+        ));
+    }
     let source_revision = process::bounded_text(
         "git",
         &[process::os("rev-parse"), process::os("HEAD")],
@@ -782,10 +969,14 @@ fn deploy(
         None
     };
 
+    let installed_build_id = windows
+        .as_ref()
+        .map(|value| value["installed_build_id"].as_str().map(str::to_owned));
     let evidence = DeploymentEvidence {
-        schema_version: 1,
+        schema_version: 2,
         applied: apply,
         source_revision,
+        build_id: record.identity.build_id.clone(),
         candidate_sha256,
         manifest: DeploymentManifestEvidence {
             vm_name: manifest.vm_name,
@@ -801,12 +992,184 @@ fn deploy(
     };
     persist_json(&output_path, &evidence)?;
     println!(
-        "Windows deployment {} evidence written to {}",
+        "Windows deployment {} of build {} evidence written to {}",
         if apply { "apply" } else { "dry-run" },
+        record.identity.build_id,
         output_path.display()
+    );
+    match installed_build_id {
+        Some(reported) if reported.as_deref() != Some(record.identity.build_id.as_str()) => {
+            Err(format!(
+                "installed service reports build {reported:?}, expected {}",
+                record.identity.build_id
+            ))
+        }
+        _ => Ok(()),
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct BuildStatusEvidence {
+    schema_version: u32,
+    captured_unix_millis: u128,
+    service_name: String,
+    verdict: Verdict,
+    service_state: Option<String>,
+    installed: Option<InstalledBuild>,
+    candidate: Option<BuildRecord>,
+}
+
+/// Compares the installed service binary with the last fetched candidate.
+fn build_status(repo: &Path, config: &Config, service: &str, output: &Path) -> Result<(), String> {
+    let candidate = read_record(config)?;
+    let script = format!(
+        r#"{PS_BUILD_FUNCTIONS}
+$ErrorActionPreference='Stop'
+$service={service}
+$svc=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
+if($null -eq $svc){{[ordered]@{{state=$null;installed=$null}} | ConvertTo-Json -Compress; exit 0}}
+$exe=Get-ServiceExe $svc
+if(-not (Test-Path -LiteralPath $exe)){{throw ('registered service executable is missing: '+$exe)}}
+[ordered]@{{state=[string]$svc.State;installed=[ordered]@{{path=$exe;sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant();build_id=(Get-BuildId $exe)}}}} | ConvertTo-Json -Compress
+"#,
+        service = ps_literal(service),
+    );
+    let value = parse_last_json_line(&remote_powershell(config, repo, &script)?)?;
+    let installed: Option<InstalledBuild> = serde_json::from_value(value["installed"].clone())
+        .map_err(|error| format!("parse installed build: {error}"))?;
+    let verdict = Verdict::of(installed.as_ref(), candidate.as_ref());
+    let evidence = BuildStatusEvidence {
+        schema_version: 1,
+        captured_unix_millis: unix_millis()?,
+        service_name: service.to_owned(),
+        verdict,
+        service_state: value["state"].as_str().map(str::to_owned),
+        installed,
+        candidate,
+    };
+    let output = resolve_local(repo, output);
+    persist_json(&output, &evidence)?;
+    println!("{}", describe_build_status(&evidence));
+    println!("Build status written to {}", output.display());
+    Ok(())
+}
+
+fn describe_build_status(status: &BuildStatusEvidence) -> String {
+    let installed = match &status.installed {
+        None => "installed: none".to_owned(),
+        Some(build) => format!(
+            "installed: {} ({}, {}) at {}",
+            build
+                .build_id
+                .as_deref()
+                .unwrap_or("unknown build, predates build tracking"),
+            build.sha256,
+            status.service_state.as_deref().unwrap_or("unknown state"),
+            build.path
+        ),
+    };
+    let candidate = match &status.candidate {
+        None => "candidate: none fetched".to_owned(),
+        Some(record) => format!(
+            "candidate: {} ({})",
+            record.identity.build_id, record.service_sha256
+        ),
+    };
+    let verdict = match status.verdict {
+        Verdict::NotInstalled => "not installed; deploy the candidate with windows deploy",
+        Verdict::Current => "current; the installed service is the fetched candidate",
+        Verdict::UpdateAvailable => {
+            "update available; the candidate differs from the installed service (windows deploy)"
+        }
+        Verdict::NoCandidate => "no candidate; run windows build and fetch",
+    };
+    format!("{installed}\n{candidate}\nverdict: {verdict}")
+}
+
+/// Removes the named service registration, its executable and configuration
+/// after backing them up. Publication and request-state files are retained
+/// and listed; they belong to the guest's durable request history.
+fn uninstall(
+    repo: &Path,
+    config: &Config,
+    service: &str,
+    output: &Path,
+    apply: bool,
+) -> Result<(), String> {
+    let script = format!(
+        r#"{PS_BUILD_FUNCTIONS}
+$ErrorActionPreference='Stop'
+$service={service}
+$apply={apply}
+$root='C:\ProgramData\VirtioMemService'
+$config=Join-Path $root 'config.json'
+$svc=Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'")
+if($null -eq $svc){{throw 'named Windows service was not found'}}
+$exe=Get-ServiceExe $svc
+$exeExists=Test-Path -LiteralPath $exe
+$before=[ordered]@{{state=[string]$svc.State;path=$exe;sha256=$(if($exeExists){{(Get-FileHash -Algorithm SHA256 -LiteralPath $exe).Hash.ToLowerInvariant()}}else{{$null}});build_id=$(if($exeExists){{Get-BuildId $exe}}else{{$null}})}}
+$backup=$null
+$removed=@()
+if($apply){{
+  $backup=Join-Path $root ('deployment-backups\uninstall-'+[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())
+  New-Item -ItemType Directory -Force -Path $backup | Out-Null
+  if($exeExists){{Copy-Item -LiteralPath $exe -Destination (Join-Path $backup 'service.exe') -Force}}
+  if(Test-Path -LiteralPath $config){{Copy-Item -LiteralPath $config -Destination (Join-Path $backup 'config.json') -Force}}
+  & reg.exe export ('HKLM\SYSTEM\CurrentControlSet\Services\'+$service) (Join-Path $backup 'service.reg') /y | Out-Null
+  if($LASTEXITCODE -ne 0){{throw "service registry backup failed with exit code $LASTEXITCODE"}}
+  if($svc.State -ne 'Stopped'){{Stop-Service -Name $service -Force; (Get-Service $service).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(30))}}
+  & sc.exe delete $service | Out-Null
+  if($LASTEXITCODE -ne 0){{throw "sc.exe delete failed with exit code $LASTEXITCODE"}}
+  $deadline=(Get-Date).AddSeconds(30)
+  while($null -ne (Get-CimInstance Win32_Service -Filter ("Name='"+$service.Replace("'","''")+"'"))){{if((Get-Date) -gt $deadline){{throw 'service registration is still present after deletion; close open service handles'}}; Start-Sleep -Milliseconds 250}}
+  if($exeExists){{Remove-Item -LiteralPath $exe -Force; $removed+=$exe; $dir=Split-Path -Parent $exe; if(@(Get-ChildItem -LiteralPath $dir -Force).Count -eq 0){{Remove-Item -LiteralPath $dir -Force; $removed+=$dir}}}}
+  if(Test-Path -LiteralPath $config){{Remove-Item -LiteralPath $config -Force; $removed+=$config}}
+}}
+$retained=@(if(Test-Path -LiteralPath $root){{Get-ChildItem -LiteralPath $root -File | ForEach-Object {{$_.FullName}}}})
+[ordered]@{{captured_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds();applied=$apply;service_name=$service;before=$before;backup_path=$backup;removed=$removed;retained_files=$retained}} | ConvertTo-Json -Depth 4 -Compress
+"#,
+        service = ps_literal(service),
+        apply = if apply { "$true" } else { "$false" },
+    );
+    let value = parse_last_json_line(&remote_powershell(config, repo, &script)?)?;
+    let output = resolve_local(repo, output);
+    persist_json(&output, &value)?;
+    println!(
+        "Windows uninstall {} of {} (build {}) evidence written to {}",
+        if apply { "apply" } else { "dry-run" },
+        service,
+        value["before"]["build_id"]
+            .as_str()
+            .unwrap_or("unknown, predates build tracking"),
+        output.display()
     );
     Ok(())
 }
+
+/// PowerShell helpers shared by deployment, build status and uninstall.
+/// `Get-BuildId` runs `EXE version` with a bound: binaries that predate the
+/// command reject it, and any other answer is reported as unknown (`$null`).
+const PS_BUILD_FUNCTIONS: &str = r#"function Get-ServiceExe($svc){
+  $raw=([string]$svc.PathName).Trim()
+  if($raw.StartsWith('"')){return $raw.Substring(1,$raw.IndexOf('"',1)-1)}
+  $end=$raw.ToLowerInvariant().IndexOf('.exe')
+  if($end -lt 0){throw 'service path does not name an .exe'}
+  return $raw.Substring(0,$end+4)
+}
+function Get-BuildId($exe){
+  $out=[IO.Path]::GetTempFileName()
+  try{
+    $p=Start-Process -FilePath $exe -ArgumentList 'version' -NoNewWindow -PassThru -RedirectStandardOutput $out -RedirectStandardError ($out+'.err')
+    $null=$p.Handle
+    if(-not $p.WaitForExit(10000)){$p.Kill(); return $null}
+    if($p.ExitCode -ne 0){return $null}
+    $id=[string](Get-Content -LiteralPath $out -Raw)
+    $id=$id.Trim()
+    if($id -cmatch '^[0-9a-z.\-]{1,64}$'){return $id}
+    return $null
+  } finally {Remove-Item -LiteralPath $out,($out+'.err') -Force -ErrorAction SilentlyContinue}
+}
+"#;
 
 fn service_cycle(
     repo: &Path,
@@ -954,7 +1317,8 @@ fn deployment_powershell(
     let telemetry = ps_literal(&manifest.telemetry_path);
     let wait_millis = manifest.poll_interval_millis.saturating_mul(3).max(1000);
     format!(
-        r#"$ErrorActionPreference='Stop'
+        r#"{PS_BUILD_FUNCTIONS}
+$ErrorActionPreference='Stop'
 $service={service}
 $candidate={candidate}
 $install={install}
@@ -989,6 +1353,7 @@ try {{
     captured_unix_millis=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     backup_path=$backup
     binary_sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $install).Hash.ToLowerInvariant()
+    installed_build_id=(Get-BuildId $install)
     config_sha256=(Get-FileHash -Algorithm SHA256 -LiteralPath $config).Hash.ToLowerInvariant()
     binary_acl=(Get-Acl -LiteralPath $install).Sddl
     config_acl=(Get-Acl -LiteralPath $config).Sddl
@@ -1238,6 +1603,57 @@ mod tests {
             ])),
             Ok(Command::Deploy { apply: true, .. })
         ));
+    }
+
+    #[test]
+    fn parses_build_status_and_dry_run_first_uninstall() {
+        assert_eq!(
+            parse(&strings(&[
+                "build-status",
+                "VirtioMemService",
+                "--output",
+                "status.json"
+            ])),
+            Ok(Command::BuildStatus {
+                service: "VirtioMemService".to_owned(),
+                output: PathBuf::from("status.json"),
+            })
+        );
+        assert!(matches!(
+            parse(&strings(&[
+                "uninstall",
+                "VirtioMemService",
+                "--output",
+                "u.json"
+            ])),
+            Ok(Command::Uninstall { apply: false, .. })
+        ));
+        assert!(matches!(
+            parse(&strings(&[
+                "uninstall",
+                "VirtioMemService",
+                "--output",
+                "u.json",
+                "--apply"
+            ])),
+            Ok(Command::Uninstall { apply: true, .. })
+        ));
+        assert!(parse(&strings(&[
+            "build-status",
+            "VirtioMemService",
+            "--output",
+            "s.json",
+            "--apply"
+        ]))
+        .is_err());
+        assert!(parse(&strings(&[
+            "uninstall",
+            "-oProxyCommand",
+            "--output",
+            "u.json"
+        ]))
+        .is_err());
+        assert!(parse(&strings(&["uninstall", "VirtioMemService"])).is_err());
     }
 
     #[test]

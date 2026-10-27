@@ -18,6 +18,14 @@
       "problemMatcher": []
     },
     {
+      "label": "Windows: build status on win11_gpu",
+      "type": "process",
+      "command": "make",
+      "args": ["win11-status"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "RHEL: local gate",
       "type": "shell",
       "command": "cargo",

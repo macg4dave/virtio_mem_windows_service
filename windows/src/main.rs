@@ -2,7 +2,7 @@ use std::process;
 
 use virtio_mem_service::{
     install_service, native_worker, remove_service, run_as_service, start_service, stop_service,
-    RuntimeWiringError, ServiceConfig, ServiceHost,
+    RuntimeWiringError, ServiceConfig, ServiceHost, BUILD_ID,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -13,12 +13,14 @@ pub enum ServiceCommand {
     Start,
     Remove,
     Help,
+    Version,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StartupRoute {
     Reject,
     Help,
+    Version,
     DispatchThenLoadConfiguration,
     LoadConfiguration,
 }
@@ -27,6 +29,7 @@ fn startup_route(command: Option<ServiceCommand>) -> StartupRoute {
     match command {
         None => StartupRoute::Reject,
         Some(ServiceCommand::Help) => StartupRoute::Help,
+        Some(ServiceCommand::Version) => StartupRoute::Version,
         Some(ServiceCommand::Run) => StartupRoute::DispatchThenLoadConfiguration,
         Some(
             ServiceCommand::Install
@@ -48,6 +51,7 @@ fn parse_command(args: &[String]) -> Option<ServiceCommand> {
         "start" => Some(ServiceCommand::Start),
         "remove" => Some(ServiceCommand::Remove),
         "help" | "--help" | "-h" => Some(ServiceCommand::Help),
+        "version" | "--version" => Some(ServiceCommand::Version),
         "run" | "" => Some(ServiceCommand::Run),
         _ => None,
     }
@@ -77,7 +81,11 @@ fn main() {
             process::exit(2);
         }
         StartupRoute::Help => {
-            println!("Usage: virtio-mem-service [install|start|run|stop|remove|help]\nRecovery with missing/damaged configuration: sc.exe stop SERVICE_NAME; sc.exe delete SERVICE_NAME (administrator terminal). Use the installed SCM identity.");
+            println!("Usage: virtio-mem-service [install|start|run|stop|remove|version|help]\nRecovery with missing/damaged configuration: sc.exe stop SERVICE_NAME; sc.exe delete SERVICE_NAME (administrator terminal). Use the installed SCM identity.");
+            return;
+        }
+        StartupRoute::Version => {
+            println!("{BUILD_ID}");
             return;
         }
         StartupRoute::DispatchThenLoadConfiguration => {}
@@ -135,7 +143,7 @@ fn main() {
                 process::exit(1);
             }
         }
-        Some(ServiceCommand::Help) | None => (),
+        Some(ServiceCommand::Help | ServiceCommand::Version) | None => (),
     }
 }
 
@@ -215,6 +223,10 @@ mod tests {
             parse_command(&[String::from("help")]),
             Some(ServiceCommand::Help)
         );
+        assert_eq!(
+            parse_command(&[String::from("version")]),
+            Some(ServiceCommand::Version)
+        );
         assert_eq!(parse_command(&[String::from("unknown")]), None);
         assert_eq!(
             parse_command(&[String::from("stop"), String::from("ignored")]),
@@ -231,6 +243,10 @@ mod tests {
         assert_eq!(
             startup_route(Some(ServiceCommand::Install)),
             StartupRoute::LoadConfiguration
+        );
+        assert_eq!(
+            startup_route(Some(ServiceCommand::Version)),
+            StartupRoute::Version
         );
     }
 }

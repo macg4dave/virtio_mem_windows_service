@@ -227,6 +227,10 @@ and build with MinGW available, or use the selected MSVC target. The Windows
 crate does not build for Linux, and type-checking does not validate native SCM,
 Win32 sampling, ACLs, file sharing with QGA or atomic replacement.
 
+For an AI-led build/test run, use the
+[Windows build/test task prompt](../.github/prompts/rust-windows-build-test.prompt.md).
+It covers SSH, native gates, QGA/libvirt diagnostics and authorised live testing.
+
 To build on the established `win11_gpu` guest from Linux, run:
 
 ```bash
@@ -234,11 +238,38 @@ make win11-build
 ```
 
 This checks the native toolchain, syncs the current working tree (including
-uncommitted source), builds the release service and downloads the SHA-256
-verified executable to `.artifacts/windows/win11_gpu/virtio-mem-service.exe`.
+uncommitted source), builds the release binaries and downloads the SHA-256
+verified service and workload executables to `.artifacts/windows/win11_gpu/`.
 `make win11-gate` also runs native tests and Clippy. VS Code offers matching
 **Windows: build service on win11_gpu** and **Windows: native gate on win11_gpu**
 tasks. These commands do not install or restart the service.
+
+### Build identity
+
+Every remote build is traceable from source to the installed service:
+
+- `sync` stamps the workspace (`virtio-mem-build.json`) with the commit, whether
+  the working tree differs from it, and a digest of every synchronised file.
+  The build ID is the 12-character commit, or `<commit>-dirty.<digest>` when
+  uncommitted changes were synchronised.
+- `build` compiles that ID into the service. `virtio-mem-service version`
+  prints it, and the Event Log start message (id 1000) includes it. Builds
+  outside xtask report `unversioned`.
+- `fetch` refuses a candidate that does not report the synchronised ID, then
+  writes `build.json` beside the executables: ID, commit, source digest and
+  both SHA-256 values. This is the candidate record.
+- `windows deploy` installs only a candidate whose hash matches `build.json`,
+  records the build ID in its evidence and fails if the installed binary
+  reports another ID.
+- `make win11-status` (`windows build-status SERVICE --output PATH`) compares
+  the installed binary with `build.json` by SHA-256 and reports
+  `not_installed`, `current`, `update_available` or `no_candidate`. Binaries
+  that predate `version` are reported as unknown builds.
+- `windows uninstall SERVICE --output PATH [--apply]` backs up the binary,
+  configuration and service registry key under
+  `C:\ProgramData\VirtioMemService\deployment-backups\`, then removes the
+  registration, binary and configuration. Telemetry and request-state files
+  are retained and listed. Without `--apply` it only reports.
 
 The presets use SSH alias `virtio-mem-windows`, workspace
 `C:\Users\Dave\github\virtio_mem_windows_service`, a 10-second connection

@@ -13,3 +13,6 @@ Change: `${input:change:required Windows service behaviour}`
   so a stop request cannot be missed. Verify the stop interleaving on Windows.
 - Apply the repository's platform safety and verification rules; use
   Development for Windows build and native validation commands.
+
+For remote build, native tests and VM diagnostics, follow
+[Windows build/test prompt](rust-windows-build-test.prompt.md).

@@ -433,7 +433,7 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
         ServiceEvent::new(
             ServiceEventId::StartPending,
             ServiceEventLevel::Information,
-            "service initialization started",
+            format!("service initialization started (build {})", crate::BUILD_ID),
         ),
     );
     let config = match ServiceConfig::load_default() {
