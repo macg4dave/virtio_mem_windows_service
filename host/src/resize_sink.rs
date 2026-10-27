@@ -53,15 +53,18 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
         self.apply_unless_stopped(prepared, stop)
     }
 
-    fn settle_pending_guarded(
+    fn retarget_pending_guarded(
         &self,
         expected: VirtioMemState,
+        target: u64,
         stop: &AtomicBool,
     ) -> Result<(), ResizeSinkError> {
         let prepared = self
-            .prepare(expected.current_bytes, |state| {
+            .prepare(target, |state| {
                 if *state != expected || state.requested_bytes == state.current_bytes {
-                    return Err("live pending resize changed since the settle decision".to_owned());
+                    return Err(
+                        "live pending resize changed since the retarget decision".to_owned()
+                    );
                 }
                 Ok(())
             })
@@ -519,15 +522,16 @@ mod tests {
         let stop = AtomicBool::new(false);
 
         assert!(sink
-            .settle_pending_guarded(
+            .retarget_pending_guarded(
                 VirtioMemState {
                     current_bytes: 5 << 30,
                     ..pending
                 },
+                5 << 30,
                 &stop
             )
             .is_err());
-        sink.settle_pending_guarded(pending, &stop)
+        sink.retarget_pending_guarded(pending, pending.current_bytes, &stop)
             .expect("an unchanged pending shrink settles at current");
         let calls = calls.borrow();
         assert_eq!(calls.len(), 3);

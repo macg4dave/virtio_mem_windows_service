@@ -133,8 +133,10 @@ fn vm_controller(
             virsh.clone(),
             config.vm_name.clone(),
             config.alias.clone(),
+            // Evidence is hashed byte-for-byte, so collect it exactly as the
+            // attestation was made: through `virsh`, not the shared session.
             AttestedCompatibilitySource::new(
-                virsh.clone(),
+                Virsh::new(config.virsh_binary.clone(), config.command_timeout),
                 config.vm_name.clone(),
                 config.alias.clone(),
                 config.compatibility_attestation_path.clone(),

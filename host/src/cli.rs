@@ -215,7 +215,7 @@ fn settle_stuck_shrink<S: MemoryStateSource, R: ResizeSink, W: Write>(
             ..live
         });
     }
-    sink.settle_pending_guarded(live, &AtomicBool::new(false))
+    sink.retarget_pending_guarded(live, live.current_bytes, &AtomicBool::new(false))
         .map_err(|error| error.to_string())?;
     let settled = state_source.memory_state()?;
     if settled.requested_bytes != settled.current_bytes {

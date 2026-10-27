@@ -155,6 +155,14 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   plugged nothing before the one-time widening once it has not moved for one
   poll, because QEMU rejects plugs outside the usable region and the driver
   never retries them.
+- **Temporary viomem workaround** (`VIOMEM WORKAROUND` markers in
+  `host/src/runtime.rs`; remove once a patched driver is deployed): viomem
+  frees about one block (8 MiB on `win11_gpu`) per device notification and
+  then stops, however large the gap. Each time a held shrink stops moving, the
+  host bounces requested one block above the guest's target and straight back:
+  two notifications, and the target never drops below what the guest asked
+  for. (Lowering the target a block at a time instead only moved the gap
+  down in step and released memory past the request.)
 - Windows reclaim size matters. Each viomem attempt asks Windows to hot-remove
   whatever whole blocks it can inside one window starting at the lowest
   plugged block, `plugged - requested` bytes long, and never more. Small removal steps
