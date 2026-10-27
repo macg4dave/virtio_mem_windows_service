@@ -23,6 +23,70 @@ Windows decides when to add or remove memory; Linux executes. Each poll:
 3. The host writes device status, with the correlated result once known, to
    `<telemetry_path>.host-status`. Windows resolves its request from it.
 
+## Memory pressure and RAM release
+
+The native worker takes one `GetPerformanceInfo` snapshot. Physical total,
+physical available, commit total/limit/peak, system cache and kernel pools all
+come from that call, with checked page-to-byte conversion. Available includes
+standby/free/zero pages: cache is not subtracted again. Memory-load percentage
+is derived from those physical counters and is diagnostic only. No WMI, PDH,
+pagefile resizing, standby-list purging or working-set trimming is used.
+
+The worker also collects paired low/high memory-resource notifications. The
+native state reaches `TargetSample` and the guest policy; failed/unavailable
+observations are `None`, not a fabricated Neutral or High. The worker waits on
+the Low object and a manual-reset cancellation event using
+`WaitForMultipleObjects`, with the normal poll interval as a timeout. While Low
+or unknown is observed it uses the cancellable timer instead, preventing a
+level-triggered Low object from spinning. A subsequent Neutral/High sample
+re-arms the Low wait. If creating the stop event fails, bounded 50 ms waits
+preserve cancellation. Failed notification creation is retried at a bounded
+poll; query failures remain visible and can recover on the next observation.
+
+Three reasons can request growth: native Low, a physical-reserve deficit, or a
+commit-reserve deficit. The last two are proactive buffers, not claims that
+Windows itself reports Low. Let C be current device bytes, A physical available,
+H = commit limit - commit total, Rp the physical reserve and Rc the commit
+reserve. The numeric target is max(0, C + Rp - A, C + Rc - H, configured minimum),
+rounded up to blocks and capped at the usable device ceiling. Native Low also
+requests up to one grow step even if those buffers look sufficient. Commit
+headroom is independent of resident usage; more RAM is not assumed to repair a
+pagefile or application problem without observing the next sample.
+
+Reclaim uses exactly those physical/commit observations, plus native High:
+
+- Every observation throughout the history window must report High. Low,
+  Neutral, failed/unavailable native state, a failed numeric sample, missing or
+  stale host geometry, pending device convergence, or a changed inferred fixed
+  RAM base restarts reclaim qualification.
+- Targets retain the highest numeric demand over the window. Downward
+  hysteresis must be met; each removal is bounded by the configured shrink
+  step and cannot pass the normal desired target or the safe-floor target
+  calculated using its separate reserves. Both physical and commit buffers
+  therefore constrain release. Host pool memory is credited only when actually
+  returned, never merely requested.
+- History uses guest monotonic time, checks every real sample gap and
+  conservatively coalesces nearby samples by their maximum targets. Its 4096
+  entry bound cannot shorten the qualification window under rapid polling.
+  Wall-clock changes still affect host-status freshness and request issuance,
+  but cannot create fictitious reclaim history.
+- An incomplete/refused removal pauses further removals for a full window.
+  A restart starts with cold history. An unresolved durable request is never
+  replaced, including by a Low observation: serial ownership and bounded
+  removal steps prevent overlapping commands; host convergence/settlement
+  resolves the existing request before the guest can issue growth.
+
+A failed numeric API sample publishes nothing, clears reclaim evidence and is
+retried on the next bounded poll rather than terminating the worker. Other
+errors (configuration, durable state, publication and clock contracts) remain
+fatal. Requests log native state, available bytes and commit headroom.
+
+References: [PERFORMANCE_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-performance_information),
+[memory-resource notifications](https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-creatememoryresourcenotification),
+[waitable memory notifications](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject).
+Notification-assisted decisions and native waits are unit/integration tested;
+this is not qualification of real virtio-mem unplug or guest workload latency.
+
 ## Request contract
 
 Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
@@ -163,7 +227,28 @@ and build with MinGW available, or use the selected MSVC target. The Windows
 crate does not build for Linux, and type-checking does not validate native SCM,
 Win32 sampling, ACLs, file sharing with QGA or atomic replacement.
 
-The remote workflow is `cargo xtask windows sync`, `build`, `test` (or `all`),
+To build on the established `win11_gpu` guest from Linux, run:
+
+```bash
+make win11-build
+```
+
+This checks the native toolchain, syncs the current working tree (including
+uncommitted source), builds the release service and downloads the SHA-256
+verified executable to `.artifacts/windows/win11_gpu/virtio-mem-service.exe`.
+`make win11-gate` also runs native tests and Clippy. VS Code offers matching
+**Windows: build service on win11_gpu** and **Windows: native gate on win11_gpu**
+tasks. These commands do not install or restart the service.
+
+The presets use SSH alias `virtio-mem-windows`, workspace
+`C:\Users\Dave\github\virtio_mem_windows_service`, a 10-second connection
+timeout and a 1,200-second per-operation timeout. Configure the alias in
+`~/.ssh/config` with the guest's current address, user and identity, and retain
+its verified host key. All `VIRTIO_MEM_WINDOWS_*` settings can be overridden
+through the environment or Make command line. An unreachable endpoint fails
+the check before source sync; the preset does not start the VM or configure SSH.
+
+The configurable remote workflow is `cargo xtask windows sync`, `build`, `test` (or `all`),
 then manifest-based `windows deploy` when authorised. Deployment manifests are
 schema 2 and include the guest `policy`. Required environment values are
 `VIRTIO_MEM_WINDOWS_SSH`, `VIRTIO_MEM_WINDOWS_DIR`,

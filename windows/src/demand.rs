@@ -329,9 +329,25 @@ pub trait MemoryResourceNotificationApi {
     fn create(&self, kind: MemoryResourceNotificationKind) -> Result<Self::Handle, u32>;
     fn query(&self, handle: Self::Handle) -> Result<bool, u32>;
     fn close(&self, handle: Self::Handle);
+
+    /// True means the low-memory object woke the worker. Default is a timer.
+    fn wait_low(
+        &self,
+        _handle: Self::Handle,
+        stop: &StopSignal,
+        timeout: Duration,
+    ) -> Result<bool, u32> {
+        stop.wait(timeout);
+        Ok(false)
+    }
 }
 
 pub trait MemoryResourceNotificationTelemetry {
+    /// Remain timer-driven once Low is observed, since notifications are level-triggered.
+    fn wait(&mut self, stop: &StopSignal, timeout: Duration, _watch_low: bool) {
+        stop.wait(timeout);
+    }
+
     fn capability(&self) -> TelemetryCapability;
     fn collect(
         &self,
@@ -403,6 +419,36 @@ impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationCollector<A> {
 impl<A: MemoryResourceNotificationApi> MemoryResourceNotificationTelemetry
     for MemoryResourceNotificationCollector<A>
 {
+    fn wait(&mut self, stop: &StopSignal, timeout: Duration, watch_low: bool) {
+        if stop.is_cancelled() {
+            return;
+        }
+        if matches!(
+            self.handles,
+            MemoryResourceNotificationHandles::CreationFailed(_)
+        ) {
+            // A missing optional facility must not permanently disable observation.
+            match self.api.create(MemoryResourceNotificationKind::Low) {
+                Ok(low) => match self.api.create(MemoryResourceNotificationKind::High) {
+                    Ok(high) => {
+                        self.handles = MemoryResourceNotificationHandles::Ready { low, high }
+                    }
+                    Err(_) => self.api.close(low),
+                },
+                Err(_) => { /* Retry at the next bounded poll. */ }
+            }
+        }
+        if watch_low {
+            if let MemoryResourceNotificationHandles::Ready { low, .. } = self.handles {
+                match self.api.wait_low(low, stop, timeout) {
+                    Ok(_) => return,
+                    Err(error) => eprintln!("native memory notification wait failed: {error}"),
+                }
+            }
+        }
+        stop.wait(timeout);
+    }
+
     fn capability(&self) -> TelemetryCapability {
         TelemetryCapability::Supported
     }
@@ -515,6 +561,53 @@ impl MemoryResourceNotificationApi for WindowsMemoryResourceNotificationApi {
         }
     }
 
+    fn wait_low(
+        &self,
+        handle: Self::Handle,
+        stop: &StopSignal,
+        timeout: Duration,
+    ) -> Result<bool, u32> {
+        use winapi::shared::ntdef::HANDLE;
+        use winapi::shared::winerror::WAIT_TIMEOUT;
+        use winapi::um::synchapi::WaitForMultipleObjects;
+        use winapi::um::winbase::WAIT_OBJECT_0;
+        // The owning collector and StopSignal outlive the wait. No handle is
+        // closed concurrently. With a native stop event this uses one kernel wait.
+        let started = Instant::now();
+        loop {
+            if stop.is_cancelled() {
+                return Ok(false);
+            }
+            let remaining = timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Ok(false);
+            }
+            let stop_event = stop.native_event();
+            let handles = [handle as HANDLE, stop_event.unwrap_or(0) as HANDLE];
+            // If creating the stop event failed, retain bounded cancellation latency.
+            let bound = if stop_event.is_some() {
+                remaining
+            } else {
+                remaining.min(Duration::from_millis(50))
+            };
+            let millis = bound.as_millis().max(1).min(u128::from(u32::MAX - 1)) as u32;
+            let result = unsafe {
+                WaitForMultipleObjects(
+                    if stop_event.is_some() { 2 } else { 1 },
+                    handles.as_ptr(),
+                    0,
+                    millis,
+                )
+            };
+            match result {
+                WAIT_OBJECT_0 => return Ok(true),
+                value if value == WAIT_OBJECT_0 + 1 => return Ok(false),
+                WAIT_TIMEOUT => {}
+                _ => return Err(last_windows_error_code()),
+            }
+        }
+    }
+
     fn close(&self, handle: Self::Handle) {
         use winapi::ctypes::c_void;
         use winapi::um::handleapi::CloseHandle;
@@ -543,6 +636,12 @@ pub fn native_memory_resource_notifications(
 #[derive(Debug, Default, Clone, Copy)]
 pub struct NativeMemoryTelemetry;
 
+fn pages_to_bytes_checked(pages: u64, page_size: u64) -> Result<u64, DemandError> {
+    pages
+        .checked_mul(page_size)
+        .ok_or(DemandError::ArithmeticOverflow)
+}
+
 pub trait MemoryTelemetry {
     fn collect(&self) -> Result<MemoryTelemetrySnapshot, DemandError>;
 }
@@ -553,22 +652,7 @@ impl MemoryTelemetry for NativeMemoryTelemetry {
         use std::mem::{size_of, zeroed};
         use winapi::shared::minwindef::FALSE;
         use winapi::um::psapi::{GetPerformanceInfo, PERFORMANCE_INFORMATION};
-        use winapi::um::sysinfoapi::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
-        // SAFETY: The Windows APIs initialize the supplied, correctly sized
-        // structures and do not retain the pointers after returning.
-        let memory = unsafe {
-            let mut value: MEMORYSTATUSEX = zeroed();
-            value.dwLength = size_of::<MEMORYSTATUSEX>() as u32;
-            if GlobalMemoryStatusEx(&mut value) == FALSE {
-                return Err(DemandError::GlobalMemoryStatus(
-                    std::io::Error::last_os_error()
-                        .raw_os_error()
-                        .unwrap_or_default() as u32,
-                ));
-            }
-            value
-        };
         // SAFETY: The Windows API initializes the supplied structure and only
         // writes within its declared size.
         let performance = unsafe {
@@ -584,6 +668,16 @@ impl MemoryTelemetry for NativeMemoryTelemetry {
             value
         };
         let page_size = performance.PageSize as u64;
+        if page_size == 0 {
+            return Err(DemandError::ZeroCounter("page size"));
+        }
+        let total = pages_to_bytes_checked(performance.PhysicalTotal as u64, page_size)?;
+        let available = pages_to_bytes_checked(performance.PhysicalAvailable as u64, page_size)?;
+        if total == 0 || available > total {
+            return Err(DemandError::InconsistentCounters(
+                "invalid physical memory snapshot",
+            ));
+        }
         let pages_to_bytes = |pages: usize| {
             (pages as u64)
                 .checked_mul(page_size)
@@ -591,9 +685,9 @@ impl MemoryTelemetry for NativeMemoryTelemetry {
         };
 
         let snapshot = MemoryTelemetrySnapshot {
-            physical_total_bytes: memory.ullTotalPhys,
-            physical_available_bytes: memory.ullAvailPhys,
-            memory_load_percent: memory.dwMemoryLoad,
+            physical_total_bytes: total,
+            physical_available_bytes: available,
+            memory_load_percent: ((u128::from(total - available) * 100) / u128::from(total)) as u32,
             commit_total_bytes: pages_to_bytes(performance.CommitTotal as usize)?,
             commit_limit_bytes: pages_to_bytes(performance.CommitLimit as usize)?,
             commit_peak_bytes: pages_to_bytes(performance.CommitPeak as usize)?,
@@ -710,7 +804,7 @@ mod tests {
     }
 
     #[test]
-    fn notification_creation_failure_is_sticky_and_cleans_partial_state() {
+    fn notification_creation_failure_is_reported_and_cleans_partial_state() {
         let (api, state) = notification_fixture(NotificationFixtureState {
             creates: VecDeque::from([Ok(1), Err(5)]),
             ..NotificationFixtureState::default()
@@ -915,5 +1009,57 @@ mod tests {
             std::io::ErrorKind::InvalidInput
         );
         assert_eq!(attempts, 1);
+    }
+    #[test]
+    fn checked_page_conversion_rejects_overflow() {
+        assert_eq!(pages_to_bytes_checked(3, 4096).unwrap(), 12288);
+        assert!(pages_to_bytes_checked(u64::MAX, 4096).is_err());
+    }
+
+    #[test]
+    fn failed_notification_creation_is_retried_on_a_bounded_wait() {
+        let (api, state) = notification_fixture(NotificationFixtureState {
+            creates: VecDeque::from([Err(5), Ok(1), Ok(2)]),
+            low_queries: VecDeque::from([Ok(false)]),
+            high_queries: VecDeque::from([Ok(true)]),
+            ..NotificationFixtureState::default()
+        });
+        let mut collector = MemoryResourceNotificationCollector::new(api);
+        assert_eq!(
+            collector.collect(1).status,
+            virtio_mem_core::TelemetrySignalStatus::Failed
+        );
+        collector.wait(&StopSignal::new(), Duration::ZERO, false);
+        assert_eq!(
+            collector.collect(2).value,
+            Some(MemoryResourceNotificationState::High)
+        );
+        drop(collector);
+        assert_eq!(state.lock().unwrap().closed, vec![1, 2]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_memory_wait_is_cancelled_promptly() {
+        let stop = StopSignal::new();
+        let other = stop.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(20));
+            other.cancel();
+        });
+        let api = WindowsMemoryResourceNotificationApi;
+        // A private nonsignalled event makes this test independent of the
+        // machine's actual memory pressure. The wait uses the same kernel path.
+        let handle = unsafe {
+            winapi::um::synchapi::CreateEventW(std::ptr::null_mut(), 1, 0, std::ptr::null())
+        };
+        assert!(!handle.is_null());
+        let handle = handle as usize;
+        let start = Instant::now();
+        api.wait_low(handle, &stop, Duration::from_secs(10))
+            .unwrap();
+        api.close(handle);
+        thread.join().unwrap();
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 }

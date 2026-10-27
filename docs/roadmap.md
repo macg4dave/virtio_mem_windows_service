@@ -17,8 +17,9 @@ This document owns direction, phase status and qualification evidence.
 
 ## Current state — implementation updated 27 October 2026
 
-The guest-driven flow is implemented in source and unqualified. No part of it
-has run against a live VM or a native Windows build.
+The guest-driven flow is implemented in source and operationally unqualified.
+The native Windows build and test gate passed on ice101 on 27 October; the new
+flow has not been deployed or exercised against live VM memory changes.
 
 Completed in this implementation pass:
 
@@ -45,11 +46,49 @@ Completed in this implementation pass:
   of VMs. `host-deploy` installs one attestation per VM at its configured path;
   `controller-status` and qualification select a VM explicitly.
 
-The Linux local gate passes: core 53, host 73 and xtask 50 tests, formatting,
+The Linux local gate passes: core 63, host 73 and xtask 50 tests, formatting,
 release builds, Clippy with warnings denied and whitespace checks. Windows
 cross-target Clippy passes with warnings denied, including the worker tests,
-which run only on Windows. A Windows GNU binary is still blocked by the missing
+which run only on Windows; the updated native gate passes all 64 Windows tests.
+A Windows GNU binary is still blocked by the missing
 `x86_64-w64-mingw32-gcc` linker.
+
+### Notification-assisted pressure and reclaim — 27 October 2026
+
+Implemented the pressure review recommendations in source: one system-wide
+`GetPerformanceInfo` snapshot, native Low as a bounded growth trigger, separate
+physical/commit reserve guards, cancellation-aware kernel notification waits
+and sustained-Low backoff. Native High plus a continuous surplus history is now
+required for RAM release; unknown/Neutral/Low observations, sample failures,
+stale or changing geometry and device convergence reset reclaim evidence.
+History is monotonic and conservatively compressed; transient numeric failures
+retry without publishing stale data. Notification creation can recover without
+restarting the service. Durable single-request ownership and partial-removal
+backoff are preserved. See development for the precise rules and limitations.
+
+Source checks: core 63, host 73 and xtask 50 tests; native Windows service/CLI/
+workload 64 tests, including the collection-to-durable-request path, notification
+wait cancellation, failure recovery and sustained-Low backoff. Formatting,
+release builds and Clippy with warnings denied pass. Evidence logs:
+`.artifacts/pressure-local-gate.log`, `.artifacts/pressure-windows-gate.log`.
+No live service deployment, restart, memory change or workload trial was done.
+
+### Native Windows build — 27 October 2026
+
+`make win11-gate` passed on `ice101.lan` using Rust 1.97.1,
+`x86_64-pc-windows-msvc` and Visual Studio 2022 17.14.43. Source was revision
+`5bf782fff89631d93d0ed15c8471b9755fdb1d89` plus the current working-tree changes.
+Release service and workload binaries built; native tests passed (48 library,
+3 service CLI, 7 workload CLI), including durable request recovery and the
+shutdown/stop interleaving tests. Formatting and Clippy with warnings denied
+passed. Both executables were fetched to `.artifacts/windows/win11_gpu/` and
+their SHA-256 values matched Windows. Local evidence is
+`.artifacts/windows/win11_gpu/native-build-evidence.json`.
+
+SSH now works. The preset initially failed because its remote workspace did
+not exist; creating that directory allowed the full gate to pass. No installed
+service was changed or restarted, and no VM memory was resized. Live SCM, ACL,
+QGA sharing and Event Log checks remain outstanding under WIN-001.
 
 ### Evidence still relevant to qualification
 

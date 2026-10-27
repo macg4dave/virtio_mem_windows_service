@@ -32,6 +32,8 @@ pub struct GuestMemoryWorker<T, P, C, N> {
     next_sequence: u64,
     previous_monotonic_millis: Option<u64>,
     interval: Duration,
+    last_native_low: bool,
+    collection_failed: bool,
 }
 
 impl<T, P, C, N> GuestMemoryWorker<T, P, C, N>
@@ -62,6 +64,8 @@ where
             next_sequence: 0,
             previous_monotonic_millis: None,
             interval,
+            last_native_low: false,
+            collection_failed: false,
         })
     }
 
@@ -70,10 +74,12 @@ where
     }
 
     fn poll_once_with_stop(&mut self, stop: &StopSignal) -> Result<RawTelemetryEnvelope, String> {
+        self.collection_failed = true;
         let memory = self
             .telemetry
             .collect()
             .map_err(|error| format!("native memory telemetry failed: {error}"))?;
+        self.collection_failed = false;
         let observed_unix_millis = self.clock.now_unix_millis()?;
         let monotonic_millis = self.clock.monotonic_millis()?;
         if self
@@ -99,6 +105,17 @@ where
             self.memory_resource_notifications.capability();
         windows_native.memory_resource_notifications =
             self.memory_resource_notifications.collect(monotonic_millis);
+        let native_pressure = if windows_native.memory_resource_notifications.status
+            == virtio_mem_core::TelemetrySignalStatus::Supported
+        {
+            windows_native.memory_resource_notifications.value
+        } else {
+            None
+        };
+        // Failed observations also back off: a signalled Low handle must not spin
+        // if the other handle cannot be queried.
+        self.last_native_low = native_pressure.is_none()
+            || native_pressure == Some(virtio_mem_core::MemoryResourceNotificationState::Low);
         envelope
             .contract_mode()
             .map_err(|error| format!("native telemetry contract failed: {error}"))?;
@@ -111,6 +128,7 @@ where
                     monotonic_millis,
                     sequence: envelope.sequence,
                     memory,
+                    native_pressure,
                 },
                 stop,
             )
@@ -124,6 +142,19 @@ where
             .checked_add(1)
             .ok_or_else(|| "raw telemetry sequence exhausted".to_owned())?;
         Ok(envelope)
+    }
+
+    fn poll_or_retry(&mut self, stop: &StopSignal) -> Result<(), String> {
+        match self.poll_once_with_stop(stop) {
+            Ok(_) => Ok(()),
+            Err(error) if self.collection_failed => {
+                self.requests.invalidate_history();
+                self.last_native_low = true;
+                eprintln!("memory sample skipped; reclaim history reset: {error}");
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub fn publisher(&self) -> &P {
@@ -142,14 +173,18 @@ where
         if stop.is_cancelled() {
             return Ok(());
         }
-        self.poll_once_with_stop(stop).map(|_| ())
+        self.poll_or_retry(stop)
     }
 
     fn run(&mut self, stop: &StopSignal) -> Result<(), String> {
         while !stop.is_cancelled() {
-            stop.wait(self.interval);
+            self.memory_resource_notifications
+                .wait(stop, self.interval, !self.last_native_low);
+            // A level transition can wake within the preceding millisecond.
+            // Preserve the strict timestamp ordering without busy-looping.
+            stop.wait(Duration::from_millis(1));
             if !stop.is_cancelled() {
-                self.poll_once_with_stop(stop)?;
+                self.poll_or_retry(stop)?;
             }
         }
         Ok(())
@@ -502,5 +537,122 @@ mod tests {
             Duration::from_secs(1),
         )
         .is_err());
+    }
+    struct FailingOnceTelemetry(Cell<bool>);
+    impl MemoryTelemetry for FailingOnceTelemetry {
+        fn collect(&self) -> Result<MemoryTelemetrySnapshot, DemandError> {
+            if self.0.replace(false) {
+                Err(DemandError::PerformanceInfo(5))
+            } else {
+                TelemetryFixture.collect()
+            }
+        }
+    }
+
+    #[test]
+    fn transient_numeric_failure_skips_publication_and_recovers_without_restart() {
+        let path = publication("retry-numeric");
+        let mut worker = GuestMemoryWorker::new(
+            FailingOnceTelemetry(Cell::new(true)),
+            UnavailableMemoryResourceNotifications,
+            PublisherFixture::default(),
+            StepClock::default(),
+            requests(&path, "retry"),
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        worker.initialize(&StopSignal::new()).unwrap();
+        assert!(worker.publisher().0.is_empty());
+        worker.poll_or_retry(&StopSignal::new()).unwrap();
+        assert_eq!(worker.publisher().0.len(), 1);
+        assert_eq!(worker.publisher().0[0].sequence, 0);
+    }
+
+    struct WaitTrackingNotifications(Vec<bool>);
+    impl MemoryResourceNotificationTelemetry for WaitTrackingNotifications {
+        fn capability(&self) -> TelemetryCapability {
+            TelemetryCapability::Supported
+        }
+        fn collect(&self, at: u64) -> OptionalTelemetrySignal<MemoryResourceNotificationState> {
+            OptionalTelemetrySignal::supported(at, MemoryResourceNotificationState::Low)
+        }
+        fn wait(&mut self, stop: &StopSignal, _timeout: Duration, watch_low: bool) {
+            self.0.push(watch_low);
+            if self.0.len() == 2 {
+                stop.cancel();
+            }
+        }
+    }
+
+    #[test]
+    fn sustained_low_backs_off_instead_of_rewaiting_on_a_signalled_object() {
+        let path = publication("low-backoff");
+        let mut worker = worker(
+            WaitTrackingNotifications(Vec::new()),
+            requests(&path, "backoff"),
+        );
+        let stop = StopSignal::new();
+        worker.initialize(&stop).unwrap();
+        worker.run(&stop).unwrap();
+        assert_eq!(worker.memory_resource_notifications.0, vec![false, false]);
+        assert_eq!(worker.publisher().0.len(), 2);
+    }
+    struct AmpleTelemetry;
+    impl MemoryTelemetry for AmpleTelemetry {
+        fn collect(&self) -> Result<MemoryTelemetrySnapshot, DemandError> {
+            let mut sample = TelemetryFixture.collect()?;
+            sample.physical_available_bytes = 8 * GIB;
+            sample.commit_total_bytes = GIB;
+            Ok(sample)
+        }
+    }
+
+    #[test]
+    fn native_notification_reaches_the_real_request_and_durable_publication_path() {
+        for native in [
+            MemoryResourceNotificationState::High,
+            MemoryResourceNotificationState::Low,
+        ] {
+            let path = publication(&format!("native-policy-{native:?}"));
+            let status = HostMemoryStatus {
+                version: MEMORY_REQUEST_VERSION,
+                vm_name: "guest".to_owned(),
+                service_name: "TelemetryService".to_owned(),
+                device_alias: "memory0".to_owned(),
+                observed_unix_millis: 1_000_000,
+                device_size_bytes: 32 * GIB,
+                block_size_bytes: 2 * MIB,
+                requested_bytes: 4 * GIB,
+                current_bytes: 4 * GIB,
+                result: None,
+            };
+            let mut bytes = serde_json::to_vec(&status).unwrap();
+            bytes.push(b'\n');
+            std::fs::write(virtio_mem_core::host_status_path(&path), bytes).unwrap();
+            let mut worker = GuestMemoryWorker::new(
+                AmpleTelemetry,
+                FixedNotifications { state: native },
+                PublisherFixture::default(),
+                StepClock::default(),
+                requests(&path, "native"),
+                Duration::from_secs(1),
+            )
+            .unwrap();
+            let envelope = worker.poll_once().unwrap();
+            if native == MemoryResourceNotificationState::Low {
+                let request = envelope.request.unwrap();
+                assert_eq!(request.operation, MemoryOperation::Add);
+                assert_eq!(request.bytes, GIB);
+                let state: virtio_mem_core::GuestRequestState = serde_json::from_slice(
+                    &std::fs::read(virtio_mem_core::request_state_path(&path)).unwrap(),
+                )
+                .unwrap();
+                assert_eq!(state.pending, Some(request));
+            } else {
+                assert!(envelope.request.is_none());
+            }
+            let _ = std::fs::remove_file(virtio_mem_core::host_status_path(&path));
+            let _ = std::fs::remove_file(virtio_mem_core::request_state_path(&path));
+        }
     }
 }

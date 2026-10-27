@@ -10,8 +10,8 @@ use crate::memory_request::{
     MAX_REQUEST_LIFETIME_MILLIS, MEMORY_REQUEST_VERSION,
 };
 use crate::{
-    TargetEstimate, TargetEstimator, TargetGeometry, TargetPolicyConfig, TargetSample,
-    VirtioMemState,
+    MemoryResourceNotificationState, TargetEstimate, TargetEstimator, TargetGeometry,
+    TargetPolicyConfig, TargetSample, VirtioMemState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +163,10 @@ impl GuestRequester {
         })
     }
 
+    pub fn invalidate_history(&mut self) {
+        self.estimator.invalidate_history();
+    }
+
     pub fn state(&self) -> &GuestRequestState {
         &self.state
     }
@@ -185,6 +189,7 @@ impl GuestRequester {
         sample: TargetSample,
         status: Option<&HostMemoryStatus>,
     ) -> Result<GuestDecision, String> {
+        let native_low = sample.native_pressure == Some(MemoryResourceNotificationState::Low);
         let now = sample.observed_unix_millis;
         let monotonic = sample.monotonic_millis;
         let status = status.filter(|status| {
@@ -196,7 +201,11 @@ impl GuestRequester {
             status.filter(|status| status.fresh_at(now, self.policy.host_status_max_age_millis));
         // Estimate on every fresh status so reclaim history stays continuous
         // while a request is outstanding.
-        let estimate = fresh
+        let converged = fresh.filter(|status| status.requested_bytes == status.current_bytes);
+        if converged.is_none() {
+            self.estimator.invalidate_history();
+        }
+        let estimate = converged
             .map(|status| {
                 self.estimator.estimate(
                     sample,
@@ -238,9 +247,19 @@ impl GuestRequester {
             });
         }
 
-        let (Some(status), Some(estimate)) = (fresh, estimate) else {
+        let (Some(status), Some(mut estimate)) = (fresh, estimate) else {
             return Ok(Self::hold());
         };
+        // Windows' own Low classification is an urgent growth trigger even
+        // when operator reserves are smaller than Windows' threshold.
+        if native_low {
+            estimate.desired_bytes = estimate.desired_bytes.max(
+                status
+                    .current_bytes
+                    .saturating_add(self.policy.grow_step_bytes)
+                    .min(estimate.effective_maximum_bytes),
+            );
+        }
         let Some((operation, bytes)) = plan_request(&estimate, status.device(), &self.policy)?
         else {
             return Ok(Self::hold());
@@ -329,6 +348,7 @@ mod tests {
             observed_unix_millis: 1_000_000 + second * 1000,
             monotonic_millis: 1 + second * 1000,
             sequence: second,
+            native_pressure: Some(MemoryResourceNotificationState::High),
             memory: MemoryTelemetrySnapshot {
                 physical_total_bytes: physical_total,
                 physical_available_bytes: available,
@@ -544,5 +564,79 @@ mod tests {
         let mut unaligned = policy();
         unaligned.grow_step_bytes = GIB + MIB;
         assert!(plan_request(&estimate, status(1, 4 * GIB, None).device(), &unaligned).is_err());
+    }
+    #[test]
+    fn native_low_grows_even_with_ample_numeric_reserves() {
+        let mut requester = requester(GuestRequestState::default());
+        let mut observation = sample(1, 6 * GIB, 8 * GIB);
+        observation.native_pressure = Some(MemoryResourceNotificationState::Low);
+        let decision = requester
+            .poll(observation, Some(&status(1, 4 * GIB, None)))
+            .unwrap();
+        let request = decision.request.unwrap();
+        assert_eq!(request.operation, MemoryOperation::Add);
+        assert_eq!(request.bytes, policy().grow_step_bytes);
+    }
+
+    #[test]
+    fn native_low_at_capacity_holds_without_overflow_or_unaligned_request() {
+        let mut requester = requester(GuestRequestState::default());
+        let mut observation = sample(1, 8 * GIB, 35 * GIB);
+        observation.native_pressure = Some(MemoryResourceNotificationState::Low);
+        assert!(requester
+            .poll(observation, Some(&status(1, 31 * GIB, None)))
+            .unwrap()
+            .request
+            .is_none());
+    }
+
+    #[test]
+    fn unknown_notifications_still_allow_commit_emergency_growth() {
+        let mut requester = requester(GuestRequestState::default());
+        let mut observation = sample(1, 6 * GIB, 8 * GIB);
+        observation.native_pressure = None;
+        observation.memory.commit_total_bytes = 8 * GIB;
+        observation.memory.commit_peak_bytes = 8 * GIB;
+        let request = requester
+            .poll(observation, Some(&status(1, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .unwrap();
+        assert_eq!(request.operation, MemoryOperation::Add);
+    }
+
+    #[test]
+    fn neutral_and_unknown_never_release_despite_sustained_numeric_surplus() {
+        for native in [None, Some(MemoryResourceNotificationState::Neutral)] {
+            let mut requester = requester(GuestRequestState::default());
+            for second in (1..=121).step_by(10) {
+                let mut observation = sample(second, 10 * GIB, 12 * GIB);
+                observation.native_pressure = native;
+                assert!(requester
+                    .poll(observation, Some(&status(second, 8 * GIB, None)))
+                    .unwrap()
+                    .request
+                    .is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn low_cannot_supersede_an_unresolved_request() {
+        let mut requester = requester(GuestRequestState::default());
+        let first = requester
+            .poll(sample(1, 0, 8 * GIB), Some(&status(1, 4 * GIB, None)))
+            .unwrap()
+            .request
+            .unwrap();
+        let mut observation = sample(2, 0, 8 * GIB);
+        observation.native_pressure = Some(MemoryResourceNotificationState::Low);
+        assert_eq!(
+            requester
+                .poll(observation, Some(&status(2, 4 * GIB, None)))
+                .unwrap()
+                .request,
+            Some(first)
+        );
     }
 }

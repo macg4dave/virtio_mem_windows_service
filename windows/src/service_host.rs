@@ -35,6 +35,8 @@ impl ServiceState {
 struct StopState {
     cancelled: Mutex<bool>,
     wake: Condvar,
+    #[cfg(windows)]
+    native_event: Option<usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,6 +50,19 @@ impl StopSignal {
             state: Arc::new(StopState {
                 cancelled: Mutex::new(false),
                 wake: Condvar::new(),
+                #[cfg(windows)]
+                native_event: {
+                    // Manual reset: cancellation stays signalled for all waiters.
+                    let handle = unsafe {
+                        winapi::um::synchapi::CreateEventW(
+                            std::ptr::null_mut(),
+                            1,
+                            0,
+                            std::ptr::null(),
+                        )
+                    };
+                    (!handle.is_null()).then_some(handle as usize)
+                },
             }),
         }
     }
@@ -55,6 +70,17 @@ impl StopSignal {
     pub fn cancel(&self) {
         *self.cancelled() = true;
         self.state.wake.notify_all();
+        #[cfg(windows)]
+        if let Some(handle) = self.state.native_event {
+            unsafe {
+                winapi::um::synchapi::SetEvent(handle as winapi::shared::ntdef::HANDLE);
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn native_event(&self) -> Option<usize> {
+        self.state.native_event
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -80,6 +106,17 @@ impl StopSignal {
             .cancelled
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(windows)]
+impl Drop for StopState {
+    fn drop(&mut self) {
+        if let Some(handle) = self.native_event {
+            unsafe {
+                winapi::um::handleapi::CloseHandle(handle as winapi::shared::ntdef::HANDLE);
+            }
+        }
     }
 }
 

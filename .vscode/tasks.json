@@ -2,6 +2,22 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "Windows: build service on win11_gpu",
+      "type": "process",
+      "command": "make",
+      "args": ["win11-build"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Windows: native gate on win11_gpu",
+      "type": "process",
+      "command": "make",
+      "args": ["win11-gate"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "RHEL: local gate",
       "type": "shell",
       "command": "cargo",

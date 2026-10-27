@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{MemoryTelemetrySnapshot, MIN_HEADROOM_BYTES};
+use crate::{MemoryResourceNotificationState, MemoryTelemetrySnapshot, MIN_HEADROOM_BYTES};
 
 const MAX_TARGET_HISTORY_ENTRIES: usize = 4096;
 #[cfg(test)]
@@ -41,6 +41,8 @@ pub struct TargetSample {
     pub monotonic_millis: u64,
     pub sequence: u64,
     pub memory: MemoryTelemetrySnapshot,
+    /// None means failed/unavailable native observation: growth is allowed, reclaim is not.
+    pub native_pressure: Option<MemoryResourceNotificationState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +66,7 @@ pub struct TargetEstimate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CandidateHistoryEntry {
-    observed_unix_millis: u64,
+    monotonic_millis: u64,
     desired_now_bytes: u64,
     floor_now_bytes: u64,
 }
@@ -76,9 +78,9 @@ struct TargetEstimatorState {
     desired_bytes: u64,
     safe_floor_bytes: u64,
     session_id: String,
-    last_observed_unix_millis: u64,
     last_monotonic_millis: u64,
     last_sequence: u64,
+    last_visible_base_bytes: Option<u64>,
     history: VecDeque<CandidateHistoryEntry>,
 }
 
@@ -143,6 +145,11 @@ impl TargetEstimator {
         })
     }
 
+    /// Discard reclaim evidence after an observation failure or missing geometry.
+    pub fn invalidate_history(&mut self) {
+        self.state.invalidate_history();
+    }
+
     pub fn estimate(
         &mut self,
         sample: TargetSample,
@@ -160,6 +167,17 @@ impl TargetEstimator {
             return Err(error);
         }
 
+        let visible_base = sample.memory.physical_total_bytes - geometry.current_bytes;
+        if self
+            .state
+            .last_visible_base_bytes
+            .is_some_and(|base| base != visible_base)
+        {
+            // Hotplug observations and host status need not arrive atomically.
+            // Never use mixed-geometry history as evidence for releasing RAM.
+            self.state.invalidate_history();
+        }
+        self.state.last_visible_base_bytes = Some(visible_base);
         if self.state.session_id.is_empty() {
             self.state.desired_bytes = geometry.current_bytes.max(instantaneous.desired_now_bytes);
             self.state.safe_floor_bytes = geometry.current_bytes;
@@ -170,23 +188,47 @@ impl TargetEstimator {
             .max(instantaneous.desired_now_bytes)
             .min(instantaneous.effective_maximum_bytes);
 
-        self.state.history.push_back(CandidateHistoryEntry {
-            observed_unix_millis: sample.observed_unix_millis,
-            desired_now_bytes: instantaneous.desired_now_bytes,
-            floor_now_bytes: instantaneous.floor_now_bytes,
-        });
+        // Reclaim requires a continuous window of native High observations.
+        // Neutral, Low, failed and unavailable observations all restart that window.
+        if sample.native_pressure != Some(MemoryResourceNotificationState::High) {
+            self.state.invalidate_history();
+        } else {
+            // Conservative time buckets bound memory without losing a full window
+            // when notification wakeups or short poll intervals produce many samples.
+            let bucket = self
+                .config
+                .history_window_millis
+                .div_ceil((MAX_TARGET_HISTORY_ENTRIES - 2) as u64)
+                .max(1);
+            if let Some(last) = self.state.history.back_mut().filter(|last| {
+                sample
+                    .monotonic_millis
+                    .saturating_sub(last.monotonic_millis)
+                    < bucket
+            }) {
+                last.desired_now_bytes =
+                    last.desired_now_bytes.max(instantaneous.desired_now_bytes);
+                last.floor_now_bytes = last.floor_now_bytes.max(instantaneous.floor_now_bytes);
+            } else {
+                self.state.history.push_back(CandidateHistoryEntry {
+                    monotonic_millis: sample.monotonic_millis,
+                    desired_now_bytes: instantaneous.desired_now_bytes,
+                    floor_now_bytes: instantaneous.floor_now_bytes,
+                });
+            }
+        }
         if self.state.history.len() > MAX_TARGET_HISTORY_ENTRIES {
             self.state.history.pop_front();
         }
         prune_history(
             &mut self.state.history,
-            sample.observed_unix_millis,
+            sample.monotonic_millis,
             self.config.history_window_millis,
         );
         let history_ready = history_is_ready(
             &self.state.history,
+            sample.monotonic_millis,
             self.config.history_window_millis,
-            self.config.maximum_gap_millis,
         );
         if history_ready {
             let window_desired = self
@@ -220,7 +262,6 @@ impl TargetEstimator {
         }
 
         self.state.session_id = sample.session_id;
-        self.state.last_observed_unix_millis = sample.observed_unix_millis;
         self.state.last_monotonic_millis = sample.monotonic_millis;
         self.state.last_sequence = sample.sequence;
 
@@ -242,10 +283,6 @@ impl TargetEstimator {
             ));
         }
         if self.state.session_id.is_empty() {
-            return Ok(());
-        }
-        if sample.observed_unix_millis < self.state.last_observed_unix_millis {
-            self.state = TargetEstimatorState::default();
             return Ok(());
         }
         if sample.session_id != self.state.session_id {
@@ -421,31 +458,21 @@ fn prune_history(history: &mut VecDeque<CandidateHistoryEntry>, now: u64, window
     while history.len() > 1
         && history
             .get(1)
-            .is_some_and(|entry| entry.observed_unix_millis <= boundary)
+            .is_some_and(|entry| entry.monotonic_millis <= boundary)
     {
         history.pop_front();
     }
 }
 
-fn history_is_ready(
-    history: &VecDeque<CandidateHistoryEntry>,
-    window: u64,
-    maximum_gap: u64,
-) -> bool {
-    let (Some(first), Some(last)) = (history.front(), history.back()) else {
+fn history_is_ready(history: &VecDeque<CandidateHistoryEntry>, now: u64, window: u64) -> bool {
+    let Some(first) = history.front() else {
         return false;
     };
-    if last
-        .observed_unix_millis
-        .saturating_sub(first.observed_unix_millis)
-        < window
-    {
+    if now.saturating_sub(first.monotonic_millis) < window {
         return false;
     }
-    history.iter().zip(history.iter().skip(1)).all(|(a, b)| {
-        b.observed_unix_millis >= a.observed_unix_millis
-            && b.observed_unix_millis - a.observed_unix_millis <= maximum_gap
-    })
+    // prepare_sample checks every real observation gap before bucketing.
+    true
 }
 
 #[cfg(test)]
@@ -496,6 +523,7 @@ mod tests {
             monotonic_millis: at,
             sequence,
             memory,
+            native_pressure: Some(MemoryResourceNotificationState::High),
         }
     }
 
@@ -673,11 +701,11 @@ mod tests {
             desired_bytes: 8 * GIB,
             safe_floor_bytes: 4 * GIB,
             session_id: "session-a".to_owned(),
-            last_observed_unix_millis: 2,
             last_monotonic_millis: 2,
             last_sequence: 2,
+            last_visible_base_bytes: None,
             history: VecDeque::from([CandidateHistoryEntry {
-                observed_unix_millis: 1,
+                monotonic_millis: 1,
                 desired_now_bytes: 4 * GIB,
                 floor_now_bytes: 3 * GIB,
             }]),
@@ -707,5 +735,118 @@ mod tests {
             ),
             Err(TargetEstimatorError::ArithmeticOverflow)
         );
+    }
+    #[test]
+    fn pressure_or_unknown_restarts_the_entire_reclaim_window() {
+        for native in [
+            None,
+            Some(MemoryResourceNotificationState::Low),
+            Some(MemoryResourceNotificationState::Neutral),
+        ] {
+            let mut estimator = TargetEstimator::new(config()).unwrap();
+            for sequence in 0..=10 {
+                estimator
+                    .estimate(
+                        sample(
+                            1_000_000 + sequence * 60_000,
+                            sequence,
+                            memory(8 * GIB, 2 * GIB, 8 * GIB),
+                        ),
+                        geometry(8 * GIB),
+                    )
+                    .unwrap();
+            }
+            let mut observation = sample(1_660_000, 11, memory(8 * GIB, 2 * GIB, 8 * GIB));
+            observation.native_pressure = native;
+            assert!(
+                !estimator
+                    .estimate(observation, geometry(8 * GIB))
+                    .unwrap()
+                    .history_ready
+            );
+            let result = estimator
+                .estimate(
+                    sample(1_720_000, 12, memory(8 * GIB, 2 * GIB, 8 * GIB)),
+                    geometry(8 * GIB),
+                )
+                .unwrap();
+            assert!(!result.history_ready);
+        }
+    }
+
+    #[test]
+    fn wall_clock_jumps_do_not_qualify_or_reset_monotonic_reclaim_history() {
+        let mut estimator = TargetEstimator::new(config()).unwrap();
+        for sequence in 0..=10 {
+            let mut observation = sample(
+                1_000_000 + sequence * 60_000,
+                sequence,
+                memory(8 * GIB, 2 * GIB, 8 * GIB),
+            );
+            observation.observed_unix_millis = if sequence % 2 == 0 { 1 } else { u64::MAX };
+            let result = estimator.estimate(observation, geometry(8 * GIB)).unwrap();
+            assert_eq!(result.history_ready, sequence == 10);
+        }
+    }
+
+    #[test]
+    fn frequent_samples_preserve_full_window_and_peak_with_bounded_history() {
+        let mut cfg = config();
+        cfg.history_window_millis = 10_000;
+        cfg.maximum_gap_millis = 2;
+        let mut estimator = TargetEstimator::new(cfg).unwrap();
+        for sequence in 0..=10_000 {
+            // A single intra-bucket high target must survive compression.
+            let used = if sequence == 4_999 { 7 * GIB } else { 2 * GIB };
+            let result = estimator
+                .estimate(
+                    sample(
+                        1_000_000 + sequence,
+                        sequence,
+                        memory(8 * GIB, used, 8 * GIB),
+                    ),
+                    geometry(8 * GIB),
+                )
+                .unwrap();
+            assert!(estimator.state.history.len() <= MAX_TARGET_HISTORY_ENTRIES);
+            if sequence == 10_000 {
+                assert!(result.history_ready);
+                assert_eq!(result.desired_bytes, 9 * GIB);
+            }
+        }
+    }
+
+    #[test]
+    fn standby_surplus_is_not_subtracted_twice_and_commit_still_bounds_reclaim() {
+        let mut observation = memory(8 * GIB, 2 * GIB, GIB);
+        observation.system_cache_bytes = 8 * GIB;
+        let estimate = calculate_instantaneous(&config(), &observation, geometry(8 * GIB)).unwrap();
+        assert_eq!(estimate.desired_now_bytes, 9 * GIB);
+        assert_eq!(estimate.floor_now_bytes, 8 * GIB);
+    }
+    #[test]
+    fn mixed_hotplug_geometry_restarts_reclaim_evidence() {
+        let mut estimator = TargetEstimator::new(config()).unwrap();
+        for sequence in 0..=10 {
+            estimator
+                .estimate(
+                    sample(
+                        1_000_000 + sequence * 60_000,
+                        sequence,
+                        memory(8 * GIB, 2 * GIB, 8 * GIB),
+                    ),
+                    geometry(8 * GIB),
+                )
+                .unwrap();
+        }
+        // Host current has advanced while the Windows physical-total observation
+        // still describes the old allocation. It must not justify reclaim.
+        let result = estimator
+            .estimate(
+                sample(1_660_000, 11, memory(8 * GIB, 2 * GIB, 8 * GIB)),
+                geometry(9 * GIB),
+            )
+            .unwrap();
+        assert!(!result.history_ready);
     }
 }

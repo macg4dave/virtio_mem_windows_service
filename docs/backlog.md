@@ -13,10 +13,15 @@ authorisation or live evidence.
 
 ### WIN-001 — Build and verify the Windows service (P1)
 
-Blocked locally: the GNU link fails because `x86_64-w64-mingw32-gcc` is absent;
-cross-target Clippy passes. Install MinGW or use the selected MSVC target or the
-remote `xtask windows` workflow. Restore a verified SSH endpoint and workload
-path first; do not assume the old alias works.
+Native MSVC build and tests passed on ice101 on 27 October via
+`make win11-gate`: 64 native tests after the pressure-policy update, formatting
+and Clippy with warnings denied.
+Release service and workload executables were fetched and SHA-256 verified;
+see the roadmap for revision, target and local evidence. SSH reachability is
+restored. The GNU cross-linker is still absent locally but no longer blocks
+producing the native binaries. The remote workload executable now exists at
+`C:\Users\Dave\github\virtio_mem_windows_service\target\release\virtio-mem-workload.exe`.
+Remaining acceptance is the live lifecycle/security/sharing work below.
 
 Complete when build/test evidence identifies the revision and target, the
 native test suite passes (including the request-state worker tests, which run

@@ -63,6 +63,10 @@ impl GuestRequests {
         })
     }
 
+    pub fn invalidate_history(&mut self) {
+        self.requester.invalidate_history();
+    }
+
     pub fn requester(&self) -> &GuestRequester {
         &self.requester
     }
@@ -74,9 +78,21 @@ impl GuestRequests {
         sample: TargetSample,
         stop: &StopSignal,
     ) -> Result<Option<MemoryRequest>, String> {
+        let observation = (
+            sample.native_pressure,
+            sample.memory.physical_available_bytes,
+            sample
+                .memory
+                .commit_limit_bytes
+                .saturating_sub(sample.memory.commit_total_bytes),
+        );
         let status = self.read_status()?;
         let decision = self.requester.poll(sample, status.as_ref())?;
         if decision.persist {
+            if let Some(request) = &decision.request {
+                eprintln!("memory request: operation={:?} bytes={} native={:?} available_bytes={} commit_headroom_bytes={}",
+                    request.operation, request.bytes, observation.0, observation.1, observation.2);
+            }
             let bytes = serde_json::to_vec(self.requester.state())
                 .map_err(|error| format!("encode request state: {error}"))?;
             replace_file(&self.state_path, &bytes, stop, self.retry_timeout)
