@@ -26,14 +26,10 @@ const SERVICE_START: DWORD = 0x00000010;
 const MAX_SERVICE_NAME_UTF16_UNITS: usize = 256;
 
 use crate::config::ServiceConfig;
-use crate::demand::{
-    native_memory_resource_notifications, process_session_id, AtomicRawTelemetryPublisher,
-    NativeMemoryTelemetry, SystemTelemetryClock,
-};
 use crate::event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
 };
-use crate::runtime::RawTelemetryWorker;
+use crate::runtime::native_raw_telemetry_worker;
 use crate::service_host::{ServiceHost, ServiceState, ServiceWorker, StopSignal};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -452,28 +448,13 @@ unsafe extern "system" fn service_main(argc: DWORD, argv: *mut *mut u16) {
         return;
     }
     let shutdown_timeout = config.shutdown_timeout;
-    let poll_interval = config.poll_interval;
-    let vm_name = config.vm_name;
-    let service_name = config.service_name;
-    let telemetry_path = config.demand_report_path;
     let status_handle_value = status_handle as usize;
     let running_event_source = event_source.clone();
     let stop_observer = stop.clone();
     let mut host = ServiceHost::with_stop_and_shutdown_timeout(
         move |service_stop: &StopSignal| {
-            let session_id = process_session_id(&service_name)
-                .map_err(|error| format!("runtime wiring / session identity: {error}"))?;
-            let mut worker = RawTelemetryWorker::with_memory_resource_notifications(
-                NativeMemoryTelemetry,
-                native_memory_resource_notifications(),
-                AtomicRawTelemetryPublisher::new(&telemetry_path),
-                SystemTelemetryClock::default(),
-                &vm_name,
-                &service_name,
-                session_id,
-                poll_interval,
-            )
-            .map_err(|error| format!("runtime wiring / worker construction: {error}"))?;
+            let mut worker = native_raw_telemetry_worker(&config)
+                .map_err(|error| format!("runtime wiring / {error}"))?;
             worker
                 .initialize(service_stop)
                 .map_err(|error| format!("runtime wiring / worker initialization: {error}"))?;

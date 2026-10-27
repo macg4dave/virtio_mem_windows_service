@@ -4,7 +4,6 @@ pub mod attestation;
 pub mod cli;
 pub mod compatibility_source;
 pub mod config;
-pub mod dommemstat;
 pub mod host_memory;
 pub mod qga;
 pub mod raw_telemetry;

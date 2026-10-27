@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::error::ServiceHostError;
@@ -28,11 +28,13 @@ impl ServiceState {
     }
 }
 
+/// The cancelled flag lives inside the mutex the condition variable waits on.
+/// Setting it under that lock means a waiter either sees it before sleeping or
+/// is already asleep when the notification arrives; a stop cannot be missed.
 #[derive(Debug)]
 struct StopState {
-    cancelled: AtomicBool,
+    cancelled: Mutex<bool>,
     wake: Condvar,
-    lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,45 +46,49 @@ impl StopSignal {
     pub fn new() -> Self {
         Self {
             state: Arc::new(StopState {
-                cancelled: AtomicBool::new(false),
+                cancelled: Mutex::new(false),
                 wake: Condvar::new(),
-                lock: Mutex::new(()),
             }),
         }
     }
 
     pub fn cancel(&self) {
-        self.state.cancelled.store(true, Ordering::Release);
+        *self.cancelled() = true;
         self.state.wake.notify_all();
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.state.cancelled.load(Ordering::Acquire)
+        *self.cancelled()
     }
 
+    /// Sleep for `timeout` or until cancelled, whichever comes first.
     pub fn wait(&self, timeout: Duration) {
-        if self.is_cancelled() {
-            return;
-        }
-
-        let guard = match self.state.lock.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let _ = self.state.wake.wait_timeout(guard, timeout);
+        // The timeout flag is not needed: callers re-check `is_cancelled`.
+        // Poisoning only means another thread panicked while holding a bool,
+        // which cannot leave it inconsistent.
+        drop(
+            self.state
+                .wake
+                .wait_timeout_while(self.cancelled(), timeout, |cancelled| !*cancelled)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
     }
 
     fn wait_until_cancelled(&self) {
-        let mut guard = match self.state.lock.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        while !self.is_cancelled() {
-            guard = match self.state.wake.wait(guard) {
-                Ok(guard) => guard,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-        }
+        drop(
+            self.state
+                .wake
+                .wait_while(self.cancelled(), |cancelled| !*cancelled)
+                .unwrap_or_else(PoisonError::into_inner),
+        );
+    }
+
+    fn cancelled(&self) -> MutexGuard<'_, bool> {
+        // See `wait`: a poisoned bool is still meaningful.
+        self.state
+            .cancelled
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -343,6 +349,38 @@ mod tests {
         thread
             .join()
             .expect("waiter should exit after cancellation");
+    }
+
+    #[test]
+    fn cancellation_between_a_waiters_check_and_sleep_is_delivered() {
+        // Reproduce the exact interleaving: the waiter has checked the flag and
+        // is about to sleep when another thread cancels. The canceller must not
+        // be able to set the flag and notify inside that gap.
+        let stop = StopSignal::new();
+        let checked = stop.cancelled();
+        assert!(!*checked);
+        let canceller = stop.clone();
+        let cancelling = thread::spawn(move || canceller.cancel());
+        let (cancelled, waited) = stop
+            .state
+            .wake
+            .wait_timeout_while(checked, Duration::from_secs(5), |cancelled| !*cancelled)
+            .expect("stop lock is not poisoned");
+        assert!(*cancelled);
+        assert!(!waited.timed_out());
+        drop(cancelled);
+        cancelling.join().expect("canceller exits");
+    }
+
+    #[test]
+    fn timed_wait_returns_promptly_after_cancellation() {
+        let stop = StopSignal::new();
+        let waiter = stop.clone();
+        let started = Instant::now();
+        let thread = thread::spawn(move || waiter.wait(Duration::from_secs(60)));
+        stop.cancel();
+        thread.join().expect("waiter exits");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[test]

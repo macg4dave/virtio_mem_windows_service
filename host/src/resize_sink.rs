@@ -69,14 +69,6 @@ impl<C: VirshCommand, E: CompatibilitySource> ResizeSink for VirshResizeSink<C, 
             .map_err(ResizeSinkError::CommandUnknown)
     }
 
-    fn renotify_shrink(&self, target_bytes: u64) -> Result<(), ResizeSinkError> {
-        let prepared = self
-            .prepare_shrink_renotification(target_bytes)
-            .map_err(ResizeSinkError::Rejected)?;
-        self.apply_prepared(prepared)
-            .map_err(ResizeSinkError::CommandUnknown)
-    }
-
     fn supersede_shrink(
         &self,
         prior_requested_bytes: u64,
@@ -134,43 +126,6 @@ impl<C: VirshCommand, E: CompatibilitySource> VirshResizeSink<C, E> {
             .run(prepared.arguments())
             .map_err(|error| error.to_string())?;
         Ok(())
-    }
-
-    fn prepare_shrink_renotification(&self, target_bytes: u64) -> Result<PreparedResize, String> {
-        let snapshot = self
-            .command
-            .run(&["dumpxml".to_owned(), self.vm_name.clone()])
-            .map_err(|error| error.to_string())?;
-        let snapshot = parse_virtio_mem_xml_for_alias(&snapshot, &self.alias)
-            .map_err(|error| error.to_string())?;
-        snapshot
-            .compatibility
-            .merge(self.compatibility_source.compatibility()?)
-            .map_err(|error| error.to_string())?
-            .validate_for_resize()
-            .map_err(|error| error.to_string())?;
-        let state = snapshot.memory;
-        state
-            .validate_target(target_bytes)
-            .map_err(|error| error.to_string())?;
-        if state.requested_bytes != target_bytes || state.current_bytes <= target_bytes {
-            return Err("shrink re-notification requires requested == target < current".to_owned());
-        }
-        let requested_kib = bytes_to_kibibytes(target_bytes)
-            .ok_or_else(|| "resize target must be an integer number of KiB".to_owned())?;
-        Ok(PreparedResize {
-            arguments: vec![
-                "update-memory-device".to_owned(),
-                self.vm_name.clone(),
-                "--alias".to_owned(),
-                self.alias.clone(),
-                "--requested-size".to_owned(),
-                requested_kib.to_string(),
-                "--live".to_owned(),
-            ],
-            current_bytes: state.current_bytes,
-            target_bytes,
-        })
     }
 
     fn prepare_shrink_supersession(
@@ -391,35 +346,6 @@ mod tests {
 
         assert!(matches!(error, ResizeSinkError::CommandUnknown(_)));
         assert_eq!(calls.borrow().len(), 2);
-    }
-
-    #[test]
-    fn renotification_uses_dedicated_exact_target_pending_precondition() {
-        let calls = Rc::new(RefCell::new(Vec::new()));
-        let sink = VirshResizeSink::new(
-            Fake {
-                xml: SHRINK_PENDING_XML,
-                calls: Rc::clone(&calls),
-            },
-            "guest",
-            "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
-
-        sink.renotify_shrink(4 * 1024 * 1024 * 1024)
-            .expect("exact shrink target may be re-notified");
-        assert_eq!(calls.borrow().len(), 2);
-
-        let wrong = VirshResizeSink::new(
-            Fake {
-                xml: SHRINK_PENDING_XML,
-                calls: Rc::clone(&calls),
-            },
-            "guest",
-            "memory0",
-        )
-        .with_external_compatibility(VirtioMemCompatibility::confirmed());
-        assert!(wrong.renotify_shrink(2 * 1024 * 1024 * 1024).is_err());
     }
 
     #[test]

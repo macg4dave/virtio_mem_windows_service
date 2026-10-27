@@ -1,8 +1,9 @@
+//! Raw Windows telemetry: bounded transport reads, envelope validation, and the
+//! acceptance rules that decide whether a valid record is new.
+
 use std::collections::VecDeque;
-use std::fs::OpenOptions;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -15,10 +16,70 @@ pub const MAX_RAW_TELEMETRY_RECORD_BYTES: usize = 64 * 1024;
 pub const MAX_RAW_TELEMETRY_FILE_BYTES: u64 = 1024 * 1024;
 const RETIRED_SESSION_LIMIT: usize = 16;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RawTelemetryRead {
-    Fresh(RawTelemetryEnvelope),
-    Unchanged(RawTelemetryEnvelope),
+/// How a valid record relates to the last accepted one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SampleAcceptance {
+    /// A successor that has not been consumed yet.
+    New,
+    /// Exactly the last accepted record: normal between producer updates.
+    Unchanged,
+}
+
+/// The last accepted record and the producer sessions it replaced. The host
+/// stores this with the estimator state that consumed the record, so a record
+/// counts as accepted only once that state is durable.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptedTelemetry {
+    last: Option<RawTelemetryEnvelope>,
+    retired_sessions: VecDeque<String>,
+}
+
+impl AcceptedTelemetry {
+    /// Classify a validated record without changing what has been accepted.
+    pub fn classify(
+        &self,
+        envelope: &RawTelemetryEnvelope,
+    ) -> Result<SampleAcceptance, RawTelemetryError> {
+        if self
+            .retired_sessions
+            .iter()
+            .any(|session| session == &envelope.session_id)
+        {
+            return Err(RawTelemetryError::InvalidEvidence(format!(
+                "raw telemetry reuses retired session {}",
+                envelope.session_id
+            )));
+        }
+        let Some(previous) = &self.last else {
+            return Ok(SampleAcceptance::New);
+        };
+        if envelope == previous {
+            return Ok(SampleAcceptance::Unchanged);
+        }
+        envelope
+            .validate_successor(previous)
+            .map_err(|error| RawTelemetryError::InvalidEvidence(error.to_string()))?;
+        Ok(SampleAcceptance::New)
+    }
+
+    /// Record a consumed record, retiring the previous session if it changed.
+    /// Call only after `classify` returned `New` for this record.
+    pub fn accept(&mut self, envelope: RawTelemetryEnvelope) {
+        if let Some(previous) = self.last.take() {
+            if previous.session_id != envelope.session_id {
+                self.retired_sessions.push_back(previous.session_id);
+                if self.retired_sessions.len() > RETIRED_SESSION_LIMIT {
+                    self.retired_sessions.pop_front();
+                }
+            }
+        }
+        self.last = Some(envelope);
+    }
+
+    pub fn last(&self) -> Option<&RawTelemetryEnvelope> {
+        self.last.as_ref()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -35,12 +96,13 @@ impl RawTelemetryError {
     }
 }
 
+/// Reads and validates the latest record. Sources keep no acceptance state.
 pub trait RawTelemetrySource {
-    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError>;
+    fn read(&self) -> Result<RawTelemetryEnvelope, RawTelemetryError>;
 }
 
 impl RawTelemetrySource for Box<dyn RawTelemetrySource> {
-    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
+    fn read(&self) -> Result<RawTelemetryEnvelope, RawTelemetryError> {
         (**self).read()
     }
 }
@@ -62,43 +124,31 @@ impl UnixClock for SystemUnixClock {
     }
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReplayState {
-    last: Option<RawTelemetryEnvelope>,
-    retired_sessions: VecDeque<String>,
-}
-
 #[derive(Debug)]
 pub struct FileRawTelemetrySource<T = SystemUnixClock> {
     path: PathBuf,
-    replay_state_path: PathBuf,
     expected_vm_name: String,
     expected_service_name: String,
     max_age: Duration,
     future_tolerance: Duration,
     clock: T,
-    replay: Mutex<ReplayState>,
 }
 
 #[derive(Debug)]
 pub struct QgaFileRawTelemetrySource<R, T = SystemUnixClock> {
     reader: R,
     guest_path: String,
-    replay_state_path: PathBuf,
     expected_vm_name: String,
     expected_service_name: String,
     max_age: Duration,
     future_tolerance: Duration,
     clock: T,
-    replay: Mutex<ReplayState>,
 }
 
 impl<R> QgaFileRawTelemetrySource<R, SystemUnixClock> {
     pub fn new(
         reader: R,
         guest_path: impl Into<String>,
-        replay_state_path: impl Into<PathBuf>,
         expected_vm_name: impl Into<String>,
         expected_service_name: impl Into<String>,
         max_age: Duration,
@@ -107,7 +157,6 @@ impl<R> QgaFileRawTelemetrySource<R, SystemUnixClock> {
         Self::with_clock(
             reader,
             guest_path,
-            replay_state_path,
             expected_vm_name,
             expected_service_name,
             max_age,
@@ -118,11 +167,9 @@ impl<R> QgaFileRawTelemetrySource<R, SystemUnixClock> {
 }
 
 impl<R, T> QgaFileRawTelemetrySource<R, T> {
-    #[allow(clippy::too_many_arguments)]
     pub fn with_clock(
         reader: R,
         guest_path: impl Into<String>,
-        replay_state_path: impl Into<PathBuf>,
         expected_vm_name: impl Into<String>,
         expected_service_name: impl Into<String>,
         max_age: Duration,
@@ -132,13 +179,11 @@ impl<R, T> QgaFileRawTelemetrySource<R, T> {
         Self {
             reader,
             guest_path: guest_path.into(),
-            replay_state_path: replay_state_path.into(),
             expected_vm_name: expected_vm_name.into(),
             expected_service_name: expected_service_name.into(),
             max_age,
             future_tolerance,
             clock,
-            replay: Mutex::new(ReplayState::default()),
         }
     }
 }
@@ -160,7 +205,6 @@ impl FileRawTelemetrySource<SystemUnixClock> {
             future_tolerance,
             SystemUnixClock,
         )
-        .with_replay_state_path(default_replay_state_path(&path))
     }
 }
 
@@ -175,28 +219,21 @@ impl<T> FileRawTelemetrySource<T> {
     ) -> Self {
         Self {
             path: path.into(),
-            replay_state_path: PathBuf::new(),
             expected_vm_name: expected_vm_name.into(),
             expected_service_name: expected_service_name.into(),
             max_age,
             future_tolerance,
             clock,
-            replay: Mutex::new(ReplayState::default()),
         }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
-
-    pub fn with_replay_state_path(mut self, path: impl Into<PathBuf>) -> Self {
-        self.replay_state_path = path.into();
-        self
-    }
 }
 
 impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
-    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
+    fn read(&self) -> Result<RawTelemetryEnvelope, RawTelemetryError> {
         let metadata = std::fs::metadata(&self.path).map_err(|error| {
             RawTelemetryError::TransportUnavailable(format!(
                 "inspect raw telemetry {}: {error}",
@@ -246,15 +283,13 @@ impl<T: UnixClock> RawTelemetrySource for FileRawTelemetrySource<T> {
             self.max_age,
             self.future_tolerance,
             &self.clock,
-            &self.replay_state_path,
-            &self.replay,
         )
         .map_err(RawTelemetryError::InvalidEvidence)
     }
 }
 
 impl<R: GuestFileReader, T: UnixClock> RawTelemetrySource for QgaFileRawTelemetrySource<R, T> {
-    fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
+    fn read(&self) -> Result<RawTelemetryEnvelope, RawTelemetryError> {
         let bytes = self
             .reader
             .read_file(&self.guest_path, MAX_RAW_TELEMETRY_FILE_BYTES as usize)
@@ -271,14 +306,11 @@ impl<R: GuestFileReader, T: UnixClock> RawTelemetrySource for QgaFileRawTelemetr
             self.max_age,
             self.future_tolerance,
             &self.clock,
-            &self.replay_state_path,
-            &self.replay,
         )
         .map_err(RawTelemetryError::InvalidEvidence)
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn validate_contents<T: UnixClock>(
     contents: &str,
     expected_vm_name: &str,
@@ -286,9 +318,7 @@ fn validate_contents<T: UnixClock>(
     max_age: Duration,
     future_tolerance: Duration,
     clock: &T,
-    replay_state_path: &Path,
-    replay: &Mutex<ReplayState>,
-) -> Result<RawTelemetryRead, String> {
+) -> Result<RawTelemetryEnvelope, String> {
     if contents.len() as u64 > MAX_RAW_TELEMETRY_FILE_BYTES {
         return Err(format!(
             "raw telemetry exceeds {} byte file limit",
@@ -321,104 +351,7 @@ fn validate_contents<T: UnixClock>(
             duration_millis(future_tolerance)?,
         )
         .map_err(|error| error.to_string())?;
-    let mut replay = replay
-        .lock()
-        .map_err(|_| "raw telemetry replay state lock is poisoned".to_owned())?;
-    if replay.last.is_none() && replay.retired_sessions.is_empty() {
-        *replay = load_replay_state(replay_state_path)?;
-    }
-    if replay
-        .retired_sessions
-        .iter()
-        .any(|session| session == &envelope.session_id)
-    {
-        return Err(format!(
-            "raw telemetry reuses retired session {}",
-            envelope.session_id
-        ));
-    }
-    if let Some(previous) = &replay.last {
-        if &envelope == previous {
-            return Ok(RawTelemetryRead::Unchanged(envelope));
-        }
-        envelope
-            .validate_successor(previous)
-            .map_err(|error| error.to_string())?;
-        if envelope.session_id != previous.session_id {
-            let retired = previous.session_id.clone();
-            replay.retired_sessions.push_back(retired);
-            if replay.retired_sessions.len() > RETIRED_SESSION_LIMIT {
-                replay.retired_sessions.pop_front();
-            }
-        }
-    }
-    replay.last = Some(envelope.clone());
-    persist_replay_state(replay_state_path, &replay)?;
-    Ok(RawTelemetryRead::Fresh(envelope))
-}
-
-fn default_replay_state_path(telemetry_path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.ack.json", telemetry_path.display()))
-}
-
-fn load_replay_state(path: &Path) -> Result<ReplayState, String> {
-    let path = if path.as_os_str().is_empty() {
-        return Ok(ReplayState::default());
-    } else {
-        path
-    };
-    let contents = match std::fs::read(path) {
-        Ok(contents) => contents,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ReplayState::default())
-        }
-        Err(error) => return Err(format!("read raw telemetry acknowledgement: {error}")),
-    };
-    if contents.len() > MAX_RAW_TELEMETRY_RECORD_BYTES {
-        return Err("raw telemetry acknowledgement exceeds size limit".to_owned());
-    }
-    serde_json::from_slice(&contents)
-        .map_err(|error| format!("parse raw telemetry acknowledgement: {error}"))
-}
-
-fn persist_replay_state(path: &Path, state: &ReplayState) -> Result<(), String> {
-    if path.as_os_str().is_empty() {
-        return Ok(());
-    }
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("create acknowledgement directory: {error}"))?;
-    }
-    let bytes = serde_json::to_vec(state)
-        .map_err(|error| format!("encode raw telemetry acknowledgement: {error}"))?;
-    let temporary = PathBuf::from(format!("{}.tmp-{}", path.display(), std::process::id()));
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary)
-        .map_err(|error| format!("open raw telemetry acknowledgement: {error}"))?;
-    file.write_all(&bytes)
-        .map_err(|error| format!("write raw telemetry acknowledgement: {error}"))?;
-    file.sync_all()
-        .map_err(|error| format!("flush raw telemetry acknowledgement: {error}"))?;
-    drop(file);
-    std::fs::rename(&temporary, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temporary);
-        format!("publish raw telemetry acknowledgement: {error}")
-    })?;
-    if let Some(parent) = path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        std::fs::File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(|error| format!("flush raw telemetry acknowledgement directory: {error}"))?;
-    }
-    Ok(())
+    Ok(envelope)
 }
 
 fn duration_millis(duration: Duration) -> Result<u64, String> {
@@ -515,7 +448,7 @@ mod tests {
             FixedClock(1_000_000),
         );
 
-        assert_eq!(source.read(), Ok(RawTelemetryRead::Fresh(latest)));
+        assert_eq!(source.read(), Ok(latest));
         std::fs::remove_file(path).expect("remove fixture");
     }
 
@@ -542,10 +475,7 @@ mod tests {
             FixedClock(1_000_000),
         );
 
-        let RawTelemetryRead::Fresh(accepted) = source.read().expect("accept legacy fallback")
-        else {
-            panic!("first legacy record must be fresh");
-        };
+        let accepted = source.read().expect("accept legacy fallback");
         assert_eq!(
             accepted.contract_mode(),
             Ok(RawTelemetryContractMode::LegacyV2Fallback)
@@ -581,10 +511,7 @@ mod tests {
             FixedClock(1_000_000),
         );
 
-        let RawTelemetryRead::Fresh(accepted) = source.read().expect("accept current telemetry")
-        else {
-            panic!("first current record must be fresh");
-        };
+        let accepted = source.read().expect("accept current telemetry");
         assert_eq!(
             accepted
                 .windows_native
@@ -597,38 +524,23 @@ mod tests {
     }
 
     #[test]
-    fn qga_file_transport_uses_the_same_durable_replay_contract() {
-        let acknowledgement = path("qga-ack");
+    fn qga_file_transport_reads_the_latest_record() {
         let record = envelope("session-qga", 995_000, 20, 0);
         let bytes = format!(
             "{}\n",
             serde_json::to_string(&record).expect("encode record")
         )
         .into_bytes();
-        let first = QgaFileRawTelemetrySource::with_clock(
-            FixedGuestFile(bytes.clone()),
-            r"C:\ProgramData\VirtioMemService\telemetry.json",
-            &acknowledgement,
-            "guest",
-            "VirtioMemService",
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            FixedClock(1_000_000),
-        );
-        assert_eq!(first.read(), Ok(RawTelemetryRead::Fresh(record.clone())));
-
-        let restarted = QgaFileRawTelemetrySource::with_clock(
+        let source = QgaFileRawTelemetrySource::with_clock(
             FixedGuestFile(bytes),
             r"C:\ProgramData\VirtioMemService\telemetry.json",
-            &acknowledgement,
             "guest",
             "VirtioMemService",
             Duration::from_secs(60),
             Duration::from_secs(5),
             FixedClock(1_000_000),
         );
-        assert_eq!(restarted.read(), Ok(RawTelemetryRead::Unchanged(record)));
-        std::fs::remove_file(acknowledgement).expect("remove acknowledgement");
+        assert_eq!(source.read(), Ok(record));
     }
 
     #[test]
@@ -699,7 +611,6 @@ mod tests {
         let qga = QgaFileRawTelemetrySource::with_clock(
             FixedGuestFile(vec![b'x'; MAX_RAW_TELEMETRY_FILE_BYTES as usize + 1]),
             r"C:\ProgramData\VirtioMemService\telemetry.json",
-            path("transport-unavailable-ack"),
             "guest",
             "VirtioMemService",
             Duration::from_secs(60),
@@ -713,62 +624,42 @@ mod tests {
     }
 
     #[test]
-    fn distinguishes_unchanged_snapshot_and_rejects_non_monotonic_or_retired_sessions() {
-        let path = path("replay");
-        let source = FileRawTelemetrySource::with_clock(
-            &path,
-            "guest",
-            "VirtioMemService",
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            FixedClock(1_000_000),
-        );
+    fn acceptance_distinguishes_unchanged_and_rejects_replayed_altered_or_retired_records() {
+        let mut accepted = AcceptedTelemetry::default();
         let first = envelope("session-a", 995_000, 10, 0);
-        std::fs::write(
-            &path,
-            format!("{}\n", serde_json::to_string(&first).expect("encode first")),
-        )
-        .expect("write first");
-        assert_eq!(source.read(), Ok(RawTelemetryRead::Fresh(first.clone())));
+        assert_eq!(accepted.classify(&first), Ok(SampleAcceptance::New));
+        accepted.accept(first.clone());
         assert_eq!(
-            source.read(),
-            Ok(RawTelemetryRead::Unchanged(first)),
+            accepted.classify(&first),
+            Ok(SampleAcceptance::Unchanged),
             "an unchanged atomic snapshot is normal between producer updates"
         );
 
+        let mut altered = first.clone();
+        altered.memory.physical_available_bytes += 1;
+        assert!(
+            accepted.classify(&altered).is_err(),
+            "same identity with different content is not unchanged"
+        );
         let non_monotonic = envelope("session-a", 996_000, 10, 1);
-        std::fs::write(
-            &path,
-            format!(
-                "{}\n",
-                serde_json::to_string(&non_monotonic).expect("encode non-monotonic")
-            ),
-        )
-        .expect("write non-monotonic");
-        assert!(source.read().is_err());
+        assert!(accepted.classify(&non_monotonic).is_err());
+        let mid_session_start = envelope("session-b", 996_000, 1, 3);
+        assert!(accepted.classify(&mid_session_start).is_err());
 
         let restarted = envelope("session-b", 996_000, 1, 0);
-        std::fs::write(
-            &path,
-            format!(
-                "{}\n",
-                serde_json::to_string(&restarted).expect("encode restart")
-            ),
-        )
-        .expect("write restart");
-        assert_eq!(source.read(), Ok(RawTelemetryRead::Fresh(restarted)));
-
+        assert_eq!(accepted.classify(&restarted), Ok(SampleAcceptance::New));
+        accepted.accept(restarted);
         let retired = envelope("session-a", 997_000, 20, 2);
-        std::fs::write(
-            &path,
-            format!(
-                "{}\n",
-                serde_json::to_string(&retired).expect("encode retired")
-            ),
-        )
-        .expect("write retired");
-        assert!(source.read().is_err());
-        std::fs::remove_file(path).expect("remove fixture");
+        assert!(accepted.classify(&retired).is_err());
+    }
+
+    #[test]
+    fn classification_does_not_accept_a_record() {
+        let accepted = AcceptedTelemetry::default();
+        let record = envelope("session-a", 995_000, 10, 0);
+        assert_eq!(accepted.classify(&record), Ok(SampleAcceptance::New));
+        assert_eq!(accepted.classify(&record), Ok(SampleAcceptance::New));
+        assert!(accepted.last().is_none());
     }
 
     #[test]
@@ -800,47 +691,13 @@ mod tests {
     }
 
     #[test]
-    fn durable_acknowledgement_recognizes_unchanged_snapshot_after_reader_restart() {
-        let path = path("durable-replay");
-        let acknowledgement = PathBuf::from(format!("{}.ack", path.display()));
-        let _ = std::fs::remove_file(&path);
-        let _ = std::fs::remove_file(&acknowledgement);
+    fn restored_acceptance_recognizes_unchanged_snapshot_after_restart() {
+        let mut accepted = AcceptedTelemetry::default();
         let first = envelope("session-a", 995_000, 10, 0);
-        std::fs::write(
-            &path,
-            format!("{}\n", serde_json::to_string(&first).expect("encode")),
-        )
-        .expect("write fixture");
-
-        let first_reader = FileRawTelemetrySource::with_clock(
-            &path,
-            "guest",
-            "VirtioMemService",
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            FixedClock(1_000_000),
-        )
-        .with_replay_state_path(&acknowledgement);
-        assert_eq!(
-            first_reader.read(),
-            Ok(RawTelemetryRead::Fresh(first.clone()))
-        );
-
-        let restarted_reader = FileRawTelemetrySource::with_clock(
-            &path,
-            "guest",
-            "VirtioMemService",
-            Duration::from_secs(60),
-            Duration::from_secs(5),
-            FixedClock(1_000_000),
-        )
-        .with_replay_state_path(&acknowledgement);
-        assert_eq!(
-            restarted_reader.read(),
-            Ok(RawTelemetryRead::Unchanged(first))
-        );
-
-        std::fs::remove_file(path).expect("remove fixture");
-        std::fs::remove_file(acknowledgement).expect("remove acknowledgement");
+        accepted.accept(first.clone());
+        let restored: AcceptedTelemetry =
+            serde_json::from_str(&serde_json::to_string(&accepted).expect("encode"))
+                .expect("decode");
+        assert_eq!(restored.classify(&first), Ok(SampleAcceptance::Unchanged));
     }
 }

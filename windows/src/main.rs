@@ -1,10 +1,8 @@
 use std::process;
 
 use virtio_mem_service::{
-    install_service, native_memory_resource_notifications, process_session_id, remove_service,
-    run_as_service, start_service, stop_service, AtomicRawTelemetryPublisher,
-    NativeMemoryTelemetry, RawTelemetryWorker, RuntimeWiringError, ServiceConfig, ServiceHost,
-    SystemTelemetryClock,
+    install_service, native_raw_telemetry_worker, remove_service, run_as_service, start_service,
+    stop_service, RuntimeWiringError, ServiceConfig, ServiceHost,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,19 +54,7 @@ fn run_service(config: ServiceConfig) -> Result<(), RuntimeWiringError> {
     config
         .validate()
         .map_err(|error| RuntimeWiringError::Configuration(error.to_string()))?;
-    let session_id =
-        process_session_id(&config.service_name).map_err(RuntimeWiringError::WorkerConstruction)?;
-    let worker = RawTelemetryWorker::with_memory_resource_notifications(
-        NativeMemoryTelemetry,
-        native_memory_resource_notifications(),
-        AtomicRawTelemetryPublisher::new(&config.demand_report_path),
-        SystemTelemetryClock::default(),
-        config.vm_name,
-        config.service_name,
-        session_id,
-        config.poll_interval,
-    )
-    .map_err(RuntimeWiringError::WorkerConstruction)?;
+    let worker = native_raw_telemetry_worker(&config)?;
 
     let mut host = ServiceHost::with_shutdown_timeout(worker, config.shutdown_timeout);
     host.run()

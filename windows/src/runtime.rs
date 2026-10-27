@@ -5,6 +5,16 @@ use crate::demand::{
     RawTelemetryPublisher, TelemetryClock, UnavailableMemoryResourceNotifications,
 };
 use crate::service_host::{ServiceWorker, StopSignal};
+#[cfg(windows)]
+use crate::{
+    config::ServiceConfig,
+    demand::{
+        native_memory_resource_notifications, process_session_id, AtomicRawTelemetryPublisher,
+        MemoryResourceNotificationCollector, NativeMemoryTelemetry, SystemTelemetryClock,
+        WindowsMemoryResourceNotificationApi,
+    },
+    error::RuntimeWiringError,
+};
 
 /// Production worker: publishes only raw, VM-scoped Windows telemetry.
 /// It has no current-allocation input and no resize interface.
@@ -168,6 +178,34 @@ where
         }
         Ok(())
     }
+}
+
+/// The worker the service runs; console and SCM start-up both build it here.
+#[cfg(windows)]
+pub type NativeRawTelemetryWorker = RawTelemetryWorker<
+    NativeMemoryTelemetry,
+    AtomicRawTelemetryPublisher,
+    SystemTelemetryClock,
+    MemoryResourceNotificationCollector<WindowsMemoryResourceNotificationApi>,
+>;
+
+#[cfg(windows)]
+pub fn native_raw_telemetry_worker(
+    config: &ServiceConfig,
+) -> Result<NativeRawTelemetryWorker, RuntimeWiringError> {
+    let session_id =
+        process_session_id(&config.service_name).map_err(RuntimeWiringError::WorkerConstruction)?;
+    RawTelemetryWorker::with_memory_resource_notifications(
+        NativeMemoryTelemetry,
+        native_memory_resource_notifications(),
+        AtomicRawTelemetryPublisher::new(&config.demand_report_path),
+        SystemTelemetryClock::default(),
+        &config.vm_name,
+        &config.service_name,
+        session_id,
+        config.poll_interval,
+    )
+    .map_err(RuntimeWiringError::WorkerConstruction)
 }
 
 #[cfg(test)]

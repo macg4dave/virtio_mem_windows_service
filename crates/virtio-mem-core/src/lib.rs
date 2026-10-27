@@ -1,7 +1,6 @@
 //! Platform-neutral virtio-mem state, policy, and QEMU Guest Agent parsing.
 
 pub mod compatibility;
-pub mod controller;
 pub mod controller_status;
 pub mod demand;
 pub mod error;
@@ -9,7 +8,6 @@ pub mod global_pool;
 pub mod pool_ledger;
 pub mod reconciler;
 pub mod shrink_recovery;
-pub mod stats;
 pub mod target_controller;
 pub mod units;
 pub mod virtio_mem;
@@ -18,7 +16,6 @@ pub mod virtio_mem_xml;
 pub use compatibility::{
     CompatibilityEvidence, VirtioMemCompatibility, VirtioMemCompatibilityError,
 };
-pub use controller::{plan_resize, MemoryControllerConfig, ResizeDecision};
 pub use controller_status::{
     parse_controller_status, AcceptedTelemetryIdentity, CapacityState, CommandOwnership,
     ControllerCommandStatus, ControllerStatusError, ControllerStatusSnapshot, ReclaimReadiness,
@@ -31,7 +28,7 @@ pub use demand::{
     TelemetrySource, TelemetryWarmup, WindowsNativeTelemetry, WindowsTelemetryCapabilities,
     LEGACY_RAW_TELEMETRY_VERSION, RAW_TELEMETRY_VERSION, WINDOWS_NATIVE_TELEMETRY_VERSION,
 };
-pub use error::{MemoryStatsError, VirtioMemError};
+pub use error::VirtioMemError;
 pub use global_pool::{
     arbitrate_host_pool, device_target_from_total_ram, total_ram_from_device,
     validate_host_pool_policy, DemandProviderIdentity, DemandReportAvailability,
@@ -52,11 +49,7 @@ pub use reconciler::{
     reconcile, ControlHealth, ReconcileAction, ReconcileDecision, ReconcileDirection,
     ReconcileError, ReconcileInput,
 };
-pub use shrink_recovery::{
-    AbandonAction, AbandonToCurrent, ShrinkAction, ShrinkObservation, ShrinkOperation,
-    ShrinkPolicy, ShrinkState,
-};
-pub use stats::{parse_memory_stats, parse_memory_stats_with_id, MemoryStats};
+pub use shrink_recovery::{AbandonAction, AbandonToCurrent, ShrinkObservation};
 pub use target_controller::{
     calculate_effective_maximum, calculate_instantaneous, CandidateHistoryEntry,
     InstantaneousTarget, TargetEstimate, TargetEstimator, TargetEstimatorError,

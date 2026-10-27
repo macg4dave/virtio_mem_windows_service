@@ -5,8 +5,6 @@ use thiserror::Error;
 
 /// Unplug must be qualified on the deployment before automatic reclaim is enabled.
 pub const DEFAULT_AUTOMATIC_WINDOWS_SHRINK: bool = false;
-/// Same-target re-notification remains an explicitly selected diagnostic mode.
-pub const DEFAULT_SHRINK_RENOTIFICATION: bool = false;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum HostConfigError {
@@ -18,18 +16,14 @@ pub enum HostConfigError {
     InvalidUnsignedInteger { name: &'static str, value: String },
     #[error("VIRTIO_MEM_ALIAS contains unsupported characters")]
     InvalidAlias,
-    #[error("lower threshold must not exceed upper threshold")]
-    InvalidThresholdOrder,
     #[error("minimum memory must not exceed maximum memory")]
     InvalidMemoryRange,
     #[error("grow and shrink steps must be greater than zero")]
     InvalidResizeStep,
     #[error("host-controller durations must be greater than zero")]
     InvalidDuration,
-    #[error("VIRTIO_MEM_STATS_SOURCE must be 'dommemstat' or 'qga': {0}")]
-    InvalidStatsSource(String),
-    #[error("VIRTIO_MEM_DEMAND_SOURCE must be 'raw' or 'guest-stats': {0}")]
-    InvalidDemandSource(String),
+    #[error("VIRTIO_MEM_DEMAND_SOURCE={0} was removed; only 'raw' telemetry remains")]
+    RetiredDemandSource(String),
     #[error("VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT must be 'file' or 'qga-file': {0}")]
     InvalidRawTelemetryTransport(String),
     #[error("VIRTIO_MEM_COMPATIBILITY_ATTESTATION_PATH must be non-empty")]
@@ -38,8 +32,6 @@ pub enum HostConfigError {
     InvalidRawTelemetryPath,
     #[error("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME must be non-empty")]
     InvalidRawTelemetryServiceName,
-    #[error("VIRTIO_MEM_RAW_TELEMETRY_ACK_PATH must be non-empty")]
-    InvalidRawTelemetryAckPath,
     #[error("VIRTIO_MEM_POLICY_STATE_PATH must be non-empty")]
     InvalidPolicyStatePath,
     #[error("VIRTIO_MEM_PRESSURE_POLICY_MODE={0} was removed; only 'legacy' remains. Set VIRTIO_MEM_OBSERVE_ONLY=true for a run that must not resize")]
@@ -50,26 +42,6 @@ pub enum HostConfigError {
     InvalidTargetPolicy(&'static str),
     #[error("environment variable {name} must be 'true' or 'false': {value}")]
     InvalidBoolean { name: &'static str, value: String },
-    #[error(
-        "environment variable {name} must be a comma-separated list of positive seconds: {value}"
-    )]
-    InvalidDurationList { name: &'static str, value: String },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatsSource {
-    /// Balloon-driver-backed `virsh dommemstat`; does not require the guest
-    /// agent to implement `guest-get-memory-stats`.
-    DomMemStat,
-    /// QEMU Guest Agent `guest-get-memory-stats`; requires a guest agent
-    /// version that implements the command.
-    Qga,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DemandSourceMode {
-    Raw,
-    GuestStats,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,8 +56,6 @@ pub struct HostConfig {
     pub alias: String,
     pub min_memory_bytes: u64,
     pub max_memory_bytes: u64,
-    pub lower_threshold_bytes: u64,
-    pub upper_threshold_bytes: u64,
     pub grow_step_bytes: u64,
     pub shrink_step_bytes: u64,
     pub fixed_visible_base_bytes: u64,
@@ -101,12 +71,7 @@ pub struct HostConfig {
     pub command_timeout: Duration,
     pub convergence_timeout: Duration,
     pub virsh_binary: String,
-    pub stats_source: StatsSource,
-    pub demand_source: DemandSourceMode,
-    pub stats_max_age: Duration,
-    pub stats_future_tolerance: Duration,
     pub raw_telemetry_path: String,
-    pub raw_telemetry_ack_path: String,
     pub raw_telemetry_transport: RawTelemetryTransport,
     pub raw_telemetry_service_name: String,
     pub raw_telemetry_max_age: Duration,
@@ -114,8 +79,6 @@ pub struct HostConfig {
     pub host_min_headroom_bytes: u64,
     pub compatibility_attestation_path: String,
     pub automatic_windows_shrink: bool,
-    pub shrink_renotification: bool,
-    pub shrink_retry_delays: Vec<Duration>,
     /// Evaluate and log decisions but never request a resize.
     pub observe_only: bool,
 }
@@ -124,35 +87,16 @@ impl HostConfig {
     pub fn from_env() -> Result<Self, HostConfigError> {
         let vm_name = required("VIRTIO_MEM_VM_NAME")?;
         let alias = required("VIRTIO_MEM_ALIAS")?;
-        let stats_source = match env::var("VIRTIO_MEM_STATS_SOURCE") {
-            Ok(value) if value.eq_ignore_ascii_case("qga") => StatsSource::Qga,
-            Ok(value) if value.eq_ignore_ascii_case("dommemstat") => StatsSource::DomMemStat,
-            Ok(value) if value.trim().is_empty() => StatsSource::DomMemStat,
-            Ok(other) => return Err(HostConfigError::InvalidStatsSource(other)),
-            Err(_) => StatsSource::DomMemStat,
-        };
-        let demand_source = match env::var("VIRTIO_MEM_DEMAND_SOURCE") {
-            Ok(value) if value.eq_ignore_ascii_case("raw") => DemandSourceMode::Raw,
-            Ok(value) if value.eq_ignore_ascii_case("guest-stats") => DemandSourceMode::GuestStats,
-            Ok(value) if value.trim().is_empty() => DemandSourceMode::Raw,
-            Ok(other) => return Err(HostConfigError::InvalidDemandSource(other)),
-            Err(_) => DemandSourceMode::Raw,
-        };
+        reject_retired_demand_source(
+            env::var_os("VIRTIO_MEM_DEMAND_SOURCE")
+                .map(|value| value.to_string_lossy().into_owned()),
+        )?;
         let raw_telemetry_transport =
             parse_raw_telemetry_transport(required("VIRTIO_MEM_RAW_TELEMETRY_TRANSPORT")?)?;
         reject_retired_pressure_policy_mode(
             env::var_os("VIRTIO_MEM_PRESSURE_POLICY_MODE")
                 .map(|value| value.to_string_lossy().into_owned()),
         )?;
-        let shrink_renotification = optional_bool(
-            "VIRTIO_MEM_SHRINK_RENOTIFICATION",
-            DEFAULT_SHRINK_RENOTIFICATION,
-        )?;
-        let shrink_retry_delays = if shrink_renotification {
-            positive_duration_list("VIRTIO_MEM_SHRINK_RETRY_DELAYS_SECONDS")?
-        } else {
-            Vec::new()
-        };
         let poll_interval_seconds = positive("VIRTIO_MEM_POLL_INTERVAL_SECONDS")?;
         let default_maximum_gap = poll_interval_seconds.checked_mul(2).ok_or_else(|| {
             HostConfigError::InvalidPositiveInteger {
@@ -165,8 +109,6 @@ impl HostConfig {
             alias,
             min_memory_bytes: positive("VIRTIO_MEM_MIN_MEMORY_BYTES")?,
             max_memory_bytes: positive("VIRTIO_MEM_MAX_MEMORY_BYTES")?,
-            lower_threshold_bytes: positive("VIRTIO_MEM_LOWER_THRESHOLD_BYTES")?,
-            upper_threshold_bytes: positive("VIRTIO_MEM_UPPER_THRESHOLD_BYTES")?,
             grow_step_bytes: positive("VIRTIO_MEM_GROW_STEP_BYTES")?,
             shrink_step_bytes: positive("VIRTIO_MEM_SHRINK_STEP_BYTES")?,
             fixed_visible_base_bytes: unsigned("VIRTIO_MEM_FIXED_VISIBLE_BASE_BYTES")?,
@@ -192,14 +134,7 @@ impl HostConfig {
             )?),
             virsh_binary: env::var("VIRTIO_MEM_VIRSH_BINARY")
                 .unwrap_or_else(|_| "virsh".to_owned()),
-            stats_source,
-            demand_source,
-            stats_max_age: Duration::from_secs(positive("VIRTIO_MEM_STATS_MAX_AGE_SECONDS")?),
-            stats_future_tolerance: Duration::from_secs(positive(
-                "VIRTIO_MEM_STATS_FUTURE_TOLERANCE_SECONDS",
-            )?),
             raw_telemetry_path: required("VIRTIO_MEM_RAW_TELEMETRY_PATH")?,
-            raw_telemetry_ack_path: required("VIRTIO_MEM_RAW_TELEMETRY_ACK_PATH")?,
             raw_telemetry_transport,
             raw_telemetry_service_name: required("VIRTIO_MEM_RAW_TELEMETRY_SERVICE_NAME")?,
             raw_telemetry_max_age: Duration::from_secs(positive(
@@ -214,8 +149,6 @@ impl HostConfig {
                 "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
                 DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
             )?,
-            shrink_renotification,
-            shrink_retry_delays,
             observe_only: optional_bool("VIRTIO_MEM_OBSERVE_ONLY", false)?,
         };
         config.validate()?;
@@ -233,9 +166,6 @@ impl HostConfig {
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
         {
             return Err(HostConfigError::InvalidAlias);
-        }
-        if self.lower_threshold_bytes > self.upper_threshold_bytes {
-            return Err(HostConfigError::InvalidThresholdOrder);
         }
         if self.min_memory_bytes > self.max_memory_bytes {
             return Err(HostConfigError::InvalidMemoryRange);
@@ -261,8 +191,6 @@ impl HostConfig {
         if self.poll_interval.is_zero()
             || self.command_timeout.is_zero()
             || self.convergence_timeout.is_zero()
-            || self.stats_max_age.is_zero()
-            || self.stats_future_tolerance.is_zero()
             || self.raw_telemetry_max_age.is_zero()
             || self.raw_telemetry_future_tolerance.is_zero()
             || self.reclaim_history.is_zero()
@@ -275,21 +203,6 @@ impl HostConfig {
                 "reclaim maximum gap exceeds history window",
             ));
         }
-        if self.shrink_renotification
-            && (self.shrink_retry_delays.is_empty()
-                || self
-                    .shrink_retry_delays
-                    .windows(2)
-                    .any(|pair| pair[0] >= pair[1])
-                || self
-                    .shrink_retry_delays
-                    .iter()
-                    .any(|delay| *delay >= self.convergence_timeout))
-        {
-            return Err(HostConfigError::InvalidTargetPolicy(
-                "shrink retry delays must be increasing and below convergence timeout",
-            ));
-        }
         if self.compatibility_attestation_path.trim().is_empty() {
             return Err(HostConfigError::InvalidAttestationPath);
         }
@@ -298,9 +211,6 @@ impl HostConfig {
         }
         if self.raw_telemetry_service_name.trim().is_empty() {
             return Err(HostConfigError::InvalidRawTelemetryServiceName);
-        }
-        if self.raw_telemetry_ack_path.trim().is_empty() {
-            return Err(HostConfigError::InvalidRawTelemetryAckPath);
         }
         if self.policy_state_path.trim().is_empty() {
             return Err(HostConfigError::InvalidPolicyStatePath);
@@ -325,6 +235,17 @@ fn parse_raw_telemetry_transport(value: String) -> Result<RawTelemetryTransport,
         "file" => Ok(RawTelemetryTransport::File),
         "qga-file" => Ok(RawTelemetryTransport::QgaFile),
         _ => Err(HostConfigError::InvalidRawTelemetryTransport(value)),
+    }
+}
+
+/// The guest-stats source was removed. Selecting it must fail rather than
+/// silently switch the daemon to a different telemetry path.
+fn reject_retired_demand_source(value: Option<String>) -> Result<(), HostConfigError> {
+    match value {
+        Some(value) if !value.trim().is_empty() && !value.eq_ignore_ascii_case("raw") => {
+            Err(HostConfigError::RetiredDemandSource(value))
+        }
+        _ => Ok(()),
     }
 }
 
@@ -394,24 +315,6 @@ fn positive_or_derived(name: &'static str, derived: u64) -> Result<u64, HostConf
     }
 }
 
-fn positive_duration_list(name: &'static str) -> Result<Vec<Duration>, HostConfigError> {
-    let value = required(name)?;
-    value
-        .split(',')
-        .map(str::trim)
-        .map(|part| {
-            part.parse::<u64>()
-                .ok()
-                .filter(|seconds| *seconds > 0)
-                .map(Duration::from_secs)
-                .ok_or_else(|| HostConfigError::InvalidDurationList {
-                    name,
-                    value: value.clone(),
-                })
-        })
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -432,14 +335,6 @@ mod tests {
                 "VIRTIO_MEM_AUTOMATIC_WINDOWS_SHRINK",
                 None,
                 DEFAULT_AUTOMATIC_WINDOWS_SHRINK,
-            ),
-            Ok(false)
-        );
-        assert_eq!(
-            parse_optional_bool(
-                "VIRTIO_MEM_SHRINK_RENOTIFICATION",
-                Some(String::new()),
-                DEFAULT_SHRINK_RENOTIFICATION,
             ),
             Ok(false)
         );
@@ -472,6 +367,22 @@ mod tests {
     }
 
     #[test]
+    fn retired_demand_sources_fail_instead_of_being_ignored() {
+        for accepted in [None, Some(""), Some("raw")] {
+            assert_eq!(
+                reject_retired_demand_source(accepted.map(str::to_owned)),
+                Ok(())
+            );
+        }
+        assert_eq!(
+            reject_retired_demand_source(Some("guest-stats".to_owned())),
+            Err(HostConfigError::RetiredDemandSource(
+                "guest-stats".to_owned()
+            ))
+        );
+    }
+
+    #[test]
     fn retired_pressure_policy_modes_fail_instead_of_being_ignored() {
         for accepted in [None, Some(""), Some("legacy")] {
             assert_eq!(
@@ -496,8 +407,6 @@ mod tests {
             alias: "bad;alias".to_owned(),
             min_memory_bytes: 1,
             max_memory_bytes: 2,
-            lower_threshold_bytes: 1,
-            upper_threshold_bytes: 2,
             grow_step_bytes: TEST_GROW_STEP_BYTES,
             shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
             fixed_visible_base_bytes: 1,
@@ -513,12 +422,7 @@ mod tests {
             command_timeout: Duration::from_secs(1),
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
-            stats_source: StatsSource::DomMemStat,
-            demand_source: DemandSourceMode::Raw,
-            stats_max_age: Duration::from_secs(60),
-            stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
-            raw_telemetry_ack_path: "/var/lib/virtio-mem-host/guest.ack.json".to_owned(),
             raw_telemetry_transport: RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
@@ -527,8 +431,6 @@ mod tests {
             compatibility_attestation_path: "/etc/virtio-mem-host/guest.attestation.json"
                 .to_owned(),
             automatic_windows_shrink: false,
-            shrink_renotification: false,
-            shrink_retry_delays: Vec::new(),
             observe_only: false,
         };
         assert_eq!(config.validate(), Err(HostConfigError::InvalidAlias));
@@ -541,8 +443,6 @@ mod tests {
             alias: "memory0".to_owned(),
             min_memory_bytes: 1,
             max_memory_bytes: 2,
-            lower_threshold_bytes: 1,
-            upper_threshold_bytes: 2,
             grow_step_bytes: TEST_GROW_STEP_BYTES,
             shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
             fixed_visible_base_bytes: 1,
@@ -558,12 +458,7 @@ mod tests {
             command_timeout: Duration::from_secs(1),
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
-            stats_source: StatsSource::DomMemStat,
-            demand_source: DemandSourceMode::Raw,
-            stats_max_age: Duration::from_secs(60),
-            stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "/run/virtio-mem-host/guest.telemetry.jsonl".to_owned(),
-            raw_telemetry_ack_path: "/var/lib/virtio-mem-host/guest.ack.json".to_owned(),
             raw_telemetry_transport: RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
@@ -571,8 +466,6 @@ mod tests {
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "valid".to_owned(),
             automatic_windows_shrink: false,
-            shrink_renotification: false,
-            shrink_retry_delays: Vec::new(),
             observe_only: false,
         };
         config.compatibility_attestation_path = " ".to_owned();
@@ -589,8 +482,6 @@ mod tests {
             alias: "memory0".to_owned(),
             min_memory_bytes: 1,
             max_memory_bytes: 2,
-            lower_threshold_bytes: 1,
-            upper_threshold_bytes: 2,
             grow_step_bytes: TEST_GROW_STEP_BYTES,
             shrink_step_bytes: TEST_SHRINK_STEP_BYTES,
             fixed_visible_base_bytes: 1,
@@ -606,12 +497,7 @@ mod tests {
             command_timeout: Duration::from_secs(1),
             convergence_timeout: Duration::from_secs(1),
             virsh_binary: "virsh".to_owned(),
-            stats_source: StatsSource::DomMemStat,
-            demand_source: DemandSourceMode::Raw,
-            stats_max_age: Duration::from_secs(60),
-            stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "valid".to_owned(),
-            raw_telemetry_ack_path: "valid.ack".to_owned(),
             raw_telemetry_transport: RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
@@ -619,8 +505,6 @@ mod tests {
             host_min_headroom_bytes: 1,
             compatibility_attestation_path: "valid".to_owned(),
             automatic_windows_shrink: false,
-            shrink_renotification: false,
-            shrink_retry_delays: Vec::new(),
             observe_only: false,
         };
         config.raw_telemetry_path = " ".to_owned();

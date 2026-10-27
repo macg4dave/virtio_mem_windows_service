@@ -11,15 +11,15 @@ use sha2::{Digest, Sha256};
 use virtio_mem_core::{
     calculate_effective_maximum, AcceptedTelemetryIdentity, CapacityState, CommandOwnership,
     ControlHealth, ControllerCommandStatus, ControllerStatusSnapshot, ReclaimReadiness,
-    RecoveryState, ResizeDecision, TargetEstimator, TargetEstimatorState, TargetGeometry,
-    TargetPolicyConfig, TargetSample, VirtioMemState, CONTROLLER_STATUS_VERSION,
+    RecoveryState, TargetEstimator, TargetEstimatorState, TargetGeometry, TargetPolicyConfig,
+    TargetSample, VirtioMemState, CONTROLLER_STATUS_VERSION,
 };
 
 use crate::attestation::CompatibilityAttestation;
 use crate::config::HostConfig;
-use crate::raw_telemetry::{RawTelemetryRead, RawTelemetrySource};
+use crate::raw_telemetry::{AcceptedTelemetry, RawTelemetrySource, SampleAcceptance};
 use crate::runtime::{
-    CommandIntent, DemandDecision, DemandSource, DurableControlState, IntentResolution,
+    command_ownership, CommandIntent, DemandEstimate, DemandSource, DurableControlState,
 };
 
 const POLICY_CHECKPOINT_VERSION: u16 = 1;
@@ -42,6 +42,11 @@ struct PolicyCheckpoint {
     command_intent: Option<CommandIntent>,
     #[serde(default)]
     last_latch_clear_reason: Option<String>,
+    /// The last telemetry record the estimator consumed. Written in the same
+    /// checkpoint as the estimator, so acceptance and consumption never
+    /// disagree. Older checkpoints without it start with no accepted record.
+    #[serde(default)]
+    accepted_telemetry: AcceptedTelemetry,
     /// Earlier builds stored shadow-policy history here. It was expendable
     /// history, never control state, so it is accepted on load and dropped.
     #[serde(default, rename = "pressure_shadow", skip_serializing)]
@@ -57,16 +62,21 @@ impl<'de> Deserialize<'de> for RetiredPressureShadow {
     }
 }
 
+/// The estimator and the record it last consumed always change together.
+#[derive(Debug, Clone)]
+struct SampleState {
+    estimator: TargetEstimator,
+    accepted: AcceptedTelemetry,
+}
+
 pub struct TargetDemandSource<R> {
     raw: R,
-    estimator: Mutex<TargetEstimator>,
+    sample: Mutex<SampleState>,
     checkpoint_path: PathBuf,
     vm_name: String,
     device_alias: String,
     policy_fingerprint: String,
     compatibility_fingerprint: String,
-    grow_step_bytes: u64,
-    shrink_step_bytes: u64,
     control: Mutex<CheckpointControl>,
 }
 
@@ -109,8 +119,8 @@ impl<R> TargetDemandSource<R> {
                 last_latch_clear_reason: checkpoint.last_latch_clear_reason.clone(),
             })
             .unwrap_or_default();
-        let state = checkpoint
-            .map(|checkpoint| checkpoint.estimator)
+        let (state, accepted) = checkpoint
+            .map(|checkpoint| (checkpoint.estimator, checkpoint.accepted_telemetry))
             .unwrap_or_default();
         let estimator = match TargetEstimator::restore(policy, state) {
             Ok(estimator) => estimator,
@@ -123,14 +133,15 @@ impl<R> TargetDemandSource<R> {
         };
         Ok(Self {
             raw,
-            estimator: Mutex::new(estimator),
+            sample: Mutex::new(SampleState {
+                estimator,
+                accepted,
+            }),
             checkpoint_path,
             vm_name: config.vm_name.clone(),
             device_alias: config.alias.clone(),
             policy_fingerprint,
             compatibility_fingerprint,
-            grow_step_bytes: config.grow_step_bytes,
-            shrink_step_bytes: config.shrink_step_bytes,
             control: Mutex::new(control),
         })
     }
@@ -226,7 +237,7 @@ fn read_controller_status_at(
             target_bytes: intent.target_bytes,
             telemetry_identity: intent.telemetry_identity.clone(),
         });
-    let command_ownership = classify_command_ownership(control.command_intent.as_ref(), live);
+    let command_ownership = command_ownership(control.command_intent.as_ref(), live);
     let latch_reason = control.actuation_latched.then(|| {
         control
             .actuation_latch_reason
@@ -308,32 +319,6 @@ fn read_controller_status_at(
     Ok(snapshot)
 }
 
-fn classify_command_ownership(
-    intent: Option<&CommandIntent>,
-    live: VirtioMemState,
-) -> CommandOwnership {
-    let Some(intent) = intent else {
-        return if live.requested_bytes == live.current_bytes {
-            CommandOwnership::None
-        } else {
-            CommandOwnership::UnownedPending
-        };
-    };
-    if live.requested_bytes == intent.target_bytes {
-        if live.current_bytes == intent.target_bytes {
-            CommandOwnership::OwnedConvergedUnresolved
-        } else {
-            CommandOwnership::OwnedPending
-        }
-    } else if live.requested_bytes == intent.prior_requested_bytes
-        && live.current_bytes == intent.prior_current_bytes
-    {
-        CommandOwnership::RecordedNotApplied
-    } else {
-        CommandOwnership::Conflict
-    }
-}
-
 fn recovery_reason(ownership: CommandOwnership, latch_reason: Option<&str>) -> Option<String> {
     if let Some(reason) = latch_reason {
         return Some(format!("actuation_latched: {reason}"));
@@ -356,30 +341,33 @@ fn recovery_reason(ownership: CommandOwnership, latch_reason: Option<&str>) -> O
 }
 
 impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
-    fn evaluate(
-        &self,
-        state: VirtioMemState,
-        _config: &HostConfig,
-    ) -> Result<DemandDecision, String> {
-        let envelope = match self.raw.read() {
-            Ok(RawTelemetryRead::Fresh(envelope)) => envelope,
-            Ok(RawTelemetryRead::Unchanged(_)) => {
-                let estimator = self
-                    .estimator
-                    .lock()
-                    .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
-                let desired_bytes = if estimator.state().desired_bytes == 0 {
+    fn evaluate(&self, state: VirtioMemState) -> Result<DemandEstimate, String> {
+        let read = self.raw.read();
+        let mut sample = self
+            .sample
+            .lock()
+            .map_err(|_| "target sample state lock is poisoned".to_owned())?;
+        let classified = read.and_then(|envelope| {
+            sample
+                .accepted
+                .classify(&envelope)
+                .map(|acceptance| (envelope, acceptance))
+        });
+        let envelope = match classified {
+            Ok((envelope, SampleAcceptance::New)) => envelope,
+            Ok((_, SampleAcceptance::Unchanged)) => {
+                let estimator = sample.estimator.state();
+                let desired_bytes = if estimator.desired_bytes == 0 {
                     state.current_bytes
                 } else {
-                    estimator.state().desired_bytes
+                    estimator.desired_bytes
                 };
-                let safe_floor_bytes = if estimator.state().safe_floor_bytes == 0 {
+                let safe_floor_bytes = if estimator.safe_floor_bytes == 0 {
                     state.current_bytes.min(desired_bytes)
                 } else {
-                    estimator.state().safe_floor_bytes.min(desired_bytes)
+                    estimator.safe_floor_bytes.min(desired_bytes)
                 };
-                return Ok(DemandDecision {
-                    decision: ResizeDecision::NoChange,
+                return Ok(DemandEstimate {
                     desired_bytes,
                     safe_floor_bytes,
                     effective_maximum_bytes: desired_bytes.max(state.current_bytes),
@@ -389,21 +377,16 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
             }
             Err(error) => {
                 if error.invalidates_history() {
-                    let mut estimator = self
-                        .estimator
-                        .lock()
-                        .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
-                    estimator.invalidate_history();
-                    self.persist_estimator(&estimator)?;
+                    sample.estimator.invalidate_history();
+                    self.persist_sample(&sample)?;
                 }
                 return Err(error.to_string());
             }
         };
-        let mut estimator = self
-            .estimator
-            .lock()
-            .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
-        let estimate_result = estimator.estimate(
+        // Work on a copy: the record counts as accepted only once the
+        // checkpoint holding it and the estimate it fed is durable.
+        let mut next = sample.clone();
+        let estimate_result = next.estimator.estimate(
             TargetSample {
                 session_id: envelope.session_id.clone(),
                 observed_unix_millis: envelope.observed_unix_millis,
@@ -417,170 +400,89 @@ impl<R: RawTelemetrySource> DemandSource for TargetDemandSource<R> {
                 current_bytes: state.current_bytes,
             },
         );
-        if let Err(error) = estimate_result {
-            self.persist_estimator(&estimator)?;
-            return Err(error.to_string());
-        }
-        let estimate = estimate_result.map_err(|error| error.to_string())?;
-        self.persist_estimator(&estimator)?;
+        let estimate = match estimate_result {
+            Ok(estimate) => estimate,
+            Err(error) => {
+                // The estimator may have invalidated its history; keep that,
+                // but the record itself stays unaccepted.
+                sample.estimator = next.estimator;
+                self.persist_sample(&sample)?;
+                return Err(error.to_string());
+            }
+        };
+        next.accepted.accept(envelope);
+        self.persist_sample(&next)?;
+        *sample = next;
         if estimate.capacity_limited {
             eprintln!(
                 "target estimator health=capacity_limited desired_now_bytes={} effective_maximum_bytes={}",
                 estimate.desired_now_bytes, estimate.effective_maximum_bytes
             );
         }
-        let actuation_latched = self
-            .control
-            .lock()
-            .map_err(|_| "target control-state lock is poisoned".to_owned())?
-            .actuation_latched;
-        let requested_bytes = if actuation_latched {
-            None
-        } else if estimate.desired_bytes > state.current_bytes {
-            Some(
-                state
-                    .current_bytes
-                    .checked_add(self.grow_step_bytes)
-                    .ok_or_else(|| "growth quantum overflowed".to_owned())?
-                    .min(estimate.desired_bytes)
-                    .min(estimate.effective_maximum_bytes),
-            )
-        } else if estimate.history_ready && estimate.desired_bytes < state.current_bytes {
-            Some(
-                state
-                    .current_bytes
-                    .saturating_sub(self.shrink_step_bytes)
-                    .max(estimate.desired_bytes)
-                    .max(estimate.safe_floor_bytes),
-            )
-        } else {
-            None
-        };
-        Ok(DemandDecision {
-            decision: requested_bytes
-                .map(|requested_bytes| ResizeDecision::Request { requested_bytes })
-                .unwrap_or(ResizeDecision::NoChange),
+        let estimator = sample.estimator.state();
+        Ok(DemandEstimate {
             safe_floor_bytes: estimate.safe_floor_bytes,
             desired_bytes: estimate.desired_bytes,
             effective_maximum_bytes: estimate.effective_maximum_bytes,
             history_ready: estimate.history_ready,
             telemetry_identity: Some(format!(
                 "{}:{}:{}:{}",
-                estimator.state().session_id,
-                estimator.state().last_sequence,
-                estimator.state().last_monotonic_millis,
-                estimator.state().last_observed_unix_millis
+                estimator.session_id,
+                estimator.last_sequence,
+                estimator.last_monotonic_millis,
+                estimator.last_observed_unix_millis
             )),
         })
     }
 
-    fn durable_control_state(&self) -> Result<DurableControlState, String> {
+    fn control_state(&self) -> Result<DurableControlState, String> {
         let control = self
             .control
             .lock()
             .map_err(|_| "target control-state lock is poisoned".to_owned())?;
         Ok(DurableControlState {
-            actuation_latched: control.actuation_latched,
+            latch_reason: control.actuation_latched.then(|| {
+                control
+                    .actuation_latch_reason
+                    .clone()
+                    .unwrap_or_else(|| "durable actuation latch has no recorded reason".to_owned())
+            }),
             intent: control.command_intent.clone(),
         })
     }
 
-    fn record_command_intent(&self, mut intent: CommandIntent) -> Result<(), String> {
-        let estimator = self
-            .estimator
+    fn save_control_state(&self, next: &DurableControlState) -> Result<(), String> {
+        let sample = self
+            .sample
             .lock()
-            .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
+            .map_err(|_| "target sample state lock is poisoned".to_owned())?;
         let mut control = self
             .control
             .lock()
             .map_err(|_| "target control-state lock is poisoned".to_owned())?;
-        if control.actuation_latched {
-            return Err("automatic actuation is durably latched".to_owned());
-        }
-        intent.policy_fingerprint_sha256 = self.policy_fingerprint.clone();
-        intent.compatibility_fingerprint_sha256 = self.compatibility_fingerprint.clone();
-        if let Some(previous) = control.command_intent.as_ref() {
-            let valid_upward_replacement = matches!(
-                intent.direction,
-                virtio_mem_core::ReconcileDirection::SupersedeShrink
-                    | virtio_mem_core::ReconcileDirection::FreezeShrink
-            ) && matches!(
-                previous.direction,
-                virtio_mem_core::ReconcileDirection::Shrink
-                    | virtio_mem_core::ReconcileDirection::SupersedeShrink
-            ) && intent.prior_requested_bytes
-                == previous.target_bytes
-                && intent.target_bytes > previous.target_bytes
-                && intent.target_bytes <= intent.prior_current_bytes;
-            if !valid_upward_replacement {
-                return Err("a durable command intent is already pending".to_owned());
-            }
-        }
-        control.command_intent = Some(intent);
-        self.persist_state(&estimator, &control)
-    }
-
-    fn resolve_command_intent(&self, live: VirtioMemState) -> Result<IntentResolution, String> {
-        let estimator = self
-            .estimator
-            .lock()
-            .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
-        let mut control = self
-            .control
-            .lock()
-            .map_err(|_| "target control-state lock is poisoned".to_owned())?;
-        let Some(intent) = control.command_intent.clone() else {
-            return Ok(IntentResolution::None);
-        };
-        let resolution = if live.requested_bytes == intent.target_bytes {
-            if live.current_bytes == intent.target_bytes {
-                control.command_intent = None;
-                IntentResolution::Converged
-            } else {
-                IntentResolution::Accepted
-            }
-        } else if live.requested_bytes == intent.prior_requested_bytes
-            && live.current_bytes == intent.prior_current_bytes
-        {
-            control.actuation_latched = true;
-            control.actuation_latch_reason = Some("recorded command was not applied".to_owned());
-            IntentResolution::NotAppliedLatched
-        } else {
-            control.actuation_latched = true;
-            control.actuation_latch_reason = Some("recorded command result is unknown".to_owned());
-            IntentResolution::CommandUnknownLatched
-        };
-        self.persist_state(&estimator, &control)?;
-        Ok(resolution)
-    }
-
-    fn latch_actuation(&self, reason: &str) -> Result<(), String> {
-        let estimator = self
-            .estimator
-            .lock()
-            .map_err(|_| "target estimator state lock is poisoned".to_owned())?;
-        let mut control = self
-            .control
-            .lock()
-            .map_err(|_| "target control-state lock is poisoned".to_owned())?;
-        control.actuation_latched = true;
-        control.actuation_latch_reason = Some(reason.to_owned());
-        self.persist_state(&estimator, &control)
+        control.actuation_latched = next.latched();
+        control.actuation_latch_reason = next.latch_reason.clone();
+        control.command_intent = next.intent.clone().map(|mut intent| {
+            intent.policy_fingerprint_sha256 = self.policy_fingerprint.clone();
+            intent.compatibility_fingerprint_sha256 = self.compatibility_fingerprint.clone();
+            intent
+        });
+        self.persist_state(&sample, &control)
     }
 }
 
 impl<R> TargetDemandSource<R> {
-    fn persist_estimator(&self, estimator: &TargetEstimator) -> Result<(), String> {
+    fn persist_sample(&self, sample: &SampleState) -> Result<(), String> {
         let control = self
             .control
             .lock()
             .map_err(|_| "target control-state lock is poisoned".to_owned())?;
-        self.persist_state(estimator, &control)
+        self.persist_state(sample, &control)
     }
 
     fn persist_state(
         &self,
-        estimator: &TargetEstimator,
+        sample: &SampleState,
         control: &CheckpointControl,
     ) -> Result<(), String> {
         persist_checkpoint(
@@ -591,11 +493,12 @@ impl<R> TargetDemandSource<R> {
                 device_alias: self.device_alias.clone(),
                 policy_fingerprint_sha256: self.policy_fingerprint.clone(),
                 compatibility_fingerprint_sha256: self.compatibility_fingerprint.clone(),
-                estimator: estimator.state().clone(),
+                estimator: sample.estimator.state().clone(),
                 actuation_latched: control.actuation_latched,
                 actuation_latch_reason: control.actuation_latch_reason.clone(),
                 command_intent: control.command_intent.clone(),
                 last_latch_clear_reason: control.last_latch_clear_reason.clone(),
+                accepted_telemetry: sample.accepted.clone(),
                 retired_pressure_shadow: RetiredPressureShadow,
             },
         )
@@ -823,7 +726,6 @@ fn sha256_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::attestation::{CompatibilityReview, LiveCompatibilityEvidence};
-    use crate::config::{DemandSourceMode, StatsSource};
     use crate::raw_telemetry::RawTelemetryError;
     use serde_json::json;
     use std::time::Duration;
@@ -835,41 +737,63 @@ mod tests {
     struct OneEnvelope(Mutex<Option<RawTelemetryEnvelope>>);
 
     impl RawTelemetrySource for OneEnvelope {
-        fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
+        fn read(&self) -> Result<RawTelemetryEnvelope, RawTelemetryError> {
             self.0
                 .lock()
                 .map_err(|_| {
                     RawTelemetryError::TransportUnavailable("fixture lock poisoned".to_owned())
                 })?
                 .take()
-                .map(RawTelemetryRead::Fresh)
                 .ok_or_else(|| {
                     RawTelemetryError::TransportUnavailable("fixture exhausted".to_owned())
                 })
         }
     }
 
-    struct OneUnchangedEnvelope(Mutex<Option<RawTelemetryEnvelope>>);
+    /// A producer that has not published since: every read returns the same record.
+    struct RepeatingEnvelope(RawTelemetryEnvelope);
 
-    impl RawTelemetrySource for OneUnchangedEnvelope {
-        fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
-            self.0
-                .lock()
-                .map_err(|_| {
-                    RawTelemetryError::TransportUnavailable("fixture lock poisoned".to_owned())
-                })?
-                .take()
-                .map(RawTelemetryRead::Unchanged)
-                .ok_or_else(|| {
-                    RawTelemetryError::TransportUnavailable("fixture exhausted".to_owned())
-                })
+    impl RawTelemetrySource for RepeatingEnvelope {
+        fn read(&self) -> Result<RawTelemetryEnvelope, RawTelemetryError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn pressured_envelope() -> RawTelemetryEnvelope {
+        RawTelemetryEnvelope::new(
+            "guest",
+            "VirtioMemService",
+            "session-a",
+            1_000_000,
+            10,
+            0,
+            MemoryTelemetrySnapshot {
+                physical_total_bytes: 16 * GIB,
+                physical_available_bytes: 0,
+                memory_load_percent: 100,
+                commit_total_bytes: 32 * GIB,
+                commit_limit_bytes: 32 * GIB,
+                commit_peak_bytes: 32 * GIB,
+                system_cache_bytes: 0,
+                kernel_paged_bytes: 0,
+                kernel_nonpaged_bytes: 0,
+            },
+        )
+    }
+
+    fn eight_gib_live() -> VirtioMemState {
+        VirtioMemState {
+            size_bytes: 24 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 8 * GIB,
+            current_bytes: 8 * GIB,
         }
     }
 
     struct FailingRaw(RawTelemetryError);
 
     impl RawTelemetrySource for FailingRaw {
-        fn read(&self) -> Result<RawTelemetryRead, RawTelemetryError> {
+        fn read(&self) -> Result<RawTelemetryEnvelope, RawTelemetryError> {
             Err(self.0.clone())
         }
     }
@@ -931,8 +855,6 @@ mod tests {
             alias: "memory0".to_owned(),
             min_memory_bytes: 2 * GIB,
             max_memory_bytes: 20 * GIB,
-            lower_threshold_bytes: GIB,
-            upper_threshold_bytes: 3 * GIB,
             grow_step_bytes: GIB,
             shrink_step_bytes: 64 * MIB,
             fixed_visible_base_bytes: 8 * GIB,
@@ -948,12 +870,7 @@ mod tests {
             command_timeout: Duration::from_secs(10),
             convergence_timeout: Duration::from_secs(300),
             virsh_binary: "virsh".to_owned(),
-            stats_source: StatsSource::DomMemStat,
-            demand_source: DemandSourceMode::Raw,
-            stats_max_age: Duration::from_secs(60),
-            stats_future_tolerance: Duration::from_secs(5),
             raw_telemetry_path: "telemetry.jsonl".to_owned(),
-            raw_telemetry_ack_path: "telemetry.ack.json".to_owned(),
             raw_telemetry_transport: crate::config::RawTelemetryTransport::File,
             raw_telemetry_service_name: "VirtioMemService".to_owned(),
             raw_telemetry_max_age: Duration::from_secs(60),
@@ -961,8 +878,6 @@ mod tests {
             host_min_headroom_bytes: 4 * GIB,
             compatibility_attestation_path: attestation.display().to_string(),
             automatic_windows_shrink: true,
-            shrink_renotification: false,
-            shrink_retry_delays: Vec::new(),
             observe_only: false,
         }
     }
@@ -981,6 +896,7 @@ mod tests {
             actuation_latch_reason: None,
             command_intent: None,
             last_latch_clear_reason: None,
+            accepted_telemetry: AcceptedTelemetry::default(),
             retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("persist checkpoint");
@@ -1070,6 +986,7 @@ mod tests {
                     compatibility_fingerprint_sha256: "b".repeat(64),
                 }),
                 last_latch_clear_reason: None,
+                accepted_telemetry: AcceptedTelemetry::default(),
                 retired_pressure_shadow: RetiredPressureShadow,
             };
             persist_checkpoint(&state_path, &checkpoint).expect("write checkpoint");
@@ -1149,6 +1066,7 @@ mod tests {
             actuation_latch_reason: None,
             command_intent: None,
             last_latch_clear_reason: None,
+            accepted_telemetry: AcceptedTelemetry::default(),
             retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
@@ -1167,7 +1085,7 @@ mod tests {
             compatibility_fingerprint.clone(),
         )
         .expect("interrupted source");
-        assert!(interrupted.evaluate(live, &config).is_err());
+        assert!(interrupted.evaluate(live).is_err());
         let preserved = load_matching_checkpoint(
             &state_path,
             &config.vm_name,
@@ -1187,7 +1105,7 @@ mod tests {
             compatibility_fingerprint.clone(),
         )
         .expect("invalid source");
-        assert!(invalid.evaluate(live, &config).is_err());
+        assert!(invalid.evaluate(live).is_err());
         let cleared = load_matching_checkpoint(
             &state_path,
             &config.vm_name,
@@ -1240,23 +1158,17 @@ mod tests {
         let source =
             TargetDemandSource::with_compatibility_fingerprint(raw, &config, "a".repeat(64))
                 .expect("construct target source");
-        let decision = source
-            .evaluate(
-                VirtioMemState {
-                    size_bytes: 24 * GIB,
-                    block_size_bytes: 2 * MIB,
-                    requested_bytes: 8 * GIB,
-                    current_bytes: 8 * GIB,
-                },
-                &config,
-            )
+        let estimate = source
+            .evaluate(VirtioMemState {
+                size_bytes: 24 * GIB,
+                block_size_bytes: 2 * MIB,
+                requested_bytes: 8 * GIB,
+                current_bytes: 8 * GIB,
+            })
             .expect("evaluate target");
         assert_eq!(
-            decision,
-            DemandDecision {
-                decision: ResizeDecision::Request {
-                    requested_bytes: 9 * GIB,
-                },
+            estimate,
+            DemandEstimate {
                 safe_floor_bytes: 8 * GIB,
                 desired_bytes: 10 * GIB,
                 effective_maximum_bytes: 20 * GIB,
@@ -1272,50 +1184,79 @@ mod tests {
     fn unchanged_atomic_snapshot_waits_without_resetting_or_actuating() {
         let (state_path, attestation) = paths("unchanged-raw-source");
         let config = config(&state_path, &attestation);
-        let raw = OneUnchangedEnvelope(Mutex::new(Some(RawTelemetryEnvelope::new(
-            "guest",
-            "VirtioMemService",
-            "session-a",
-            1_000_000,
-            10,
-            0,
-            MemoryTelemetrySnapshot {
-                physical_total_bytes: 16 * GIB,
-                physical_available_bytes: 8 * GIB,
-                memory_load_percent: 50,
-                commit_total_bytes: 16 * GIB,
-                commit_limit_bytes: 32 * GIB,
-                commit_peak_bytes: 16 * GIB,
-                system_cache_bytes: 0,
-                kernel_paged_bytes: 0,
-                kernel_nonpaged_bytes: 0,
-            },
-        ))));
-        let source =
-            TargetDemandSource::with_compatibility_fingerprint(raw, &config, "a".repeat(64))
-                .expect("construct target source");
-        let decision = source
-            .evaluate(
-                VirtioMemState {
-                    size_bytes: 24 * GIB,
-                    block_size_bytes: 2 * MIB,
-                    requested_bytes: 8 * GIB,
-                    current_bytes: 8 * GIB,
-                },
-                &config,
-            )
-            .expect("unchanged snapshot is a normal wait state");
+        let source = TargetDemandSource::with_compatibility_fingerprint(
+            RepeatingEnvelope(pressured_envelope()),
+            &config,
+            "a".repeat(64),
+        )
+        .expect("construct target source");
+        let first = source.evaluate(eight_gib_live()).expect("first record");
+        assert!(first.telemetry_identity.is_some());
 
-        assert_eq!(decision.decision, ResizeDecision::NoChange);
-        assert_eq!(decision.desired_bytes, 8 * GIB);
-        assert_eq!(decision.safe_floor_bytes, 8 * GIB);
-        assert!(!decision.history_ready);
-        assert!(decision.telemetry_identity.is_none());
-        assert!(!state_path.exists());
+        let unchanged = source
+            .evaluate(eight_gib_live())
+            .expect("unchanged snapshot is a normal wait state");
+        assert!(unchanged.telemetry_identity.is_none());
+        assert!(!unchanged.history_ready);
+        assert_eq!(unchanged.desired_bytes, first.desired_bytes);
+        assert_eq!(unchanged.safe_floor_bytes, first.safe_floor_bytes);
+        fs::remove_file(state_path).expect("remove checkpoint");
     }
 
     #[test]
-    fn command_intent_is_written_before_resolution_and_never_replayed() {
+    fn accepted_record_is_recognised_as_unchanged_after_restart() {
+        let (state_path, attestation) = paths("accepted-restart");
+        let config = config(&state_path, &attestation);
+        let construct = || {
+            TargetDemandSource::with_compatibility_fingerprint(
+                RepeatingEnvelope(pressured_envelope()),
+                &config,
+                "a".repeat(64),
+            )
+            .expect("construct target source")
+        };
+        assert!(construct()
+            .evaluate(eight_gib_live())
+            .expect("first record")
+            .telemetry_identity
+            .is_some());
+        assert!(construct()
+            .evaluate(eight_gib_live())
+            .expect("restarted read")
+            .telemetry_identity
+            .is_none());
+        fs::remove_file(state_path).expect("remove checkpoint");
+    }
+
+    #[test]
+    fn failed_checkpoint_write_does_not_accept_the_record() {
+        let (state_path, attestation) = paths("unwritable-checkpoint");
+        let config = config(&state_path, &attestation);
+        let source = TargetDemandSource::with_compatibility_fingerprint(
+            RepeatingEnvelope(pressured_envelope()),
+            &config,
+            "a".repeat(64),
+        )
+        .expect("construct target source");
+        // A directory where the checkpoint belongs makes the atomic rename fail.
+        fs::create_dir(&state_path).expect("block checkpoint path");
+        assert!(source.evaluate(eight_gib_live()).is_err());
+        assert!(
+            source.evaluate(eight_gib_live()).is_err(),
+            "an unpersisted record must not read back as accepted and unchanged"
+        );
+
+        fs::remove_dir(&state_path).expect("unblock checkpoint path");
+        assert!(source
+            .evaluate(eight_gib_live())
+            .expect("record accepted once durable")
+            .telemetry_identity
+            .is_some());
+        fs::remove_file(state_path).expect("remove checkpoint");
+    }
+
+    #[test]
+    fn control_state_is_stamped_persisted_and_restored_across_restart() {
         let (state_path, attestation) = paths("intent");
         let config = config(&state_path, &attestation);
         let source = TargetDemandSource::with_compatibility_fingerprint(
@@ -1324,124 +1265,59 @@ mod tests {
             "a".repeat(64),
         )
         .expect("construct target source");
-        let intent = CommandIntent {
+        let unstamped = CommandIntent {
             operation_id: "operation-1".to_owned(),
             direction: virtio_mem_core::ReconcileDirection::Shrink,
             prior_requested_bytes: 8 * GIB,
             prior_current_bytes: 8 * GIB,
             target_bytes: 8 * GIB - 64 * MIB,
             telemetry_identity: "session:1:2:3".to_owned(),
+            policy_fingerprint_sha256: String::new(),
+            compatibility_fingerprint_sha256: String::new(),
+        };
+        let stamped = CommandIntent {
             policy_fingerprint_sha256: policy_fingerprint(
                 &target_policy_config(&config).expect("policy"),
             )
             .expect("policy fingerprint"),
             compatibility_fingerprint_sha256: "a".repeat(64),
+            ..unstamped.clone()
         };
 
         source
-            .record_command_intent(intent.clone())
-            .expect("write intent");
-        assert_eq!(
-            source
-                .durable_control_state()
-                .expect("control state")
-                .intent,
-            Some(intent)
-        );
-        assert_eq!(
-            source
-                .resolve_command_intent(VirtioMemState {
-                    size_bytes: 24 * GIB,
-                    block_size_bytes: 2 * MIB,
-                    requested_bytes: 8 * GIB - 64 * MIB,
-                    current_bytes: 8 * GIB,
-                })
-                .expect("accepted command"),
-            IntentResolution::Accepted
-        );
-
-        let restarted = TargetDemandSource::with_compatibility_fingerprint(
-            OneEnvelope(Mutex::new(None)),
-            &config,
-            "a".repeat(64),
-        )
-        .expect("restore target source");
-        assert!(restarted
-            .durable_control_state()
-            .expect("restored control state")
-            .intent
-            .is_some());
-        assert_eq!(
-            restarted
-                .resolve_command_intent(VirtioMemState {
-                    size_bytes: 24 * GIB,
-                    block_size_bytes: 2 * MIB,
-                    requested_bytes: 8 * GIB - 64 * MIB,
-                    current_bytes: 8 * GIB - 64 * MIB,
-                })
-                .expect("resolve convergence"),
-            IntentResolution::Converged
-        );
-        assert!(restarted
-            .durable_control_state()
-            .expect("cleared control state")
-            .intent
-            .is_none());
-        fs::remove_file(state_path).expect("remove checkpoint");
-    }
-
-    #[test]
-    fn unchanged_or_unknown_command_results_latch_durably() {
-        let (state_path, attestation) = paths("latch");
-        let config = config(&state_path, &attestation);
-        let source = TargetDemandSource::with_compatibility_fingerprint(
-            OneEnvelope(Mutex::new(None)),
-            &config,
-            "a".repeat(64),
-        )
-        .expect("construct target source");
-        source
-            .record_command_intent(CommandIntent {
-                operation_id: "operation-1".to_owned(),
-                direction: virtio_mem_core::ReconcileDirection::Shrink,
-                prior_requested_bytes: 8 * GIB,
-                prior_current_bytes: 8 * GIB,
-                target_bytes: 8 * GIB - 64 * MIB,
-                telemetry_identity: "session:1:2:3".to_owned(),
-                policy_fingerprint_sha256: String::new(),
-                compatibility_fingerprint_sha256: String::new(),
+            .save_control_state(&DurableControlState {
+                latch_reason: None,
+                intent: Some(unstamped),
             })
             .expect("write intent");
+        let restored = || {
+            TargetDemandSource::with_compatibility_fingerprint(
+                OneEnvelope(Mutex::new(None)),
+                &config,
+                "a".repeat(64),
+            )
+            .expect("restore target source")
+            .control_state()
+            .expect("restored control state")
+        };
+        assert_eq!(restored().intent, Some(stamped.clone()));
+
+        source
+            .save_control_state(&DurableControlState {
+                latch_reason: Some("recorded command was not applied".to_owned()),
+                intent: Some(stamped),
+            })
+            .expect("write latch");
+        let latched = restored();
         assert_eq!(
-            source
-                .resolve_command_intent(VirtioMemState {
-                    size_bytes: 24 * GIB,
-                    block_size_bytes: 2 * MIB,
-                    requested_bytes: 8 * GIB,
-                    current_bytes: 8 * GIB,
-                })
-                .expect("resolve unchanged state"),
-            IntentResolution::NotAppliedLatched
-        );
-        assert!(
-            source
-                .durable_control_state()
-                .expect("latched state")
-                .actuation_latched
+            latched.latch_reason.as_deref(),
+            Some("recorded command was not applied")
         );
 
-        let restarted = TargetDemandSource::with_compatibility_fingerprint(
-            OneEnvelope(Mutex::new(None)),
-            &config,
-            "a".repeat(64),
-        )
-        .expect("restore target source");
-        assert!(
-            restarted
-                .durable_control_state()
-                .expect("restored latch")
-                .actuation_latched
-        );
+        source
+            .save_control_state(&DurableControlState::default())
+            .expect("clear control state");
+        assert_eq!(restored(), DurableControlState::default());
         fs::remove_file(state_path).expect("remove checkpoint");
     }
 
@@ -1464,6 +1340,7 @@ mod tests {
             actuation_latch_reason: Some("ambiguous command".to_owned()),
             command_intent: None,
             last_latch_clear_reason: None,
+            accepted_telemetry: AcceptedTelemetry::default(),
             retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
@@ -1538,6 +1415,7 @@ mod tests {
             actuation_latch_reason: Some("attestation changed before command".to_owned()),
             command_intent: None,
             last_latch_clear_reason: None,
+            accepted_telemetry: AcceptedTelemetry::default(),
             retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
@@ -1637,6 +1515,7 @@ mod tests {
             actuation_latch_reason: None,
             command_intent: None,
             last_latch_clear_reason: Some("prior review".to_owned()),
+            accepted_telemetry: AcceptedTelemetry::default(),
             retired_pressure_shadow: RetiredPressureShadow,
         };
         persist_checkpoint(&state_path, &checkpoint).expect("checkpoint");
@@ -1690,23 +1569,23 @@ mod tests {
         };
 
         assert_eq!(
-            classify_command_ownership(Some(&intent), live(6 * GIB, 7 * GIB)),
+            command_ownership(Some(&intent), live(6 * GIB, 7 * GIB)),
             CommandOwnership::OwnedPending
         );
         assert_eq!(
-            classify_command_ownership(Some(&intent), live(6 * GIB, 6 * GIB)),
+            command_ownership(Some(&intent), live(6 * GIB, 6 * GIB)),
             CommandOwnership::OwnedConvergedUnresolved
         );
         assert_eq!(
-            classify_command_ownership(Some(&intent), live(8 * GIB, 8 * GIB)),
+            command_ownership(Some(&intent), live(8 * GIB, 8 * GIB)),
             CommandOwnership::RecordedNotApplied
         );
         assert_eq!(
-            classify_command_ownership(Some(&intent), live(7 * GIB, 8 * GIB)),
+            command_ownership(Some(&intent), live(7 * GIB, 8 * GIB)),
             CommandOwnership::Conflict
         );
         assert_eq!(
-            classify_command_ownership(None, live(7 * GIB, 8 * GIB)),
+            command_ownership(None, live(7 * GIB, 8 * GIB)),
             CommandOwnership::UnownedPending
         );
         assert!(recovery_reason(CommandOwnership::OwnedPending, None).is_none());

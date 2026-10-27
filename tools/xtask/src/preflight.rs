@@ -8,7 +8,7 @@ use virtio_mem_host::attestation::AttestedCompatibilitySource;
 use virtio_mem_host::compatibility_source::CompatibilitySource;
 use virtio_mem_host::qga::{GuestFileReader, VirshQgaFileReader};
 use virtio_mem_host::raw_telemetry::{
-    QgaFileRawTelemetrySource, RawTelemetryRead, RawTelemetrySource,
+    AcceptedTelemetry, QgaFileRawTelemetrySource, RawTelemetrySource, SampleAcceptance,
 };
 use virtio_mem_host::virsh::Virsh;
 
@@ -197,15 +197,23 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
             .map_err(|error| format!("create preflight artifact directory: {error}"))?;
     }
 
-    let initial_source = source(command, &ack_path);
-    let initial = expect_fresh(
-        initial_source.read().map_err(|error| error.to_string())?,
+    // The controller stores acceptance inside its policy checkpoint; here it is
+    // kept at the ack path so a "restarted reader" proves it survives a reload.
+    let mut accepted = AcceptedTelemetry::default();
+    let initial = read_telemetry(&source(command))?;
+    require_acceptance(
+        &accepted,
+        &initial,
+        SampleAcceptance::New,
         "initial telemetry",
     )?;
-    let initial_restart = expect_unchanged(
-        replay_source(command, &ack_path, &initial)?
-            .read()
-            .map_err(|error| error.to_string())?,
+    accepted.accept(initial.clone());
+    save_acceptance(&ack_path, &accepted)?;
+    let initial_restart = read_telemetry(&replay_source(command, &initial)?)?;
+    require_acceptance(
+        &load_acceptance(&ack_path)?,
+        &initial_restart,
+        SampleAcceptance::Unchanged,
         "initial host-reader restart",
     )?;
     if initial.session_id != initial_restart.session_id
@@ -227,11 +235,16 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
 
     let deadline = Instant::now() + command.preflight_timeout;
     let new_session = loop {
-        let sample = source(command, &ack_path)
-            .read()
-            .map_err(|error| error.to_string())?;
-        if let RawTelemetryRead::Fresh(envelope) = sample {
-            if envelope.session_id != initial.session_id {
+        let envelope = read_telemetry(&source(command))?;
+        if accepted
+            .classify(&envelope)
+            .map_err(|error| error.to_string())?
+            == SampleAcceptance::New
+        {
+            let rolled = envelope.session_id != initial.session_id;
+            accepted.accept(envelope.clone());
+            save_acceptance(&ack_path, &accepted)?;
+            if rolled {
                 break envelope;
             }
         }
@@ -243,10 +256,11 @@ pub fn run(command: &Command, repo: &Path) -> Result<(), String> {
         }
         std::thread::sleep(command.sample_interval);
     };
-    let final_restart = expect_unchanged(
-        replay_source(command, &ack_path, &new_session)?
-            .read()
-            .map_err(|error| error.to_string())?,
+    let final_restart = read_telemetry(&replay_source(command, &new_session)?)?;
+    require_acceptance(
+        &load_acceptance(&ack_path)?,
+        &final_restart,
+        SampleAcceptance::Unchanged,
         "new-session host-reader restart",
     )?;
     if final_restart.session_id != new_session.session_id
@@ -315,7 +329,6 @@ impl GuestFileReader for CapturedTelemetry {
 
 fn replay_source(
     command: &Command,
-    ack_path: &Path,
     envelope: &virtio_mem_core::RawTelemetryEnvelope,
 ) -> Result<QgaFileRawTelemetrySource<CapturedTelemetry>, String> {
     let mut bytes = serde_json::to_vec(envelope)
@@ -324,7 +337,6 @@ fn replay_source(
     Ok(QgaFileRawTelemetrySource::new(
         CapturedTelemetry(bytes),
         &command.telemetry_path,
-        ack_path,
         &command.vm,
         &command.service,
         command.telemetry_max_age,
@@ -332,17 +344,13 @@ fn replay_source(
     ))
 }
 
-fn source(
-    command: &Command,
-    ack_path: &Path,
-) -> QgaFileRawTelemetrySource<VirshQgaFileReader<Virsh>> {
+fn source(command: &Command) -> QgaFileRawTelemetrySource<VirshQgaFileReader<Virsh>> {
     QgaFileRawTelemetrySource::new(
         VirshQgaFileReader::new(
             Virsh::with_connection("virsh", command.command_timeout, &command.connection),
             &command.vm,
         ),
         &command.telemetry_path,
-        ack_path,
         &command.vm,
         &command.service,
         command.telemetry_max_age,
@@ -350,23 +358,41 @@ fn source(
     )
 }
 
-fn expect_fresh(
-    read: RawTelemetryRead,
-    description: &str,
+fn read_telemetry(
+    source: &impl RawTelemetrySource,
 ) -> Result<virtio_mem_core::RawTelemetryEnvelope, String> {
-    match read {
-        RawTelemetryRead::Fresh(value) => Ok(value),
-        RawTelemetryRead::Unchanged(_) => Err(format!("{description} was unexpectedly unchanged")),
+    source.read().map_err(|error| error.to_string())
+}
+
+fn require_acceptance(
+    accepted: &AcceptedTelemetry,
+    envelope: &virtio_mem_core::RawTelemetryEnvelope,
+    expected: SampleAcceptance,
+    description: &str,
+) -> Result<(), String> {
+    let actual = accepted
+        .classify(envelope)
+        .map_err(|error| format!("{description}: {error}"))?;
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "{description} was {actual:?}, expected {expected:?}"
+        ))
     }
 }
-fn expect_unchanged(
-    read: RawTelemetryRead,
-    description: &str,
-) -> Result<virtio_mem_core::RawTelemetryEnvelope, String> {
-    match read {
-        RawTelemetryRead::Unchanged(value) => Ok(value),
-        RawTelemetryRead::Fresh(_) => Err(format!("{description} replayed a fresh record")),
-    }
+
+fn save_acceptance(path: &Path, accepted: &AcceptedTelemetry) -> Result<(), String> {
+    let bytes = serde_json::to_vec(accepted)
+        .map_err(|error| format!("encode preflight acknowledgement: {error}"))?;
+    std::fs::write(path, bytes).map_err(|error| format!("write preflight acknowledgement: {error}"))
+}
+
+fn load_acceptance(path: &Path) -> Result<AcceptedTelemetry, String> {
+    let bytes =
+        std::fs::read(path).map_err(|error| format!("read preflight acknowledgement: {error}"))?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| format!("parse preflight acknowledgement: {error}"))
 }
 
 fn live_state(command: &Command, repo: &Path) -> Result<VirtioMemState, String> {

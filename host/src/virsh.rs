@@ -124,7 +124,7 @@ impl VirshCommand for Virsh {
 fn read_only(arguments: &[String]) -> bool {
     matches!(
         arguments.first().map(String::as_str),
-        Some("dumpxml" | "dommemstat" | "domstate" | "version")
+        Some("dumpxml" | "domstate" | "version")
     )
 }
 
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn read_commands_do_not_request_a_management_connection() {
         let virsh = Virsh::with_connection("virsh", Duration::from_secs(1), "qemu:///system");
-        for operation in ["dumpxml", "dommemstat", "domstate", "version"] {
+        for operation in ["dumpxml", "domstate", "version"] {
             let command = virsh.command(&[operation.to_owned(), "guest".to_owned()]);
             let args = command.get_args().collect::<Vec<_>>();
             assert_eq!(

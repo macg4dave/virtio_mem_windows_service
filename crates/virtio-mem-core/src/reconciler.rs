@@ -71,14 +71,13 @@ pub fn reconcile(input: ReconcileInput) -> Result<ReconcileDecision, ReconcileEr
         .live
         .validate()
         .map_err(|_| ReconcileError::InvalidInput("invalid live device state"))?;
-    if input.desired_bytes == 0
-        || input.safe_floor_bytes == 0
-        || input.effective_maximum_bytes == 0
+    // Desired size and safe floor may be zero: an empty device is valid state.
+    if input.effective_maximum_bytes == 0
         || input.grow_step_bytes == 0
         || input.shrink_step_bytes == 0
     {
         return Err(ReconcileError::InvalidInput(
-            "targets, limits, and movement quanta must be positive",
+            "effective maximum and movement quanta must be positive",
         ));
     }
     if input.safe_floor_bytes > input.desired_bytes

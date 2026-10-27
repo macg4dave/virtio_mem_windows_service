@@ -4,15 +4,14 @@ use std::sync::{atomic::AtomicBool, Arc};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 use virtio_mem_host::attestation::AttestedCompatibilitySource;
-use virtio_mem_host::config::{DemandSourceMode, HostConfig, RawTelemetryTransport, StatsSource};
-use virtio_mem_host::dommemstat::DomMemStatSource;
+use virtio_mem_host::config::{HostConfig, RawTelemetryTransport};
 use virtio_mem_host::host_memory::ProcMeminfoSource;
-use virtio_mem_host::qga::{VirshGuestAgent, VirshQgaFileReader};
+use virtio_mem_host::qga::VirshQgaFileReader;
 use virtio_mem_host::raw_telemetry::{
     FileRawTelemetrySource, QgaFileRawTelemetrySource, RawTelemetrySource,
 };
 use virtio_mem_host::resize_sink::VirshResizeSink;
-use virtio_mem_host::runtime::{DemandSource, GuestStatsDemandSource, HostRuntime};
+use virtio_mem_host::runtime::{DemandSource, HostRuntime};
 use virtio_mem_host::target_policy::TargetDemandSource;
 use virtio_mem_host::virsh::Virsh;
 use virtio_mem_host::xml_source::VirshXmlSource;
@@ -54,62 +53,31 @@ fn main() -> ExitCode {
         eprintln!("virtio-mem-host signal setup error: {error}");
         return ExitCode::FAILURE;
     }
-    match config.demand_source {
-        DemandSourceMode::Raw => {
-            let raw: Box<dyn RawTelemetrySource> = match config.raw_telemetry_transport {
-                RawTelemetryTransport::File => Box::new(
-                    FileRawTelemetrySource::new(
-                        &config.raw_telemetry_path,
-                        &config.vm_name,
-                        &config.raw_telemetry_service_name,
-                        config.raw_telemetry_max_age,
-                        config.raw_telemetry_future_tolerance,
-                    )
-                    .with_replay_state_path(&config.raw_telemetry_ack_path),
-                ),
-                RawTelemetryTransport::QgaFile => {
-                    let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
-                    Box::new(QgaFileRawTelemetrySource::new(
-                        VirshQgaFileReader::new(virsh, config.vm_name.clone()),
-                        &config.raw_telemetry_path,
-                        &config.raw_telemetry_ack_path,
-                        &config.vm_name,
-                        &config.raw_telemetry_service_name,
-                        config.raw_telemetry_max_age,
-                        config.raw_telemetry_future_tolerance,
-                    ))
-                }
-            };
-            match TargetDemandSource::new(raw, &config) {
-                Ok(source) => run_controller(source, config, &stop),
-                Err(error) => {
-                    eprintln!("virtio-mem-host target policy error: {error}");
-                    ExitCode::FAILURE
-                }
-            }
-        }
-        DemandSourceMode::GuestStats => {
+    let raw: Box<dyn RawTelemetrySource> = match config.raw_telemetry_transport {
+        RawTelemetryTransport::File => Box::new(FileRawTelemetrySource::new(
+            &config.raw_telemetry_path,
+            &config.vm_name,
+            &config.raw_telemetry_service_name,
+            config.raw_telemetry_max_age,
+            config.raw_telemetry_future_tolerance,
+        )),
+        RawTelemetryTransport::QgaFile => {
             let virsh = Virsh::new(config.virsh_binary.clone(), config.command_timeout);
-            match config.stats_source {
-                StatsSource::DomMemStat => run_controller(
-                    GuestStatsDemandSource::new(DomMemStatSource::new(
-                        virsh,
-                        config.vm_name.clone(),
-                        config.stats_max_age,
-                        config.stats_future_tolerance,
-                    )),
-                    config,
-                    &stop,
-                ),
-                StatsSource::Qga => run_controller(
-                    GuestStatsDemandSource::new(VirshGuestAgent::new(
-                        virsh,
-                        config.vm_name.clone(),
-                    )),
-                    config,
-                    &stop,
-                ),
-            }
+            Box::new(QgaFileRawTelemetrySource::new(
+                VirshQgaFileReader::new(virsh, config.vm_name.clone()),
+                &config.raw_telemetry_path,
+                &config.vm_name,
+                &config.raw_telemetry_service_name,
+                config.raw_telemetry_max_age,
+                config.raw_telemetry_future_tolerance,
+            ))
+        }
+    };
+    match TargetDemandSource::new(raw, &config) {
+        Ok(source) => run_controller(source, config, &stop),
+        Err(error) => {
+            eprintln!("virtio-mem-host target policy error: {error}");
+            ExitCode::FAILURE
         }
     }
 }

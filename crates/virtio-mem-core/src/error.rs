@@ -1,22 +1,6 @@
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
-pub enum MemoryStatsError {
-    #[error("invalid QEMU Guest Agent response: {0}")]
-    InvalidJson(String),
-    #[error("QEMU Guest Agent response envelope is invalid: {0}")]
-    InvalidEnvelope(&'static str),
-    #[error("QEMU Guest Agent response id does not match the request")]
-    MismatchedResponseId,
-    #[error("QEMU Guest Agent response is missing {0}")]
-    MissingStat(&'static str),
-    #[error("QEMU Guest Agent response has inconsistent memory values")]
-    InconsistentValues,
-    #[error("memory controller configuration is invalid: {0}")]
-    InvalidConfiguration(&'static str),
-}
-
-#[derive(Debug, Error, PartialEq, Eq)]
 pub enum VirtioMemError {
     #[error("virtio-mem device size must be greater than zero")]
     ZeroSize,

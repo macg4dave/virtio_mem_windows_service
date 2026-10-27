@@ -2,8 +2,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use virtio_mem_core::{
-    parse_virtio_mem_xml_for_alias, AbandonAction, AbandonToCurrent, ResizeDecision,
-    ShrinkObservation,
+    parse_virtio_mem_xml_for_alias, AbandonAction, AbandonToCurrent, ShrinkObservation,
 };
 
 use crate::attestation::{
@@ -11,12 +10,10 @@ use crate::attestation::{
     VirshCompatibilityEvidenceSource,
 };
 use crate::compatibility_source::CompatibilitySource;
-use crate::config::{HostConfig, StatsSource};
-use crate::dommemstat::DomMemStatSource;
+use crate::config::HostConfig;
 use crate::host_memory::{validate_grow_headroom, HostMemorySource, ProcMeminfoSource};
-use crate::qga::VirshGuestAgent;
 use crate::resize_sink::VirshResizeSink;
-use crate::runtime::{evaluate_memory_decision, GuestStatsSource, MemoryStateSource};
+use crate::runtime::MemoryStateSource;
 use crate::target_policy::{clear_actuation_latch, read_controller_status};
 use crate::virsh::{Virsh, VirshCommand};
 use crate::xml_source::VirshXmlSource;
@@ -26,9 +23,6 @@ const DEFAULT_CONNECTION: &str = "qemu:///system";
 #[derive(Debug, PartialEq, Eq)]
 pub enum CliCommand {
     Status {
-        connection: String,
-    },
-    Decision {
         connection: String,
     },
     Attest {
@@ -84,28 +78,17 @@ pub fn parse_args(args: &[String]) -> Result<Option<CliCommand>, String> {
     };
     if !matches!(
         mode,
-        "status"
-            | "decision"
-            | "attest"
-            | "snapshot"
-            | "validate"
-            | "resize"
-            | "abandon-shrink"
-            | "clear-latch"
+        "status" | "attest" | "snapshot" | "validate" | "resize" | "abandon-shrink" | "clear-latch"
     ) {
         return Err(format!("unknown CLI command: {mode}\n{}", usage()));
     }
-    if matches!(mode, "status" | "decision") {
+    if mode == "status" {
         let connection = match args {
             [_] => DEFAULT_CONNECTION.to_owned(),
             [_, option, value] if option == "--connect" && !value.is_empty() => value.clone(),
             _ => return Err(usage().to_owned()),
         };
-        return Ok(Some(if mode == "status" {
-            CliCommand::Status { connection }
-        } else {
-            CliCommand::Decision { connection }
-        }));
+        return Ok(Some(CliCommand::Status { connection }));
     }
     if mode == "clear-latch" {
         if args.len() < 2 || args.len() > 5 || args[1].trim().is_empty() {
@@ -349,7 +332,7 @@ fn required_option<T>(value: Option<T>, name: &str) -> Result<T, String> {
 }
 
 pub fn usage() -> &'static str {
-    "Usage: virtio-mem-host status [--connect URI]\n       virtio-mem-host decision [--connect URI]\n       virtio-mem-host clear-latch REASON [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
+    "Usage: virtio-mem-host status [--connect URI]\n       virtio-mem-host clear-latch REASON [--apply] [--connect URI]\n       virtio-mem-host attest VM ALIAS REVIEW_FILE --command-timeout-seconds N [--connect URI]\n       virtio-mem-host [snapshot|validate] VM ALIAS --command-timeout-seconds N [--connect URI]\n       virtio-mem-host resize VM ALIAS TARGET_BYTES --attestation FILE --host-min-headroom-bytes BYTES --command-timeout-seconds N [--apply] [--connect URI]\n       virtio-mem-host abandon-shrink VM ALIAS IMMUTABLE_TARGET_BYTES --attestation FILE --command-timeout-seconds N --sample-interval-seconds N --convergence-timeout-seconds N [--apply] [--connect URI]"
 }
 
 pub fn run(command: CliCommand) -> Result<(), String> {
@@ -364,7 +347,6 @@ fn run_with<H: HostMemorySource, W: Write>(
 ) -> Result<(), String> {
     match command {
         CliCommand::Status { connection } => run_configured_status(&connection, output),
-        CliCommand::Decision { connection } => run_configured_decision(&connection, output),
         CliCommand::ClearLatch {
             reason,
             connection,
@@ -529,66 +511,6 @@ fn run_configured_status<W: Write>(connection: &str, output: &mut W) -> Result<(
     serde_json::to_writer_pretty(&mut *output, &status)
         .map_err(|error| format!("encode controller status: {error}"))?;
     writeln!(output).map_err(|error| error.to_string())
-}
-
-fn run_configured_decision<W: Write>(connection: &str, output: &mut W) -> Result<(), String> {
-    let config = HostConfig::from_env().map_err(|error| error.to_string())?;
-    let virsh = Virsh::with_connection(
-        config.virsh_binary.clone(),
-        config.command_timeout,
-        connection,
-    );
-    let state_source =
-        VirshXmlSource::new(virsh.clone(), config.vm_name.clone(), config.alias.clone());
-    match config.stats_source {
-        StatsSource::DomMemStat => run_decision_with(
-            DomMemStatSource::new(
-                virsh,
-                config.vm_name.clone(),
-                config.stats_max_age,
-                config.stats_future_tolerance,
-            ),
-            state_source,
-            &config,
-            "dommemstat",
-            output,
-        ),
-        StatsSource::Qga => run_decision_with(
-            VirshGuestAgent::new(virsh, config.vm_name.clone()),
-            state_source,
-            &config,
-            "qga",
-            output,
-        ),
-    }
-}
-
-fn run_decision_with<G: GuestStatsSource, S: MemoryStateSource, W: Write>(
-    stats_source: G,
-    state_source: S,
-    config: &HostConfig,
-    source_name: &str,
-    output: &mut W,
-) -> Result<(), String> {
-    let state = state_source.memory_state()?;
-    state.validate().map_err(|error| error.to_string())?;
-    let stats = stats_source.get_memory_stats()?;
-    let decision = evaluate_memory_decision(&stats, state, config)?;
-    writeln!(output, "source={source_name}").map_err(|error| error.to_string())?;
-    writeln!(output, "free_bytes={}", stats.free_bytes).map_err(|error| error.to_string())?;
-    writeln!(output, "available_bytes={}", stats.available_bytes)
-        .map_err(|error| error.to_string())?;
-    writeln!(output, "requested_bytes={}", state.requested_bytes)
-        .map_err(|error| error.to_string())?;
-    writeln!(output, "current_bytes={}", state.current_bytes).map_err(|error| error.to_string())?;
-    match decision {
-        ResizeDecision::NoChange => writeln!(output, "decision=no_change"),
-        ResizeDecision::WaitForConvergence => writeln!(output, "decision=wait_for_convergence"),
-        ResizeDecision::Request { requested_bytes } => {
-            writeln!(output, "decision=request target_bytes={requested_bytes}")
-        }
-    }
-    .map_err(|error| error.to_string())
 }
 
 fn run_snapshot_with<C: VirshCommand, W: Write>(
@@ -798,7 +720,7 @@ mod tests {
     use super::*;
     use crate::compatibility_source::FixedCompatibilitySource;
     use crate::virsh::VirshError;
-    use virtio_mem_core::{MemoryStats, VirtioMemCompatibility, VirtioMemState};
+    use virtio_mem_core::VirtioMemCompatibility;
 
     const GIB: u64 = 1 << 30;
     const CONVERGED_XML: &str = "<domain><devices><memory model='virtio-mem' dynamic-memslots='on' unplugged-inaccessible='on'><target><size unit='GiB'>8</size><block unit='MiB'>2</block><requested unit='GiB'>4</requested><current unit='GiB'>4</current></target><alias name='memory0'/></memory></devices></domain>";
@@ -900,12 +822,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_args(&args(&["decision"])).expect("decision"),
-            Some(CliCommand::Decision {
-                connection: DEFAULT_CONNECTION.to_owned()
-            })
-        );
-        assert_eq!(
             parse_args(&args(&[
                 "abandon-shrink",
                 "guest",
@@ -932,13 +848,6 @@ mod tests {
                 command_timeout_seconds: 4,
                 sample_interval_seconds: 2,
                 convergence_timeout_seconds: 8,
-            })
-        );
-        assert_eq!(
-            parse_args(&args(&["decision", "--connect", "test:///default"]))
-                .expect("decision connection"),
-            Some(CliCommand::Decision {
-                connection: "test:///default".to_owned()
             })
         );
         assert_eq!(
@@ -1083,91 +992,6 @@ mod tests {
         )
         .is_err());
         assert!(calls.borrow().is_empty());
-    }
-
-    struct FixedStats(MemoryStats);
-
-    impl GuestStatsSource for FixedStats {
-        fn get_memory_stats(&self) -> Result<MemoryStats, String> {
-            Ok(MemoryStats {
-                free_bytes: self.0.free_bytes,
-                available_bytes: self.0.available_bytes,
-                total_bytes: self.0.total_bytes,
-            })
-        }
-    }
-
-    struct FixedState(VirtioMemState);
-
-    impl MemoryStateSource for FixedState {
-        fn memory_state(&self) -> Result<VirtioMemState, String> {
-            Ok(self.0)
-        }
-    }
-
-    #[test]
-    fn decision_preview_uses_the_runtime_evaluator_without_actuation() {
-        let config = HostConfig {
-            vm_name: "guest".to_owned(),
-            alias: "memory0".to_owned(),
-            min_memory_bytes: 4 * GIB,
-            max_memory_bytes: 8 * GIB,
-            lower_threshold_bytes: GIB,
-            upper_threshold_bytes: 3 * GIB,
-            grow_step_bytes: GIB,
-            shrink_step_bytes: 64 * 1024 * 1024,
-            fixed_visible_base_bytes: 4 * GIB,
-            physical_reserve_bytes: 2 * GIB,
-            commit_reserve_bytes: 2 * GIB,
-            safe_floor_physical_reserve_bytes: GIB,
-            safe_floor_commit_reserve_bytes: GIB,
-            reclaim_history: Duration::from_secs(600),
-            reclaim_max_gap: Duration::from_secs(60),
-            downward_hysteresis_bytes: 256 * 1024 * 1024,
-            policy_state_path: "state.json".to_owned(),
-            poll_interval: Duration::from_secs(30),
-            command_timeout: Duration::from_secs(10),
-            convergence_timeout: Duration::from_secs(300),
-            virsh_binary: "virsh".to_owned(),
-            stats_source: StatsSource::DomMemStat,
-            demand_source: crate::config::DemandSourceMode::Raw,
-            stats_max_age: Duration::from_secs(60),
-            stats_future_tolerance: Duration::from_secs(5),
-            raw_telemetry_path: "guest.telemetry.jsonl".to_owned(),
-            raw_telemetry_ack_path: "guest.telemetry.ack.json".to_owned(),
-            raw_telemetry_transport: crate::config::RawTelemetryTransport::File,
-            raw_telemetry_service_name: "VirtioMemService".to_owned(),
-            raw_telemetry_max_age: Duration::from_secs(60),
-            raw_telemetry_future_tolerance: Duration::from_secs(5),
-            host_min_headroom_bytes: 4 * GIB,
-            compatibility_attestation_path: "reviewed.json".to_owned(),
-            automatic_windows_shrink: false,
-            shrink_renotification: false,
-            shrink_retry_delays: Vec::new(),
-            observe_only: false,
-        };
-        let mut output = Vec::new();
-        run_decision_with(
-            FixedStats(MemoryStats {
-                free_bytes: GIB / 2,
-                available_bytes: 6 * GIB,
-                total_bytes: 6 * GIB,
-            }),
-            FixedState(VirtioMemState {
-                size_bytes: 10 * GIB,
-                block_size_bytes: 2 * 1024 * 1024,
-                requested_bytes: 4 * GIB,
-                current_bytes: 4 * GIB,
-            }),
-            &config,
-            "dommemstat",
-            &mut output,
-        )
-        .expect("valid preview");
-        assert_eq!(
-            String::from_utf8(output).expect("UTF-8 output"),
-            "source=dommemstat\nfree_bytes=536870912\navailable_bytes=6442450944\nrequested_bytes=4294967296\ncurrent_bytes=4294967296\ndecision=request target_bytes=5368709120\n"
-        );
     }
 
     #[test]

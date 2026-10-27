@@ -165,7 +165,7 @@ impl TargetPolicyConfig {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TargetEstimator {
     config: TargetPolicyConfig,
     state: TargetEstimatorState,

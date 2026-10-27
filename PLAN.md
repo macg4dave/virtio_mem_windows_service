@@ -36,11 +36,11 @@ platform risk: Windows virtio-mem unplug has already stalled once (Phase 0).
 | Item | Reality |
 | --- | --- |
 | Code size | 29,641 Rust source lines, including tests, comments, and blanks; not a production-code count |
-| Non-Windows tests | 2026-10-26: core 78, host 88, xtask 45 pass with `--locked` |
+| Non-Windows tests | 2026-10-26: core 65, host 88, xtask 45 pass with `--locked` |
 | `windows` crate | `cargo clippy -p virtio-mem-service --all-targets --target x86_64-pc-windows-gnu` passes on Linux (type-check only; no MinGW linker installed, so no binary). Native service behaviour requires Windows execution |
 | Automatic resizing | Earlier "never enabled" claim was wrong. Archived workload run `qualification-1789231813766-72447` records 1,098,907,648 bytes of peak growth but zero accepted reclaim; the later passing run explicitly required no resizing. The installed host unit is currently disabled/inactive |
 | Multi-VM pool (`global_pool.rs`, `pool_ledger.rs`, ~2.4k lines) | Pure arbitration with strict priority, plus a ledger; unit-tested but not yet wired into the host. This is the product's core goal (Phase 4) |
-| Host config | ~35 `VIRTIO_MEM_*` env vars, 2 demand-source modes, 2 raw transports; one target policy plus `VIRTIO_MEM_OBSERVE_ONLY` |
+| Host config | ~30 `VIRTIO_MEM_*` env vars; raw Windows telemetry only (file or QGA-file transport); one target policy plus `VIRTIO_MEM_OBSERVE_ONLY` |
 
 Growth has occurred in an earlier automatic workload run. That does not prove
 reliable shrink or unattended operation. Those outcomes still require direct
@@ -155,10 +155,11 @@ remain acceptance work, to be exercised through the application.
 Keep:
 
 - Windows service: sample `GlobalMemoryStatusEx` and commit info every N
-  seconds, write one JSON line atomically. Install/run as a service. (Skip
-  this if Phase 0 says dommemstat is enough.)
+  seconds, write one JSON line atomically. Install/run as a service.
+  **Decided:** raw Windows telemetry is the only demand source; the
+  guest-stats/dommemstat path was removed.
 - Host daemon, one VM, one device:
-  1. read guest stats (QGA file read or dommemstat)
+  1. read guest telemetry (QGA file read)
   2. read live device XML (`requested`, `current`, block size, max)
   3. compute one bounded, block-aligned device target using the contract below
   4. grow promptly in bounded steps when target exceeds current; shrink only after
@@ -185,15 +186,14 @@ policy change, not an equivalent refactor.
 
 Proposed removals, subject to the Phase 0 result and retained contracts:
 
-- `shrink_recovery` until shrink is proven, compatibility attestation,
-  and the custom QGA memory-command path. Keep `global_pool` and `pool_ledger`
-  for Phase 4.
+- Compatibility attestation, if a simpler check proves sufficient. Keep
+  `global_pool` and `pool_ledger` for Phase 4, and `AbandonToCurrent` for the
+  manual `abandon-shrink` recovery.
 - Keep `tools/xtask`: the user retains it for AI-driven testing and
   qualification. Consolidate duplication inside it; do not delete commands.
   Direct Cargo commands, listed below, are the local gate.
 
-Do not remove dommemstat with the unsupported custom QGA command if Phase 0
-selects dommemstat. Preserve command ownership, uncertain-outcome handling,
+Preserve command ownership, uncertain-outcome handling,
 host reserve checks, and required recovery behavior when removing larger
 compatibility/status/recovery layers. Check actual API and CLI consumers before
 removing public contracts; do not introduce speculative compatibility layers.
@@ -213,12 +213,24 @@ is a simplification aim, not a measured reduction or correctness criterion.
 - Manual runs need no password: `dave` is in the `libvirt` group (see Phase 0
   evidence). `sudo` also works, as the startup authorization error says.
 - No current Windows binary build or live deployment of the Phase 1 changes.
+- Before redeploying the host daemon: telemetry acceptance moved from the
+  `VIRTIO_MEM_RAW_TELEMETRY_ACK_PATH` file into the policy checkpoint
+  (`accepted_telemetry`). The setting is ignored and the old file is unused.
+  The first record after the upgrade is treated as new; retired-session
+  history starts empty, while freshness and identity checks still apply.
+- Before redeploying the host daemon: `VIRTIO_MEM_DEMAND_SOURCE` other than
+  `raw` now refuses to start; the stats-source, threshold, stats-age and
+  shrink re-notification settings are ignored if still present.
 - Before redeploying the host daemon: shadow/growth pressure modes are gone.
   A config with `VIRTIO_MEM_PRESSURE_POLICY_MODE` other than `legacy` now
   refuses to start (deliberately, so a non-actuating `shadow` deployment never
   silently starts resizing). Use `VIRTIO_MEM_OBSERVE_ONLY=true` for a
   no-resize run; xtask `--expect-no-resize` requires it. The deployed
-  `/etc/virtio-mem-host/win11_gpu.conf` was not readable and is unchecked.
+  `/etc/virtio-mem-host/win11_gpu.conf` carries shadow-mode margin settings and
+  a shadow log path, so it was a shadow (non-resizing) deployment. When the new
+  binary is deployed, and not before, replace its `VIRTIO_MEM_PRESSURE_*` lines
+  with `VIRTIO_MEM_OBSERVE_ONLY=true`. The old binary ignores that setting and
+  would resize if started with the shadow lines removed.
 - Controller status JSON is now version 4 (pressure fields removed). xtask and
   the host binary must be the same build. Existing policy checkpoints that
   carry the retired `pressure_shadow` field still load; it is dropped on save.
@@ -315,13 +327,13 @@ instructions. It is not evidence that the platform works.
 
 - **Windows service:** command dispatch -> configuration -> `RawTelemetryWorker`
   -> native memory APIs -> telemetry envelope -> `AtomicRawTelemetryPublisher`.
-  SCM and console startup construct the worker separately.
-- **Host raw telemetry:** configuration -> file or QGA file reader ->
-  validation/replay acknowledgement -> `TargetDemandSource` -> estimator and
-  `HostRuntime` -> host-memory gate -> resize sink
-  -> live XML observation.
-- **Host guest stats:** dommemstat or custom QGA command -> `plan_resize` -> the
-  same runtime, with different persistence and recovery behavior.
+  SCM and console startup share one worker constructor.
+- **Host:** configuration -> file or QGA file reader -> envelope validation ->
+  `TargetDemandSource` (acceptance via `AcceptedTelemetry`, stored in the
+  same checkpoint write as the estimator) -> `HostRuntime`, which owns
+  the operation lifecycle (durable intent and latch via the checkpoint,
+  `command_ownership` resolution, `reconcile` for every action) -> host-memory
+  gate -> resize sink -> live XML observation.
 - **Operational tooling:** xtask dispatches deployment and qualification,
   invokes local/remote processes, writes evidence, and can start controllers
   or workloads. It is not merely a build-command wrapper.
@@ -343,46 +355,6 @@ Source references describe the reviewed snapshot and may move during refactoring
 do not establish whether external consumers exist. All executable changes below
 belong to future work after the current phase's exit criteria.
 
-### 1. COMBINE — Resize lifecycle and authoritative command state
-
-- **Evidence/callers:** `host/src/runtime.rs:249`, `HostRuntime::run`;
-  `host/src/target_policy.rs:63`, `TargetDemandSource`;
-  `crates/virtio-mem-core/src/reconciler.rs:78`, `reconcile`;
-  `crates/virtio-mem-core/src/shrink_recovery.rs:142`, `ShrinkOperation`.
-  Each represents parts of pending operations, ownership, latching, or
-  convergence. Runtime keeps local ownership flags alongside checkpointed
-  intent. Durable pending shrink takes an earlier branch than the local
-  shrink observer.
-- **Canonical direction:** host runtime owns operation state, a pure reconciler
-  chooses actions, persistence stores that state, and status derives from it.
-- **Benefit:** remove competing lifecycle interpretations and synchronized flags.
-- **Preservation risk:** retain restart ownership, uncertain outcomes, and required
-  recovery before removing either path.
-
-### 3. COMBINE — Convergence timeout behavior
-
-- **Evidence/callers:** in `host/src/runtime.rs`, durable growth and the
-  pending-request branch return `ConvergenceTimeout`; durable shrink latches
-  through another branch. These paths serve the same runtime with different
-  sources.
-- **Canonical behavior:** one documented timeout transition consistent with
-  stopping actuation and reporting the stall.
-- **Benefit:** source selection does not change the timeout contract.
-- **Verification/risk:** retain observation and prohibit replay; cover both
-  telemetry sources and restart, including how deadlines behave across restart.
-
-### 4. COMBINE — Daemon and CLI policy evaluation
-
-- **Evidence/callers:** `host/src/cli.rs:551`, `run_configured_decision`, selects
-  only `stats_source` and invokes the threshold policy. It ignores the raw
-  demand source selected by `host/src/main.rs`.
-- **Canonical direction:** share the selected pure policy evaluation, or retain
-  the command as an explicitly named guest-stats diagnostic.
-- **Benefit:** diagnostic output describes the actual configured policy.
-- **Verification/risk:** the existing raw evaluator writes acknowledgements and
-  checkpoints; do not reuse it directly for a read-only preview. Verify decision
-  parity for identical inputs and absence of writes.
-
 ### 5. IMPROVE — Specify target semantics before replacing math
 
 - **Evidence/callers:** `crates/virtio-mem-core/src/target_controller.rs:375`,
@@ -396,32 +368,14 @@ belong to future work after the current phase's exit criteria.
 - **Verification/risk:** preserve physical floors, capacity limits, alignment,
   and overflow handling. A different policy is an intentional behavior change.
 
-### 6. COMBINE — Accepted-sample identity and persistence
+### 7. IMPROVE — Configuration file
 
-- **Evidence/callers:** `host/src/raw_telemetry.rs:290`, `validate_contents`,
-  serves file and QGA readers and persists replay acceptance before the
-  estimator consumes the sample. `TargetEstimator::prepare_sample` at
-  `crates/virtio-mem-core/src/target_controller.rs:336` independently tracks
-  ordering.
-- **Canonical direction:** transport obtains bytes, envelope validation
-  establishes validity, and host policy state owns acceptance. Retain distinct
-  history-window checks where their purposes differ.
-- **Benefit:** fewer competing acceptance records and persistence-order problems.
-- **Verification/risk:** preserve unchanged-record handling, altered-record
-  rejection, retired sessions, and restart continuity. Persistence failure must
-  not become successful acceptance on the next read.
-
-### 7. IMPROVE / DELETE — Configuration and policy modes
-
-- **Evidence/callers:** `host/src/config.rs:142`, `HostConfig::from_env`, loads
-  settings for multiple paths regardless of selection. There are two demand
-  modes and two raw transports.
-- **Canonical direction:** after Phase 0, one selected telemetry path and one
-  policy through `HostConfig`; keep automatic shrink default-off.
-- **Benefit:** fewer invalid combinations and irrelevant required settings.
-- **Verification/risk:** migrate configuration with mode removal, including the
-  systemd example. Introduce TOML only with that migration; preserve required
-  transport settings, timeouts, permissions, and deliberate defaults.
+- **Evidence/callers:** `host/src/config.rs`, `HostConfig::from_env`, reads
+  about 30 environment variables. One demand source and one policy remain; the
+  `file` raw transport serves local testing and `qga-file` production.
+- **Canonical direction:** the one config file with per-VM priority (row 8).
+- **Verification/risk:** migrate the systemd example with it; preserve
+  required transport settings, timeouts, permissions, and deliberate defaults.
 
 ### 8. KEEP / IMPROVE — Pool arbitration and ledger (Phase 4)
 
@@ -446,21 +400,6 @@ belong to future work after the current phase's exit criteria.
   recovery have different preconditions. Do not merge those checks or remove
   the immediate live-state race check as apparent duplicate work.
 
-### 11. COMBINE / IMPROVE — Windows startup and cancellation
-
-- **Evidence/callers:** worker construction is repeated in `run_service` at
-  `windows/src/main.rs:58` and `service_main` at
-  `windows/src/service_scm.rs:402`. Separately, `StopSignal` at
-  `windows/src/service_host.rs:54` updates cancellation and notifies without
-  holding the mutex used by condition-variable waits. Cancellation can occur
-  between a predicate check and waiting, losing the notification.
-- **Canonical direction:** one worker-construction path and one correctly
-  synchronized cancellation protocol in the existing service lifecycle.
-- **Benefit:** console and SCM execution cannot drift; stopping wakes waiters.
-- **Verification/risk:** preserve dispatcher attachment before configuration
-  loading and correct Running/Failed publication. Use controlled interleavings
-  for cancellation during initialization, polling, and shutdown.
-
 ### 12. DELETE / IMPROVE — Tooling duplicates product contracts
 
 - **Evidence/callers:** `tools/xtask/src/windows.rs:765`, `windows::deploy`,
@@ -482,8 +421,7 @@ belong to future work after the current phase's exit criteria.
 
 ### 14. KEEP / SEPARATE — Different transport and platform contracts
 
-- **Evidence/callers:** `host/src/qga.rs` and `host/src/dommemstat.rs` provide
-  different evidence. `windows/src/demand.rs` uses Windows atomic replacement;
+- **Evidence/callers:** `windows/src/demand.rs` uses Windows atomic replacement;
   `host/src/target_policy.rs` publishes durable Linux checkpoints. Windows Event
   Log and host stderr/journal output also have different consumers.
 - **Canonical shared foundations:** `parse_virtio_mem_xml_for_alias` at
@@ -529,12 +467,8 @@ milestone system.
 | --- | --- | --- |
 | 0 | Complete the existing platform investigation | Record repeated grow/shrink outcomes, timing, stalls, and dommemstat usefulness here. Separately authorized live work; no implementation expansion. |
 | 1 | Define the minimum loop's contract | Specify telemetry source, whole-guest/device mapping, physical floor, aligned maximum, default-off shrink, timeout, restart ownership, and recovery before replacing policy. |
-| 3 | Correct failure-state handling | Timeout behavior is consistent across sources; cancellation cannot miss a wakeup. Verify with fake observations/clocks and controlled thread ordering. |
-| 5 | Unify action selection and lifecycle state | One pending-operation owner and one action path serve the retained source. Cover convergence, external divergence, rejection, ambiguous execution, timeout, cancellation, and restart. |
-| 6 | Make diagnostics reflect the selected policy | Preview agrees with daemon policy for identical inputs and writes no controller or replay state. |
-| 7 | Consolidate sample acceptance and persistence | One authoritative accepted identity; persistence failure cannot masquerade as acceptance. Cover unchanged, replayed, altered, stale, restarted, and retired-session records. |
-| 8 | Reduce remaining modes and move to the config file | Pick one demand source; move settings to the one config file with per-VM priority. Remove settings and feature paths together; update xtask, Make targets, and IDE tasks to match. |
-| 9 | Simplify Windows wiring and finish verification | One worker-construction path; retained atomic publication and SCM tests pass. Build for a Windows target, then separately verify native service behavior. |
+| 8 | Move to the config file | Move settings to the one config file with per-VM priority. Remove settings and feature paths together; update xtask, Make targets, and IDE tasks to match. |
+| 9 | Finish Windows verification | Build a Windows binary and run the `windows` crate tests on Windows (they type-check on Linux but cannot run there; this includes the stop-signal interleaving test). Then verify native service behaviour. |
 
 For authorized implementation changes, the Linux regression gate while xtask
 remains is:
@@ -557,9 +491,8 @@ commands as completed checks or authorization for live tests.
 
 ## Expected simplification
 
-After the Phase 0 decision, further reductions can remove duplicate histories,
-the alternate demand-source mode, and recovery machinery the retained product
-does not support. Preserve required failure and recovery behavior before removing
+The estimator's own ordering check (`prepare_sample`) remains as an invariant
+inside core; it no longer competes with a separately persisted record. Preserve required failure and recovery behavior before removing
 larger layers. Do not assume the SHA-256 dependencies are unused while the
 ledger, attestation, and fingerprints remain.
 

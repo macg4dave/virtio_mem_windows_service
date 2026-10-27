@@ -24,6 +24,8 @@ pub use event_log::{
     ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
 };
 pub use runtime::RawTelemetryWorker;
+#[cfg(windows)]
+pub use runtime::{native_raw_telemetry_worker, NativeRawTelemetryWorker};
 pub use service_host::StopSignal;
 pub use service_host::{ServiceHost, ServiceState, ServiceWorker};
 pub use service_scm::{
