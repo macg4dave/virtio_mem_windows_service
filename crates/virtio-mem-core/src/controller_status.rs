@@ -19,6 +19,8 @@ pub enum CommandDirection {
     Shrink,
     /// Accept what a stalled shrink left plugged by requesting `current`.
     SettleShrink,
+    /// Accept what a stalled growth plugged by requesting `current`.
+    SettleGrow,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,8 +4,9 @@
 Shows Windows-visible physical RAM using a fresh native snapshot on every tick.
 .DESCRIPTION
 Runs on Windows 11 in Windows PowerShell 5.1 or PowerShell 7 without elevation.
-Use Ctrl+C to stop. An in-place dashboard shows a table, rolling physical RAM
-history and total-RAM change events. Redirected output uses plain snapshots.
+Use Ctrl+C to stop. An in-place, colour dashboard on a blue console shows the
+memory table, usage bars, rolling physical RAM history and total-RAM change
+events. Redirected output uses the same layout as plain ASCII snapshots.
 This observes Windows-visible memory, not the hypervisor's requested allocation.
 .EXAMPLE
 .\Watch-Ram.ps1
@@ -74,17 +75,128 @@ namespace VirtioMemTools {
 '@
 }
 
+# Dashboard geometry: 78 columns by 28 rows fits the 80x30 minimum console.
+$FrameWidth = 78
+$PanelInner = $FrameWidth - 4
+$PlotWidth = 60
+$PlotHeight = 5
+$Background = [ConsoleColor]::DarkBlue
+
+# Box drawing and bar glyphs for the console; ASCII for redirected snapshots.
+$UnicodeGlyphs = @{
+    TopLeft = [char] 0x2554; TopRight = [char] 0x2557; BottomLeft = [char] 0x255A
+    BottomRight = [char] 0x255D; Horizontal = [char] 0x2550; Vertical = [char] 0x2551
+    TeeLeft = [char] 0x255F; TeeRight = [char] 0x2562; Rule = [char] 0x2500
+    Full = [char] 0x2588; Empty = [char] 0x2591; TotalMark = [char] 0x2501
+    Axis = [char] 0x2524; AxisCorner = [char] 0x2514; Up = [char] 0x25B2; Down = [char] 0x25BC
+    Dot = [char] 0x25CF
+}
+$AsciiGlyphs = @{
+    TopLeft = '+'; TopRight = '+'; BottomLeft = '+'; BottomRight = '+'; Horizontal = '='
+    Vertical = '|'; TeeLeft = '+'; TeeRight = '+'; Rule = '-'; Full = '#'; Empty = '.'
+    TotalMark = 'T'; Axis = '|'; AxisCorner = '+'; Up = '+'; Down = '-'; Dot = '*'
+}
+
 function Format-RamValue([decimal] $Bytes) {
     return ('{0:N3} GiB' -f ($Bytes / 1GB))
 }
 
-function New-RamBar([double] $Percent, [int] $Width = 30) {
-    $filled = [int] [math]::Round([math]::Max(0, [math]::Min(100, $Percent)) * $Width / 100)
-    return '[' + ('#' * $filled) + ('.' * ($Width - $filled)) + ']'
+function Get-LoadColor([double] $Percent) {
+    if ($Percent -ge 90) { return [ConsoleColor]::Red }
+    if ($Percent -ge 70) { return [ConsoleColor]::Yellow }
+    return [ConsoleColor]::Green
+}
+
+# A frame is a list of lines; each line is a list of coloured text segments.
+# Adjacent segments with the same colours merge so rendering stays cheap.
+function Start-FrameLine {
+    $script:FrameLine = New-Object 'System.Collections.Generic.List[object]'
+    $script:Frame.Add($script:FrameLine)
+}
+
+function Add-Text([string] $Text, [ConsoleColor] $Foreground = [ConsoleColor]::Gray,
+        [ConsoleColor] $Back = $Background) {
+    if ($Text.Length -eq 0) { return }
+    $last = if ($script:FrameLine.Count -gt 0) { $script:FrameLine[$script:FrameLine.Count - 1] }
+    if ($null -ne $last -and $last.Foreground -eq $Foreground -and $last.Back -eq $Back) {
+        $last.Text += $Text
+    } else {
+        $script:FrameLine.Add(@{ Text = $Text; Foreground = $Foreground; Back = $Back })
+    }
+}
+
+function Get-LineLength {
+    $length = 0
+    foreach ($segment in $script:FrameLine) { $length += $segment.Text.Length }
+    return $length
+}
+
+# Pads the current line to $Column, keeping the colours of the padding.
+function Add-PadTo([int] $Column, [ConsoleColor] $Back = $Background) {
+    $missing = $Column - (Get-LineLength)
+    if ($missing -gt 0) { Add-Text (' ' * $missing) ([ConsoleColor]::Gray) $Back }
+}
+
+function Add-Bar([string] $Title, [ConsoleColor] $Fill, [string] $Text) {
+    Start-FrameLine
+    $label = " $Title "
+    Add-Text $label ([ConsoleColor]::White) $Fill
+    Add-Text (' ' * ($FrameWidth - $label.Length - $Text.Length)) ([ConsoleColor]::White) $Fill
+}
+
+function Add-PanelTop([string] $Title, [string] $Detail = '') {
+    Start-FrameLine
+    Add-Text ([string] $G.TopLeft + $G.Horizontal) ([ConsoleColor]::Cyan)
+    Add-Text " $Title " ([ConsoleColor]::White)
+    if ($Detail) { Add-Text "$Detail " ([ConsoleColor]::DarkCyan) }
+    Add-Text ([string] $G.Horizontal * ($FrameWidth - 1 - (Get-LineLength))) ([ConsoleColor]::Cyan)
+    Add-Text ([string] $G.TopRight) ([ConsoleColor]::Cyan)
+}
+
+function Start-PanelRow {
+    Start-FrameLine
+    Add-Text ([string] $G.Vertical + ' ') ([ConsoleColor]::Cyan)
+}
+
+function Stop-PanelRow {
+    Add-PadTo ($FrameWidth - 2)
+    Add-Text (' ' + [string] $G.Vertical) ([ConsoleColor]::Cyan)
+}
+
+function Add-PanelRule {
+    Start-FrameLine
+    Add-Text ([string] $G.TeeLeft + ([string] $G.Rule * ($FrameWidth - 2)) + $G.TeeRight) ([ConsoleColor]::Cyan)
+}
+
+function Add-PanelBottom {
+    Start-FrameLine
+    Add-Text ([string] $G.BottomLeft + ([string] $G.Horizontal * ($FrameWidth - 2)) + $G.BottomRight) ([ConsoleColor]::Cyan)
+}
+
+function Add-Meter([string] $Label, [double] $Percent, [string] $Detail) {
+    $width = 36
+    $filled = [int] [math]::Round([math]::Max(0, [math]::Min(100, $Percent)) * $width / 100)
+    Start-PanelRow
+    Add-Text ($Label.PadRight(10)) ([ConsoleColor]::Gray)
+    Add-Text ([string] $G.Full * $filled) (Get-LoadColor $Percent)
+    Add-Text ([string] $G.Empty * ($width - $filled)) ([ConsoleColor]::DarkCyan)
+    Add-Text (' {0,5:N1}%' -f $Percent) (Get-LoadColor $Percent)
+    Add-Text ("  $Detail") ([ConsoleColor]::Gray)
+    Stop-PanelRow
+}
+
+function Add-MetricRow([string] $Label, [string] $Now, [string] $Session,
+        [ConsoleColor] $NowColor = [ConsoleColor]::White) {
+    Start-PanelRow
+    Add-Text ($Label.PadRight(20)) ([ConsoleColor]::Gray)
+    Add-Text ($Now.PadLeft(16)) $NowColor
+    Add-Text '    ' ([ConsoleColor]::Gray)
+    Add-Text $Session ([ConsoleColor]::Yellow)
+    Stop-PanelRow
 }
 
 $history = New-Object 'System.Collections.Generic.List[object]'
-$events = New-Object 'System.Collections.Generic.List[string]'
+$events = New-Object 'System.Collections.Generic.List[object]'
 $previousTotal = $null
 $baselineTotal = $null
 $minimumTotal = $null
@@ -97,12 +209,20 @@ $sampleNumber = 0
 $startedAt = [DateTimeOffset]::Now
 $interactive = $false
 $oldCursorVisible = $true
+$oldForeground = $null
+$oldBackground = $null
+$oldEncoding = $null
 if (-not $AsObject -and -not $NoClear) {
     try {
         $interactive = -not [Console]::IsOutputRedirected -and
             [Console]::WindowWidth -ge 80 -and [Console]::WindowHeight -ge 30
         if ($interactive) {
             $oldCursorVisible = [Console]::CursorVisible
+            $oldForeground = [Console]::ForegroundColor
+            $oldBackground = [Console]::BackgroundColor
+            $oldEncoding = [Console]::OutputEncoding
+            [Console]::OutputEncoding = [Text.Encoding]::UTF8
+            [Console]::BackgroundColor = $Background
             [Console]::Clear()
             [Console]::CursorVisible = $false
         }
@@ -110,6 +230,13 @@ if (-not $AsObject -and -not $NoClear) {
         # ISE, remoting and redirected hosts may not expose a console.
         $interactive = $false
     }
+}
+
+function Restore-Console {
+    if ($null -ne $oldEncoding) { [Console]::OutputEncoding = $oldEncoding }
+    if ($null -ne $oldBackground) { [Console]::BackgroundColor = $oldBackground }
+    if ($null -ne $oldForeground) { [Console]::ForegroundColor = $oldForeground }
+    [Console]::CursorVisible = $oldCursorVisible
 }
 
 try {
@@ -139,8 +266,7 @@ try {
         $peakInUse = [math]::Max($peakInUse, $inUse)
         if ($delta -ne 0) {
             if ($delta -gt 0) { $addedBytes += $delta } else { $removedBytes -= $delta }
-            $events.Insert(0, ('{0:HH:mm:ss}  {1,10:+0.00;-0.00} MiB  total {2:N3} GiB' -f
-                $now, ($delta / 1MB), ($total / 1GB)))
+            $events.Insert(0, [pscustomobject] @{ Timestamp = $now; Delta = $delta; Total = $total })
             if ($events.Count -gt 3) { $events.RemoveAt(3) }
         }
         $row = [pscustomobject] [ordered] @{
@@ -166,44 +292,46 @@ try {
         } else {
             $history.Add($row)
             if ($history.Count -gt $HistorySamples) { $history.RemoveAt(0) }
-            $lines = New-Object 'System.Collections.Generic.List[string]'
-            $lines.Add((' RAM WATCH | {0} | {1:HH:mm:ss} | refresh {2} ms' -f
-                $env:COMPUTERNAME, $now, $IntervalMilliseconds))
-            $lines.Add((' Session {0} | samples {1} | Ctrl+C to stop' -f
-                ($now - $startedAt).ToString('hh\:mm\:ss'), ($sampleNumber + 1)))
-            $lines.Add(' +---------------------+------------------+-------------------------------+')
-            $lines.Add(' | PHYSICAL RAM        | NOW              | SESSION                       |')
-            $lines.Add(' +---------------------+------------------+-------------------------------+')
-            $lines.Add((' | Total               | {0,16} | min {1,8:N3} / max {2,8:N3} GiB |' -f
-                (Format-RamValue $total), ($minimumTotal / 1GB), ($maximumTotal / 1GB)))
-            $lines.Add((' | In use              | {0,16} | peak {1,20:N3} GiB |' -f
-                (Format-RamValue $inUse), ($peakInUse / 1GB)))
-            $lines.Add((' | Available           | {0,16} | low  {1,20:N3} GiB |' -f
-                (Format-RamValue $available), ($minimumAvailable / 1GB)))
-            $netText = '{0:+0.00;-0.00;0.00} MiB' -f (([decimal] $total - $baselineTotal) / 1MB)
-            $changeText = '+{0:N1} / -{1:N1} MiB' -f ($addedBytes / 1MB), ($removedBytes / 1MB)
-            $lines.Add((' | Net total change    | {0,16} | {1,-29} |' -f $netText, $changeText))
-            $lines.Add(' +---------------------+------------------+-------------------------------+')
-            $lines.Add((' In use {0} {1,5:N1}%' -f
-                (New-RamBar (100.0 * $inUse / $total)), (100.0 * $inUse / $total)))
-            $lines.Add((' Commit {0} {1,5:N1}%' -f
-                (New-RamBar (100.0 * $commit / $limit)), (100.0 * $commit / $limit)))
-            $lines.Add((' Commit: {0} / {1}; headroom {2}' -f
-                (Format-RamValue $commit), (Format-RamValue $limit), (Format-RamValue ($limit - $commit))))
-            $lines.Add('')
+            $G = if ($interactive) { $UnicodeGlyphs } else { $AsciiGlyphs }
+            $script:Frame = New-Object 'System.Collections.Generic.List[object]'
+            $usedPercent = 100.0 * $inUse / $total
+            $commitPercent = 100.0 * $commit / $limit
+
+            $clock = '{0:HH:mm:ss}' -f $now
+            Add-Bar ('{0} VIRTIO-MEM RAM MONITOR  {1}' -f $G.Dot, $env:COMPUTERNAME) ([ConsoleColor]::DarkCyan) $clock
+            Add-Text $clock ([ConsoleColor]::White) ([ConsoleColor]::DarkCyan)
+            Start-FrameLine
+            Add-Text (' Session {0}   samples {1}   refresh {2} ms' -f
+                ($now - $startedAt).ToString('hh\:mm\:ss'), ($sampleNumber + 1), $IntervalMilliseconds) ([ConsoleColor]::Gray)
+            Add-PadTo $FrameWidth
+
+            Add-PanelTop 'PHYSICAL MEMORY' 'now / session'
+            Add-MetricRow 'Total' (Format-RamValue $total) ('min {0:N3} / max {1:N3} GiB' -f
+                ($minimumTotal / 1GB), ($maximumTotal / 1GB))
+            Add-MetricRow 'In use' (Format-RamValue $inUse) ('peak {0:N3} GiB' -f ($peakInUse / 1GB)) (Get-LoadColor $usedPercent)
+            Add-MetricRow 'Available' (Format-RamValue $available) ('low {0:N3} GiB' -f ($minimumAvailable / 1GB))
+            $net = [decimal] $total - $baselineTotal
+            $netColor = if ($net -gt 0) { [ConsoleColor]::Green } elseif ($net -lt 0) { [ConsoleColor]::Red } else { [ConsoleColor]::White }
+            Add-MetricRow 'Net total change' ('{0:+0.00;-0.00;0.00} MiB' -f ($net / 1MB)) ('added {0:N1} / removed {1:N1} MiB' -f
+                ($addedBytes / 1MB), ($removedBytes / 1MB)) $netColor
+            Add-MetricRow 'Commit headroom' (Format-RamValue ($limit - $commit)) ('{0} of {1}' -f
+                (Format-RamValue $commit), (Format-RamValue $limit))
+            Add-PanelRule
+            Add-Meter 'In use' $usedPercent ('{0:N2} / {1:N2} GiB' -f ($inUse / 1GB), ($total / 1GB))
+            Add-Meter 'Commit' $commitPercent ('{0:N2} / {1:N2} GiB' -f ($commit / 1GB), ($limit / 1GB))
+            Add-PanelBottom
+
             # Absolute GiB, not percentages: total changes remain visible even
             # when Windows grows memory during a workload. Scale includes total.
             $scale = [math]::Ceiling((($history | Measure-Object TotalBytes -Maximum).Maximum / 1GB))
             $scale = [math]::Max(1, $scale)
-            $plotWidth = 60
-            $plotHeight = 5
             $points = $history.ToArray()
-            if ($history.Count -gt $plotWidth) {
+            if ($history.Count -gt $PlotWidth) {
                 # Compress the entire selected window into columns, preserving
                 # peak in-use within each bin and its latest physical total.
-                $points = @(for ($column = 0; $column -lt $plotWidth; $column++) {
-                    $first = [int] [math]::Floor($column * $history.Count / $plotWidth)
-                    $last = [int] [math]::Floor(($column + 1) * $history.Count / $plotWidth) - 1
+                $points = @(for ($column = 0; $column -lt $PlotWidth; $column++) {
+                    $first = [int] [math]::Floor($column * $history.Count / $PlotWidth)
+                    $last = [int] [math]::Floor(($column + 1) * $history.Count / $PlotWidth) - 1
                     $peak = [uint64] 0
                     for ($index = $first; $index -le $last; $index++) {
                         $peak = [math]::Max($peak, $history[$index].InUseBytes)
@@ -216,49 +344,78 @@ try {
                 })
             }
             $span = ($history[$history.Count - 1].Timestamp - $history[0].Timestamp).TotalSeconds
-            $lines.Add((' RAM HISTORY | last {0:N1}s | T=total  #=peak used | scale 0..{1} GiB' -f $span, $scale))
-            for ($y = $plotHeight; $y -ge 0; $y--) {
-                $label = $scale * $y / $plotHeight
-                $cells = ''
+            Add-PanelTop 'RAM HISTORY' ('last {0:N0}s  {1}=total  {2}=peak used  0..{3} GiB' -f
+                $span, $G.TotalMark, $G.Full, $scale)
+            for ($y = $PlotHeight; $y -ge 0; $y--) {
+                Start-PanelRow
+                Add-Text ('{0,5:N1} {1}' -f ($scale * $y / $PlotHeight), $G.Axis) ([ConsoleColor]::DarkCyan)
                 foreach ($point in $points) {
-                    $totalLevel = [int] [math]::Round(($point.TotalBytes / 1GB) / $scale * $plotHeight)
-                    $usedLevel = [int] [math]::Round(($point.InUseBytes / 1GB) / $scale * $plotHeight)
-                    if ($y -eq $totalLevel) { $cells += 'T' }
-                    elseif ($y -le $usedLevel) { $cells += '#' }
-                    else { $cells += ' ' }
+                    $totalLevel = [int] [math]::Round(($point.TotalBytes / 1GB) / $scale * $PlotHeight)
+                    $usedLevel = [int] [math]::Round(($point.InUseBytes / 1GB) / $scale * $PlotHeight)
+                    if ($y -eq $totalLevel) {
+                        Add-Text ([string] $G.TotalMark) ([ConsoleColor]::Yellow)
+                    } elseif ($y -le $usedLevel) {
+                        Add-Text ([string] $G.Full) (Get-LoadColor (100.0 * $point.InUseBytes / $point.TotalBytes))
+                    } else {
+                        Add-Text ' '
+                    }
                 }
-                $lines.Add((' {0,5:N1} |{1}' -f $label, $cells.PadRight($plotWidth)))
+                Stop-PanelRow
             }
-            $lines.Add('       +' + ('-' * $plotWidth))
-            $lines.Add(('        {0:HH:mm:ss} oldest                         newest {1:HH:mm:ss}' -f
-                $points[0].Timestamp, $points[-1].Timestamp))
-            $lines.Add(' TOTAL RAM CHANGES (newest first)')
+            Start-PanelRow
+            Add-Text ('      ' + [string] $G.AxisCorner + ([string] $G.Rule * $PlotWidth)) ([ConsoleColor]::DarkCyan)
+            Stop-PanelRow
+            Start-PanelRow
+            Add-Text ('       {0:HH:mm:ss} oldest' -f $points[0].Timestamp) ([ConsoleColor]::Gray)
+            Add-PadTo (2 + 7 + $PlotWidth - 15)
+            Add-Text ('newest {0:HH:mm:ss}' -f $points[-1].Timestamp) ([ConsoleColor]::Gray)
+            Stop-PanelRow
+            Add-PanelBottom
+
+            Add-PanelTop 'TOTAL RAM CHANGES' 'newest first'
             for ($eventIndex = 0; $eventIndex -lt 3; $eventIndex++) {
-                if ($eventIndex -lt $events.Count) { $lines.Add(' ' + $events[$eventIndex]) }
-                elseif ($eventIndex -eq 0) { $lines.Add(' No total-RAM changes observed this session.') }
-                else { $lines.Add('') }
+                Start-PanelRow
+                if ($eventIndex -lt $events.Count) {
+                    $change = $events[$eventIndex]
+                    $up = $change.Delta -gt 0
+                    $color = if ($up) { [ConsoleColor]::Green } else { [ConsoleColor]::Red }
+                    Add-Text ('{0:HH:mm:ss}  ' -f $change.Timestamp) ([ConsoleColor]::Gray)
+                    Add-Text ('{0} {1,10:+0.00;-0.00} MiB' -f $(if ($up) { $G.Up } else { $G.Down }), ($change.Delta / 1MB)) $color
+                    Add-Text ('   total {0:N3} GiB' -f ($change.Total / 1GB)) ([ConsoleColor]::White)
+                } elseif ($eventIndex -eq 0) {
+                    Add-Text 'No total-RAM changes observed this session.' ([ConsoleColor]::DarkCyan)
+                }
+                Stop-PanelRow
             }
-            $lines.Add(' Available includes standby/free/zero pages; commit is not resident RAM.')
-            $lines.Add(' Windows-visible RAM, not hypervisor requested bytes.')
+            Add-PanelBottom
+            Add-Bar 'Ctrl+C stop | Windows-visible RAM, not hypervisor requested bytes' ([ConsoleColor]::DarkCyan) ''
+
+            $plain = @($script:Frame | ForEach-Object {
+                (@($_ | ForEach-Object { $_.Text }) -join '').TrimEnd()
+            }) -join [Environment]::NewLine
             if ($interactive) {
                 try {
-                    $width = [Console]::WindowWidth - 1
-                    if ($width -lt 40 -or [Console]::WindowHeight -le $lines.Count) {
+                    if ([Console]::WindowWidth -le $FrameWidth -or [Console]::WindowHeight -le $script:Frame.Count) {
                         throw 'Console resized below dashboard dimensions.'
                     }
                     [Console]::SetCursorPosition(0, 0)
-                    $frame = @($lines | ForEach-Object {
-                        if ($_.Length -gt $width) { $_.Substring(0, $width) } else { $_.PadRight($width) }
-                    }) -join [Environment]::NewLine
-                    [Console]::Write($frame)
+                    foreach ($line in $script:Frame) {
+                        foreach ($segment in $line) {
+                            [Console]::ForegroundColor = $segment.Foreground
+                            [Console]::BackgroundColor = $segment.Back
+                            [Console]::Write($segment.Text)
+                        }
+                        [Console]::BackgroundColor = $Background
+                        [Console]::Write([Environment]::NewLine)
+                    }
                 } catch {
                     # Continue collecting if the terminal is resized or disconnected.
-                    [Console]::CursorVisible = $oldCursorVisible
+                    Restore-Console
                     $interactive = $false
-                    Write-Host ($lines -join [Environment]::NewLine)
+                    Write-Host $plain
                 }
             } else {
-                Write-Host ($lines -join [Environment]::NewLine)
+                Write-Host $plain
             }
         }
         $previousTotal = $total
@@ -269,7 +426,7 @@ try {
     }
 } finally {
     if ($interactive) {
-        [Console]::CursorVisible = $oldCursorVisible
+        Restore-Console
         [Console]::WriteLine()
     }
 }

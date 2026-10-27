@@ -125,10 +125,36 @@ Owners: [request contract](../crates/virtio-mem-core/src/memory_request.rs),
   `partial`). A refusal before any command (latched, observe-only, expired,
   replayed, misaligned, or the resize sink's final checks) is published as
   `rejected` and does not latch; only an earlier admission journals it.
-- A shrink that stops before its target is settled once at its current
-  allocation and reported `partial`. Growth or settlement past
-  `convergence_timeout_seconds`, an unknown command outcome, a recorded command
-  that never applied, or conflicting live state latch the VM and report
+- A shrink or growth that stops before its target is settled once at its
+  current allocation and reported `partial`: as soon as it has not moved for
+  three polls, or at `convergence_timeout_seconds` if it keeps moving. The
+  Windows viomem driver makes one attempt per device notification: a removal
+  stops when Windows cannot evacuate its window, and a plug QEMU rejects as
+  outside the usable region is never retried. Holding the guest's single
+  request slot longer would only delay its next request. See
+  [viomem issues](prissue.md).
+- Windows reclaim size matters. Each viomem attempt asks Windows to hot-remove
+  whatever whole blocks it can inside one window starting at the lowest
+  plugged block, `plugged - requested` bytes long, and never more. Small removal steps
+  confine that window to the oldest, least removable memory: on `win11_gpu`
+  64 MiB steps returned 2 MiB each, while one 1 GiB and one 2.2 GiB window
+  returned 90 MiB and 1.17 GiB within seconds. Use a `shrink_step_bytes` that
+  covers the expected surplus (3 GiB on `win11_gpu`), below the 4 GiB a
+  single Windows MDL can describe; the desired target and safe floor still
+  bound every removal.
+- Released blocks leave holes, and viomem plugs only above the highest
+  plugged block. QEMU accepts plugs only below its usable-region edge: the
+  largest `requested` ever set plus 256 MiB (x86-64), reset only by a VM reset.
+  When a grow settles with nothing plugged, the host widens that edge once:
+  with the domain paused it requests the device ceiling and then the current
+  allocation again, and resumes only after the restore succeeds (otherwise it
+  latches and leaves the domain paused). Widening re-arms when the device
+  reaches 0 after a reset.
+- Release returns little until the window passes the unmovable low zone: on
+  `win11_gpu`, after use, requests up to 1 GiB returned nothing, 2 GiB returned
+  900 MiB and 4 GiB 2.83 GiB. The guest uses a 3 GiB `shrink_step_bytes`.
+- Settlement past `convergence_timeout_seconds`, an unknown command outcome,
+  a recorded command that never applied, or conflicting live state latch the VM and report
   `uncertain`, which Windows never treats as terminal. The original start time
   survives restart; a backwards clock fails closed.
 - Unowned divergence is observed, never replayed. Unreadable live state keeps
@@ -305,11 +331,15 @@ Run `tools/windows/Watch-Ram.ps1` in Windows PowerShell 5.1 or PowerShell 7:
 
 No elevation is needed. Ctrl+C stops the monitor. It calls `GetPerformanceInfo`
 on every tick. The RAM-only dashboard refreshes in place in a console of at least
-80 columns by 30 rows, showing physical total, available/in-use RAM, commit
-headroom, usage bars, session minimum/maximum total, minimum available, peak
-usage and cumulative added/removed memory. A rolling chart plots total (`T`)
-and in-use (`#`) RAM against an absolute GiB scale. The latest three total-RAM
-changes remain listed with timestamps and signed MiB changes.
+80 columns by 30 rows: a blue console with title and status bars, double-line
+panels and colour block bars (green, yellow from 70%, red from 90%). It shows
+physical total, available/in-use RAM, commit headroom, usage bars, session
+minimum/maximum total, minimum available, peak usage and cumulative
+added/removed memory. A rolling chart plots total (`━`) and in-use (`█`) RAM
+against an absolute GiB scale. The latest three total-RAM changes remain listed
+with timestamps, green ▲/red ▼ markers and signed MiB changes. The console's
+colours, encoding and cursor are restored on exit. Redirected and `-NoClear`
+output prints the same layout in ASCII (`T`, `#`).
 
 History defaults to 60 observations. Set `-HistorySamples 300` for a longer
 window (approximately five minutes at the default interval); windows wider
@@ -328,8 +358,9 @@ A copy is staged at `C:\Users\Dave\Watch-Ram.ps1` on ice101 for convenience.
 Native Windows PowerShell sampling, object output and plain dashboard rendering
 were verified on 27 October 2026. A 65-sample injected API fixture verified
 +1 GiB/-1 GiB events, session extrema, cumulative changes and history compression
-without changing guest RAM. Interactive cursor repaint was not visually
-qualified; live hot-add/removal was not performed for this monitor test.
+without changing guest RAM. The colour dashboard's ASCII layout was rechecked
+in Windows PowerShell 5.1 on the same day; its interactive colour repaint was
+not visually qualified.
 
 ## Qualification runner
 

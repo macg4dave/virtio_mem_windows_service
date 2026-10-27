@@ -178,39 +178,57 @@ impl CompatibilityAttestation {
     pub fn validate_live(&self, live: &LiveCompatibilityEvidence) -> Result<(), String> {
         self.validate_integrity()?;
         live.validate()?;
+        // Each field with its attested and live values, so a drift report
+        // identifies what changed.
         let comparisons = [
-            ("vm_name", self.evidence.vm_name == live.vm_name),
+            (
+                "vm_name",
+                self.evidence.vm_name.clone(),
+                live.vm_name.clone(),
+            ),
             (
                 "device_alias",
-                self.evidence.device_alias == live.device_alias,
+                self.evidence.device_alias.clone(),
+                live.device_alias.clone(),
             ),
             (
                 "domain_xml",
-                self.evidence.domain_xml_sha256 == live.domain_xml_sha256,
+                self.evidence.domain_xml_sha256.clone(),
+                live.domain_xml_sha256.clone(),
             ),
             (
                 "qemu_argv",
-                self.evidence.qemu_argv_sha256 == live.qemu_argv_sha256,
+                self.evidence.qemu_argv_sha256.clone(),
+                live.qemu_argv_sha256.clone(),
             ),
             (
                 "libvirt_version",
-                self.evidence.libvirt_version_sha256 == live.libvirt_version_sha256,
+                self.evidence.libvirt_version_sha256.clone(),
+                live.libvirt_version_sha256.clone(),
             ),
             (
                 "qemu_version",
-                self.evidence.qemu_version == live.qemu_version,
+                self.evidence.qemu_version.to_string(),
+                live.qemu_version.to_string(),
             ),
             (
                 "dynamic_memslots",
-                self.evidence.dynamic_memslots == live.dynamic_memslots,
+                self.evidence.dynamic_memslots.to_string(),
+                live.dynamic_memslots.to_string(),
             ),
             (
                 "unplugged_inaccessible",
-                self.evidence.unplugged_inaccessible == live.unplugged_inaccessible,
+                self.evidence.unplugged_inaccessible.to_string(),
+                live.unplugged_inaccessible.to_string(),
             ),
         ];
-        if let Some((field, _)) = comparisons.iter().find(|(_, matches)| !matches) {
-            return Err(format!("live compatibility evidence drifted: {field}"));
+        if let Some((field, attested, observed)) = comparisons
+            .iter()
+            .find(|(_, attested, observed)| attested != observed)
+        {
+            return Err(format!(
+                "live compatibility evidence drifted: {field} (attested {attested}, live {observed})"
+            ));
         }
         Ok(())
     }
@@ -439,12 +457,22 @@ fn scrub_allocation_state(xml: &str) -> String {
     scrubbed
 }
 
+/// Removes the `requested-size` member, value and one adjacent separator from
+/// the generated argv. Libvirt omits the member entirely when the request is
+/// zero, so blanking only its value would make a zero request look like
+/// configuration drift.
 fn scrub_qemu_argv(arguments: &str) -> String {
     const KEY: &str = "requested-size";
     let mut scrubbed = arguments.to_owned();
     let mut offset = 0;
     while let Some(found) = scrubbed[offset..].find(KEY) {
-        let key_end = offset + found + KEY.len();
+        let key_start = offset + found;
+        let key_end = key_start + KEY.len();
+        let member_start = if scrubbed[..key_start].ends_with('"') {
+            key_start - 1
+        } else {
+            key_start
+        };
         let mut separator = key_end;
         while let Some(character) = scrubbed[separator..].chars().next() {
             if character == '"' || character.is_whitespace() {
@@ -472,15 +500,25 @@ fn scrub_qemu_argv(arguments: &str) -> String {
         if quoted {
             value_start += 1;
         }
-        let value_end = scrubbed[value_start..]
+        let mut member_end = scrubbed[value_start..]
             .find(|character: char| {
                 (quoted && character == '"')
                     || (!quoted
                         && (character == ',' || character == '}' || character.is_whitespace()))
             })
             .map_or(scrubbed.len(), |end| value_start + end);
-        scrubbed.replace_range(value_start..value_end, "<allocation-state>");
-        offset = value_start + "<allocation-state>".len();
+        if quoted && member_end < scrubbed.len() {
+            member_end += 1;
+        }
+        let (remove_start, remove_end) = if scrubbed[member_end..].starts_with(',') {
+            (member_start, member_end + 1)
+        } else if scrubbed[..member_start].ends_with(',') {
+            (member_start - 1, member_end)
+        } else {
+            (member_start, member_end)
+        };
+        scrubbed.replace_range(remove_start..remove_end, "");
+        offset = remove_start;
     }
     scrubbed
 }
@@ -621,6 +659,19 @@ mod tests {
                 )
                 .as_bytes()
             )
+        );
+        // Libvirt omits the member when the request is zero.
+        let zero = r#"-device '{"driver":"virtio-mem-pci","node":0,"memdev":"m0","id":"memory0"}'"#;
+        for argv in [
+            r#"-device '{"driver":"virtio-mem-pci","node":0,"requested-size":1073741824,"memdev":"m0","id":"memory0"}'"#,
+            r#"-device '{"driver":"virtio-mem-pci","node":0,"memdev":"m0","id":"memory0","requested-size":2097152}'"#,
+            r#"-device '{"driver":"virtio-mem-pci","node":0,"memdev":"m0","id":"memory0","requested-size":"4194304"}'"#,
+        ] {
+            assert_eq!(scrub_qemu_argv(argv), scrub_qemu_argv(zero), "{argv}");
+        }
+        assert_eq!(
+            scrub_qemu_argv("-device virtio-mem,node=0,requested-size=1G,id=m"),
+            scrub_qemu_argv("-device virtio-mem,node=0,id=m")
         );
         assert_eq!(
             scrub_allocation_state(before),

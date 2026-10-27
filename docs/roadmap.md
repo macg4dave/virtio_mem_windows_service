@@ -53,6 +53,76 @@ which run only on Windows; the updated native gate passes all 64 Windows tests.
 A Windows GNU binary is still blocked by the missing
 `x86_64-w64-mingw32-gcc` linker.
 
+### Installed resizing controller — 27 October 2026
+
+Both sides are installed on `win11_gpu` and resize on demand. Windows build
+`e2b5982a6df8-dirty.f9731111acbb` (native gate: 54/3/7 tests) runs as
+`VirtioMemService`; `virtio-mem-host@win11_gpu.service` is enabled, running
+`/etc/virtio-mem-host/win11_gpu.toml` with `observe_only = false`, a 20 GiB
+pool and 4 GiB host headroom. Evidence: `.artifacts/install/`.
+
+Fixed in this pass: the guest discarded its reclaim window whenever the device
+was converging on its own request, so every 64 MiB removal step waited a
+further full window; and `--elevate` started sudo in a background process
+group, where it could not read the password from the terminal.
+
+Live results: earlier foreground runs grew 1 GiB to 2.82 GiB in four completed
+grants of 5–6 s each. Under the installed controller, the first idle reclaim
+(64 MiB) returned only 2 MiB in the 300 s convergence bound; the host settled
+it once and reported `partial`, Windows resolved it and paused removals, and
+no latch was set. This matches the 26 October observation (10 MiB) and points
+at guest-side unplug by the VirtIO viomem driver 100.102.104.29400 on
+Windows 11 build 26300. Growth is qualified in practice; reclaim is not.
+
+Driver investigation (upstream `viomem` source at `f7c8beb`, 26 October): each
+device notification wakes one removal attempt, which asks Windows to hot-remove
+whole blocks inside a window starting at the lowest plugged block and only
+`plugged - requested` bytes long. The inherited 64 MiB `shrink_step_bytes`
+confined every attempt to the oldest, least removable 64 MiB, which explains
+the 2 MiB results; retries of the same small window returned nothing. With the
+controller holding, manual windows of 1 GiB and 2.2 GiB returned 90 MiB and
+1.17 GiB within seconds (2.82 → 1.56 GiB device). The guest manifest now uses
+a 2 GiB step. Upstream issue #1696 (`RtlFindLongestRunSet` never resets its
+run counter) can still exclude lower removable memory after holes; it limits
+but does not prevent reclaim. The host also settles a shrink that has not
+moved for three polls (observed: 17 s) instead of holding the guest's single
+request slot for the full timeout.
+
+Release leaves holes that break growth (27 October, 09:07–09:20). A grow from
+1.56 to 4 GiB plugged nothing: viomem plugs at the longest free run, which is
+the tail above the highest plugged block, and QEMU rejects plug requests
+beyond `addr + usable_region_size` (`requested + 256 MiB` on x86-64) with
+`VIRTIO_MEM_RESP_ERROR`. Once the holes below the highest plugged block exceed
+256 MiB, no grow of any size can succeed until those holes close or a VM reset
+unplugs everything. A removal ladder (2 MiB–1 GiB) run in that state returned
+at most 6 MiB per request, so its sizes are not evidence. Requesting 0
+returned 448 MiB from the top of the region, after which a 512 MiB grow
+plugged at once. No upstream fix exists (issue #1696 covers only the run
+counter); [the draft reports](prissue.md) describe all three driver issues.
+Evidence: `.artifacts/reclaim-ladder/`.
+
+Also fixed on 27 October: libvirt omits `requested-size` from the generated
+QEMU argv when the request is zero, so the attestation's argv hash drifted
+whenever the live request was zero. At 09:23 the resize sink refused the
+settle of a zero-target shrink for that reason, which latched the VM. The
+scrubber now removes the whole member; the attestation was regenerated and
+the latch cleared with the device converged. An earlier refusal at 09:04
+reported the same field while the live request was non-zero; its cause is
+unconfirmed, so drift errors now name the attested and live values.
+
+Release and growth characterised (27 October, 09:40–10:05). Growth was capped
+because QEMU's usable region only grows: plugs land above the highest plugged
+block and fail at the largest-ever `requested + 256 MiB`; the cap reproduced
+at 1638 and 1640 MiB. Widening it with the VM paused for 0.14 s removed the
+cap: 256 MiB steps to 3.17 GiB and a 1 GiB grow then plugged. After widening,
+a release ladder (use and free 3 GiB, then release) returned nothing for
+64 MiB–1 GiB, 900 MiB for 2 GiB and 2.83 GiB for 4 GiB, and growth back to
+4.25 GiB worked after every rung. The host now widens automatically after a
+grow that plugs nothing; the guest step is 3 GiB. Evidence:
+`.artifacts/reclaim-ladder/*-widened/`. A growth that never
+plugs now settles like a stalled shrink instead of latching after the
+convergence timeout.
+
 ### Notification-assisted pressure and reclaim — 27 October 2026
 
 Implemented the pressure review recommendations in source: one system-wide
@@ -169,8 +239,10 @@ unknown or contradicted effect latches.
 Depends on Phase 1. First inspect guest requests and would-be grants with
 `observe_only = true` under `host-run`; then run bounded workload trials with
 resizing enabled. Verify growth, actual returned bytes, partial results,
-request retries, QGA status delivery and renewed pressure. Windows should
-initially request small, block-aligned reclaim steps with conservative timing.
+request retries, QGA status delivery and renewed pressure. Windows reclaim
+steps must be block aligned and large enough to cover the surplus: viomem only
+searches a window of the requested size, so small steps return little (see
+Installed resizing controller above). Keep conservative reclaim timing.
 Test the real systemd unit only after foreground trials pass.
 
 Exit: recorded convergence and recovery outcomes, acceptable guest memory

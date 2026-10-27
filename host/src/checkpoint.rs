@@ -254,7 +254,7 @@ pub fn read_controller_status(
         ControlHealth::RecoveryRequired
     } else if command_ownership == CommandOwnership::OwnedPending {
         match control.intent.as_ref().map(|intent| intent.direction) {
-            Some(CommandDirection::Grow) => ControlHealth::Growing,
+            Some(CommandDirection::Grow | CommandDirection::SettleGrow) => ControlHealth::Growing,
             _ => ControlHealth::Shrinking,
         }
     } else {

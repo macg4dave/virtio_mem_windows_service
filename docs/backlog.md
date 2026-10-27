@@ -66,8 +66,9 @@ unresolved device state before proceeding.
 
 ### QUAL-002 — Demonstrate growth and reclaim under workload (P1)
 
-Depends on QUAL-001. Use authorised bounded application runs with small
-Windows reclaim requests, conservative guest timing and an explicit host
+Depends on QUAL-001. Use authorised bounded application runs with Windows
+reclaim steps that cover the surplus (viomem searches only a window of the
+requested size), conservative guest timing and an explicit host
 reserve. Exercise renewed pressure after reclaim, partial/empty results,
 retransmissions, host and Windows service restarts while a request is
 outstanding, and a stalled removal that settles short.
