@@ -183,12 +183,41 @@ to thirty seconds. A transition into native Low or across a numeric safety floor
 opposite-direction request is also allowed immediately. Retained requests are
 always retransmitted unchanged while unresolved.
 
-The unpatched-driver shrink workaround is still present. If it reaches its
-minimum target and memory then stops moving for the convergence timeout, the
+The unpatched-driver shrink workaround starts with a 64 MiB extension and
+uses 64 MiB as its maximum. A short or empty release backs off to one live
+device block; fully released steps double up to that maximum. This feedback
+prevents large target decrements from exhausting the target range while
+Windows returns only small amounts. Steps are also clamped by the original
+goal, fresh numeric surplus, device blocks and minimum target. Extra extensions require native High.
+The complete outstanding removal window, including earlier extensions, must
+fit above the built-in physical and commit reserves. The controller settles
+an owned shrink at its current allocation when this stops being true, native
+Low arrives, or fresh guest telemetry becomes unavailable. It reports the
+original request's actual result so the guest can then request growth.
+Unknown/Neutral signals pause extra extensions while the existing window is
+safe. The workaround can overshoot the original allocation goal before
+asynchronous settlement; the stride does not guarantee exact return or faster
+evacuation by Windows.
+
+Telemetry publication uses Rust atomic rename for delete-shared reader
+compatibility; durable request state keeps explicit write-through replacement.
+Readers use a bounded PowerShell child
+through QGA guest-exec with read/write/delete sharing and dispose its handle
+in a finally block. They do not hold a daemon-owned guest-file-open handle
+across multiple commands, so a lost host reply cannot leave that handle
+blocking publication. Child status and output are bounded and validated.
+This adds process startup cost to each telemetry read. Status writes still
+use guest-file operations; failed closes receive one cleanup retry without
+replaying the file operation. Publication failures retain the
+durable request and retry on the polling timer rather than stopping the
+Windows service. Application events 2005 and 1005 mark publication failure and recovery.
+
+If the workaround reaches its minimum target and memory then stops moving for a poll interval, the
 controller settles at the actual allocation and reports the original request's
-result. This releases the request slot for renewed pressure. It does not force
-Windows to return unevictable memory. Normal progress is not interrupted by
-this idle deadline.
+result. Waiting longer cannot produce a new lower target. Fresh guest policy
+can then choose a new removal target or request growth; failed removals retain
+the existing guest retry backoff. Windows may still be unable to evacuate the
+remaining blocks. Normal progress is not interrupted by this idle deadline.
 
 ## Optional telemetry and the control channel
 

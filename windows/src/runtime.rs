@@ -35,6 +35,8 @@ pub struct GuestMemoryWorker<T, P, C, N> {
     interval: Duration,
     last_native_low: bool,
     collection_failed: bool,
+    publication_failed: bool,
+    publication_degraded: bool,
     wake: crate::wake::WakeChannel,
 }
 
@@ -69,6 +71,8 @@ where
             interval,
             last_native_low: false,
             collection_failed: false,
+            publication_failed: false,
+            publication_degraded: false,
             wake: crate::wake::WakeChannel::default(),
         })
     }
@@ -84,6 +88,7 @@ where
     }
 
     fn poll_once_with_stop(&mut self, stop: &StopSignal) -> Result<RawTelemetryEnvelope, String> {
+        self.publication_failed = false;
         self.wake.refresh();
         self.collection_failed = true;
         let memory = self
@@ -130,9 +135,21 @@ where
             )
             .map_err(|error| format!("guest memory request failed: {error}"))?;
         envelope.diagnostics = Some(self.requests.diagnostics(self.clock.boot_uptime_millis()));
-        self.publisher
-            .publish(&envelope, stop)
-            .map_err(|error| format!("raw telemetry publication failed: {error}"))?;
+        // Policy has already consumed this sample even if its publication
+        // fails. A retry must advance both ordering counters.
+        self.previous_monotonic_millis = Some(monotonic_millis);
+        self.next_sequence = self
+            .next_sequence
+            .checked_add(1)
+            .ok_or_else(|| "raw telemetry sequence exhausted".to_owned())?;
+        if let Err(error) = self.publisher.publish(&envelope, stop) {
+            self.publication_failed = true;
+            return Err(format!("raw telemetry publication failed: {error}"));
+        }
+        if self.publication_degraded {
+            self.report_publication(true, "raw telemetry publication recovered");
+            self.publication_degraded = false;
+        }
         self.wake.notify(stop);
         if let Some(publisher) = &mut self.diagnostics {
             if let Err(error) = publisher.publish(&envelope, stop) {
@@ -141,17 +158,24 @@ where
                 eprintln!("optional telemetry output failed: {error}");
             }
         }
-        self.previous_monotonic_millis = Some(monotonic_millis);
-        self.next_sequence = self
-            .next_sequence
-            .checked_add(1)
-            .ok_or_else(|| "raw telemetry sequence exhausted".to_owned())?;
         Ok(envelope)
     }
 
     fn poll_or_retry(&mut self, stop: &StopSignal) -> Result<(), String> {
         match self.poll_once_with_stop(stop) {
             Ok(_) => Ok(()),
+            Err(error) if self.publication_failed => {
+                // Request state was persisted before publication. Keep that
+                // ownership and retry a fresh sample on the normal timer;
+                // a reader collision must not terminate the service.
+                self.requests.invalidate_history();
+                self.last_native_low = true;
+                if !self.publication_degraded {
+                    self.report_publication(false, &format!("telemetry publication unavailable; retrying without dropping the pending request: {error}"));
+                    self.publication_degraded = true;
+                }
+                Ok(())
+            }
             Err(error) if self.collection_failed => {
                 self.requests.invalidate_history();
                 self.last_native_low = true;
@@ -160,6 +184,34 @@ where
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn report_publication(&self, recovered: bool, message: &str) {
+        eprintln!("{message}");
+        #[cfg(windows)]
+        {
+            use crate::event_log::{
+                ServiceEvent, ServiceEventId, ServiceEventLevel, ServiceEventSink, WindowsEventLog,
+            };
+            let (id, level) = if recovered {
+                (
+                    ServiceEventId::TelemetryRecovered,
+                    ServiceEventLevel::Information,
+                )
+            } else {
+                (
+                    ServiceEventId::TelemetryUnavailable,
+                    ServiceEventLevel::Warning,
+                )
+            };
+            if let Err(error) = WindowsEventLog::open(self.requests.requester().service_name())
+                .and_then(|log| log.emit(&ServiceEvent::new(id, level, message)))
+            {
+                eprintln!("publish telemetry health event failed: {error}");
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = recovered;
     }
 
     pub fn publisher(&self) -> &P {
@@ -229,7 +281,10 @@ pub fn native_worker(config: &ServiceConfig) -> Result<NativeWorker, RuntimeWiri
     GuestMemoryWorker::new(
         NativeMemoryTelemetry,
         native_memory_resource_notifications(),
-        AtomicRawTelemetryPublisher::new(&config.demand_report_path, config.shutdown_timeout()),
+        AtomicRawTelemetryPublisher::new(
+            &config.demand_report_path,
+            config.poll_interval().min(config.shutdown_timeout()),
+        ),
         SystemTelemetryClock::default(),
         requests,
         config.poll_interval(),
@@ -577,6 +632,59 @@ mod tests {
         worker.poll_or_retry(&StopSignal::new()).unwrap();
         assert_eq!(worker.publisher().0.len(), 1);
         assert_eq!(worker.publisher().0[0].sequence, 0);
+    }
+
+    struct FailingOncePublisher(bool, PublisherFixture);
+    impl RawTelemetryPublisher for FailingOncePublisher {
+        fn publish(
+            &mut self,
+            envelope: &RawTelemetryEnvelope,
+            stop: &StopSignal,
+        ) -> Result<(), String> {
+            if std::mem::replace(&mut self.0, false) {
+                Err("replace telemetry.json: Access is denied. (os error 5)".to_owned())
+            } else {
+                self.1.publish(envelope, stop)
+            }
+        }
+    }
+
+    #[test]
+    fn publication_failure_keeps_worker_and_pending_request_alive_then_recovers() {
+        let path = publication("retry-publication");
+        let status = HostMemoryStatus {
+            version: MEMORY_REQUEST_VERSION,
+            vm_name: "guest".to_owned(),
+            service_name: "TelemetryService".to_owned(),
+            device_alias: "memory0".to_owned(),
+            observed_unix_millis: 1_000_000,
+            device_size_bytes: 32 * GIB,
+            block_size_bytes: 2 * MIB,
+            requested_bytes: 4 * GIB,
+            current_bytes: 4 * GIB,
+            result: None,
+        };
+        let mut bytes = serde_json::to_vec(&status).unwrap();
+        bytes.push(b'\n');
+        std::fs::write(virtio_mem_core::host_status_path(&path), bytes).unwrap();
+
+        let mut worker = GuestMemoryWorker::new(
+            TelemetryFixture,
+            UnavailableMemoryResourceNotifications,
+            FailingOncePublisher(true, PublisherFixture::default()),
+            StepClock::default(),
+            requests(&path, "retry"),
+            Duration::from_millis(1),
+        )
+        .unwrap();
+        worker.initialize(&StopSignal::new()).unwrap();
+        let pending = worker.requests.requester().state().pending.clone();
+        assert!(pending.is_some());
+        assert!(worker.publisher().1 .0.is_empty());
+        worker.poll_or_retry(&StopSignal::new()).unwrap();
+        assert_eq!(worker.publisher().1 .0.len(), 1);
+        assert_eq!(worker.publisher().1 .0[0].sequence, 1);
+        assert_eq!(worker.publisher().1 .0[0].request, pending);
     }
 
     struct WaitTrackingNotifications(Vec<bool>);
