@@ -24,8 +24,6 @@ pub enum ServiceEventId {
     StatusPublishFailed = 2_003,
     WakeUnavailable = 2_004,
     WakeConnected = 1_004,
-    TelemetryUnavailable = 2_005,
-    TelemetryRecovered = 1_005,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

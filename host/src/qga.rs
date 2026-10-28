@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 
 use crate::virsh::VirshCommand;
 
-const GUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const MAX_GUEST_FILE_READS: usize = 16;
 
 pub trait GuestFileReader {
     fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String>;
@@ -36,6 +36,12 @@ struct OpenResponse {
 }
 
 #[derive(Deserialize)]
+struct ReadResponse {
+    #[serde(rename = "return")]
+    result: ReadResult,
+}
+
+#[derive(Deserialize)]
 struct WriteResponse {
     #[serde(rename = "return")]
     result: WriteResult,
@@ -44,6 +50,14 @@ struct WriteResponse {
 #[derive(Deserialize)]
 struct WriteResult {
     count: usize,
+}
+
+#[derive(Deserialize)]
+struct ReadResult {
+    count: usize,
+    #[serde(rename = "buf-b64", default)]
+    buffer_base64: String,
+    eof: bool,
 }
 
 impl<C: VirshCommand> VirshGuestFiles<C> {
@@ -58,16 +72,6 @@ impl<C: VirshCommand> VirshGuestFiles<C> {
     }
 
     fn close(&self, handle: u64) -> Result<(), String> {
-        self.close_once(handle).or_else(|first| {
-            // A timeout can leave a known QGA handle holding telemetry open.
-            // Retry only closing that handle, never its read or write. The
-            // second close is harmless if the first reply alone was lost.
-            self.close_once(handle)
-                .map_err(|second| format!("{first}; close retry failed: {second}"))
-        })
-    }
-
-    fn close_once(&self, handle: u64) -> Result<(), String> {
         let response = self.execute(json!({
             "execute": "guest-file-close",
             "arguments": {"handle": handle}
@@ -135,87 +139,56 @@ impl<C: VirshCommand> GuestFileWriter for VirshGuestFiles<C> {
     }
 }
 
-/// Read Windows handoffs without leaving a daemon-owned QGA file handle.
-/// The child owns and closes its read handle, including when a host command
-/// times out. Delete sharing lets the publisher atomically replace the file.
-fn shared_reader_script(path: &str, maximum_bytes: usize) -> Result<String, String> {
-    if path.trim().is_empty() || path.contains('\0') {
-        return Err("QGA guest file path must be nonempty and contain no NUL".to_owned());
-    }
-    let capacity = maximum_bytes
-        .checked_add(1)
-        .filter(|capacity| *capacity <= i32::MAX as usize)
-        .ok_or_else(|| "QGA read bound is too large".to_owned())?;
-    let path = path.replace('\'', "''");
-    Ok(format!(
-        r#"$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';
-$f=[IO.File]::Open('{path}',[IO.FileMode]::Open,[IO.FileAccess]::Read,([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete));
-try {{
-  $b=New-Object byte[] {capacity}; $n=0;
-  while ($n -lt $b.Length) {{ $c=$f.Read($b,$n,$b.Length-$n); if ($c -eq 0) {{ break }}; $n+=$c }};
-  if ($n -gt {maximum_bytes}) {{ throw 'guest file exceeds {maximum_bytes} byte limit' }};
-  [Console]::OpenStandardOutput().Write($b,0,$n)
-}} finally {{ $f.Dispose() }}"#
-    ))
-}
-
 impl<C: VirshCommand> GuestFileReader for VirshGuestFiles<C> {
     fn read_file(&self, path: &str, maximum_bytes: usize) -> Result<Vec<u8>, String> {
-        let script = shared_reader_script(path, maximum_bytes)?;
-        let encoded: Vec<_> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-        let response: Value = serde_json::from_str(&self.execute(json!({
-            "execute": "guest-exec",
-            "arguments": {
-                "path": "powershell.exe",
-                "arg": ["-NoProfile", "-NonInteractive", "-EncodedCommand", encode_base64(&encoded)],
-                "capture-output": true
-            }
-        }))?).map_err(|error| format!("parse guest-exec response: {error}"))?;
-        let pid = response
-            .get("return")
-            .and_then(|value| value.get("pid"))
-            .and_then(Value::as_u64)
-            .ok_or_else(|| format!("guest-exec did not return a reader PID: {response}"))?;
-        let started = std::time::Instant::now();
-        loop {
-            if started.elapsed() >= GUEST_READ_TIMEOUT {
-                return Err("guest telemetry reader did not exit within 5 seconds".to_owned());
-            }
-            let response: Value = serde_json::from_str(&self.execute(json!({
-                "execute": "guest-exec-status", "arguments": {"pid": pid}
-            }))?)
-            .map_err(|error| format!("parse guest-exec-status response: {error}"))?;
-            let status = response
-                .get("return")
-                .ok_or_else(|| format!("guest-exec-status failed: {response}"))?;
-            match status.get("exited").and_then(Value::as_bool) {
-                Some(false) => {
-                    std::thread::sleep(std::time::Duration::from_millis(25));
-                    continue;
-                }
-                Some(true) => {}
-                None => return Err("guest-exec-status has no exited flag".to_owned()),
-            }
-            if status.get("exitcode").and_then(Value::as_i64) != Some(0)
-                || status.get("signal").is_some()
+        let handle = match self.open(path, "r") {
+            Err(error)
+                if error.contains("being used by another process")
+                    || error.contains("sharing violation") =>
             {
-                let error =
-                    decode_base64(status.get("err-data").and_then(Value::as_str).unwrap_or(""))?;
-                return Err(format!(
-                    "guest telemetry reader failed: {}",
-                    String::from_utf8_lossy(&error)
-                ));
+                // The publisher atomically replaces this file. Retry only a
+                // known transient collision, never an ambiguous read/close.
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                self.open(path, "r")?
             }
-            if status.get("out-truncated").and_then(Value::as_bool) == Some(true) {
-                return Err("guest telemetry reader output was truncated".to_owned());
+            result => result?,
+        };
+        self.with_handle(handle, || {
+            let mut contents = Vec::new();
+            for _ in 0..MAX_GUEST_FILE_READS {
+                let requested = maximum_bytes
+                    .checked_sub(contents.len())
+                    .and_then(|remaining| remaining.checked_add(1))
+                    .ok_or_else(|| "QGA read bound overflowed".to_owned())?;
+                let read = self.execute(json!({
+                    "execute": "guest-file-read",
+                    "arguments": {"handle": handle, "count": requested}
+                }))?;
+                let read: ReadResponse = serde_json::from_str(&read)
+                    .map_err(|error| format!("parse guest-file-read response: {error}"))?;
+                let bytes = decode_base64(&read.result.buffer_base64)?;
+                if read.result.count != bytes.len() {
+                    return Err(format!(
+                        "guest-file-read count {} does not match decoded length {}",
+                        read.result.count,
+                        bytes.len()
+                    ));
+                }
+                if bytes.is_empty() && !read.result.eof {
+                    return Err("QGA guest-file-read made no progress before EOF".to_owned());
+                }
+                contents.extend_from_slice(&bytes);
+                if contents.len() > maximum_bytes {
+                    return Err(format!("QGA guest file exceeds {maximum_bytes} byte limit"));
+                }
+                if read.result.eof {
+                    return Ok(contents);
+                }
             }
-            let bytes =
-                decode_base64(status.get("out-data").and_then(Value::as_str).unwrap_or(""))?;
-            if bytes.len() > maximum_bytes {
-                return Err(format!("QGA guest file exceeds {maximum_bytes} byte limit"));
-            }
-            return Ok(bytes);
-        }
+            Err(format!(
+                "QGA guest file did not reach EOF within {MAX_GUEST_FILE_READS} reads"
+            ))
+        })
     }
 }
 
@@ -331,74 +304,66 @@ mod tests {
     }
 
     #[test]
-    fn reads_with_a_child_owned_delete_shared_handle_and_reaps_the_child() {
-        let fake = FileFake::new(&[
-            r#"{"return":{"pid":7}}"#,
-            r#"{"return":{"exited":false}}"#,
-            r#"{"return":{"exited":true,"exitcode":0,"out-data":"YWJj"}}"#,
-        ]);
-        let files = VirshGuestFiles::new(fake, "guest");
-        assert_eq!(
-            files
-                .read_file("C:\\Dave's folder\\telemetry.json", 3)
-                .unwrap(),
-            b"abc"
-        );
-        let requests = files.command.requests.lock().unwrap();
-        assert_eq!(requests.len(), 3);
-        assert_eq!(requests[0]["execute"], "guest-exec");
-        assert_eq!(requests[1]["execute"], "guest-exec-status");
-        assert_eq!(requests[1]["arguments"]["pid"], 7);
-        let bytes = decode_base64(requests[0]["arguments"]["arg"][3].as_str().unwrap()).unwrap();
-        let script = String::from_utf16(
-            &bytes
-                .chunks_exact(2)
-                .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-        assert!(script.contains("Dave''s folder"));
-        assert!(script.contains("[IO.FileShare]::Delete"));
-        assert!(script.contains("finally { $f.Dispose() }"));
-    }
-
-    #[test]
-    fn rejects_failed_truncated_oversized_or_malformed_child_output() {
-        for status in [
-            r#"{"return":{"exited":true,"exitcode":1,"err-data":"ZmFpbGVk"}}"#,
-            r#"{"return":{"exited":true,"exitcode":0,"out-truncated":true}}"#,
-            r#"{"return":{"exited":true,"exitcode":0,"out-data":"YWJjZA=="}}"#,
-            r#"{"return":{"exited":true,"exitcode":0,"out-data":"!="}}"#,
-            r#"{"error":{"desc":"guest command timed out"}}"#,
-        ] {
-            let fake = FileFake::new(&[r#"{"return":{"pid":7}}"#, status]);
-            let files = VirshGuestFiles::new(fake, "guest");
-            assert!(files.read_file("publication", 3).is_err());
-            assert!(files
-                .command
-                .requests
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|request| request["execute"] != "guest-file-open"));
+    fn retries_a_sharing_collision_before_opening_a_read_handle() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        struct SharingFake(AtomicUsize);
+        impl VirshCommand for SharingFake {
+            fn run(&self, _: &[String]) -> Result<String, VirshError> {
+                match self.0.fetch_add(1, Ordering::SeqCst) {
+                    0 => Err(VirshError::Failed {
+                        status: "1".to_owned(),
+                        stderr: "being used by another process".to_owned(),
+                    }),
+                    1 => Ok(r#"{"return":7}"#.to_owned()),
+                    2 => Ok(r#"{"return":{"count":3,"buf-b64":"YWJj","eof":true}}"#.to_owned()),
+                    3 => Ok(r#"{"return":{}}"#.to_owned()),
+                    _ => panic!("retry must be bounded"),
+                }
+            }
         }
-        assert!(shared_reader_script("", 3).is_err());
-        assert!(shared_reader_script("publication", usize::MAX).is_err());
+        let files = VirshGuestFiles::new(SharingFake(AtomicUsize::new(0)), "guest");
+        assert_eq!(files.read_file("publication", 3).unwrap(), b"abc");
+        assert_eq!(files.command.0.load(Ordering::SeqCst), 4);
     }
 
     #[test]
-    fn retries_a_failed_close_without_replaying_the_file_operation() {
+    fn reads_and_closes_one_bounded_guest_file() {
         let fake = FileFake::new(&[
             r#"{"return":7}"#,
-            r#"{"return":{"count":3}}"#,
-            r#"{"error":{"desc":"guest agent timed out"}}"#,
+            r#"{"return":{"count":3,"buf-b64":"YWJj","eof":true}}"#,
             r#"{"return":{}}"#,
         ]);
-        let files = VirshGuestFiles::new(fake, "guest");
-        files.write_file("status", b"abc").unwrap();
-        let requests = files.command.requests.lock().unwrap();
-        assert_eq!(requests.len(), 4);
-        assert_eq!(requests[2], requests[3]);
+        assert_eq!(
+            VirshGuestFiles::new(fake, "guest").read_file(r"C:\telemetry.json", 3),
+            Ok(b"abc".to_vec())
+        );
+    }
+
+    #[test]
+    fn joins_bounded_partial_qga_reads_before_closing() {
+        let fake = FileFake::new(&[
+            r#"{"return":7}"#,
+            r#"{"return":{"count":2,"buf-b64":"YWI=","eof":false}}"#,
+            r#"{"return":{"count":1,"buf-b64":"Yw==","eof":true}}"#,
+            r#"{"return":{}}"#,
+        ]);
+        assert_eq!(
+            VirshGuestFiles::new(fake, "guest").read_file(r"C:\telemetry.json", 3),
+            Ok(b"abc".to_vec())
+        );
+    }
+
+    #[test]
+    fn rejects_oversized_or_malformed_base64_and_still_closes() {
+        for read_response in [
+            r#"{"return":{"count":4,"buf-b64":"YWJjZA==","eof":true}}"#,
+            r#"{"return":{"count":1,"buf-b64":"!===","eof":true}}"#,
+        ] {
+            let fake = FileFake::new(&[r#"{"return":9}"#, read_response, r#"{"return":{}}"#]);
+            let reader = VirshGuestFiles::new(fake, "guest");
+            assert!(reader.read_file(r"C:\telemetry.json", 3).is_err());
+            assert_eq!(reader.command.requests.lock().expect("requests").len(), 3);
+        }
     }
 
     #[test]

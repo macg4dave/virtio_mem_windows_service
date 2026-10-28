@@ -127,8 +127,8 @@ pub struct VmController<G, S, R> {
     pending_since: Option<Instant>,
     /// The owned resize's last observed allocation and when it last moved.
     pending_progress: Option<(u64, Instant)>,
-    /// VIOMEM WORKAROUND: the last extension's operation and allocation
-    /// when it was sent, plus the accepted step in blocks.
+    /// VIOMEM WORKAROUND: the last shrink extension's operation, allocation
+    /// and step in blocks.
     extension: Option<(String, u64, u64)>,
     /// A growth settled without plugging anything: widen QEMU's usable
     /// region on the next converged poll.
@@ -638,11 +638,10 @@ where
         // - a grow that has plugged nothing before the one-time widening:
         //   QEMU rejects plugs past its usable region and the driver never
         //   retries, so it settles and the widening lets the next plug land;
-        // - a shrink with Low memory, insufficient surplus, or unavailable
-        //   telemetry: the held shrink
+        // - a shrink while Windows reports Low memory: the held shrink
         //   occupies the guest's only request slot, so release it and let
         //   the guest ask for memory again;
-        // - a shrink stalled at its minimum target for a poll interval,
+        // - a shrink stuck at its minimum target for the convergence timeout,
         //   where the driver workaround cannot make another attempt.
         let can_settle = !self.control.latched() && !self.config.observe_only;
         let settle = match direction {
@@ -657,57 +656,22 @@ where
                     && self.command_stalled(state)
             }
             CommandDirection::Shrink if can_settle => {
-                // Stop the held command as well as further extensions when
-                // fresh telemetry cannot justify its entire outstanding window.
-                // Native High alone is not evidence that a prior shrink is safe.
-                let guest = self.guest.read();
-                let reserves = virtio_mem_core::settings::GlobalSettings::default()
-                    .guest_policy()
-                    .target;
-                let surplus = guest.as_ref().map_or(0, |envelope| {
-                    envelope
-                        .memory
-                        .physical_available_bytes
-                        .saturating_sub(reserves.physical_reserve_bytes)
-                        .min(
-                            envelope
-                                .memory
-                                .commit_limit_bytes
-                                .saturating_sub(envelope.memory.commit_total_bytes)
-                                .saturating_sub(reserves.commit_reserve_bytes),
-                        )
-                });
-                let remaining = state.current_bytes.saturating_sub(state.requested_bytes);
-                let release_reason = match &guest {
-                    Err(_) => Some("guest_telemetry_unavailable"),
-                    Ok(envelope)
-                        if envelope.native_pressure
-                            == Some(MemoryResourceNotificationState::Low) =>
-                    {
-                        Some("guest_low_memory")
-                    }
-                    Ok(_) if remaining > surplus => Some("guest_surplus_exhausted"),
-                    Ok(_) => None,
-                };
-                if let Some(reason) = release_reason {
-                    self.log(&format!("event=held_shrink_released reason={reason} remaining_bytes={remaining} surplus_bytes={surplus}"));
+                let guest = self.guest.read().ok();
+                if guest.as_ref().is_some_and(|envelope| {
+                    envelope.native_pressure == Some(MemoryResourceNotificationState::Low)
+                }) {
+                    self.log("event=held_shrink_released reason=guest_low_memory");
                     true
                 } else {
-                    // VIOMEM WORKAROUND (see `extend_shrink`). Reserve space
-                    // for all already requested removal before widening it.
-                    let guest = guest.expect("validated fresh telemetry");
-                    let extension_room =
-                        if guest.native_pressure == Some(MemoryResourceNotificationState::High) {
-                            surplus.saturating_sub(remaining)
-                        } else {
-                            0
-                        };
-                    let base_ram = guest
-                        .memory
-                        .physical_total_bytes
-                        .checked_sub(state.current_bytes);
+                    // VIOMEM WORKAROUND (see `extend_shrink`).
+                    let base_ram = guest.and_then(|envelope| {
+                        envelope
+                            .memory
+                            .physical_total_bytes
+                            .checked_sub(state.current_bytes)
+                    });
                     if let Some(base_ram) = base_ram.filter(|_| self.command_stalled(state)) {
-                        return self.extend_shrink(state, base_ram, extension_room, stop);
+                        return self.extend_shrink(state, base_ram, stop);
                     }
                     false
                 }
@@ -729,33 +693,33 @@ where
     }
 
     // =====================================================================
-    // VIOMEM WORKAROUND START: widen a stalled removal by 64 MiB
+    // VIOMEM WORKAROUND START: widen a stalled removal one block at a time
     //
-    // The unpatched driver chooses one longest plugged run and caps the
-    // removal window by `plugged - requested`. It attempts removal once per
-    // configuration wake, rather than walking every plugged run or retrying
-    // until convergence. Lowering the target may widen that window and sends
-    // another notification; it does not guarantee that Windows returns the
-    // added window, especially once the entire chosen run is covered.
-    // Start at 64 MiB; back off to one block after a short or empty release.
-    // Double fully released steps up to 64 MiB. Clamp to remaining movement, fresh numeric
-    // surplus and minimum RAM. Extra windows require native High. Settle at
-    // current once the original guest goal is reached or the minimum target
-    // is stalled: no lower target can generate another attempt at that point.
-    // Settlement is asynchronous, so a lower target can overshoot the goal.
+    // Unpatched viomem driver bug: each removal only tries a window that
+    // starts at the lowest plugged block and is `plugged - requested` long,
+    // once per device notification. Memory at the bottom of that window that
+    // Windows cannot evacuate stops the removal for good. Observed live on
+    // win11_gpu: each request one block (8 MiB then) lower frees exactly the block
+    // it adds to the window, and the gap below `current` stays the same;
+    // re-sending a target already tried (bouncing up and back) frees nothing.
+    // So each time a held shrink stops moving, request less, and settle as
+    // soon as `current` reaches the guest's goal: the admitted request's
+    // bytes below the allocation it started from, never below `min_ram`.
+    // The step starts at one block and doubles, up to
+    // `MAX_EXTENSION_BYTES`, while each step is released in full; a short
+    // release drops it back to one block. It never steps past the goal.
     //
     // TO REMOVE once a patched viomem is deployed: delete this block and
     // the marked branch in `observe_pending`.
     // =====================================================================
 
-    /// Preferred and maximum extension; short releases fall back to one block.
-    const INITIAL_EXTENSION_BYTES: u64 = 64 * 1024 * 1024;
+    /// Largest single extension, whatever the device block size.
+    const MAX_EXTENSION_BYTES: u64 = 256 * 1024 * 1024;
 
     fn extend_shrink(
         &mut self,
         state: VirtioMemState,
         base_ram: u64,
-        extension_room: u64,
         stop: &AtomicBool,
     ) -> Result<Step, HostRuntimeError> {
         let block = state.block_size_bytes;
@@ -796,38 +760,34 @@ where
             ));
             return self.settle_short(CommandDirection::Shrink, state, stop);
         }
-        if extension_room < block && state.requested_bytes > floor {
-            self.log_pending_health(CommandDirection::Shrink, state, Some(floor));
-            return Ok(Step::Wait);
-        }
-        let maximum = Self::INITIAL_EXTENSION_BYTES.div_ceil(block);
-        let mut released = 0;
-        let step = match self.extension.as_ref() {
-            Some((operation, from, previous_step)) if *operation == operation_id => {
-                released = from.saturating_sub(state.current_bytes);
-                if released >= previous_step * block {
-                    (previous_step * 2).min(maximum)
-                } else {
-                    1
-                }
+        let step = match self.extension.take() {
+            Some((operation, from, step))
+                if operation == operation_id
+                    && from.saturating_sub(state.current_bytes) >= step * block =>
+            {
+                (step * 2).min((Self::MAX_EXTENSION_BYTES / block).max(1))
             }
-            _ => maximum,
+            _ => 1,
         };
-        let step_bytes = (step * block)
-            .min(state.current_bytes - goal)
-            .min(extension_room - extension_room % block);
-        let Some(target) = Some(state.requested_bytes.saturating_sub(step_bytes).max(floor))
+        let step_bytes = (step * block).min((state.current_bytes - goal).div_ceil(block) * block);
+        let Some(target) = state
+            .requested_bytes
+            .checked_sub(step_bytes)
+            .map(|target| target.max(floor))
             .filter(|target| *target < state.requested_bytes)
         else {
-            // `observe_pending` already waited a full poll with no movement.
-            // At the floor no lower target exists, so another convergence
-            // timeout cannot trigger a new driver attempt. Settle the original
-            // request and let fresh guest policy choose the next target.
-            self.log(&format!(
-                "event=held_shrink_released reason=minimum_target_exhausted requested_bytes={} current_bytes={} goal_bytes={goal} floor_bytes={floor}",
-                state.requested_bytes, state.current_bytes
-            ));
-            return self.settle_short(CommandDirection::Shrink, state, stop);
+            // At the floor the driver workaround cannot widen its scan any
+            // further. Release a genuinely stalled request so it cannot
+            // occupy the guest's only request slot indefinitely.
+            if self
+                .pending_progress
+                .is_some_and(|(_, since)| since.elapsed() >= self.config.convergence_timeout)
+            {
+                self.log("event=held_shrink_released reason=minimum_target_stalled");
+                return self.settle_short(CommandDirection::Shrink, state, stop);
+            }
+            self.log_pending_health(CommandDirection::Shrink, state, Some(floor));
+            return Ok(Step::Wait);
         };
         if stop.load(Ordering::Acquire) {
             return Ok(Step::Wait);
@@ -838,19 +798,17 @@ where
         // The new target is durable before the command, like any other.
         intent.target_bytes = target;
         self.save()?;
-        let actual_step = state.requested_bytes - target;
+        self.pending_progress = None;
+        self.extension = Some((operation_id, state.current_bytes, step_bytes / block));
         let command = self
             .resize_sink
             .retarget_pending_guarded(state, target, stop);
         self.log(&format!(
-            "event=shrink_extended target_bytes={target} step_bytes={actual_step} current_bytes={} goal_bytes={goal} floor_bytes={floor} released_since_previous_bytes={released} surplus_cap_bytes={extension_room} command_result={command:?}",
+            "event=shrink_extended target_bytes={target} step_bytes={step_bytes} current_bytes={} goal_bytes={goal} floor_bytes={floor} command_result={command:?}",
             state.current_bytes
         ));
         match command {
-            Ok(()) => {
-                self.pending_progress = None;
-                self.extension = Some((operation_id, state.current_bytes, actual_step / block));
-            }
+            Ok(()) => {}
             // Nothing ran: keep the previous target.
             Err(ResizeSinkError::Rejected(_)) => {
                 if let Some(intent) = self.control.intent.as_mut() {
@@ -1426,7 +1384,6 @@ mod tests {
         /// A retarget of a stalled shrink to a new low frees the blocks it
         /// adds to viomem's window; re-sending a tried target frees nothing.
         release_per_notification: bool,
-        notification_limit: Option<u64>,
     }
 
     /// A device that converges toward `requested` whenever it is read.
@@ -1445,7 +1402,6 @@ mod tests {
                 stall_at: None,
                 grow_stall_at: None,
                 release_per_notification: false,
-                notification_limit: None,
             })))
         }
 
@@ -1515,8 +1471,7 @@ mod tests {
         ) -> Result<(), ResizeSinkError> {
             let mut device = self.device.0.borrow_mut();
             if device.release_per_notification && target < device.live.requested_bytes {
-                let added = (device.live.requested_bytes - target)
-                    .min(device.notification_limit.unwrap_or(u64::MAX));
+                let added = device.live.requested_bytes - target;
                 device.stall_at = device.stall_at.map(|stall| stall.saturating_sub(added));
             }
             device.live.requested_bytes = target;
@@ -1543,9 +1498,6 @@ mod tests {
         request: Option<MemoryRequest>,
         statuses: Vec<HostMemoryStatus>,
         native: Option<MemoryResourceNotificationState>,
-        available: Option<u64>,
-        unavailable: bool,
-        commit_headroom: Option<u64>,
         /// Report Windows' total as fixed RAM plus this device's current
         /// allocation, as a real guest does; otherwise a fixed 8 GiB.
         device: Option<Device>,
@@ -1578,9 +1530,6 @@ mod tests {
 
     impl GuestLink for Guest {
         fn read(&self) -> Result<RawTelemetryEnvelope, String> {
-            if self.0.borrow().unavailable {
-                return Err("stale publication".to_owned());
-            }
             let mut envelope = RawTelemetryEnvelope::new(
                 "guest",
                 "VirtioMemService",
@@ -1600,14 +1549,8 @@ mod tests {
                     kernel_nonpaged_bytes: 0,
                 },
             );
-            if let Some(headroom) = self.0.borrow().commit_headroom {
-                envelope.memory.commit_total_bytes = envelope.memory.commit_limit_bytes - headroom;
-            }
             envelope.request = self.0.borrow().request.clone();
             envelope.native_pressure = self.0.borrow().native;
-            if let Some(available) = self.0.borrow().available {
-                envelope.memory.physical_available_bytes = available;
-            }
             if let Some(device) = &self.0.borrow().device {
                 envelope.memory.physical_total_bytes = device.live().current_bytes;
             }
@@ -1989,10 +1932,8 @@ mod tests {
     #[test]
     fn a_removal_stalled_at_the_floor_settles_without_losing_its_result() {
         let mut fixture = Fixture::new("floor-shrink", 100, 8 * GIB);
-        // The full convergence deadline must not delay an exhausted workaround.
-        fixture.config.convergence_timeout = Duration::from_secs(300);
+        fixture.config.convergence_timeout = Duration::from_millis(20);
         fixture.guest.track(&fixture.device);
-        fixture.guest.0.borrow_mut().available = Some(4 * GIB);
         fixture.config.min_ram = 7 * GIB;
         fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
         fixture
@@ -2003,7 +1944,7 @@ mod tests {
         round(&mut runtime);
         assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
         assert!(fixture.guest.last_result().is_none());
-        thread::sleep(Duration::from_millis(5));
+        thread::sleep(Duration::from_millis(30));
         round(&mut runtime);
         round(&mut runtime);
         assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
@@ -2024,175 +1965,11 @@ mod tests {
         assert!(!fixture.journal().latched());
     }
 
+    // VIOMEM WORKAROUND test: delete with the workaround.
     #[test]
-    fn a_restored_zero_target_is_settled_and_a_fresh_removal_changes_targets_again() {
-        let fixture = Fixture::new("zero-floor-restart", 100, 2 * GIB);
-        fixture.guest.signal(MemoryResourceNotificationState::High);
-        fixture.guest.0.borrow_mut().available = Some(4 * GIB);
-        fixture.device.0.borrow_mut().stall_at = Some(GIB + 512 * MIB);
-        fixture
-            .guest
-            .send(Some(request(1, MemoryOperation::Remove, 2 * GIB)));
-        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        round(&mut runtime);
-        round(&mut runtime);
-        assert_eq!(*fixture.targets.borrow(), [0]);
-        drop(runtime);
-
-        let mut runtime = self::runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        round(&mut runtime);
-        thread::sleep(Duration::from_millis(5));
-        round(&mut runtime);
-        round(&mut runtime);
-        let result = fixture
-            .guest
-            .last_result()
-            .expect("original request result");
-        assert_eq!(result.request.identity.sequence, 1);
-        assert_eq!(result.outcome, MemoryOutcome::Partial);
-        assert_eq!(result.actual_bytes, 512 * MIB);
-        assert_eq!(*fixture.targets.borrow(), [0, GIB + 512 * MIB]);
-
-        // A new policy request changes the target again. Never replay the
-        // completed request or invent growth to get out of the zero target.
-        fixture
-            .guest
-            .send(Some(request(2, MemoryOperation::Remove, GIB)));
-        round(&mut runtime);
-        round(&mut runtime);
-        thread::sleep(Duration::from_millis(5));
-        round(&mut runtime);
-        assert_eq!(
-            *fixture.targets.borrow(),
-            [0, GIB + 512 * MIB, 512 * MIB, 512 * MIB - 64 * MIB,]
-        );
-        drop(runtime);
-        assert_eq!(
-            fixture
-                .journal()
-                .journal
-                .request
-                .as_ref()
-                .unwrap()
-                .identity
-                .sequence,
-            2
-        );
-        assert!(!fixture.journal().latched());
-    }
-
-    // VIOMEM WORKAROUND tests: delete with the workaround.
-    #[test]
-    fn stalled_removal_keeps_64_mib_steps_and_settles_at_the_goal() {
+    fn a_stalled_removal_widens_in_growing_steps_and_stops_at_the_goal() {
         let mut fixture = Fixture::new("extend-shrink", 100, 8 * GIB);
         fixture.config.poll_interval = Duration::from_millis(2);
-        fixture.guest.signal(MemoryResourceNotificationState::High);
-        fixture.guest.0.borrow_mut().available = Some(4 * GIB);
-        {
-            let mut device = fixture.device.0.borrow_mut();
-            device.stall_at = Some(7 * GIB + 448 * MIB);
-            device.release_per_notification = true;
-        }
-        fixture
-            .guest
-            .send(Some(request(1, MemoryOperation::Remove, GIB)));
-        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        for _ in 0..18 {
-            round(&mut runtime);
-            thread::sleep(Duration::from_millis(5));
-        }
-        assert_eq!(
-            *fixture.targets.borrow(),
-            [
-                7 * GIB,
-                7 * GIB - 64 * MIB,
-                7 * GIB - 128 * MIB,
-                7 * GIB - 192 * MIB,
-                7 * GIB - 256 * MIB,
-                7 * GIB - 320 * MIB,
-                7 * GIB - 384 * MIB,
-                7 * GIB - 448 * MIB,
-                7 * GIB
-            ]
-        );
-        assert_eq!(fixture.guest.last_result().unwrap().actual_bytes, GIB);
-        assert_eq!(
-            fixture.guest.last_result().unwrap().outcome,
-            MemoryOutcome::Completed
-        );
-    }
-
-    #[test]
-    fn partial_driver_progress_completes_before_the_target_range_is_exhausted() {
-        let mut fixture = Fixture::new("feedback-completion", 100, 2 * GIB);
-        fixture.config.poll_interval = Duration::from_millis(1);
-        fixture.guest.signal(MemoryResourceNotificationState::High);
-        fixture.guest.0.borrow_mut().available = Some(4 * GIB);
-        {
-            let mut device = fixture.device.0.borrow_mut();
-            device.live.block_size_bytes = 8 * MIB;
-            device.stall_at = Some(GIB + 512 * MIB);
-            device.release_per_notification = true;
-            device.notification_limit = Some(8 * MIB);
-        }
-        fixture
-            .guest
-            .send(Some(request(1, MemoryOperation::Remove, GIB)));
-        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        for _ in 0..180 {
-            round(&mut runtime);
-            if fixture.guest.last_result().is_some() {
-                break;
-            }
-            thread::sleep(Duration::from_millis(2));
-        }
-        let result = fixture.guest.last_result().expect("terminal result");
-        assert_eq!(result.outcome, MemoryOutcome::Completed);
-        assert_eq!(result.actual_bytes, GIB);
-        assert_eq!(fixture.device.live().current_bytes, GIB);
-        assert!(
-            !fixture.targets.borrow().contains(&0),
-            "feedback must avoid consuming the target range before the original goal"
-        );
-    }
-
-    #[test]
-    fn short_releases_back_off_then_probe_up_to_the_64_mib_limit() {
-        let mut fixture = Fixture::new("partial-stride", 100, 8 * GIB);
-        fixture.config.poll_interval = Duration::from_millis(2);
-        fixture.guest.signal(MemoryResourceNotificationState::High);
-        fixture.guest.0.borrow_mut().available = Some(4 * GIB);
-        {
-            let mut device = fixture.device.0.borrow_mut();
-            device.stall_at = Some(7 * GIB + 512 * MIB);
-            device.release_per_notification = true;
-            device.notification_limit = Some(8 * MIB);
-        }
-        fixture
-            .guest
-            .send(Some(request(1, MemoryOperation::Remove, GIB)));
-        let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        for _ in 0..10 {
-            round(&mut runtime);
-            thread::sleep(Duration::from_millis(5));
-        }
-        let targets = fixture.targets.borrow();
-        assert!(targets.len() >= 5);
-        // The first 64 MiB notification releases just 8 MiB. Return to one
-        // 2 MiB device block, then grow only when actual progress supports it.
-        let steps: Vec<_> = targets.windows(2).map(|pair| pair[0] - pair[1]).collect();
-        assert_eq!(steps[..4], [64 * MIB, 2 * MIB, 4 * MIB, 8 * MIB]);
-        assert!(steps.iter().all(|step| *step <= 64 * MIB));
-    }
-
-    #[test]
-    fn extensions_wait_for_high_memory_and_numeric_surplus_then_clamp_to_goal() {
-        let mut fixture = Fixture::new("extension-safety", 100, 8 * GIB);
-        fixture.config.poll_interval = Duration::from_millis(2);
-        fixture
-            .guest
-            .signal(MemoryResourceNotificationState::Neutral);
-        fixture.guest.0.borrow_mut().available = Some(4 * GIB);
         {
             let mut device = fixture.device.0.borrow_mut();
             device.stall_at = Some(7 * GIB + 12 * MIB);
@@ -2202,71 +1979,28 @@ mod tests {
             .guest
             .send(Some(request(1, MemoryOperation::Remove, GIB)));
         let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-        for _ in 0..4 {
+        for _ in 0..12 {
             round(&mut runtime);
             thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(*fixture.targets.borrow(), [7 * GIB]);
-        fixture.guest.signal(MemoryResourceNotificationState::High);
-        fixture.guest.0.borrow_mut().available = Some(2 * GIB + 20 * MIB);
-        for _ in 0..8 {
-            round(&mut runtime);
-            thread::sleep(Duration::from_millis(5));
-        }
+        // 7 GiB, then extensions of 2, 4 and (doubling to 8, capped at the
+        // 6 MiB left) 6 MiB, each released in full; at the goal the shrink
+        // settles at what the guest kept, not further down.
         assert_eq!(
             *fixture.targets.borrow(),
-            [7 * GIB, 7 * GIB - 8 * MIB, 7 * GIB - 12 * MIB, 7 * GIB]
+            [
+                7 * GIB,
+                7 * GIB - 2 * MIB,
+                7 * GIB - 6 * MIB,
+                7 * GIB - 12 * MIB,
+                7 * GIB
+            ]
         );
-        assert_eq!(fixture.guest.last_result().unwrap().actual_bytes, GIB);
-    }
-
-    #[test]
-    fn renewed_demand_or_stale_telemetry_releases_shrink_and_allows_growth_after_restart() {
-        for reason in ["physical", "commit", "stale"] {
-            let stale = reason == "stale";
-            let fixture = Fixture::new(&format!("renewed-{reason}"), 100, 8 * GIB);
-            fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
-            fixture.guest.signal(MemoryResourceNotificationState::High);
-            fixture.guest.0.borrow_mut().available = Some(4 * GIB);
-            fixture
-                .guest
-                .send(Some(request(1, MemoryOperation::Remove, GIB)));
-            let mut runtime = runtime(vec![fixture.controller(None)], 64 * GIB, None);
-            round(&mut runtime);
-            round(&mut runtime);
-            drop(runtime);
-
-            // Restore the owned shrink from disk. High can remain signalled
-            // even when the outstanding scan window would exhaust reserves.
-            fixture.guest.0.borrow_mut().available = Some(2 * GIB + 256 * MIB);
-            if reason == "commit" {
-                fixture.guest.0.borrow_mut().available = Some(4 * GIB);
-                fixture.guest.0.borrow_mut().commit_headroom = Some(2 * GIB + 256 * MIB);
-            }
-            fixture.guest.0.borrow_mut().unavailable = stale;
-            let mut runtime = self::runtime(vec![fixture.controller(None)], 64 * GIB, None);
-            round(&mut runtime);
-            round(&mut runtime);
-            assert_eq!(*fixture.targets.borrow(), [7 * GIB, 7 * GIB + 512 * MIB]);
-            let result = fixture
-                .guest
-                .last_result()
-                .expect("correlated partial result");
-            assert_eq!(result.outcome, MemoryOutcome::Partial);
-            assert_eq!(result.actual_bytes, 512 * MIB);
-            fixture.guest.0.borrow_mut().unavailable = false;
-            fixture
-                .guest
-                .send(Some(request(2, MemoryOperation::Add, GIB)));
-            for _ in 0..3 {
-                round(&mut runtime);
-            }
-            assert_eq!(
-                fixture.guest.last_result().unwrap().outcome,
-                MemoryOutcome::Completed
-            );
-            assert_eq!(fixture.device.live().current_bytes, 8 * GIB + 512 * MIB);
-        }
+        let result = fixture.guest.last_result().expect("result");
+        assert_eq!(result.outcome, MemoryOutcome::Completed);
+        assert_eq!(result.actual_bytes, GIB);
+        drop(runtime);
+        assert!(!fixture.journal().latched());
     }
 
     #[test]
@@ -2274,7 +2008,6 @@ mod tests {
         let fixture = Fixture::new("low-release", 100, 8 * GIB);
         fixture.device.0.borrow_mut().stall_at = Some(7 * GIB + 512 * MIB);
         fixture.guest.signal(MemoryResourceNotificationState::High);
-        fixture.guest.0.borrow_mut().available = Some(4 * GIB);
         fixture
             .guest
             .send(Some(request(1, MemoryOperation::Remove, GIB)));

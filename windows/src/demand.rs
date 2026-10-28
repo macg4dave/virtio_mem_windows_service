@@ -134,14 +134,6 @@ fn atomic_replace(
     use winapi::shared::minwindef::FALSE;
     use winapi::um::winbase::{MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH};
 
-    if !durable {
-        // Rust uses FileRenameInfoEx/POSIX replacement on access denial.
-        // With delete-shared readers this keeps old snapshots readable while
-        // new opens see the replacement. Durable request state retains the
-        // explicit write-through path below.
-        return retry_atomic_replace(stop, timeout, || std::fs::rename(source, destination));
-    }
-
     let source = source
         .as_os_str()
         .encode_wide()
@@ -763,37 +755,6 @@ mod tests {
                 .expect("complete JSON");
         assert_eq!(current.sequence, 2);
         std::fs::remove_file(path).expect("remove fixture");
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn telemetry_replacement_keeps_a_delete_shared_reader_on_its_old_snapshot() {
-        use std::os::windows::fs::OpenOptionsExt;
-        use winapi::um::winnt::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
-        let path = std::env::temp_dir().join(format!(
-            "virtio-mem-shared-reader-{}.json",
-            std::process::id()
-        ));
-        std::fs::write(&path, b"old publication").unwrap();
-        let mut reader = OpenOptions::new()
-            .read(true)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-            .open(&path)
-            .unwrap();
-        replace_file(
-            &path,
-            b"new publication",
-            false,
-            &StopSignal::new(),
-            Duration::from_millis(10),
-        )
-        .unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"new publication");
-        let mut old = String::new();
-        std::io::Read::read_to_string(&mut reader, &mut old).unwrap();
-        assert_eq!(old, "old publication");
-        drop(reader);
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
